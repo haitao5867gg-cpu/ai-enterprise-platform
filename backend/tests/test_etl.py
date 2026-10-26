@@ -379,8 +379,28 @@ def test_values_a_target_computes_are_its_own():
     copied["targets"][0]["quality_rules"] = [
         {"name": "not_returned", "condition": "status <> 'returned'"}
     ]
-    with pytest.raises(PlanError, match="not_returned|'returned'"):
+    with pytest.raises(PlanError, match="'returned'"):
         validate_plan(copied, tables, known, trust_assumptions=False)
+
+    # Downstream of a copy the input still holds the source's values, whatever the
+    # downstream target makes of them.
+    rewritten = plan()
+    rewritten["targets"][0]["columns"].append({"name": "status", "source": "o.status"})
+    rewritten["targets"].append(
+        {
+            "name": "relabelled",
+            "sources": ["order_facts"],
+            "logic": "改写状态",
+            "columns": [
+                {
+                    "name": "status",
+                    "source": "CASE WHEN status = 'returned' THEN 'completed' ELSE status END",
+                }
+            ],
+        }
+    )
+    with pytest.raises(PlanError, match="relabelled 拿 status 和 'returned' 比较"):
+        validate_plan(rewritten, tables, known, trust_assumptions=False)
 
 
 def test_known_values_from_the_profile():

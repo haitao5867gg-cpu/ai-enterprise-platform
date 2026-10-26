@@ -126,7 +126,12 @@ def score_plan(expect: dict[str, Any], plan: dict[str, Any] | None) -> list[Chec
             columns = [c.get("name", "") for c in t.get("columns", [])]
             computed += [c.get("source", "") for c in t.get("columns", [])]
             own = re.compile(r"\b(?:" + "|".join(map(re.escape, columns)) + r")\b", re.I)
-            computed += [own.sub("", q.get("condition", "")) for q in t.get("quality_rules", [])]
+            for q in t.get("quality_rules", []):
+                # Odd parts are string literals: kept whole, names are dropped only outside.
+                parts = re.split(r"('(?:[^']|'')*')", q.get("condition", ""))
+                computed.append(
+                    "".join(p if i % 2 else own.sub("", p) for i, p in enumerate(parts))
+                )
         text = json.dumps(computed, ensure_ascii=False)
         found = [w for w in expect["forbid"] if _has([text], w)]
         checks.append(Check("plan", "forbid", not found, f"用了 {found}" if found else ""))

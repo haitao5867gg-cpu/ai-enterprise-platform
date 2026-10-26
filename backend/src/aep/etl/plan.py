@@ -119,25 +119,36 @@ def _value_problems(
     user said so), so once ``trust_assumptions`` is set a value the assumptions name stays.
     """
     explained = " ".join(plan.assumptions).lower()
-    names = {t.name for t in plan.targets}
-    # Columns some target computes rather than copies: their values are not the source's.
-    derived = {c.name for t in plan.targets for c in t.columns if not _copies(c)}
+    targets = {t.name: t for t in plan.targets}
+    own: dict[str, set[str]] = {}
+
+    def derived_in(name: str) -> set[str]:
+        """Columns of target ``name`` whose values are not the source's: computed there, or
+        copied from a column an upstream target computed."""
+        if name not in own:
+            own[name] = set()  # a cycle (rejected above anyway) ends here
+            upstream = inputs(targets[name])
+            own[name] = {
+                c.name for c in targets[name].columns if not _copies(c) or c.name in upstream
+            }
+        return own[name]
+
+    def inputs(target: Target) -> set[str]:
+        return {c for s in target.sources if s in targets for c in derived_in(s)}
+
     problems = []
     for target in plan.targets:
-        # Column expressions read the target's inputs; reading another target, a derived
-        # column there has its own values.
-        upstream = derived if any(s in names for s in target.sources) else set()
+        # Column expressions read the target's inputs: source tables keep the profiled
+        # values, but a column an upstream target computed has its own.
+        upstream = inputs(target)
         pairs = [
             p for c in target.columns for p in compared_literals(c.source) if p[0] not in upstream
         ]
-        # Quality rules check the target's own output, so only copied columns keep the
-        # source's values.
-        copied = {c.name for c in target.columns if _copies(c)}
+        # Quality rules check the target's own output, where only copied source columns
+        # keep the profiled values.
+        kept = {c.name for c in target.columns if _copies(c)} - derived_in(target.name)
         pairs += [
-            p
-            for q in target.quality_rules
-            for p in compared_literals(q.condition)
-            if p[0] in copied and p[0] not in upstream
+            p for q in target.quality_rules for p in compared_literals(q.condition) if p[0] in kept
         ]
         for column, literal in dict.fromkeys(pairs):
             seen = known.get(column)
