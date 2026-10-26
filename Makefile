@@ -1,4 +1,4 @@
-.PHONY: up up-full down logs test lint fmt
+.PHONY: up up-full down logs test lint fmt eval
 
 up:        ## Start the full local stack
 	docker compose up --build -d
@@ -16,6 +16,12 @@ down:      ## Stop the stack, Langfuse included (data volumes are kept)
 
 logs:
 	docker compose logs -f
+
+# Score the ETL eval set against the running stack, e.g. `make eval MODEL=company`.
+# Needs a real model; with Databricks configured it also checks the dev runs.
+API ?= http://localhost:8000
+eval:      ## Run evals/etl/cases.yaml and print the scores
+	cd backend && uv run aep-eval ../evals/etl/cases.yaml --api $(API) $(if $(MODEL),--model $(MODEL)) $(if $(ONLY),--only $(ONLY))
 
 test: test-connectors      ## Connector + backend tests + frontend type check
 	cd backend && uv run pytest -q
