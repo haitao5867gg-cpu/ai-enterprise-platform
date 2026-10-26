@@ -39,10 +39,16 @@ language 是 sql 时，代码是一条 SELECT（可以用 WITH），结尾不要
 
 @dataclass(frozen=True)
 class Compute:
-    """Classic pipeline compute: each update starts a job cluster of this size."""
+    """Classic pipeline compute: each update starts a job cluster of this size.
 
-    node_type: str
+    ``policy_id`` names a cluster policy to create the cluster under, for workspaces
+    where users may create clusters only through a policy; the policy can then
+    also fix the node type, which may be left empty.
+    """
+
+    node_type: str = ""
     workers: int = 1
+    policy_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,9 +143,12 @@ def _pipeline(name: str, library: str, compute: Compute | None) -> dict[str, obj
     else:
         # Quality rules (expectations) need the Advanced edition on classic compute.
         pipeline["edition"] = "ADVANCED"
-        pipeline["clusters"] = [
-            {"label": "default", "node_type_id": compute.node_type, "num_workers": compute.workers}
-        ]
+        cluster: dict[str, object] = {"label": "default", "num_workers": compute.workers}
+        if compute.node_type:
+            cluster["node_type_id"] = compute.node_type
+        if compute.policy_id:
+            cluster |= {"policy_id": compute.policy_id, "apply_policy_default_values": True}
+        pipeline["clusters"] = [cluster]
     pipeline["libraries"] = [{"file": {"path": library}}]
     pipeline["configuration"] = {"source_catalog": "${var.source_catalog}"}
     return pipeline

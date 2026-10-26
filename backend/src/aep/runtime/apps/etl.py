@@ -76,9 +76,11 @@ def _dev_message(name: str, dev: DevRun, retry: bool) -> str:
 
 def build(ctx: AppContext) -> StateGraph:
     compute = None
-    if ctx.settings.databricks_pipeline_node_type:
+    if ctx.settings.databricks_pipeline_node_type or ctx.settings.databricks_pipeline_policy_id:
         compute = codegen.Compute(
-            ctx.settings.databricks_pipeline_node_type, ctx.settings.databricks_pipeline_workers
+            ctx.settings.databricks_pipeline_node_type,
+            ctx.settings.databricks_pipeline_workers,
+            ctx.settings.databricks_pipeline_policy_id,
         )
 
     def model_for(state: EtlState, step: str) -> str:

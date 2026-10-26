@@ -183,3 +183,72 @@ async def test_without_databricks_the_run_says_it_skipped(tmp_path):
 
     assert view.result["verification"]["status"] == "skipped"
     assert "AEP_DATABRICKS_HOST" in view.result["verification"]["reason"]
+
+
+async def test_dropped_connections_are_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr("aep.databricks.asyncio.sleep", _no_sleep)
+    workspace = fake_databricks.FakeWorkspace(tmp_path, runs=[True])
+    workspace.drop(2)
+
+    dev = await workspace.target().run(bundle())
+
+    assert dev.status == "passed" and dev.warnings == []
+    assert dev.tables[0].rows == 4990
+
+
+async def test_a_workspace_that_keeps_dropping_is_a_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr("aep.databricks.asyncio.sleep", _no_sleep)
+    workspace = fake_databricks.FakeWorkspace(tmp_path, runs=[True])
+    workspace.drop(100)
+
+    dev = await workspace.target().run(bundle())
+
+    assert dev.status == "passed"
+    assert "ConnectError" in dev.warnings[0]
+
+
+async def test_cluster_creation_denied_is_not_blamed_on_the_code(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.deny_clusters()
+
+    dev = await workspace.target().run(bundle())
+
+    assert (dev.status, dev.stage, dev.fixable) == ("failed", "run", False)
+    assert dev.tables == []
+    assert "not authorized to create clusters" in dev.errors[0]
+
+
+async def test_cluster_creation_denied_stops_without_regenerating(tmp_path):
+    service, gateway, ds, workspace = await dev_service(
+        tmp_path, [], [reply(plan()), reply({"targets": {"order_facts": PYSPARK_BODY}})]
+    )
+    workspace.deny_clusters()
+
+    run_id = await start(service, ds)
+    view = await decide(service, run_id, "approve")
+
+    assert view.record.status == "done"
+    verification = view.result["verification"]
+    assert (verification["status"], verification["attempt"]) == ("failed", 1)
+    assert len(gateway.requests) == 2  # plan + one codegen, no retry
+    assert "not authorized to create clusters" in view.messages[-1]["content"]
+
+
+def test_classic_compute_under_a_cluster_policy():
+    confirmed = EtlPlan.model_validate(plan())
+    files = codegen.render_bundle(
+        "shop_orders", confirmed, "示例库", codegen.Compute(policy_id="E0631F5C0D0006C3")
+    )
+    pipeline = yaml.safe_load(files["databricks.yml"])["resources"]["pipelines"]["shop_orders"]
+    assert pipeline["clusters"] == [
+        {
+            "label": "default",
+            "num_workers": 1,
+            "policy_id": "E0631F5C0D0006C3",
+            "apply_policy_default_values": True,
+        }
+    ]
+
+
+async def _no_sleep(seconds: float) -> None:
+    return None

@@ -4,6 +4,9 @@ The CLI is a small script that records each call (arguments, the files in the
 bundle directory, the environment it got) and answers like the real one. Each
 ``bundle run`` starts a new pipeline update that passes or fails in the order
 given by ``runs``; a failed update's event log carries an AnalysisException.
+``deny_clusters`` makes updates fail before any table runs, as in a workspace
+where the user may not create clusters; ``drop`` makes the next REST requests
+lose their connection.
 """
 
 import json
@@ -19,6 +22,10 @@ from aep.databricks import DevTarget
 
 HOST = "https://adb-1.test.databricks.azure.cn"
 PIPELINE_ID = "pipe-1"
+CLUSTER_DENIED = (
+    "Failed to create a pipeline cluster: PERMISSION_DENIED: You are not authorized to create "
+    "clusters. Please contact your administrator."
+)
 MISSING_COLUMN = (
     "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column or function parameter with name `o`.`qty` "
     "cannot be resolved. Did you mean one of the following? [`o`.`quantity`]"
@@ -63,6 +70,8 @@ class FakeWorkspace:
         self.state_file.write_text(
             json.dumps({"calls": [], "runs": runs or [], "fail": {}, "updates": 0})
         )
+        self.clusters_denied = False
+        self.drops = 0
         self.cli = tmp_path / "databricks"
         self.cli.write_text(
             CLI.format(
@@ -85,6 +94,15 @@ class FakeWorkspace:
         state["fail"][step] = output
         self.state_file.write_text(json.dumps(state))
 
+    def deny_clusters(self) -> None:
+        self.clusters_denied = True
+        state = self._state()
+        state["runs"] = [False] * 10
+        self.state_file.write_text(json.dumps(state))
+
+    def drop(self, requests: int) -> None:
+        self.drops = requests
+
     def settings(self, **changes: Any) -> Settings:
         values: dict[str, Any] = {
             "llm_gateway_url": "http://gateway.test",
@@ -106,6 +124,26 @@ class FakeWorkspace:
         update_id = f"update-{update}"
         origin = {"pipeline_id": PIPELINE_ID, "update_id": update_id, "flow_name": "order_facts"}
         passed = self._state()["runs"][update - 1] if update <= len(self._state()["runs"]) else True
+        if self.clusters_denied:
+            return [
+                {
+                    "timestamp": "2026-10-26T08:00:02Z",
+                    "level": "ERROR",
+                    "event_type": "update_progress",
+                    "message": f"Update {update_id} is FAILED.",
+                    "origin": {"pipeline_id": PIPELINE_ID, "update_id": update_id},
+                    "error": {
+                        "exceptions": [
+                            {
+                                "class_name": "com.databricks.pipelines.common.errors."
+                                "deployment.DeploymentException",
+                                "message": CLUSTER_DENIED,
+                            }
+                        ]
+                    },
+                    "details": {"update_progress": {"state": "FAILED"}},
+                }
+            ]
         if not passed:
             return [
                 {
@@ -171,6 +209,9 @@ class FakeWorkspace:
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if self.drops:
+            self.drops -= 1
+            raise httpx.ConnectError("Connection reset by peer", request=request)
         if request.headers.get("authorization") != "Bearer dapi-test-token":
             return httpx.Response(401, json={"error_code": "UNAUTHENTICATED"})
         updates = self._state()["updates"]

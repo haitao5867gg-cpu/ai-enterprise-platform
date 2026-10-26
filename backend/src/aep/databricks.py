@@ -25,6 +25,9 @@ from aep.etl.codegen import Bundle
 TARGET = "dev"
 OUTPUT_TAIL = 4000
 EVENT_PAGE = 250
+# Connections to the workspace can drop mid-request (seen through egress proxies
+# to Azure China); reads are retried this many times before giving up.
+GET_ATTEMPTS = 4
 
 
 class DatabricksError(Exception):
@@ -192,14 +195,20 @@ class DevTarget:
         return proc.returncode == 0, out.decode(errors="replace")
 
     async def _get(self, path: str, **params: Any) -> dict[str, Any]:
-        try:
-            resp = await self._http.get(
-                f"{self._host}{path}",
-                params=params,
-                headers={"Authorization": f"Bearer {self._settings.databricks_token}"},
-            )
-        except httpx.HTTPError as exc:
-            raise DatabricksError(f"{path}: {exc}") from exc
+        for attempt in range(1, GET_ATTEMPTS + 1):
+            try:
+                resp = await self._http.get(
+                    f"{self._host}{path}",
+                    params=params,
+                    headers={"Authorization": f"Bearer {self._settings.databricks_token}"},
+                )
+                break
+            except httpx.TransportError as exc:
+                if attempt == GET_ATTEMPTS:
+                    raise DatabricksError(f"{path}: {exc!r}") from exc
+                await asyncio.sleep(attempt)
+            except httpx.HTTPError as exc:
+                raise DatabricksError(f"{path}: {exc!r}") from exc
         if resp.status_code != 200:
             raise DatabricksError(f"{path}: HTTP {resp.status_code} {resp.text[:500]}")
         return resp.json()
@@ -261,7 +270,10 @@ class DevTarget:
         if dev.update_id:
             dev.tables, dev.errors = summarize_events(events, dev.update_id)
         if not ran.ok:
-            dev.fixable = True
+            # Only a failed table is the generated code's fault. An update that
+            # failed before any table ran (no permission to create its cluster,
+            # quota, no serverless) is about the workspace; regenerating won't help.
+            dev.fixable = not dev.errors or any(t.status == "FAILED" for t in dev.tables)
             if not dev.errors:
                 dev.errors = [ran.output.strip() or "管道运行失败，没有拿到报错信息"]
         for table in dev.tables:

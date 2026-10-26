@@ -35,10 +35,12 @@ class Settings(BaseSettings):
     databricks_catalog: str = ""
     databricks_schema: str = ""
     databricks_source_catalog: str = ""
-    # Pipelines run on serverless compute unless a node type is given; then each
-    # update starts a classic job cluster of that type.
+    # Pipelines run on serverless compute unless a node type or a cluster policy is
+    # given; then each update starts a classic job cluster of that type, created
+    # under that policy (for users who may create clusters only through one).
     databricks_pipeline_node_type: str = ""
     databricks_pipeline_workers: int = 1
+    databricks_pipeline_policy_id: str = ""
     databricks_cli: str = "databricks"
     databricks_timeout_seconds: float = 3600.0
 
