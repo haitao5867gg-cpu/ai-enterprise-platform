@@ -7,6 +7,11 @@ given by ``runs``; a failed update's event log carries an AnalysisException.
 ``deny_clusters`` makes updates fail before any table runs, as in a workspace
 where the user may not create clusters; ``drop`` makes the next REST requests
 lose their connection.
+
+The workspace also has one all-purpose cluster (``CLUSTER_ID``) answering the
+Command Execution API: each command gets the next of ``cluster_outputs`` (an
+outcome as ``aep.cluster_harness`` prints it, or an error string), and is kept
+in ``commands``.
 """
 
 import json
@@ -22,6 +27,7 @@ from aep.databricks import DevTarget
 
 HOST = "https://adb-1.test.databricks.azure.cn"
 PIPELINE_ID = "pipe-1"
+CLUSTER_ID = "0101-000000-abcdefgh"
 CLUSTER_DENIED = (
     "Failed to create a pipeline cluster: PERMISSION_DENIED: You are not authorized to create "
     "clusters. Please contact your administrator."
@@ -72,6 +78,10 @@ class FakeWorkspace:
         )
         self.clusters_denied = False
         self.drops = 0
+        self.cluster_state = "RUNNING"
+        self.cluster_outputs: list[dict[str, Any] | str] = []
+        self.commands: list[dict[str, Any]] = []
+        self.contexts: set[str] = set()
         self.cli = tmp_path / "databricks"
         self.cli.write_text(
             CLI.format(
@@ -214,6 +224,8 @@ class FakeWorkspace:
             raise httpx.ConnectError("Connection reset by peer", request=request)
         if request.headers.get("authorization") != "Bearer dapi-test-token":
             return httpx.Response(401, json={"error_code": "UNAUTHENTICATED"})
+        if "/clusters/" in request.url.path or request.url.path.startswith("/api/1.2/"):
+            return self._cluster(request)
         updates = self._state()["updates"]
         if request.url.path == f"/api/2.0/pipelines/{PIPELINE_ID}":
             latest = [{"update_id": f"update-{updates}"}] if updates else []
@@ -221,3 +233,42 @@ class FakeWorkspace:
         if request.url.path == f"/api/2.0/pipelines/{PIPELINE_ID}/events":
             return httpx.Response(200, json={"events": self._events(updates)})
         return httpx.Response(404, json={"error_code": "RESOURCE_DOES_NOT_EXIST"})
+
+    def _cluster(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path.removeprefix("/api/")
+        body = json.loads(request.content) if request.content else {}
+        cluster = request.url.params.get("cluster_id") or body.get("cluster_id")
+        cluster = cluster or request.url.params.get("clusterId") or body.get("clusterId")
+        if cluster != CLUSTER_ID:
+            return httpx.Response(400, json={"error_code": "INVALID_PARAMETER_VALUE"})
+        if path == "2.0/clusters/get":
+            state = self.cluster_state
+            if state == "STARTING":  # comes up on the next look
+                self.cluster_state = "RUNNING"
+                state = "PENDING"
+            return httpx.Response(200, json={"cluster_id": CLUSTER_ID, "state": state})
+        if path == "2.0/clusters/start":
+            self.cluster_state = "STARTING"
+            return httpx.Response(200, json={})
+        if path == "1.2/contexts/create":
+            context = f"ctx-{len(self.contexts) + 1}"
+            self.contexts.add(context)
+            return httpx.Response(200, json={"id": context})
+        if path == "1.2/contexts/status":
+            return httpx.Response(200, json={"status": "Running"})
+        if path == "1.2/contexts/destroy":
+            self.contexts.discard(body["contextId"])
+            return httpx.Response(200, json={})
+        if path == "1.2/commands/execute":
+            self.commands.append(body)
+            return httpx.Response(200, json={"id": f"cmd-{len(self.commands)}"})
+        if path == "1.2/commands/status":
+            index = int(request.url.params["commandId"].removeprefix("cmd-")) - 1
+            output = self.cluster_outputs[index] if index < len(self.cluster_outputs) else {}
+            if isinstance(output, str):
+                results = {"resultType": "error", "summary": output}
+            else:
+                outcome = {"tables": [], "errors": []} | output
+                results = {"resultType": "text", "data": "AEP_RESULT " + json.dumps(outcome)}
+            return httpx.Response(200, json={"status": "Finished", "results": results})
+        return httpx.Response(404, json={"error_code": "ENDPOINT_NOT_FOUND"})
