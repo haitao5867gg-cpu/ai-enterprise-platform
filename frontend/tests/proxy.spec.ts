@@ -103,6 +103,45 @@ test("does not expose arbitrary backend routes or incorrect methods", async ({
   expect((await request.get("/api/runs/id/resume")).status()).toBe(405);
   expect((await request.post("/api/readyz", { data: {} })).status()).toBe(405);
   expect((await request.post("/api/runs/id", { data: {} })).status()).toBe(405);
+  expect((await request.post("/api/datasources", { data: {} })).status()).toBe(
+    405,
+  );
+  expect(
+    (await request.post("/api/runs/id/files.zip", { data: {} })).status(),
+  ).toBe(405);
+  expect((await request.get("/api/datasources/id")).status()).toBe(404);
+  expect((await request.get("/api/runs/id/files.zip/extra")).status()).toBe(
+    404,
+  );
+});
+
+test("forwards data sources and preserves ZIP bytes, download headers and errors", async ({
+  request,
+}) => {
+  const sources = await request.get("/api/datasources");
+  expect(sources.status()).toBe(200);
+  expect(await sources.json()).toEqual([
+    {
+      datasource_id: "fixture-postgres",
+      name: "契约示例库",
+      kind: "postgres",
+      description: "合成测试数据源",
+    },
+  ]);
+  expect(sources.headers()["cache-control"]).toBe("no-store");
+  const zip = await request.get("/api/runs/zip-fixture/files.zip");
+  expect(zip.status()).toBe(200);
+  expect(zip.headers()["content-type"]).toBe("application/zip");
+  expect(zip.headers()["content-disposition"]).toBe(
+    "attachment; filename=\"fixture.zip\"; filename*=UTF-8''%E6%B5%8B%E8%AF%95.zip",
+  );
+  expect(zip.headers()["cache-control"]).toBe("no-store");
+  expect(await zip.body()).toEqual(
+    Buffer.from([0x50, 0x4b, 3, 4, 0, 0xff, 0xfe, 0x80, 0xc3, 0x28, 0]),
+  );
+  const missing = await request.get("/api/runs/missing-run/files.zip");
+  expect(missing.status()).toBe(404);
+  expect(await missing.json()).toEqual({ detail: "Run not found" });
 });
 
 test("network and timeout errors are bounded and hide internal connection details", async ({

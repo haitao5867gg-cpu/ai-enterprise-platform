@@ -14,6 +14,9 @@ import {
 } from "../lib/runs";
 import { Icon } from "./icons";
 import { ErrorNotice, StatusBadge } from "./ui";
+import { getEtlPlan, getEtlResult } from "../lib/etl";
+import { EtlPlanView } from "./etl-plan";
+import { GeneratedFiles } from "./generated-files";
 
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;
@@ -126,6 +129,7 @@ export function RunDetail({ id }: { id: string }) {
       if (controller.signal.aborted) return;
       if (receipt.run_id !== id)
         throw new ApiError("服务返回的运行编号不匹配，请刷新核对。");
+      setComment("");
       setRun((previous) =>
         previous
           ? {
@@ -148,6 +152,12 @@ export function RunDetail({ id }: { id: string }) {
   }
 
   const controlsDisabled = submitting !== null || rechecking || Boolean(error);
+  const plan =
+    run?.status === "waiting" ? getEtlPlan(run.pending?.details) : null;
+  const etlResult =
+    run?.app === "etl" && run.status === "done"
+      ? getEtlResult(run.result)
+      : null;
   return (
     <>
       <Link className="back-link" href="/">
@@ -179,70 +189,83 @@ export function RunDetail({ id }: { id: string }) {
       ) : (
         run && (
           <div className="detail-grid">
-            <section className="panel conversation-panel" aria-label="运行对话">
-              <div className="section-heading">
-                <h2>
-                  <Icon name="runs" />
-                  对话过程
-                </h2>
-                <span className="muted">{run.messages.length} 条消息</span>
-              </div>
-              <ol className="messages" aria-label="消息记录">
-                {run.messages.map((message, index) => (
-                  <li
-                    className={`message ${message.role === "user" ? "user-message" : ""}`}
-                    key={index}
-                  >
-                    <span className="message-avatar">
-                      {message.role === "user" ? (
-                        "你"
-                      ) : (
-                        <Icon name="spark" size={18} />
-                      )}
-                    </span>
-                    <div className="message-body">
-                      <div className="message-meta">
-                        <strong>
-                          {message.role === "user"
-                            ? "你"
-                            : message.role === "assistant"
-                              ? run.app
-                              : "系统"}
-                        </strong>
-                        <span>{String(index + 1).padStart(2, "0")}</span>
-                      </div>
-                      <p className="message-content">{message.content}</p>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-              {run.messages.length === 0 && (
-                <p className="panel-padding muted">应用暂未返回消息。</p>
-              )}
-              <div className="conversation-state" role="status">
-                {run.status === "running" ? (
-                  <>
-                    <span className="spinner" />
-                    应用正在运行，消息将自动更新
-                  </>
-                ) : run.status === "waiting" ? (
-                  <>
-                    <span className="dot amber" />
-                    应用已暂停，等待人工确认
-                  </>
-                ) : run.status === "done" ? (
-                  <>
-                    <Icon name="check" size={16} />
-                    本次运行已结束
-                  </>
-                ) : (
-                  <>
-                    <Icon name="alert" size={16} />
-                    本次运行失败
-                  </>
-                )}
-              </div>
-            </section>
+            <div className="run-main">
+              {plan && <EtlPlanView plan={plan} />}
+              {etlResult && <GeneratedFiles result={etlResult} runId={id} />}
+              <details
+                className={`conversation-history ${run.app === "etl" ? "collapsible" : ""}`}
+                open={run.app !== "etl" || (!plan && !etlResult)}
+              >
+                <summary>查看对话过程 · {run.messages.length} 条消息</summary>
+                <section
+                  className="panel conversation-panel"
+                  aria-label="运行对话"
+                >
+                  <div className="section-heading">
+                    <h2>
+                      <Icon name="runs" />
+                      对话过程
+                    </h2>
+                    <span className="muted">{run.messages.length} 条消息</span>
+                  </div>
+                  <ol className="messages" aria-label="消息记录">
+                    {run.messages.map((message, index) => (
+                      <li
+                        className={`message ${message.role === "user" ? "user-message" : ""}`}
+                        key={index}
+                      >
+                        <span className="message-avatar">
+                          {message.role === "user" ? (
+                            "你"
+                          ) : (
+                            <Icon name="spark" size={18} />
+                          )}
+                        </span>
+                        <div className="message-body">
+                          <div className="message-meta">
+                            <strong>
+                              {message.role === "user"
+                                ? "你"
+                                : message.role === "assistant"
+                                  ? run.app
+                                  : "系统"}
+                            </strong>
+                            <span>{String(index + 1).padStart(2, "0")}</span>
+                          </div>
+                          <p className="message-content">{message.content}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                  {run.messages.length === 0 && (
+                    <p className="panel-padding muted">应用暂未返回消息。</p>
+                  )}
+                  <div className="conversation-state" role="status">
+                    {run.status === "running" ? (
+                      <>
+                        <span className="spinner" />
+                        应用正在运行，消息将自动更新
+                      </>
+                    ) : run.status === "waiting" ? (
+                      <>
+                        <span className="dot amber" />
+                        应用已暂停，等待人工确认
+                      </>
+                    ) : run.status === "done" ? (
+                      <>
+                        <Icon name="check" size={16} />
+                        本次运行已结束
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="alert" size={16} />
+                        本次运行失败
+                      </>
+                    )}
+                  </div>
+                </section>
+              </details>
+            </div>
             <aside className="run-sidebar">
               <div className="panel run-info">
                 <h2>运行信息</h2>
@@ -267,6 +290,17 @@ export function RunDetail({ id }: { id: string }) {
                     <dd className="monospace">{run.run_id}</dd>
                   </div>
                 </dl>
+                {run.trace_id && (
+                  <a
+                    className="trace-link"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    href={`http://localhost:3100/project/aep-local/traces/${encodeURIComponent(run.trace_id)}`}
+                  >
+                    在 Langfuse 中查看
+                    <Icon name="arrow" size={14} />
+                  </a>
+                )}
               </div>
               {run.status === "waiting" && (
                 <section
@@ -350,11 +384,28 @@ export function RunDetail({ id }: { id: string }) {
                   className="panel result-card"
                   aria-labelledby="result-title"
                 >
-                  <span className="result-icon">
-                    <Icon name="check" size={20} />
+                  <span
+                    className={`result-icon ${etlResult && !etlResult.checks.passed ? "failed" : ""}`}
+                  >
+                    <Icon
+                      name={
+                        etlResult && !etlResult.checks.passed
+                          ? "alert"
+                          : "check"
+                      }
+                      size={20}
+                    />
                   </span>
                   <h2 id="result-title">运行结果</h2>
-                  <ResultView result={run.result} />
+                  {etlResult ? (
+                    <p>
+                      {etlResult.checks.passed
+                        ? `已生成 ${Object.keys(etlResult.files).length} 个文件，可查看代码或下载 ZIP。`
+                        : "代码检查未通过，请查看并处理主区域列出的问题。"}
+                    </p>
+                  ) : (
+                    <ResultView result={run.result} />
+                  )}
                 </section>
               )}
               {run.status === "error" && (

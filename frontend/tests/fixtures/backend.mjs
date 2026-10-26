@@ -14,6 +14,26 @@ createServer(async (request, response) => {
     return json({ detail: "Wrong API base path" }, 404);
   if (path === "/readyz")
     return json({ status: "ok", source: "contract-fixture" });
+  if (path === "/datasources")
+    return json([
+      {
+        datasource_id: "fixture-postgres",
+        name: "契约示例库",
+        kind: "postgres",
+        description: "合成测试数据源",
+      },
+    ]);
+  if (path === "/runs/zip-fixture/files.zip") {
+    response.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition":
+        "attachment; filename=\"fixture.zip\"; filename*=UTF-8''%E6%B5%8B%E8%AF%95.zip",
+    });
+    // Deliberately includes invalid UTF-8 and NUL bytes to detect text conversion.
+    return response.end(
+      Buffer.from([0x50, 0x4b, 3, 4, 0, 0xff, 0xfe, 0x80, 0xc3, 0x28, 0]),
+    );
+  }
   if (path === "/runs/unavailable-run") return request.socket.destroy();
   if (path === "/runs/timeout-run") return;
   if (path === "/runs/fixture") return json({ source: "contract-fixture" });

@@ -2,20 +2,63 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { errorMessage, readReceipt, requestJson } from "../lib/runs";
+import { readDataSources, type DataSource, type EtlLanguage } from "../lib/etl";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 
 export function NewRun() {
   const router = useRouter();
   const [text, setText] = useState("");
+  const [app, setApp] = useState<"hello" | "etl">("hello");
+  const [sources, setSources] = useState<DataSource[]>([]);
+  const [datasourceId, setDatasourceId] = useState("");
+  const [language, setLanguage] = useState<EtlLanguage>("pyspark");
+  const [sourcesLoading, setSourcesLoading] = useState(true);
+  const [sourcesError, setSourcesError] = useState("");
+  const [sourcesRevision, setSourcesRevision] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const busy = useRef(false);
+  useEffect(() => {
+    if (app !== "etl") return;
+    const controller = new AbortController();
+    async function loadSources() {
+      setSourcesLoading(true);
+      setSourcesError("");
+      try {
+        const value = readDataSources(
+          await requestJson("/datasources", {
+            signal: controller.signal,
+          }),
+        );
+        if (!controller.signal.aborted) {
+          setSources(value);
+          setDatasourceId((id) =>
+            value.some((source) => source.datasource_id === id) ? id : "",
+          );
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) setSourcesError(errorMessage(err));
+      } finally {
+        if (!controller.signal.aborted) setSourcesLoading(false);
+      }
+    }
+    void loadSources();
+    return () => controller.abort();
+  }, [app, sourcesRevision]);
+  const needsSource =
+    app === "etl" &&
+    (sourcesLoading ||
+      Boolean(sourcesError) ||
+      !sources.some((source) => source.datasource_id === datasourceId));
+  const selectedSource = sources.find(
+    (source) => source.datasource_id === datasourceId,
+  );
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy.current || !text.trim()) return;
+    if (busy.current || !text.trim() || needsSource) return;
     busy.current = true;
     setSubmitting(true);
     setError("");
@@ -23,7 +66,17 @@ export function NewRun() {
       const receipt = readReceipt(
         await requestJson("/runs", {
           method: "POST",
-          body: JSON.stringify({ app: "hello", input: { text: text.trim() } }),
+          body: JSON.stringify({
+            app,
+            input:
+              app === "etl"
+                ? {
+                    datasource_id: datasourceId,
+                    request: text.trim(),
+                    language,
+                  }
+                : { text: text.trim() },
+          }),
         }),
       );
       router.push(`/runs/${encodeURIComponent(receipt.run_id)}`);
@@ -60,18 +113,79 @@ export function NewRun() {
             <select
               id="app"
               name="app"
-              defaultValue="hello"
+              value={app}
+              onChange={(event) =>
+                setApp(event.target.value as "hello" | "etl")
+              }
               disabled={submitting}
             >
               <option value="hello">hello · 示例应用</option>
+              <option value="etl">etl · 数据 ETL 工作流</option>
             </select>
             <p className="field-hint">
-              接收需求、请求人工确认，并返回运行结果。
+              {app === "etl"
+                ? "探查数据、确认方案，生成 Databricks Lakeflow 管道代码。"
+                : "接收需求、请求人工确认，并返回运行结果。"}
             </p>
           </div>
+          {app === "etl" && (
+            <div className="form-section">
+              <span className="step-label">
+                02<span>选择数据源</span>
+              </span>
+              <label htmlFor="datasource">数据源</label>
+              <select
+                id="datasource"
+                required
+                value={datasourceId}
+                onChange={(event) => setDatasourceId(event.target.value)}
+                disabled={submitting || sourcesLoading || Boolean(sourcesError)}
+                aria-describedby="datasource-hint"
+              >
+                <option value="">
+                  {sourcesLoading ? "正在加载数据源…" : "请选择数据源"}
+                </option>
+                {sources.map((source) => (
+                  <option
+                    key={source.datasource_id}
+                    value={source.datasource_id}
+                  >
+                    {source.name} · {source.kind}
+                  </option>
+                ))}
+              </select>
+              <p className="field-hint" id="datasource-hint">
+                {selectedSource?.description ||
+                  "从已登记的数据源中选择，连接器只读探查源数据。"}
+              </p>
+              {sourcesError && (
+                <ErrorNotice
+                  message={sourcesError}
+                  onRetry={() => setSourcesRevision((value) => value + 1)}
+                />
+              )}
+              {!sourcesLoading && !sourcesError && sources.length === 0 && (
+                <p className="field-hint" role="status">
+                  暂无可用数据源，请先登记数据源后刷新。
+                </p>
+              )}
+              {!sourcesLoading && !sourcesError && (
+                <button
+                  type="button"
+                  className="text-button source-refresh"
+                  disabled={submitting}
+                  onClick={() => setSourcesRevision((value) => value + 1)}
+                >
+                  <Icon name="refresh" size={14} />
+                  刷新数据源
+                </button>
+              )}
+            </div>
+          )}
           <div className="form-section">
             <span className="step-label">
-              02<span>描述需求</span>
+              {app === "etl" ? "03" : "02"}
+              <span>描述需求</span>
             </span>
             <label htmlFor="request">你想完成什么？</label>
             <textarea
@@ -82,20 +196,38 @@ export function NewRun() {
               placeholder="例如：请整理一份客户数据清洗方案，并在执行前让我确认。"
               value={text}
               onChange={(e) => setText(e.target.value)}
-              disabled={submitting}
+              disabled={submitting || needsSource}
               aria-describedby="request-hint"
             />
             <p className="field-hint" id="request-hint">
               尽量说明目标与约束，帮助应用理解你的需求。
             </p>
           </div>
+          {app === "etl" && (
+            <div className="form-section">
+              <label htmlFor="language">
+                生成语言<span className="muted">（选填）</span>
+              </label>
+              <select
+                id="language"
+                value={language}
+                disabled={submitting}
+                onChange={(event) =>
+                  setLanguage(event.target.value as EtlLanguage)
+                }
+              >
+                <option value="pyspark">PySpark（默认）</option>
+                <option value="sql">SQL</option>
+              </select>
+            </div>
+          )}
           {error && <ErrorNotice message={error} />}
           <div className="form-actions">
             <span>运行过程与结果将自动记录</span>
             <button
               className="button primary"
               type="submit"
-              disabled={submitting || !text.trim()}
+              disabled={submitting || !text.trim() || needsSource}
             >
               {submitting ? (
                 <>
