@@ -38,6 +38,20 @@ language 是 sql 时，代码是一条 SELECT（可以用 WITH），结尾不要
 
 
 @dataclass(frozen=True)
+class Compute:
+    """Classic pipeline compute: each update starts a job cluster of this size.
+
+    ``policy_id`` names a cluster policy to create the cluster under, for workspaces
+    where users may create clusters only through a policy; the policy can then
+    also fix the node type, which may be left empty.
+    """
+
+    node_type: str = ""
+    workers: int = 1
+    policy_id: str = ""
+
+
+@dataclass(frozen=True)
 class Bundle:
     name: str
     files: dict[str, str]
@@ -77,7 +91,8 @@ def render_pyspark(plan: EtlPlan, bodies: dict[str, str]) -> str:
         "",
         "def source(name: str):",
         '    """A source table (schema.table), read through the source catalog."""',
-        '    return spark.read.table(f"{SOURCE_CATALOG}.{name}")',
+        '    parts = [SOURCE_CATALOG, *name.split(".")]',
+        '    return spark.read.table(".".join(f"`{part}`" for part in parts))',
     ]
     for target in plan.targets:
         parts += ["", ""]
@@ -105,7 +120,7 @@ def render_sql(plan: EtlPlan, queries: dict[str, str]) -> str:
         query = queries[target.name].strip().rstrip(";")
         for name in sources:
             query = re.sub(
-                rf"(?<![\w.`$]){re.escape(name)}\b", f"${{source_catalog}}.{name}", query
+                rf"(?<![\w.`$]){re.escape(name)}\b", f"`${{source_catalog}}`.{name}", query
             )
         parts += ["", *[f"-- {line}" for line in _target_header(target)]]
         head = f"CREATE OR REFRESH MATERIALIZED VIEW {target.name}"
@@ -117,7 +132,31 @@ def render_sql(plan: EtlPlan, queries: dict[str, str]) -> str:
     return "\n".join(parts) + "\n"
 
 
-def render_bundle(name: str, plan: EtlPlan, source_name: str) -> dict[str, str]:
+def _pipeline(name: str, library: str, compute: Compute | None) -> dict[str, object]:
+    pipeline: dict[str, object] = {
+        "name": name,
+        "catalog": "${var.catalog}",
+        "schema": "${var.schema}",
+    }
+    if compute is None:
+        pipeline["serverless"] = True
+    else:
+        # Quality rules (expectations) need the Advanced edition on classic compute.
+        pipeline["edition"] = "ADVANCED"
+        cluster: dict[str, object] = {"label": "default", "num_workers": compute.workers}
+        if compute.node_type:
+            cluster["node_type_id"] = compute.node_type
+        if compute.policy_id:
+            cluster |= {"policy_id": compute.policy_id, "apply_policy_default_values": True}
+        pipeline["clusters"] = [cluster]
+    pipeline["libraries"] = [{"file": {"path": library}}]
+    pipeline["configuration"] = {"source_catalog": "${var.source_catalog}"}
+    return pipeline
+
+
+def render_bundle(
+    name: str, plan: EtlPlan, source_name: str, compute: Compute | None = None
+) -> dict[str, str]:
     library = PIPELINE_PY if plan.language == "pyspark" else PIPELINE_SQL
     config = {
         "bundle": {"name": name},
@@ -131,18 +170,7 @@ def render_bundle(name: str, plan: EtlPlan, source_name: str) -> dict[str, str]:
                 "description": f"Lakehouse Federation catalog for the source {source_name}"
             },
         },
-        "resources": {
-            "pipelines": {
-                name: {
-                    "name": name,
-                    "catalog": "${var.catalog}",
-                    "schema": "${var.schema}",
-                    "serverless": True,
-                    "libraries": [{"file": {"path": library}}],
-                    "configuration": {"source_catalog": "${var.source_catalog}"},
-                }
-            }
-        },
+        "resources": {"pipelines": {name: _pipeline(name, library, compute)}},
         "targets": {
             "dev": {
                 "mode": "development",
@@ -179,8 +207,14 @@ def render_bundle(name: str, plan: EtlPlan, source_name: str) -> dict[str, str]:
     }
 
 
-def render(name: str, plan: EtlPlan, code: dict[str, str], source_name: str) -> Bundle:
-    files = render_bundle(name, plan, source_name)
+def render(
+    name: str,
+    plan: EtlPlan,
+    code: dict[str, str],
+    source_name: str,
+    compute: Compute | None = None,
+) -> Bundle:
+    files = render_bundle(name, plan, source_name, compute)
     if plan.language == "pyspark":
         files[PIPELINE_PY] = render_pyspark(plan, code)
     else:

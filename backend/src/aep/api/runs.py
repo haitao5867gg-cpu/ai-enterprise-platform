@@ -11,8 +11,13 @@ richer view, tagged by ``details.type``:
   ``quality_rules`` (``name``, ``condition``, ``on_violation``).
 
 A finished ``etl`` run's ``result`` has ``bundle``, ``language``, ``plan``,
-``files`` (path → content) and ``checks`` (``passed``, ``problems``);
-``GET /runs/{id}/files.zip`` downloads the files.
+``files`` (path → content), ``checks`` (``passed``, ``problems``: the static
+checks) and ``verification``, the run on the Databricks dev target:
+``status`` is ``skipped`` (with ``reason``), ``passed`` or ``failed``; a run that
+happened also has ``stage`` (validate, deploy or run), ``attempt``, ``errors``,
+``warnings``, ``url`` (the pipeline in the workspace) and ``tables`` (``name``,
+``status``, ``rows``, ``dropped``, ``expectations`` with ``name``, ``passed`` and
+``failed`` row counts). ``GET /runs/{id}/files.zip`` downloads the files.
 """
 
 import io

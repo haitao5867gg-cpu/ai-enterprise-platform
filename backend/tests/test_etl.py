@@ -71,7 +71,7 @@ def reply(value: dict) -> str:
     return "```json\n" + json.dumps(value, ensure_ascii=False) + "\n```"
 
 
-async def make_service(replies: list[str]):
+async def make_service(replies: list[str], settings=SETTINGS, databricks=None):
     gateway = FakeGateway(replies)
     sources = MemoryDataSourceStore()
     shop = await sources.create("示例库", "postgres", fake_connector.URL)
@@ -81,7 +81,9 @@ async def make_service(replies: list[str]):
         MemoryRunStore(),
         InMemorySaver(),
         default_apps(),
-        AppContext(gateway.client, SETTINGS, datasources=sources, tools=tools),
+        AppContext(
+            gateway.client, settings, datasources=sources, tools=tools, databricks=databricks
+        ),
     )
     return service, gateway, shop.datasource_id
 
@@ -159,7 +161,10 @@ async def test_sql_pipeline_reads_sources_through_the_source_catalog():
     sql = view.result["files"]["src/pipeline.sql"]
     assert "CREATE OR REFRESH MATERIALIZED VIEW order_facts" in sql
     assert "CONSTRAINT positive_quantity EXPECT (quantity > 0) ON VIOLATION DROP ROW" in sql
-    assert "FROM ${source_catalog}.sales.orders o JOIN ${source_catalog}.sales.customers c" in sql
+    # Quoted, since catalog names may hold hyphens (icsd-ace-dev).
+    assert (
+        "FROM `${source_catalog}`.sales.orders o JOIN `${source_catalog}`.sales.customers c" in sql
+    )
 
 
 async def test_unusable_plan_is_repaired_once():

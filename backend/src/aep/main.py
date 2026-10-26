@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from aep import __version__, llm, tracing
 from aep.api import datasources, runs
 from aep.config import Settings, get_settings
+from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
 from aep.runtime.registry import AppContext, default_apps
@@ -73,15 +74,20 @@ def create_app() -> FastAPI:
         await register_defaults(sources, settings.default_datasources)
         tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
+        databricks = DevTarget.from_settings(settings)
         service = RunService(
             store,
             checkpointer,
             default_apps(),
-            AppContext(llm_client, settings, datasources=sources, tools=tools),
+            AppContext(
+                llm_client, settings, datasources=sources, tools=tools, databricks=databricks
+            ),
             tracer,
         )
         if tracer.enabled:
             log.info("tracing runs to Langfuse at %s", settings.langfuse_host)
+        if databricks is not None:
+            log.info("validating ETL bundles on Databricks at %s", settings.databricks_host)
         recovered = await service.recover()
         if recovered:
             log.info("resumed %d runs left running by the previous process", recovered)
@@ -95,6 +101,8 @@ def create_app() -> FastAPI:
         except TimeoutError:
             log.warning("shutting down with runs still in progress; they resume on next start")
         tracer.shutdown()
+        if databricks is not None:
+            await databricks.close()
         await pool.close()
         await llm_client.close()
 
