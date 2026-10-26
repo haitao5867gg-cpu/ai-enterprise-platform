@@ -8,18 +8,37 @@ richer view, tagged by ``details.type``:
   ``aep.etl.plan.EtlPlan``: ``summary``, ``language``, and ``targets`` with
   ``name``, ``description``, ``sources``, ``logic``, ``columns`` (``name``,
   ``source``, ``description``), ``primary_key``, ``load`` (``mode``, ``key``) and
-  ``quality_rules`` (``name``, ``condition``, ``on_violation``).
+  ``quality_rules`` (``name``, ``condition``, ``on_violation``), and
+  ``assumptions`` (strings the user should check; may be empty).
+- ``etl_release`` (app ``etl``): the bundle passed on the Databricks dev target
+  and waits for approval to go to prod. ``details`` has ``bundle``,
+  ``verification`` (the dev run, as in the result below) and ``target``:
+  ``mode`` (``job`` or ``pipeline``), ``catalog``, ``schema``, ``schedule``
+  (Quartz cron), ``timezone`` and ``cluster_id`` (job mode). ``reject`` sends
+  the code back to be rewritten with the comment.
+
+``POST /runs/{id}/resume`` takes ``decision``, an optional ``comment`` and an
+optional ``actor`` (who decided; until sign-in exists the client provides it).
 
 A finished ``etl`` run's ``result`` has ``bundle``, ``language``, ``plan``,
 ``files`` (path → content), ``checks`` (``passed``, ``problems``: the static
 checks) and ``verification``, the run on the Databricks dev target:
 ``status`` is ``skipped`` (with ``reason``), ``passed`` or ``failed``; a run that
 happened also has ``mode`` (``pipeline``: the bundle was deployed and run;
-``cluster``: only its transformations ran, on ``cluster_id``), ``stage``
+``job``: deployed as a notebook job on ``cluster_id`` and run, with ``job_id``
+and ``run_id``; ``cluster``: only its transformations ran, on ``cluster_id``),
+``stage``
 (validate, deploy or run), ``attempt``, ``errors``, ``warnings``, ``url`` (the
 pipeline, or the cluster, in the workspace) and ``tables`` (``name``, ``status``,
 ``rows``, ``dropped``, ``expectations`` with ``name``, ``passed`` and ``failed``
-row counts). ``GET /runs/{id}/files.zip`` downloads the files.
+row counts). ``approvals`` lists every decision so far: ``step`` (``plan`` or
+``release``), ``decision``, ``comment``, ``actor`` and ``at`` (ISO time).
+``release`` is the prod deploy: ``status`` ``skipped`` (with ``reason``: no prod
+target configured, or the dev run did not pass), ``deployed`` or ``failed``,
+with ``mode``, ``catalog``, ``schema``, ``schedule``, ``timezone``, ``job_id``,
+``pipeline_id``, ``cluster_id``, ``url``, ``steps`` and ``errors``; it is absent
+while the run waits for the release approval.
+``GET /runs/{id}/files.zip`` downloads the files.
 """
 
 import io
@@ -58,6 +77,9 @@ class CreateRun(BaseModel):
 class Resume(BaseModel):
     decision: str
     comment: str | None = None
+    # Who decided. Until sign-in exists (M4) the client says so; it goes into the
+    # run's approval record.
+    actor: str | None = None
 
 
 class RunRef(BaseModel):
@@ -145,7 +167,7 @@ async def get_run(run_id: str, service: Service) -> RunDetail:
 @router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
 async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
     try:
-        record = await service.resume(run_id, body.decision, body.comment)
+        record = await service.resume(run_id, body.decision, body.comment, body.actor)
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
     except NotWaiting as exc:

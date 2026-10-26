@@ -15,6 +15,12 @@ target would, then run once; the job's notebook reports the outcome. ``cluster``
 deploys nothing: the transformations run once on the cluster through the
 Command Execution API (``aep.cluster_harness``) and nothing is written.
 
+After a person approves, ``release`` deploys the same bundle to the prod target
+(``AEP_DATABRICKS_PROD_CATALOG`` / ``_SCHEMA``) on a schedule, without running it
+there: in ``job`` mode the job is created or updated through the REST API, in
+``pipeline`` mode ``bundle deploy -t prod`` deploys the pipeline and the job that
+refreshes it.
+
 Off unless ``AEP_DATABRICKS_HOST`` and ``AEP_DATABRICKS_TOKEN`` are set.
 """
 
@@ -25,7 +31,9 @@ import os
 import re
 import tempfile
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -37,6 +45,7 @@ from aep.config import Settings
 from aep.etl.codegen import PIPELINE_PY, PIPELINE_SQL, Bundle, CodeError, parse_sql
 
 TARGET = "dev"
+PROD = "prod"
 OUTPUT_TAIL = 4000
 EVENT_PAGE = 250
 # Connections to the workspace can drop mid-request (seen through egress proxies
@@ -92,6 +101,32 @@ class DevRun:
     cluster_id: str | None = None
     job_id: int | None = None
     run_id: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class Release:
+    """The deploy of an approved bundle to the prod target.
+
+    Nothing runs at deploy time: the job (``job_id``; in ``pipeline`` mode the
+    job that refreshes ``pipeline_id``) runs on ``schedule`` (Quartz cron) in
+    ``timezone`` and writes to ``catalog``.``schema``.
+    """
+
+    status: Literal["deployed", "failed"]
+    mode: Literal["pipeline", "job"]
+    catalog: str
+    schema: str
+    schedule: str
+    timezone: str
+    steps: list[Step] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    job_id: int | None = None
+    pipeline_id: str | None = None
+    cluster_id: str | None = None
+    url: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -167,12 +202,28 @@ class DevTarget:
     async def close(self) -> None:
         await self._http.aclose()
 
-    def _variables(self) -> list[str]:
-        values = {
-            "catalog": self._settings.databricks_catalog,
-            "schema": self._settings.databricks_schema,
-            "source_catalog": self._settings.databricks_source_catalog,
+    def _values(self, target: str, schedule: str | None = None) -> dict[str, str]:
+        """Bundle variables the platform sets for ``target``; empty ones keep the bundle's."""
+        s = self._settings
+        if target == PROD:
+            return {
+                "catalog": s.databricks_prod_catalog,
+                "schema": s.databricks_prod_schema,
+                "source_catalog": s.databricks_source_catalog,
+                "cluster_id": s.databricks_prod_cluster_id or s.databricks_cluster_id,
+                "schedule": schedule or s.databricks_prod_schedule,
+                "timezone": s.databricks_prod_timezone,
+            }
+        return {
+            "catalog": s.databricks_catalog,
+            "schema": s.databricks_schema,
+            "source_catalog": s.databricks_source_catalog,
+            "cluster_id": s.databricks_cluster_id,
         }
+
+    def _variables(self, target: str = TARGET, schedule: str | None = None) -> list[str]:
+        values = self._values(target, schedule)
+        values.pop("cluster_id")  # Only job bundles have it, and those deploy over REST.
         return [f"--var={k}={v}" for k, v in values.items() if v]
 
     def _env(self, home: Path) -> dict[str, str]:
@@ -445,25 +496,22 @@ class DevTarget:
             await self._post("/api/2.0/workspace/import", body)
 
     def _job_settings(
-        self, config: dict[str, Any], name: str, short_name: str, root: str
+        self,
+        config: dict[str, Any],
+        name: str,
+        short_name: str,
+        root: str,
+        target: str = TARGET,
+        schedule: str | None = None,
     ) -> dict[str, Any]:
-        """The bundle's job as the dev target deploys it, its variables filled in."""
+        """The bundle's job as ``target`` deploys it, its variables filled in."""
         values = {k: str(v.get("default", "")) for k, v in config["variables"].items()}
-        dev_values = (config["targets"].get(TARGET) or {}).get("variables") or {}
+        overrides = config["targets"].get(target) or {}
         values |= {
             k: str(v).replace("${workspace.current_user.short_name}", short_name)
-            for k, v in dev_values.items()
+            for k, v in (overrides.get("variables") or {}).items()
         }
-        values |= {
-            k: v
-            for k, v in {
-                "catalog": self._settings.databricks_catalog,
-                "schema": self._settings.databricks_schema,
-                "source_catalog": self._settings.databricks_source_catalog,
-                "cluster_id": self._settings.databricks_cluster_id,
-            }.items()
-            if v
-        }
+        values |= {k: v for k, v in self._values(target, schedule).items() if v}
 
         def fill(node: Any) -> Any:
             if isinstance(node, dict):
@@ -475,14 +523,19 @@ class DevTarget:
             return node
 
         job = fill(config["resources"]["jobs"][name])
-        # Development mode, as bundle deploy does it: the job is named and tagged
-        # for its user. A failure goes back to code generation at once, so the
-        # dev job does not retry.
-        job["name"] = f"[dev {short_name}] {job.get('name', name)}"
-        job["tags"] = {**job.get("tags", {}), "dev": short_name, "aep_bundle": name}
+        job |= fill(((overrides.get("resources") or {}).get("jobs") or {}).get(name) or {})
+        if target == PROD:
+            job["tags"] = {**job.get("tags", {}), "aep_bundle": name, "aep_target": PROD}
+        else:
+            # Development mode, as bundle deploy does it: the job is named and tagged
+            # for its user. A failure goes back to code generation at once, so the
+            # dev job does not retry.
+            job["name"] = f"[dev {short_name}] {job.get('name', name)}"
+            job["tags"] = {**job.get("tags", {}), "dev": short_name, "aep_bundle": name}
         for task in job.get("tasks", []):
-            task.pop("max_retries", None)
-            task.pop("min_retry_interval_millis", None)
+            if target != PROD:
+                task.pop("max_retries", None)
+                task.pop("min_retry_interval_millis", None)
             notebook = task.get("notebook_task")
             if notebook and not notebook["notebook_path"].startswith("/"):
                 # Imported notebooks lose their extension.
@@ -490,12 +543,32 @@ class DevTarget:
                 notebook["notebook_path"] = f"{root}/{path}"
         return job
 
-    async def _put_job(self, settings: dict[str, Any]) -> int:
-        """Updates the job of that name, or creates it."""
-        found = await self._get("/api/2.1/jobs/list", name=settings["name"])
-        jobs = found.get("jobs") or []
-        if jobs:
-            job_id = int(jobs[0]["job_id"])
+    async def _owned_job(self, name: str, tags: dict[str, str]) -> int | None:
+        """The platform's job of that name (all ``tags`` set), or None if there is none.
+
+        A job of that name that the platform did not deploy is never taken over."""
+        found = await self._get("/api/2.1/jobs/list", name=name)
+        ids = [int(job["job_id"]) for job in found.get("jobs") or []]
+        owned = []
+        for job_id in ids:
+            job = await self._get("/api/2.1/jobs/get", job_id=job_id)
+            have = (job.get("settings") or {}).get("tags") or {}
+            if all(have.get(k) == v for k, v in tags.items()):
+                owned.append(job_id)
+        if len(owned) > 1:
+            raise DatabricksError(
+                f"工作区里有多个平台部署的 Job 叫 {name}（{owned}），不知道该更新哪个"
+            )
+        if ids and not owned:
+            raise DatabricksError(
+                f"工作区里已有一个叫 {name} 的 Job（{ids[0]}），不是平台部署的，不会覆盖它；"
+                "请换一个 bundle 名，或者先处理那个 Job"
+            )
+        return owned[0] if owned else None
+
+    async def _put_job(self, settings: dict[str, Any], job_id: int | None) -> int:
+        """Updates job ``job_id`` to ``settings``, or creates the job."""
+        if job_id is not None:
             await self._post("/api/2.1/jobs/reset", {"job_id": job_id, "new_settings": settings})
             return job_id
         return int((await self._post("/api/2.1/jobs/create", settings))["job_id"])
@@ -532,10 +605,10 @@ class DevTarget:
             user = (await self._get("/api/2.0/preview/scim/v2/Me"))["userName"]
             short_name = re.sub(r"[^a-z0-9]+", "_", user.split("@")[0].lower()).strip("_")
             root = f"/Users/{user}/.bundle/{bundle.name}/{TARGET}/files"
+            settings = self._job_settings(config, bundle.name, short_name, root)
+            existing = await self._owned_job(settings["name"], {"aep_bundle": bundle.name})
             await self._upload(root, bundle.files)
-            dev.job_id = await self._put_job(
-                self._job_settings(config, bundle.name, short_name, root)
-            )
+            dev.job_id = await self._put_job(settings, existing)
         except DatabricksError as exc:
             dev.steps.append(Step("deploy", False, _tail(str(exc))))
             dev.errors = [str(exc)]
@@ -566,6 +639,98 @@ class DevTarget:
             return dev
         _apply(dev, outcome)
         return dev
+
+    # --- release to prod ----------------------------------------------------
+
+    async def release(self, bundle: Bundle, schedule: str | None = None) -> Release:
+        """Deploys an approved bundle to the prod target, to run on ``schedule``."""
+        values = self._values(PROD, schedule)
+        mode = self._settings.databricks_deploy_mode
+        release = Release(
+            "failed",
+            "job" if mode == "job" else "pipeline",
+            values["catalog"],
+            values["schema"],
+            values["schedule"],
+            values["timezone"],
+        )
+        blocker = self._settings.databricks_release_blocker
+        if blocker:
+            release.errors = [blocker]
+            return release
+        if mode == "job":
+            await self._release_job(bundle, release, values)
+            return release
+        with tempfile.TemporaryDirectory(prefix="aep-bundle-") as scratch:
+            root = Path(scratch) / bundle.name
+            home = Path(scratch) / "home"
+            home.mkdir()
+            for path, content in bundle.files.items():
+                file = root / path
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(content)
+            await self._release_pipeline(root, self._env(home), bundle.name, release)
+        return release
+
+    async def _release_job(self, bundle: Bundle, release: Release, values: dict[str, str]) -> None:
+        release.cluster_id = values["cluster_id"] or None
+        if not release.cluster_id:
+            release.errors = ["Job 上线需要集群（AEP_DATABRICKS_PROD_CLUSTER_ID 或 _CLUSTER_ID）"]
+            return
+        try:
+            config = yaml.safe_load(bundle.files["databricks.yml"])
+            config["resources"]["jobs"][bundle.name]
+        except (yaml.YAMLError, KeyError, TypeError):
+            release.errors = ["bundle 里没有这个 Job 的定义（databricks.yml 的 resources.jobs）"]
+            return
+        try:
+            user = (await self._get("/api/2.0/preview/scim/v2/Me"))["userName"]
+            short_name = re.sub(r"[^a-z0-9]+", "_", user.split("@")[0].lower()).strip("_")
+            # Each release gets its own folder and the job switches to it only once
+            # every file is there: a failed release leaves the running job as it was.
+            stamp = f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+            root = f"/Users/{user}/.bundle/{bundle.name}/{PROD}/releases/{stamp}/files"
+            settings = self._job_settings(
+                config, bundle.name, short_name, root, PROD, release.schedule
+            )
+            tags = {"aep_bundle": bundle.name, "aep_target": PROD}
+            existing = await self._owned_job(settings["name"], tags)
+            await self._upload(root, bundle.files)
+            release.job_id = await self._put_job(settings, existing)
+        except DatabricksError as exc:
+            release.steps.append(Step("deploy", False, _tail(str(exc))))
+            release.errors = [str(exc)]
+            return
+        release.status = "deployed"
+        release.url = f"{self._host}/#job/{release.job_id}"
+        release.steps.append(Step("deploy", True, f"job {release.job_id}，文件在 {root}"))
+
+    async def _release_pipeline(
+        self, root: Path, env: dict[str, str], name: str, release: Release
+    ) -> None:
+        target = [f"--target={PROD}", *self._variables(PROD, release.schedule)]
+        stages = (
+            ("validate", ["bundle", "validate", *target]),
+            ("deploy", ["bundle", "deploy", *target, "--auto-approve"]),
+            ("summary", ["bundle", "summary", *target, "--output=json"]),
+        )
+        output = ""
+        for label, args in stages:
+            ok, output = await self._cli(root, env, *args)
+            release.steps.append(Step(label, ok, _tail(output)))
+            if not ok:
+                release.errors = [output.strip()]
+                return
+        try:
+            resources = json.loads(output)["resources"]
+            pipeline = resources["pipelines"][name]
+            release.pipeline_id, release.url = pipeline["id"], pipeline.get("url")
+            refresh = (resources.get("jobs") or {}).get(f"{name}_refresh") or {}
+            release.job_id = int(refresh["id"]) if refresh.get("id") else None
+        except (ValueError, KeyError, TypeError):
+            release.errors = ["部署后找不到管道的 id"]
+            return
+        release.status = "deployed"
 
 
 def _outcome(text: str) -> dict[str, Any] | None:

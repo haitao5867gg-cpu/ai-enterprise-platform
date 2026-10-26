@@ -59,6 +59,18 @@ AEP_DATABRICKS_CATALOG=<目标 catalog>
 AEP_DATABRICKS_SCHEMA=<目标 schema>
 ```
 
+#### 上线审批与 prod 部署
+
+再填上 prod 目标后，dev 试跑通过的 run 会停下来等上线审批：页面（或 `POST /runs/{id}/resume`，可带 `actor` 写明审批人）确认后，bundle 部署到 prod 目标并按计划运行，部署时不立即运行；驳回时写下意见，代码按意见重写、再试跑、再等审批。每次确认和驳回都记在 run 结果的 `approvals` 里，部署结果在 `release` 里。`cluster` 模式只试跑不部署，不提供上线。
+
+```bash
+AEP_DATABRICKS_PROD_CATALOG=<prod catalog>
+AEP_DATABRICKS_PROD_SCHEMA=<prod schema>
+# AEP_DATABRICKS_PROD_CLUSTER_ID=<prod 用的集群，默认同 AEP_DATABRICKS_CLUSTER_ID>
+# AEP_DATABRICKS_PROD_SCHEDULE=0 0 2 * * ?   # Quartz cron，默认每天 2 点；run 的 input.schedule 可单独指定
+# AEP_DATABRICKS_PROD_TIMEZONE=Asia/Shanghai
+```
+
 ### 追踪（Langfuse）
 
 ```bash

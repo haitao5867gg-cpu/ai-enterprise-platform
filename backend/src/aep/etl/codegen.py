@@ -149,6 +149,10 @@ def parse_sql(pipeline: str) -> list[dict[str, object]]:
         raise CodeError(str(exc)) from exc
 
 
+DEFAULT_SCHEDULE = "0 0 2 * * ?"
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+
+
 def _pipeline(name: str, library: str, compute: Compute | None) -> dict[str, object]:
     pipeline: dict[str, object] = {
         "name": name,
@@ -230,11 +234,36 @@ def render_bundle(
             "description": f"Lakehouse Federation catalog for the source {source_name}"
         },
     }
+    variables |= {
+        "schedule": {
+            "description": "When prod refreshes the tables (Quartz cron)",
+            "default": DEFAULT_SCHEDULE,
+        },
+        "timezone": {"description": "Time zone of the schedule", "default": DEFAULT_TIMEZONE},
+    }
+    schedule = {
+        "quartz_cron_expression": "${var.schedule}",
+        "timezone_id": "${var.timezone}",
+        "pause_status": "UNPAUSED",
+    }
     if job:
         variables["cluster_id"] = {"description": "Existing cluster the job runs on"}
         resources: dict[str, object] = {"jobs": {name: _job(name)}}
+        # Only prod runs on a schedule; dev runs when the platform runs it.
+        prod_jobs: dict[str, object] = {name: {"schedule": schedule}}
     else:
         resources = {"pipelines": {name: _pipeline(name, library, compute)}}
+        refresh = {
+            "name": f"{name}_refresh",
+            "schedule": schedule,
+            "tasks": [
+                {
+                    "task_key": "refresh",
+                    "pipeline_task": {"pipeline_id": f"${{resources.pipelines.{name}.id}}"},
+                }
+            ],
+        }
+        prod_jobs = {f"{name}_refresh": refresh}
     config = {
         "bundle": {"name": name},
         "variables": variables,
@@ -245,7 +274,14 @@ def render_bundle(
                 "default": True,
                 "variables": {"schema": f"${{workspace.current_user.short_name}}_{name}"},
             },
-            "prod": {"mode": "production"},
+            "prod": {
+                "mode": "production",
+                "workspace": {
+                    "root_path": "/Workspace/Users/${workspace.current_user.userName}"
+                    "/.bundle/${bundle.name}/${bundle.target}"
+                },
+                "resources": {"jobs": prod_jobs},
+            },
         },
     }
     rows = [f"| `{t.name}` | {', '.join(t.sources)} | {t.description} |" for t in plan.targets]
@@ -267,6 +303,10 @@ def render_bundle(
             + (" --var cluster_id=<集群 id>" if job else ""),
             f"databricks bundle run -t dev {name}",
             "```",
+            "",
+            "上线到 prod 目标（`-t prod`，另外用 `--var catalog=... --var schema=...` 指定 prod 的",
+            f"catalog 和 schema）后按计划刷新，默认每天 2 点（`{DEFAULT_TIMEZONE}`），用",
+            "`--var schedule=<Quartz cron>` 修改。",
             "",
         ]
     )
