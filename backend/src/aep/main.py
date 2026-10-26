@@ -14,12 +14,14 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import runs
+from aep.api import datasources, runs
 from aep.config import Settings, get_settings
+from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
+from aep.tools.mcp import McpTools
 
 log = logging.getLogger(__name__)
 
@@ -66,12 +68,16 @@ def create_app() -> FastAPI:
         await checkpointer.setup()
         store = PostgresRunStore(pool)
         await store.setup()
+        sources = PostgresDataSourceStore(pool)
+        await sources.setup()
+        await register_defaults(sources, settings.default_datasources)
+        tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
         service = RunService(
             store,
             checkpointer,
             default_apps(),
-            AppContext(llm_client=llm_client, settings=settings),
+            AppContext(llm_client, settings, datasources=sources, tools=tools),
             tracer,
         )
         if tracer.enabled:
@@ -81,6 +87,8 @@ def create_app() -> FastAPI:
             log.info("resumed %d runs left running by the previous process", recovered)
         app.state.llm_client = llm_client
         app.state.run_service = service
+        app.state.datasources = sources
+        app.state.mcp_tools = tools
         yield
         try:
             await asyncio.wait_for(service.wait_idle(), timeout=10)
@@ -92,6 +100,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="AI Enterprise Platform", version=__version__, lifespan=lifespan)
     app.include_router(runs.router)
+    app.include_router(datasources.router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

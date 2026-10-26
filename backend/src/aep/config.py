@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     llm_gateway_key: str = "sk-local-dev"
     default_model: str = "mock"
     llm_timeout_seconds: float = 120.0
+    # Each call to a connector (MCP server) tool.
+    tool_timeout_seconds: float = 30.0
+    # Data sources registered at startup when no source of that name exists yet,
+    # as JSON: [{"name": ..., "kind": ..., "connector_url": ..., "description": ...}].
+    default_datasources: list[dict[str, str]] = []
 
     # Langfuse tracing. Off unless both keys are set; the names are shared with
     # the gateway, which reports model calls to the same project.

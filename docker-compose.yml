@@ -116,6 +116,8 @@ services:
       AEP_REDIS_URL: redis://redis:6379/0
       AEP_LLM_GATEWAY_URL: http://litellm:4000
       AEP_LLM_GATEWAY_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
+      # The sample source database, through its read-only connector.
+      AEP_DEFAULT_DATASOURCES: '[{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"}]'
     ports:
       - "8000:8000"
     depends_on:
