@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from aep.datasources import DataSource
+from aep.etl.plan import KnownValues
 from aep.tools.mcp import McpTools
 
 MAX_TABLES = 20
@@ -41,11 +42,39 @@ async def profile_tables(
             "columns": described["columns"],
             "foreign_keys": described["foreign_keys"],
             "estimated_row_count": stats.get("estimated_row_count"),
+            "sample_row_count": stats.get("sample_row_count"),
+            "sample_limit": stats.get("sample_limit"),
             "column_stats": stats["columns"],
             "sample": sample["rows"],
         }
 
     return list(await asyncio.gather(*(one(schema, table) for schema, table in names)))
+
+
+def known_values(tables: list[dict[str, Any]]) -> dict[str, KnownValues]:
+    """Per column name, every value the profile listed for it.
+
+    Only columns whose values were all listed (none cut short) count. A table was read
+    whole when its stats sample came back smaller than the limit. A name used in several
+    tables merges their values, and is complete only if every table's is.
+    """
+    known: dict[str, KnownValues] = {}
+    for t in tables:
+        rows, limit = t.get("sample_row_count"), t.get("sample_limit")
+        whole = isinstance(rows, int) and isinstance(limit, int) and rows < limit
+        for s in t["column_stats"]:
+            listed = s.get("top_values")
+            if listed is None or any(v.get("truncated") for v in listed):
+                continue
+            if len(listed) != (s.get("distinct_count") or 0):
+                continue
+            values = frozenset(str(v["value"]).strip().lower() for v in listed)
+            name, complete = s["name"].lower(), whole
+            if name in known:
+                values |= known[name].values
+                complete = complete and known[name].complete
+            known[name] = KnownValues(values, complete)
+    return known
 
 
 def _short(value: Any) -> Any:

@@ -12,7 +12,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from aep.datasources import MemoryDataSourceStore
 from aep.etl import codegen
-from aep.etl.plan import EtlPlan, PlanError, validate_plan
+from aep.etl.plan import EtlPlan, KnownValues, PlanError, compared_literals, validate_plan
+from aep.etl.profile import known_values
 from aep.main import app
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
@@ -311,3 +312,90 @@ def test_target_names_must_not_clash_with_generated_code():
         bad["targets"][0]["name"] = name
         with pytest.raises(PlanError, match="保留字"):
             validate_plan(bad, ["sales.orders", "sales.customers"])
+
+
+def test_compared_literals():
+    assert compared_literals("count_if(lower(trim(o.status)) = 'returned')") == [
+        ("status", "returned")
+    ]
+    assert compared_literals("CASE WHEN status <> 'it''s' THEN 1 END") == [("status", "it''s")]
+    assert sorted(compared_literals("Status NOT IN ('a', 'b') AND kind == 'c'")) == [
+        ("kind", "c"),
+        ("status", "a"),
+        ("status", "b"),
+    ]
+    assert compared_literals("ordered_at >= '2026-01-01'") == []
+
+
+def returns_plan(assumptions=()):
+    value = plan(assumptions=list(assumptions))
+    value["targets"][0]["columns"].append(
+        {"name": "returned", "source": "count_if(lower(trim(o.status)) = 'returned')"}
+    )
+    return value
+
+
+def test_plan_cannot_compare_with_a_value_the_data_does_not_have():
+    whole = {"status": KnownValues(frozenset({"paid", "cancelled"}), complete=True)}
+    with pytest.raises(PlanError, match="status 的全部取值只有 cancelled、paid"):
+        validate_plan(
+            returns_plan(["退货按 returned 算"]), ["sales.orders", "sales.customers"], whole
+        )
+    fine = plan()
+    fine["targets"][0]["quality_rules"] = [
+        {"name": "paid_only", "condition": "lower(status) IN (' Paid ')", "on_violation": "drop"}
+    ]
+    validate_plan(fine, ["sales.orders", "sales.customers"], whole)
+
+
+def test_a_value_missing_from_a_sample_must_be_explained():
+    sampled = {"status": KnownValues(frozenset({"paid"}), complete=False)}
+    with pytest.raises(PlanError, match="在 assumptions 里写明为什么用 'returned'"):
+        validate_plan(returns_plan(), ["sales.orders", "sales.customers"], sampled)
+    validate_plan(
+        returns_plan(["样本里没有 returned，按约定的退货状态 returned 统计"]),
+        ["sales.orders", "sales.customers"],
+        sampled,
+    )
+
+
+def test_known_values_from_the_profile():
+    def table(rows, limit, columns):
+        return {"sample_row_count": rows, "sample_limit": limit, "column_stats": columns}
+
+    def values(*listed, **extra):
+        return [{"value": v, "count": 1, **extra} for v in listed]
+
+    known = known_values(
+        [
+            table(
+                3,
+                1000,
+                [
+                    {"name": "status", "distinct_count": 2, "top_values": values("Paid", "x ")},
+                    {
+                        "name": "note",
+                        "distinct_count": 1,
+                        "top_values": values("a", truncated=True),
+                    },
+                    {"name": "city", "distinct_count": 30},
+                    {"name": "kind", "distinct_count": 3, "top_values": values("a", "b")},
+                ],
+            ),
+            table(
+                1000, 1000, [{"name": "Status", "distinct_count": 1, "top_values": values("new")}]
+            ),
+        ]
+    )
+    assert known == {"status": KnownValues(frozenset({"paid", "x", "new"}), complete=False)}
+    alone = known_values([table(3, 1000, [{"name": "s", "distinct_count": 0, "top_values": []}])])
+    assert alone == {"s": KnownValues(frozenset(), complete=True)}
+
+
+async def test_a_made_up_value_goes_back_to_the_model():
+    service, gateway, ds = await make_service([reply(returns_plan()), reply(plan())])
+    run_id = await start(service, ds, tables=["sales.orders", "sales.customers"])
+    view = await service.get(run_id)
+    assert view.record.status == "waiting", view.record.error
+    feedback = gateway.requests[1]["body"]["messages"][-1]["content"]
+    assert "status 的全部取值只有 paid，数据里没有这个取值" in feedback
