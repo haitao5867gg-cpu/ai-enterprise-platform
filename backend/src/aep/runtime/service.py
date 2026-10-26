@@ -4,6 +4,7 @@ A run executes in a background task until it finishes or reaches an
 ``interrupt`` (a human decision). Everything needed to continue is in the
 checkpointer, so a run waiting for a decision survives a restart, and runs that
 were mid-step when the process stopped are picked up again by ``recover``.
+Each of those executions is one segment of the run's trace (see aep.tracing).
 """
 
 import asyncio
@@ -15,6 +16,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
+from aep import tracing
 from aep.runtime.registry import AppBuilder, AppContext
 from aep.runtime.store import RunRecord, RunStore
 
@@ -43,6 +45,7 @@ class RunView:
     messages: list[dict[str, str]]
     pending: dict[str, Any] | None
     result: dict[str, Any] | None
+    trace_id: str | None = None
 
 
 def _config(run_id: str) -> dict[str, Any]:
@@ -56,8 +59,10 @@ class RunService:
         checkpointer: BaseCheckpointSaver,
         apps: dict[str, AppBuilder],
         ctx: AppContext,
+        tracer: tracing.Tracer | None = None,
     ) -> None:
         self._store = store
+        self._tracer = tracer or tracing.Tracer()
         self._graphs: dict[str, CompiledStateGraph] = {
             name: build(ctx).compile(checkpointer=checkpointer) for name, build in apps.items()
         }
@@ -71,7 +76,7 @@ class RunService:
         if app not in self._graphs:
             raise UnknownApp(app)
         record = await self._store.create(app, input)
-        self._spawn(record, {"input": input})
+        self._spawn(record, {"input": input}, "start", input)
         return record
 
     async def get(self, run_id: str) -> RunView:
@@ -88,6 +93,7 @@ class RunService:
             messages=values.get("messages", []),
             pending=pending,
             result=values.get("result"),
+            trace_id=tracing.trace_id(run_id) if self._tracer.enabled else None,
         )
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
@@ -100,7 +106,8 @@ class RunService:
         if decision not in view.pending.get("options", []):
             raise InvalidDecision(decision)
         await self._store.set_status(run_id, "running")
-        self._spawn(view.record, Command(resume={"decision": decision, "comment": comment}))
+        answer = {"decision": decision, "comment": comment}
+        self._spawn(view.record, Command(resume=answer), "resume", answer)
         return await self._store.get(run_id)
 
     async def recover(self) -> int:
@@ -110,7 +117,7 @@ class RunService:
             state = await self._graphs[record.app].aget_state(_config(record.run_id))
             # No checkpoint yet means the run never got going: start it from its input.
             payload = None if state.values else {"input": record.input}
-            self._spawn(record, payload)
+            self._spawn(record, payload, "recover")
         return len(runs)
 
     async def wait_idle(self) -> None:
@@ -118,18 +125,28 @@ class RunService:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
-    def _spawn(self, record: RunRecord, payload: Any) -> None:
-        task = asyncio.create_task(self._drive(record, payload))
+    def _spawn(self, record: RunRecord, payload: Any, step: str, step_input: Any = None) -> None:
+        task = asyncio.create_task(self._drive(record, payload, step, step_input))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _drive(self, record: RunRecord, payload: Any) -> None:
+    async def _drive(self, record: RunRecord, payload: Any, step: str, step_input: Any) -> None:
         graph = self._graphs[record.app]
         config = _config(record.run_id)
-        try:
-            await graph.ainvoke(payload, config)
-            state = await graph.aget_state(config)
-            await self._store.set_status(record.run_id, "waiting" if state.interrupts else "done")
-        except Exception as exc:
-            log.exception("run %s failed", record.run_id)
-            await self._store.set_status(record.run_id, "error", error=str(exc))
+        with self._tracer.segment(record.run_id, record.app, step, step_input) as segment:
+            try:
+                await graph.ainvoke(payload, {**config, "callbacks": segment.callbacks})
+                state = await graph.aget_state(config)
+                status = "waiting" if state.interrupts else "done"
+                segment.finish(
+                    {
+                        "status": status,
+                        "pending": state.interrupts[0].value if state.interrupts else None,
+                        "result": (state.values or {}).get("result"),
+                    }
+                )
+                await self._store.set_status(record.run_id, status)
+            except Exception as exc:
+                log.exception("run %s failed", record.run_id)
+                segment.finish({"status": "error"}, error=str(exc))
+                await self._store.set_status(record.run_id, "error", error=str(exc))

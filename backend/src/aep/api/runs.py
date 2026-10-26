@@ -67,6 +67,8 @@ class RunDetail(BaseModel):
     pending: Pending | None
     result: dict[str, Any] | None
     error: str | None
+    # Langfuse trace of this run; null when tracing is off.
+    trace_id: str | None = None
 
 
 def _summary(r: RunRecord) -> RunSummary:
@@ -88,6 +90,7 @@ def _detail(v: RunView) -> RunDetail:
         pending=Pending(**v.pending) if v.pending else None,
         result=v.result,
         error=v.record.error,
+        trace_id=v.trace_id,
     )
 
 

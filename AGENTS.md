@@ -18,7 +18,7 @@
 - 工具接入：一律做成 MCP Server。数据源连接器只读。
 - 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
 - 平台应用：每个应用是 `backend/src/aep/runtime/apps/` 下的一张 LangGraph 图，在 `aep.runtime.registry.default_apps` 里注册。节点里调模型只能用 `AppContext.llm_client`。运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`。
-- 观测：Langfuse 自托管。
+- 观测：Langfuse 自托管（`make up-full` 启动）。一次 run 对应一条 trace（id 由 run_id 推出），每次执行（开始、确认后恢复、重启后恢复）是其中一段，节点由 LangGraph 回调上报，模型调用由网关上报，见 `aep.tracing`。新应用不用写追踪代码。没配 Langfuse Key 时追踪关闭，什么都不发出。
 - Databricks：查询走托管 MCP（dbsql），部署走 Declarative Automation Bundles（原 Asset Bundles），分 dev / prod 目标。
 - 部署：本地 `docker compose`，生产 Azure（AKS + Helm，Terraform 建环境，Entra ID 登录）。本地和 Azure 用同一套镜像，差异只在配置。
 - 第一版单租户、两个角色（使用者、审批者），但业务表都预留 `tenant_id` 列。
@@ -29,7 +29,7 @@
 ```
 backend/    Python 3.12 + FastAPI，包名 aep（src 布局），uv 管理依赖
 frontend/   Next.js（App Router）+ TypeScript
-infra/      基础设施配置（litellm/ 为模型网关）
+infra/      基础设施配置（litellm/ 模型网关，langfuse/ 追踪）
 .github/    CI
 ```
 
@@ -39,6 +39,8 @@ infra/      基础设施配置（litellm/ 为模型网关）
 cp .env.example .env        # 可选
 make up                     # 等同 docker compose up --build -d
 # Web http://localhost:3000   API http://localhost:8000/docs   模型网关 http://localhost:4000
+make up-full                # 再加上自托管 Langfuse，所有 run 都会追踪
+# Langfuse http://localhost:3100（admin@aep.local / aep-local-dev）
 make test                   # 后端测试 + 前端类型检查
 make lint
 ```
@@ -48,7 +50,7 @@ make lint
 
 ## 代码规范
 
-- Python：ruff 检查和格式化（行宽 100），类型标注齐全。配置只从 `aep.config.Settings` 读，环境变量统一 `AEP_` 前缀。
+- Python：ruff 检查和格式化（行宽 100），类型标注齐全。配置只从 `aep.config.Settings` 读，环境变量统一 `AEP_` 前缀（例外：`LANGFUSE_*`，与网关共用同一组变量）。
 - TypeScript：`strict` 模式，`npm run typecheck` 必须通过。
 - 新功能必须带测试；后端测试放 `backend/tests/`，不得依赖外部网络或真实模型（用 `tests/conftest.py` 里的 `FakeGateway`）。运行时测试用 `MemoryRunStore` + `InMemorySaver`；需要真实 Postgres 的测试读取 `AEP_TEST_DATABASE_URL`，没设置时自动跳过（CI 会设置）。
 - 不提交密钥、`.env`、客户数据。凭据在本地放 `.env`，在 Azure 放 Key Vault。

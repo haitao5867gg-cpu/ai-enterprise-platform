@@ -39,3 +39,6 @@ model_list:
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+
+# litellm_settings is added by entrypoint.sh from langfuse.yaml when tracing is
+# on; a litellm_settings block here would be overridden by it.
