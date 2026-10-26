@@ -6,7 +6,7 @@
 
 ## 快速开始
 
-需要 Docker。
+需要 Docker（Mac / Windows 装 Docker Desktop）。没有 `make` 时用 `docker compose up --build -d` 代替 `make up`，`docker compose --profile observability down` 代替 `make down`。
 
 ```bash
 make up
@@ -19,7 +19,18 @@ make up
 
 ### ETL 应用
 
-`make up` 会自动登记一个本地示例库（客户、商品、订单）。用 API 发起一次运行：
+`make up` 会自动登记一个本地示例库（客户、商品、订单）。`mock` 模型不会输出方案，ETL 要用真实模型：把 `.env.example` 复制为 `.env`，填好一个模型并把 `AEP_DEFAULT_MODEL` 设成它的别名。例如用公司的 OpenAI 兼容网关：
+
+```bash
+AEP_DEFAULT_MODEL=company
+COMPANY_API_BASE=https://<网关地址>/v1
+COMPANY_API_KEY=<密钥>
+# COMPANY_MODEL=openai/deepseek-v4.1-flash-new   # 默认值，模型 id 以网关 /v1/models 为准
+```
+
+改完 `.env` 后重新执行 `make up`，打开 http://localhost:3000 →「新建运行」→ 应用选 `etl`、数据源选「示例库」、写下需求 →「开始运行」。工作流先探查数据、给出方案，在页面上确认（或写意见驳回）后生成 Databricks bundle，可以在页面上看代码、下载 ZIP。
+
+也可以直接用 API：
 
 ```bash
 ds=$(curl -s localhost:8000/datasources | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["datasource_id"])')
@@ -27,9 +38,26 @@ curl -s localhost:8000/runs -H 'content-type: application/json' \
   -d "{\"app\":\"etl\",\"input\":{\"datasource_id\":\"$ds\",\"request\":\"做一张订单明细宽表\"}}"
 ```
 
-工作流会先探查数据、给出方案，然后等待确认（`POST /runs/{id}/resume`）。确认后生成 Databricks bundle，用 `GET /runs/{id}/files.zip` 下载。`mock` 模型不会输出方案，这个应用要在 `.env` 里配好一个真实模型，并把 `AEP_DEFAULT_MODEL` 设成它的别名（例如 `qwen`）；也可以在 `input.models` 里为 `plan` 和 `codegen` 分别指定模型。
+确认用 `POST /runs/{id}/resume`，下载用 `GET /runs/{id}/files.zip`；`input.models` 可以为 `plan` 和 `codegen` 分别指定模型。
 
-在 `.env` 里填了 `AEP_DATABRICKS_HOST` 和 `AEP_DATABRICKS_TOKEN` 之后，生成的 bundle 会在 API 容器里用 Databricks CLI 部署到 dev 目标并试跑一次（`bundle validate`、`deploy -t dev`、`run -t dev`），然后从管道事件日志读出每张表写入的行数和质量规则的结果，写进 run 结果的 `verification`。试跑失败时，报错会交回代码生成重写，最多试跑三次。目标 catalog、schema、源表所在的 catalog 和经典计算的节点类型见 `.env.example`。不填就跳过这一步，结果里会写明跳过的原因。没有建管道集群的权限时，可以填 `AEP_DATABRICKS_CLUSTER_ID`，改为在这台现有集群上执行生成的转换逻辑，核对行数和质量规则，不部署管道。
+#### Databricks dev 试跑
+
+在 `.env` 里填了 `AEP_DATABRICKS_HOST` 和 `AEP_DATABRICKS_TOKEN` 之后，生成的 bundle 会部署到 dev 目标并运行一次，每张表的行数和质量规则结果写进 run 结果的 `verification`，页面上也会显示。试跑失败时，报错交回代码生成重写，最多试跑三次。不填就跳过这一步，结果里写明原因。部署方式由 `AEP_DATABRICKS_DEPLOY` 决定（不填时：有 `AEP_DATABRICKS_CLUSTER_ID` 就用 `job`，否则用 `pipeline`）：
+
+- `job`：bundle 是一个跑在已有集群上的 Notebook Job，通过 REST API 部署并运行，写入目标表。不需要建集群的权限。
+- `pipeline`：Lakeflow 管道，在 API 容器里用 Databricks CLI `bundle deploy -t dev` 部署后运行；需要建集群的权限（或 `AEP_DATABRICKS_PIPELINE_POLICY_ID`），Azure 中国区没有 serverless 时还要填 `AEP_DATABRICKS_PIPELINE_NODE_TYPE`。
+- `cluster`：只在已有集群上执行一次转换逻辑，核对行数和质量规则，不部署也不写表。
+
+源表要在 Databricks 里也能读到（`AEP_DATABRICKS_SOURCE_CATALOG`，例如 Lakehouse Federation 的外部目录，或导入了同样数据的 catalog）。例如：
+
+```bash
+AEP_DATABRICKS_HOST=https://adb-<workspace-id>.<n>.databricks.azure.cn
+AEP_DATABRICKS_TOKEN=<个人访问令牌>
+AEP_DATABRICKS_CLUSTER_ID=<集群 id>
+AEP_DATABRICKS_SOURCE_CATALOG=<源表所在 catalog>
+AEP_DATABRICKS_CATALOG=<目标 catalog>
+AEP_DATABRICKS_SCHEMA=<目标 schema>
+```
 
 ### 追踪（Langfuse）
 
