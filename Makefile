@@ -17,12 +17,23 @@ down:      ## Stop the stack, Langfuse included (data volumes are kept)
 logs:
 	docker compose logs -f
 
-test:      ## Backend tests + frontend type check
+test: test-connectors      ## Connector + backend tests + frontend type check
 	cd backend && uv run pytest -q
 	cd frontend && npm run typecheck
 
 lint:
 	cd backend && uv run ruff check . && uv run ruff format --check .
+	cd connectors/postgres && uv run ruff check . && uv run ruff format --check .
 
 fmt:
 	cd backend && uv run ruff check --fix . && uv run ruff format .
+	cd connectors/postgres && uv run ruff check --fix . && uv run ruff format .
+
+.PHONY: test-connectors smoke-connectors
+
+test-connectors:  ## Integration tests against the synthetic source database
+	docker compose up -d --wait source-postgres
+	uv run --frozen --project connectors/postgres pytest connectors/postgres/tests -q
+
+smoke-connectors: ## Call all five tools on the running Streamable HTTP server
+	uv run --frozen --project connectors/postgres aep-postgres-smoke
