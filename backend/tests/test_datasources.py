@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from aep.datasources import MemoryDataSourceStore
+from aep.datasources import MemoryDataSourceStore, register_defaults
 from aep.main import app
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError
 from tests import fake_connector
@@ -87,18 +87,23 @@ async def test_call_returns_plain_data():
     tools = tools_for()
 
     table = await tools.call(
-        fake_connector.URL, "describe_table", {"schema": "public", "table": "orders"}
+        fake_connector.URL, "describe_table", {"schema": "sales", "table": "orders"}
     )
     schemas = await tools.call(fake_connector.URL, "list_schemas")
 
-    assert [c["name"] for c in table["columns"]] == ["id", "customer_id", "amount", "updated_at"]
-    assert schemas == ["public"]
+    assert [c["name"] for c in table["columns"]] == [
+        "order_id",
+        "customer_id",
+        "quantity",
+        "ordered_at",
+    ]
+    assert schemas == {"schemas": ["sales"]}
 
 
 async def test_tool_error_is_raised():
     with pytest.raises(ToolError, match="does not exist"):
         await tools_for().call(
-            fake_connector.URL, "describe_table", {"schema": "public", "table": "x"}
+            fake_connector.URL, "describe_table", {"schema": "sales", "table": "x"}
         )
 
 
@@ -106,5 +111,14 @@ async def test_slow_connector_times_out():
     tools = tools_for(fake_connector.build(delay_seconds=2), timeout_seconds=0.2)
     with pytest.raises(ConnectorUnavailable, match="no answer"):
         await tools.call(
-            fake_connector.URL, "describe_table", {"schema": "public", "table": "orders"}
+            fake_connector.URL, "describe_table", {"schema": "sales", "table": "orders"}
         )
+
+
+async def test_defaults_are_registered_once():
+    store = MemoryDataSourceStore()
+    defaults = [{"name": "示例库", "kind": "postgres", "connector_url": fake_connector.URL}]
+
+    assert await register_defaults(store, defaults) == 1
+    assert await register_defaults(store, defaults) == 0
+    assert [d.name for d in await store.all()] == ["示例库"]

@@ -107,6 +107,12 @@ jobs:
       - run: curl -sf http://localhost:3000 | grep -q "后端状态"
       - name: Run survives an API restart while waiting for approval
         run: scripts/smoke-runs.sh
+      - name: The sample data source is registered and its connector answers
+        run: |
+          id=$(curl -sf http://localhost:8000/datasources |
+            python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["name"] == "示例库"))')
+          curl -sf "http://localhost:8000/datasources/$id/tools" |
+            python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert {"describe_table", "sample_rows", "table_stats"} <= names'
       - if: failure()
         run: docker compose logs
       - if: always()

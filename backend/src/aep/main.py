@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from aep import __version__, llm, tracing
 from aep.api import datasources, runs
 from aep.config import Settings, get_settings
-from aep.datasources import PostgresDataSourceStore
+from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
         await store.setup()
         sources = PostgresDataSourceStore(pool)
         await sources.setup()
+        await register_defaults(sources, settings.default_datasources)
         tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
         service = RunService(

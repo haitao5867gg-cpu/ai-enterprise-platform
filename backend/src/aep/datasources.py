@@ -87,6 +87,23 @@ def _record(row: dict[str, Any]) -> DataSource:
     return DataSource(**row)
 
 
+async def register_defaults(store: DataSourceStore, defaults: list[dict[str, str]]) -> int:
+    """Register each default whose name is not taken yet; returns how many were added."""
+    taken = {d.name for d in await store.all()}
+    added = 0
+    for item in defaults:
+        if item["name"] in taken:
+            continue
+        try:
+            await store.create(
+                item["name"], item["kind"], item["connector_url"], item.get("description", "")
+            )
+        except DuplicateName:  # another process registered it first
+            continue
+        added += 1
+    return added
+
+
 class PostgresDataSourceStore:
     """Data sources in Postgres. The pool must use dict rows and autocommit."""
 
