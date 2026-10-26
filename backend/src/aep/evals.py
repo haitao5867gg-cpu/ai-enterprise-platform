@@ -18,6 +18,7 @@ The report is printed as a table and written as JSON.
 import argparse
 import asyncio
 import json
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -118,8 +119,18 @@ def score_plan(expect: dict[str, Any], plan: dict[str, Any] | None) -> list[Chec
         missing = [w for w in expect["mention"] if not _has([text], w)]
         checks.append(Check("plan", "mention", not missing, f"没提到 {missing}" if missing else ""))
     if "forbid" in expect:
-        # What the tables would compute, not what the assumptions say about it.
-        text = json.dumps(targets, ensure_ascii=False)
+        # What the tables compute (column expressions and the literals in quality rules),
+        # not what the names, logic or assumptions say about it.
+        text = json.dumps(
+            [c.get("source", "") for t in targets for c in t.get("columns", [])]
+            + [
+                literal
+                for t in targets
+                for q in t.get("quality_rules", [])
+                for literal in re.findall(r"'([^']*)'", q.get("condition", ""))
+            ],
+            ensure_ascii=False,
+        )
         found = [w for w in expect["forbid"] if _has([text], w)]
         checks.append(Check("plan", "forbid", not found, f"用了 {found}" if found else ""))
     if "assumptions" in expect:

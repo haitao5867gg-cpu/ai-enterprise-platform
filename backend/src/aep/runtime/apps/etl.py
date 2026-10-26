@@ -34,11 +34,11 @@ from aep.databricks import DevRun, Release
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.plan import SYSTEM_PROMPT as PLAN_PROMPT
-from aep.etl.profile import describe_for_model, profile_tables
+from aep.etl.profile import describe_for_model, known_values, profile_tables
 from aep.runtime.registry import AppContext
 
 CODEGEN_ATTEMPTS = 3
-PLAN_ATTEMPTS = 2
+PLAN_ATTEMPTS = 3
 DEV_RUN_ATTEMPTS = 3
 ERROR_CHARS = 1500
 
@@ -167,10 +167,11 @@ def build(ctx: AppContext) -> StateGraph:
             )
             prompt.append({"role": "user", "content": f"用户的修改意见：{state['feedback']}"})
         sources = [t["name"] for t in state["profile"]]
+        known = known_values(state["profile"])
         for attempt in range(PLAN_ATTEMPTS):
             reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "plan"))
             try:
-                result = validate_plan(llm.parse_json(reply.text), sources)
+                result = validate_plan(llm.parse_json(reply.text), sources, known, attempt > 0)
                 break
             except (ValueError, PlanError) as exc:
                 if attempt == PLAN_ATTEMPTS - 1:

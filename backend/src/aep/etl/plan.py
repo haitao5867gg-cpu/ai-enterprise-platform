@@ -7,7 +7,8 @@ does not exist goes back to the model instead of on to the user.
 
 import keyword
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -70,8 +71,77 @@ class PlanError(ValueError):
     pass
 
 
-def validate_plan(raw: Any, source_tables: Collection[str]) -> EtlPlan:
-    """Parse the model's plan and check it against the profiled ``source_tables`` (schema.table)."""
+@dataclass(frozen=True)
+class KnownValues:
+    """Every value the profile saw in a column; ``complete`` when the whole table was read."""
+
+    values: frozenset[str]
+    complete: bool
+
+
+# A column compared with a string literal: ``lower(trim(o.status)) = 'paid'``,
+# ``status IN ('a', 'b')``. Only the column name is kept (the last identifier before
+# any closing parentheses); range comparisons are left alone.
+COMPARED = re.compile(r"\b(\w+)\s*\)*\s*(?:==?|!=|<>)\s*'((?:[^']|'')*)'")
+COMPARED_IN = re.compile(r"\b(\w+)\s*\)*\s+(?:not\s+)?in\s*\(([^)]*)\)", re.I)
+LITERAL = re.compile(r"'((?:[^']|'')*)'")
+
+
+def _normal(value: str) -> str:
+    return value.replace("''", "'").strip().lower()
+
+
+def compared_literals(expression: str) -> list[tuple[str, str]]:
+    """(column, literal) pairs where ``expression`` compares a column with string literals."""
+    pairs = [(c, v) for c, v in COMPARED.findall(expression)]
+    for column, listed in COMPARED_IN.findall(expression):
+        pairs += [(column, v) for v in LITERAL.findall(listed)]
+    return [(column.lower(), value) for column, value in pairs]
+
+
+def _value_problems(
+    plan: EtlPlan, known: Mapping[str, KnownValues], trust_assumptions: bool
+) -> list[str]:
+    """Literals the plan compares a column with that the profile never saw in it.
+
+    Such a value is usually made up, so it goes back to the model with the actual values.
+    It can still be right (rare, or only in a part of the table the sample missed, or the
+    user said so), so once ``trust_assumptions`` is set a value the assumptions name stays.
+    """
+    explained = " ".join(plan.assumptions).lower()
+    problems = []
+    for target in plan.targets:
+        expressions = [c.source for c in target.columns]
+        expressions += [q.condition for q in target.quality_rules]
+        pairs = dict.fromkeys(p for e in expressions for p in compared_literals(e))
+        for column, literal in pairs:
+            seen = known.get(column)
+            if seen is None or _normal(literal) in seen.values:
+                continue
+            if trust_assumptions and _normal(literal) in explained:
+                continue
+            actual = "、".join(sorted(seen.values)) or "（全是空值）"
+            where = "整张表" if seen.complete else "样本"
+            problems.append(
+                f"{target.name} 拿 {column} 和 '{literal}' 比较，但{where}里 {column} 的取值只有 "
+                f"{actual}。需求说的取值对应其中某个时请改用实际取值；数据里确实没有时，"
+                "不要编造取值，做不了的指标去掉或给 null，并在 assumptions 里说明；"
+                f"确定要用 '{literal}'（比如用户指定了）就在 assumptions 里写明原因"
+            )
+    return problems
+
+
+def validate_plan(
+    raw: Any,
+    source_tables: Collection[str],
+    known: Mapping[str, KnownValues] | None = None,
+    trust_assumptions: bool = True,
+) -> EtlPlan:
+    """Parse the model's plan and check it against the profiled ``source_tables`` (schema.table)
+    and the ``known`` values of their columns (by column name, see ``aep.etl.profile``).
+
+    ``trust_assumptions`` false: a value the data lacks goes back even if the assumptions name
+    it, so the model looks at the actual values once before keeping it."""
     try:
         plan = EtlPlan.model_validate(raw)
     except ValidationError as exc:
@@ -110,6 +180,7 @@ def validate_plan(raw: Any, source_tables: Collection[str]) -> EtlPlan:
                     f"（{quality.condition}）；质量规则逐行判断，不能用聚合，"
                     "唯一性请用 primary_key 表达"
                 )
+    problems += _value_problems(plan, known or {}, trust_assumptions)
     if problems:
         raise PlanError("；".join(dict.fromkeys(problems)))
     return plan
@@ -123,6 +194,8 @@ Databricks Lakeflow 声明式管道的 ETL 方案。
 logic 和表达式里写实际取值；同一取值有大小写或空格不同的写法时，先 lower(trim(...)) 再比较。
 数据里找不到需求提到的取值、需求有歧义、或者你加了需求没提的业务过滤时，
 在 assumptions 里逐条写明你的理解和做法，交给用户确认，不要编造数据里没有的取值。
+需求要的数据源库里根本没有（没有对应的列，取值分布里也没有对应的取值）时，不要拿猜测的取值代替：
+能做的部分照做，做不了的指标去掉或者给 null，并在 assumptions 里说明缺什么数据。
 质量规则对目标表的每一行单独判断，条件里只能用这一行的列，不能用 count、sum 等聚合函数；
 唯一性用 primary_key 表达，不要写成质量规则。
 目标表放在 Unity Catalog 的同一个 schema 里，表名和列名用小写蛇形命名。

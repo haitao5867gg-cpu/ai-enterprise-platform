@@ -79,6 +79,22 @@ def test_plan_checks():
     assert all(c.passed is None for c in evals.score_plan(expect, None))
 
 
+def test_forbid_looks_at_what_the_tables_compute():
+    honest = plan()
+    target = honest["targets"][0]
+    target["logic"] = "没有退货数据，returned_count 留空"
+    target["columns"].append({"name": "returned_count", "source": "cast(null as bigint)"})
+    honest["assumptions"] = ["数据里没有 returned 状态"]
+    made_up = plan()
+    made_up["targets"][0]["quality_rules"] = [
+        {"name": "not_returned", "condition": "status <> 'returned'", "on_violation": "drop"}
+    ]
+    expect = {"forbid": ["returned"]}
+
+    assert by_name(evals.score_plan(expect, honest))["forbid"].passed
+    assert by_name(evals.score_plan(expect, made_up))["forbid"].passed is False
+
+
 def finished(verification, **result):
     body = {
         "plan": plan(),
