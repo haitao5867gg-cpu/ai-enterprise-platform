@@ -89,7 +89,7 @@ export async function mockRuns(request: Request, path: string[]) {
   if (request.method === "GET") return json(run);
   if (
     !isRecord(body) ||
-    !["approve", "reject"].includes(String(body.decision)) ||
+    (body.decision !== "approve" && body.decision !== "reject") ||
     (body.comment !== undefined && typeof body.comment !== "string")
   ) {
     return json({ detail: "Invalid decision or comment" }, 422);

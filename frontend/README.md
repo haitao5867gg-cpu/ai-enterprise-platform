@@ -43,7 +43,7 @@ npm test
 
 `npm test` 启动独立端口 3100–3102：3100 是开发 mock，3101 是生产前端，3102 是仅供测试的本地契约服务。请先完成 build 并确保端口空闲。测试不使用数据库、外部网络或真实模型；覆盖确认、带意见驳回、刷新详情、列表筛选、故障恢复、两秒轮询、重复提交保护、终态停止轮询、手机布局和键盘操作。生产前端测试故意传入 `AEP_MOCK_RUNS=true`，验证它仍向配置的后端基础路径转发。
 
-CI 的 frontend job 执行类型检查、ESLint、构建和以上测试。可用以下命令重新生成 PR 中的页面截图（使用合成需求）：
+CI 的 frontend job 执行类型检查、ESLint、构建和以上测试，再启动真实 Compose 后端执行下文的两条浏览器联调路径，上传截图并清理测试容器。可用以下命令生成开发 mock 的页面截图（使用合成需求）：
 
 ```bash
 AEP_CAPTURE_SCREENSHOTS=1 npm test -- --project=workbench

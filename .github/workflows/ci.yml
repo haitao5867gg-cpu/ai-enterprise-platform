@@ -51,6 +51,26 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm test
+      - name: Start the local stack for browser acceptance
+        working-directory: .
+        run: |
+          make up
+          docker compose up -d --wait
+      - name: Create, approve and reject runs against the real backend
+        env:
+          AEP_LIVE_BASE_URL: http://localhost:3000
+          AEP_CAPTURE_SCREENSHOTS: "1"
+        run: npm run test:live
+      - name: Upload workbench screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-workbench-screenshots
+          path: frontend/docs/screenshots/
+      - name: Stop the browser acceptance stack
+        if: always()
+        working-directory: .
+        run: docker compose down -v
 
   stack:
     # Boots the whole local stack the same way a developer does, then checks readiness.

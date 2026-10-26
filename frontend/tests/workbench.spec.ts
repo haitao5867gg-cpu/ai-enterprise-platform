@@ -13,6 +13,7 @@ async function capture(page: Page, name: string) {
 
 test("new run → approval → done, then reject with a comment", async ({
   page,
+  request,
 }) => {
   const origins = new Set<string>();
   page.on("request", (request) => {
@@ -38,6 +39,11 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(
     page.getByRole("list", { name: "消息记录" }).getByRole("listitem"),
   ).toHaveCount(2);
+  const id = new URL(page.url()).pathname.split("/").at(-1)!;
+  const invalidDecision = await request.post(`/api/runs/${id}/resume`, {
+    data: { decision: ["approve"], comment: "" },
+  });
+  expect(invalidDecision.status()).toBe(422);
   await capture(page, "approval");
   await page.getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
