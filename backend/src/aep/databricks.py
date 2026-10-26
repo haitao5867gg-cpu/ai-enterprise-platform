@@ -31,7 +31,9 @@ import os
 import re
 import tempfile
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -541,12 +543,32 @@ class DevTarget:
                 notebook["notebook_path"] = f"{root}/{path}"
         return job
 
-    async def _put_job(self, settings: dict[str, Any]) -> int:
-        """Updates the job of that name, or creates it."""
-        found = await self._get("/api/2.1/jobs/list", name=settings["name"])
-        jobs = found.get("jobs") or []
-        if jobs:
-            job_id = int(jobs[0]["job_id"])
+    async def _owned_job(self, name: str, tags: dict[str, str]) -> int | None:
+        """The platform's job of that name (all ``tags`` set), or None if there is none.
+
+        A job of that name that the platform did not deploy is never taken over."""
+        found = await self._get("/api/2.1/jobs/list", name=name)
+        ids = [int(job["job_id"]) for job in found.get("jobs") or []]
+        owned = []
+        for job_id in ids:
+            job = await self._get("/api/2.1/jobs/get", job_id=job_id)
+            have = (job.get("settings") or {}).get("tags") or {}
+            if all(have.get(k) == v for k, v in tags.items()):
+                owned.append(job_id)
+        if len(owned) > 1:
+            raise DatabricksError(
+                f"工作区里有多个平台部署的 Job 叫 {name}（{owned}），不知道该更新哪个"
+            )
+        if ids and not owned:
+            raise DatabricksError(
+                f"工作区里已有一个叫 {name} 的 Job（{ids[0]}），不是平台部署的，不会覆盖它；"
+                "请换一个 bundle 名，或者先处理那个 Job"
+            )
+        return owned[0] if owned else None
+
+    async def _put_job(self, settings: dict[str, Any], job_id: int | None) -> int:
+        """Updates job ``job_id`` to ``settings``, or creates the job."""
+        if job_id is not None:
             await self._post("/api/2.1/jobs/reset", {"job_id": job_id, "new_settings": settings})
             return job_id
         return int((await self._post("/api/2.1/jobs/create", settings))["job_id"])
@@ -583,10 +605,10 @@ class DevTarget:
             user = (await self._get("/api/2.0/preview/scim/v2/Me"))["userName"]
             short_name = re.sub(r"[^a-z0-9]+", "_", user.split("@")[0].lower()).strip("_")
             root = f"/Users/{user}/.bundle/{bundle.name}/{TARGET}/files"
+            settings = self._job_settings(config, bundle.name, short_name, root)
+            existing = await self._owned_job(settings["name"], {"aep_bundle": bundle.name})
             await self._upload(root, bundle.files)
-            dev.job_id = await self._put_job(
-                self._job_settings(config, bundle.name, short_name, root)
-            )
+            dev.job_id = await self._put_job(settings, existing)
         except DatabricksError as exc:
             dev.steps.append(Step("deploy", False, _tail(str(exc))))
             dev.errors = [str(exc)]
@@ -664,12 +686,17 @@ class DevTarget:
         try:
             user = (await self._get("/api/2.0/preview/scim/v2/Me"))["userName"]
             short_name = re.sub(r"[^a-z0-9]+", "_", user.split("@")[0].lower()).strip("_")
-            root = f"/Users/{user}/.bundle/{bundle.name}/{PROD}/files"
-            await self._upload(root, bundle.files)
+            # Each release gets its own folder and the job switches to it only once
+            # every file is there: a failed release leaves the running job as it was.
+            stamp = f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+            root = f"/Users/{user}/.bundle/{bundle.name}/{PROD}/releases/{stamp}/files"
             settings = self._job_settings(
                 config, bundle.name, short_name, root, PROD, release.schedule
             )
-            release.job_id = await self._put_job(settings)
+            tags = {"aep_bundle": bundle.name, "aep_target": PROD}
+            existing = await self._owned_job(settings["name"], tags)
+            await self._upload(root, bundle.files)
+            release.job_id = await self._put_job(settings, existing)
         except DatabricksError as exc:
             release.steps.append(Step("deploy", False, _tail(str(exc))))
             release.errors = [str(exc)]

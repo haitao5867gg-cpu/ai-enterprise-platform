@@ -16,7 +16,7 @@ from tests.conftest import FakeGateway
 from tests.test_databricks_job import PASSED, job_bundle
 from tests.test_etl import PYSPARK_BODY, decide, make_service, plan, reply, start
 
-PROD_ROOT = f"/Users/{fake_databricks.USER}/.bundle/shop_orders/prod/files"
+RELEASES = f"/Users/{fake_databricks.USER}/.bundle/shop_orders/prod/releases/"
 PROD = {"databricks_prod_catalog": "icsd-ace-prod", "databricks_prod_schema": "sales_mart"}
 
 
@@ -62,8 +62,10 @@ async def test_releases_the_job_to_prod_on_a_schedule_without_running_it(tmp_pat
     assert (release.catalog, release.schema) == ("icsd-ace-prod", "sales_mart")
     assert release.url == f"{fake_databricks.HOST}/#job/100"
     assert workspace.job_runs == []
-    assert f"{PROD_ROOT}/src/run" in workspace.files
     job = workspace.jobs[100]
+    notebook = job["tasks"][0]["notebook_task"]["notebook_path"]
+    assert notebook.startswith(RELEASES) and notebook.endswith("/files/src/run")
+    assert notebook in workspace.files
     assert job["name"] == "shop_orders"
     assert job["tags"] == {"aep_bundle": "shop_orders", "aep_target": "prod"}
     assert job["schedule"] == {
@@ -75,7 +77,7 @@ async def test_releases_the_job_to_prod_on_a_schedule_without_running_it(tmp_pat
     assert task["max_retries"] == 1  # prod keeps the bundle's retries
     assert task["existing_cluster_id"] == fake_databricks.CLUSTER_ID
     assert task["notebook_task"] == {
-        "notebook_path": f"{PROD_ROOT}/src/run",
+        "notebook_path": notebook,
         "base_parameters": {
             "catalog": "icsd-ace-prod",
             "schema": "sales_mart",
@@ -107,6 +109,47 @@ async def test_a_failed_release_says_why(tmp_path):
     release = await unconfigured.release(job_bundle())
     assert release.status == "failed"
     assert "AEP_DATABRICKS_PROD_CATALOG" in release.errors[0]
+
+
+async def test_a_failed_release_leaves_the_running_job_as_it_was(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    target = as_prod_job(workspace)
+    first = await target.release(job_bundle())
+    live = workspace.jobs[100]["tasks"][0]["notebook_task"]["notebook_path"]
+    files = dict(workspace.files)
+
+    changed = job_bundle()
+    changed.files["src/pipeline.py"] += "\n# changed\n"
+    second = await target.release(changed, schedule="bad cron")
+
+    assert first.status == "deployed"
+    assert second.status == "failed" and "HTTP 400" in second.errors[0]
+    assert workspace.jobs[100]["tasks"][0]["notebook_task"]["notebook_path"] == live
+    # The new files went to a folder of their own; the live ones are unchanged.
+    assert {k: v for k, v in workspace.files.items() if k in files} == files
+
+    third = await target.release(changed)
+    assert (third.status, third.job_id, list(workspace.jobs)) == ("deployed", 100, [100])
+    assert workspace.jobs[100]["tasks"][0]["notebook_task"]["notebook_path"] != live
+
+
+async def test_never_takes_over_a_job_the_platform_did_not_deploy(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.jobs[7] = {"name": "shop_orders", "tags": {"owner": "finance"}, "tasks": []}
+
+    release = await as_prod_job(workspace).release(job_bundle())
+
+    assert release.status == "failed"
+    assert "不是平台部署的" in release.errors[0]
+    assert workspace.jobs == {7: {"name": "shop_orders", "tags": {"owner": "finance"}, "tasks": []}}
+    assert workspace.files == {}  # nothing uploaded either
+
+    # A dev job of the bundle does not count as the prod job.
+    workspace.jobs = {}
+    workspace.job_outputs = [PASSED]
+    await as_prod_job(workspace).run(job_bundle())
+    release = await as_prod_job(workspace).release(job_bundle())
+    assert (release.status, sorted(workspace.jobs)) == ("deployed", [100, 101])
 
 
 async def test_releases_a_pipeline_with_the_cli(tmp_path):

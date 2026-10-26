@@ -14,7 +14,8 @@ outcome as ``aep.cluster_harness`` prints it, or an error string), and is kept
 in ``commands``.
 
 For job deploys it keeps imported files in ``files`` (a notebook under its path
-without ``.py``) and jobs in ``jobs`` (id → settings). Each job run ends with
+without ``.py``) and jobs in ``jobs`` (id → settings); a schedule whose cron
+starts with "bad" is rejected. Each job run ends with
 the next of ``job_outputs``: an outcome as the job's notebook reports it (the
 run fails when it has errors), or an error string from a run that failed before
 the notebook could report.
@@ -315,6 +316,14 @@ class FakeWorkspace:
                 if job["name"] == params.get("name")
             ]
             return httpx.Response(200, json={"jobs": jobs} if jobs else {})
+        if path == "2.1/jobs/get":
+            job_id = int(params["job_id"])
+            return httpx.Response(200, json={"job_id": job_id, "settings": self.jobs[job_id]})
+        if path in ("2.1/jobs/create", "2.1/jobs/reset"):
+            settings = body.get("new_settings", body)
+            cron = (settings.get("schedule") or {}).get("quartz_cron_expression", "")
+            if cron.startswith("bad"):
+                return httpx.Response(400, json={"error_code": "INVALID_PARAMETER_VALUE"})
         if path == "2.1/jobs/create":
             job_id = 100 + len(self.jobs)
             self.jobs[job_id] = body
