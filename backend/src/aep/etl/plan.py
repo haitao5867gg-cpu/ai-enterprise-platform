@@ -99,6 +99,16 @@ def compared_literals(expression: str) -> list[tuple[str, str]]:
     return [(column.lower(), value) for column, value in pairs]
 
 
+# A copy of a column, at most with its case and spaces normalized: ``lower(trim(o.status))``.
+COPY = re.compile(r"(?:(?:lower|upper|trim|ltrim|rtrim)\s*\(\s*)*(?:\w+\.)?(\w+)\s*\)*", re.I)
+
+
+def _copies(column: TargetColumn) -> bool:
+    """Whether ``column`` is a source column of the same name, so it keeps its values."""
+    match = COPY.fullmatch(column.source.strip())
+    return bool(match) and match.group(1).lower() == column.name.lower()
+
+
 def _value_problems(
     plan: EtlPlan, known: Mapping[str, KnownValues], trust_assumptions: bool
 ) -> list[str]:
@@ -109,12 +119,27 @@ def _value_problems(
     user said so), so once ``trust_assumptions`` is set a value the assumptions name stays.
     """
     explained = " ".join(plan.assumptions).lower()
+    names = {t.name for t in plan.targets}
+    # Columns some target computes rather than copies: their values are not the source's.
+    derived = {c.name for t in plan.targets for c in t.columns if not _copies(c)}
     problems = []
     for target in plan.targets:
-        expressions = [c.source for c in target.columns]
-        expressions += [q.condition for q in target.quality_rules]
-        pairs = dict.fromkeys(p for e in expressions for p in compared_literals(e))
-        for column, literal in pairs:
+        # Column expressions read the target's inputs; reading another target, a derived
+        # column there has its own values.
+        upstream = derived if any(s in names for s in target.sources) else set()
+        pairs = [
+            p for c in target.columns for p in compared_literals(c.source) if p[0] not in upstream
+        ]
+        # Quality rules check the target's own output, so only copied columns keep the
+        # source's values.
+        copied = {c.name for c in target.columns if _copies(c)}
+        pairs += [
+            p
+            for q in target.quality_rules
+            for p in compared_literals(q.condition)
+            if p[0] in copied and p[0] not in upstream
+        ]
+        for column, literal in dict.fromkeys(pairs):
             seen = known.get(column)
             if seen is None or _normal(literal) in seen.values:
                 continue

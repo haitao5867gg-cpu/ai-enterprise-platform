@@ -89,10 +89,18 @@ def test_forbid_looks_at_what_the_tables_compute():
     made_up["targets"][0]["quality_rules"] = [
         {"name": "not_returned", "condition": "status <> 'returned'", "on_violation": "drop"}
     ]
-    expect = {"forbid": ["returned"]}
+    honest["targets"][0]["quality_rules"] = [
+        {"name": "fewer_returns", "condition": "returned_count <= quantity", "on_violation": "warn"}
+    ]
+    missing_column = plan()
+    missing_column["targets"][0]["quality_rules"] = [
+        {"name": "flagged", "condition": "return_flag IS NOT NULL", "on_violation": "drop"}
+    ]
+    expect = {"forbid": ["returned", "return_flag"]}
 
     assert by_name(evals.score_plan(expect, honest))["forbid"].passed
     assert by_name(evals.score_plan(expect, made_up))["forbid"].passed is False
+    assert by_name(evals.score_plan(expect, missing_column))["forbid"].passed is False
 
 
 def finished(verification, **result):
