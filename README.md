@@ -17,6 +17,18 @@ make up
 - 模型网关（LiteLLM）：http://localhost:4000。不填任何 Key 也能用 `mock` 模型；要用真实模型，把 `.env.example` 复制为 `.env` 并填入对应厂商的 Key，然后重新执行 `make up`。
 - 健康检查：`/healthz`（进程存活）、`/readyz`（Postgres、Redis、模型网关均可用）
 
+### ETL 应用
+
+`make up` 会自动登记一个本地示例库（客户、商品、订单）。用 API 发起一次运行：
+
+```bash
+ds=$(curl -s localhost:8000/datasources | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["datasource_id"])')
+curl -s localhost:8000/runs -H 'content-type: application/json' \
+  -d "{\"app\":\"etl\",\"input\":{\"datasource_id\":\"$ds\",\"request\":\"做一张订单明细宽表\"}}"
+```
+
+工作流会先探查数据、给出方案，然后等待确认（`POST /runs/{id}/resume`）。确认后生成 Databricks bundle，用 `GET /runs/{id}/files.zip` 下载。`mock` 模型不会输出方案，这个应用要在 `.env` 里配好一个真实模型，并把 `AEP_DEFAULT_MODEL` 设成它的别名（例如 `qwen`）；也可以在 `input.models` 里为 `plan` 和 `codegen` 分别指定模型。
+
 ### 追踪（Langfuse）
 
 ```bash

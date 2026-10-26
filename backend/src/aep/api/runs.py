@@ -1,8 +1,26 @@
-"""Runs API. The frontend (issue #4) is built against this contract."""
+"""Runs API. The frontend (issue #4) is built against this contract.
 
+A waiting run's ``pending`` is always an approval: show ``prompt`` and offer
+``options``; ``reject`` may carry a comment. Apps can attach ``details`` for a
+richer view, tagged by ``details.type``:
+
+- ``etl_plan`` (app ``etl``): ``details.plan`` is the proposed ETL plan, as
+  ``aep.etl.plan.EtlPlan``: ``summary``, ``language``, and ``targets`` with
+  ``name``, ``description``, ``sources``, ``logic``, ``columns`` (``name``,
+  ``source``, ``description``), ``primary_key``, ``load`` (``mode``, ``key``) and
+  ``quality_rules`` (``name``, ``condition``, ``on_violation``).
+
+A finished ``etl`` run's ``result`` has ``bundle``, ``language``, ``plan``,
+``files`` (path → content) and ``checks`` (``passed``, ``problems``);
+``GET /runs/{id}/files.zip`` downloads the files.
+"""
+
+import io
+import re
+import zipfile
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from aep.runtime.service import (
@@ -57,6 +75,7 @@ class Pending(BaseModel):
     kind: str
     prompt: str
     options: list[str]
+    details: dict[str, Any] | None = None
 
 
 class RunDetail(BaseModel):
@@ -127,3 +146,26 @@ async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
     except InvalidDecision as exc:
         raise HTTPException(422, f"invalid decision: {body.decision}") from exc
     return RunRef(run_id=record.run_id, status=record.status)
+
+
+@router.get("/{run_id}/files.zip")
+async def download_files(run_id: str, service: Service) -> Response:
+    """The files a finished run produced (e.g. an ETL bundle), as a zip archive."""
+    try:
+        view = await service.get(run_id)
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    files = (view.result or {}).get("files")
+    if not files:
+        raise HTTPException(404, "this run has no files")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path, content in sorted(files.items()):
+            archive.writestr(path, content)
+    name = str((view.result or {}).get("bundle") or run_id)
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return Response(
+        buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'},
+    )
