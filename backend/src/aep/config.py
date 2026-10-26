@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     # databricks_cluster_id, nothing deployed or written). Empty means "job" when
     # a cluster is given, otherwise "pipeline".
     databricks_deploy: Literal["", "pipeline", "job", "cluster"] = ""
+    # The prod target, deployed after a person approves the release of a bundle that
+    # passed on dev. Off unless catalog and schema are set, and not in "cluster" mode.
+    # The job runs on databricks_prod_cluster_id (empty: databricks_cluster_id) on
+    # this Quartz schedule.
+    databricks_prod_catalog: str = ""
+    databricks_prod_schema: str = ""
+    databricks_prod_cluster_id: str = ""
+    databricks_prod_schedule: str = "0 0 2 * * ?"
+    databricks_prod_timezone: str = "Asia/Shanghai"
     databricks_cli: str = "databricks"
     databricks_timeout_seconds: float = 3600.0
 
@@ -64,6 +73,17 @@ class Settings(BaseSettings):
         if self.databricks_deploy:
             return self.databricks_deploy
         return "job" if self.databricks_cluster_id else "pipeline"
+
+    @property
+    def databricks_release_blocker(self) -> str | None:
+        """Why bundles cannot be released to prod, or None when they can."""
+        if not (self.databricks_host and self.databricks_token):
+            return "没有配置 Databricks 工作区"
+        if self.databricks_deploy_mode == "cluster":
+            return "cluster 模式只在集群上试跑、不部署；上线需要 job 或 pipeline 模式"
+        if not (self.databricks_prod_catalog and self.databricks_prod_schema):
+            return "没有配置 prod 目标（AEP_DATABRICKS_PROD_CATALOG、AEP_DATABRICKS_PROD_SCHEMA）"
+        return None
 
 
 @lru_cache

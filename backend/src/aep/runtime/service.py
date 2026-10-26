@@ -99,14 +99,16 @@ class RunService:
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         return await self._store.recent(limit)
 
-    async def resume(self, run_id: str, decision: str, comment: str | None) -> RunRecord:
+    async def resume(
+        self, run_id: str, decision: str, comment: str | None, actor: str | None = None
+    ) -> RunRecord:
         view = await self.get(run_id)
         if view.record.status != "waiting" or view.pending is None:
             raise NotWaiting(run_id)
         if decision not in view.pending.get("options", []):
             raise InvalidDecision(decision)
         await self._store.set_status(run_id, "running")
-        answer = {"decision": decision, "comment": comment}
+        answer = {"decision": decision, "comment": comment, "actor": actor}
         self._spawn(view.record, Command(resume=answer), "resume", answer)
         return await self._store.get(run_id)
 

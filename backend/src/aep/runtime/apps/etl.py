@@ -6,16 +6,22 @@ codegen (the model writes each table's transformation, checked statically,
 retried with the problems) → package (bundle files as the run result) → verify
 (deploy the pipeline, or a notebook job on an existing cluster, to the
 Databricks dev target and run it, or only run the transformations on an existing
-cluster; a failed run goes back to codegen with its errors).
-Without a configured workspace, verify is skipped and the result says so.
+cluster; a failed run goes back to codegen with its errors) → release (a person
+approves going to prod, or sends the code back with comments) → deploy_prod (the
+bundle goes to the prod target, on a schedule).
+Without a configured workspace, verify is skipped and the result says so; without
+a prod target, the run ends after verify and ``result.release`` says why.
+Every decision is kept in ``result.approvals``.
 
 Input: ``datasource_id`` and ``request``; optional ``tables`` (schema.table to
 limit profiling), ``language`` ("pyspark" by default, or "sql"), ``name`` (the
-bundle name) and ``models`` (a model alias per step: ``plan``, ``codegen``).
+bundle name), ``models`` (a model alias per step: ``plan``, ``codegen``) and
+``schedule`` (Quartz cron for prod; AEP_DATABRICKS_PROD_SCHEDULE by default).
 """
 
 import json
 import operator
+from datetime import UTC, datetime
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -23,7 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from aep import llm
-from aep.databricks import DevRun
+from aep.databricks import DevRun, Release
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.plan import SYSTEM_PROMPT as PLAN_PROMPT
@@ -47,6 +53,7 @@ class EtlState(TypedDict, total=False):
     problems: list[str]
     attempts: int
     dev_runs: int
+    approvals: Annotated[list[dict[str, Any]], operator.add]
     result: dict[str, Any] | None
 
 
@@ -87,6 +94,28 @@ def _dev_message(name: str, dev: DevRun, retry: bool) -> str:
             lines.append("带着报错重新生成代码。")
     lines += [f"注意：{w}" for w in dev.warnings]
     return "\n".join(lines)
+
+
+def _approval(step: str, answer: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step": step,
+        "decision": answer.get("decision"),
+        "comment": answer.get("comment"),
+        "actor": answer.get("actor"),
+        "at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _release_message(name: str, release: Release) -> str:
+    where = f"{release.catalog}.{release.schema}"
+    if release.status == "failed":
+        return "\n".join(
+            [f"上线到 prod 失败（{name} → {where}）：", *[f"- {e[:500]}" for e in release.errors]]
+        )
+    what = f"Job {release.job_id}" if release.mode == "job" else f"管道 {release.pipeline_id}"
+    head = f"已上线到 prod：{name} 部署为 {what}，写入 {where}"
+    head += f"，按计划 `{release.schedule}`（{release.timezone}）运行"
+    return head + (f"：{release.url}" if release.url else "")
 
 
 def build(ctx: AppContext) -> StateGraph:
@@ -166,10 +195,19 @@ def build(ctx: AppContext) -> StateGraph:
                 "details": {"type": "etl_plan", "plan": state["plan"]},
             }
         )
+        approvals = [_approval("plan", answer)]
         if answer.get("decision") == "approve":
-            return {"messages": [{"role": "user", "content": "确认方案"}], "attempts": 0}
+            return {
+                "messages": [{"role": "user", "content": "确认方案"}],
+                "attempts": 0,
+                "approvals": approvals,
+            }
         comment = answer.get("comment") or "请换一种做法"
-        return {"messages": [{"role": "user", "content": f"驳回：{comment}"}], "feedback": comment}
+        return {
+            "messages": [{"role": "user", "content": f"驳回：{comment}"}],
+            "feedback": comment,
+            "approvals": approvals,
+        }
 
     async def write_code(state: EtlState) -> dict[str, Any]:
         confirmed = EtlPlan.model_validate(state["plan"])
@@ -249,6 +287,7 @@ def build(ctx: AppContext) -> StateGraph:
                 "files": files,
                 "checks": {"passed": not problems, "problems": problems},
                 "verification": verification,
+                "approvals": state.get("approvals", []),
             },
         }
 
@@ -274,10 +313,84 @@ def build(ctx: AppContext) -> StateGraph:
             errors = [e[:ERROR_CHARS] for e in dev.errors[:10]]
             update["problems"] = ["代码在 Databricks dev 目标上运行失败，报错如下：", *errors]
             update["attempts"] = 0
+        elif dev.status != "passed":
+            result["release"] = {"status": "skipped", "reason": "dev 试跑没有通过，不能上线"}
+        elif blocker := ctx.settings.databricks_release_blocker:
+            result["release"] = {"status": "skipped", "reason": blocker}
         return update
 
     def after_verify(state: EtlState) -> str:
-        return "codegen" if state.get("problems") else END
+        if state.get("problems"):
+            return "codegen"
+        result = state["result"] or {}
+        passed = (result.get("verification") or {}).get("status") == "passed"
+        return "release" if passed and "release" not in result else END
+
+    def release_target(state: EtlState) -> dict[str, Any]:
+        s = ctx.settings
+        mode = "job" if s.databricks_deploy_mode == "job" else "pipeline"
+        target = {
+            "mode": mode,
+            "catalog": s.databricks_prod_catalog,
+            "schema": s.databricks_prod_schema,
+            "schedule": state["input"].get("schedule") or s.databricks_prod_schedule,
+            "timezone": s.databricks_prod_timezone,
+        }
+        if mode == "job":
+            target["cluster_id"] = s.databricks_prod_cluster_id or s.databricks_cluster_id
+        return target
+
+    def release(state: EtlState) -> dict[str, Any]:
+        result = dict(state["result"] or {})
+        target = release_target(state)
+        answer = interrupt(
+            {
+                "kind": "approval",
+                "prompt": f"dev 试跑已通过。确认把 {result['bundle']} 上线到 prod"
+                f"（{target['catalog']}.{target['schema']}，按计划 {target['schedule']} 运行）吗？"
+                "驳回时写下修改意见，代码会按意见重写。",
+                "options": ["approve", "reject"],
+                "details": {
+                    "type": "etl_release",
+                    "bundle": result["bundle"],
+                    "verification": result.get("verification"),
+                    "target": target,
+                },
+            }
+        )
+        approval = _approval("release", answer)
+        result["approvals"] = [*state.get("approvals", []), approval]
+        if answer.get("decision") == "approve":
+            return {
+                "result": result,
+                "approvals": [approval],
+                "messages": [{"role": "user", "content": "确认上线"}],
+            }
+        comment = answer.get("comment") or "请改进代码"
+        return {
+            "result": result,
+            "approvals": [approval],
+            "messages": [{"role": "user", "content": f"驳回上线：{comment}"}],
+            "problems": [f"审批者驳回了上线，意见：{comment}"],
+            "attempts": 0,
+            "dev_runs": 0,
+        }
+
+    def after_release(state: EtlState) -> str:
+        return "codegen" if state.get("problems") else "deploy_prod"
+
+    async def deploy_prod(state: EtlState) -> dict[str, Any]:
+        assert ctx.databricks is not None
+        result = dict(state["result"] or {})
+        bundle = codegen.Bundle(result["bundle"], result["files"])
+        shipped = await ctx.databricks.release(bundle, state["input"].get("schedule"))
+        result["release"] = shipped.as_dict()
+        return {
+            "result": result,
+            "messages": [
+                {"role": "assistant", "content": _release_message(result["bundle"], shipped)}
+            ],
+        }
 
     def after_review(state: EtlState) -> str:
         return "plan" if state.get("feedback") else "codegen"
@@ -289,11 +402,15 @@ def build(ctx: AppContext) -> StateGraph:
     graph.add_node("codegen", write_code)
     graph.add_node("package", package)
     graph.add_node("verify", verify)
+    graph.add_node("release", release)
+    graph.add_node("deploy_prod", deploy_prod)
     graph.add_edge(START, "profile")
     graph.add_edge("profile", "plan")
     graph.add_edge("plan", "review")
     graph.add_conditional_edges("review", after_review, ["plan", "codegen"])
     graph.add_conditional_edges("codegen", after_code, ["codegen", "package"])
     graph.add_conditional_edges("package", after_package, ["verify", END])
-    graph.add_conditional_edges("verify", after_verify, ["codegen", END])
+    graph.add_conditional_edges("verify", after_verify, ["codegen", "release", END])
+    graph.add_conditional_edges("release", after_release, ["codegen", "deploy_prod"])
+    graph.add_edge("deploy_prod", END)
     return graph
