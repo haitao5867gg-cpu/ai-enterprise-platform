@@ -1,0 +1,5 @@
+# Appended to config.yaml by entrypoint.sh when Langfuse keys are set: every
+# model call is reported to Langfuse, under the run trace the API names in the
+# request metadata (see backend/src/aep/tracing.py).
+litellm_settings:
+  callbacks: ["langfuse"]

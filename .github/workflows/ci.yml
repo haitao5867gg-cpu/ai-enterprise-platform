@@ -68,3 +68,21 @@ jobs:
         run: docker compose logs
       - if: always()
         run: docker compose down -v
+
+  observability:
+    # `make up-full`: the stack plus self-hosted Langfuse, then one traced run.
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    env:
+      LANGFUSE_PUBLIC_KEY: pk-lf-local-dev
+      LANGFUSE_SECRET_KEY: sk-lf-local-dev
+      LANGFUSE_HOST: http://langfuse-web:3000
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose --profile observability up --build -d --wait
+      - name: One run is one Langfuse trace, model call included
+        run: scripts/smoke-trace.sh
+      - if: failure()
+        run: docker compose --profile observability logs api litellm langfuse-web langfuse-worker
+      - if: always()
+        run: docker compose --profile observability down -v

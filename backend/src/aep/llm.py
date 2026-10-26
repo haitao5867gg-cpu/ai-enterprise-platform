@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import httpx
 from openai import AsyncOpenAI
 
+from aep import tracing
 from aep.config import Settings
 
 
@@ -44,6 +45,11 @@ async def chat(
     **params: object,
 ) -> ChatResult:
     """Send one chat completion through the gateway and return its text and usage."""
+    trace_meta = tracing.gateway_metadata()
+    if trace_meta:
+        extra_body = dict(params.pop("extra_body", None) or {})
+        extra_body["metadata"] = {**extra_body.get("metadata", {}), **trace_meta}
+        params["extra_body"] = extra_body
     resp = await client.chat.completions.create(model=model, messages=messages, **params)
     usage = resp.usage
     return ChatResult(

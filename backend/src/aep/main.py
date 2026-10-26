@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-from aep import __version__, llm
+from aep import __version__, llm, tracing
 from aep.api import runs
 from aep.config import Settings, get_settings
 from aep.health import check_llm_gateway, check_postgres, check_redis
@@ -66,12 +66,16 @@ def create_app() -> FastAPI:
         await checkpointer.setup()
         store = PostgresRunStore(pool)
         await store.setup()
+        tracer = tracing.Tracer.from_settings(settings)
         service = RunService(
             store,
             checkpointer,
             default_apps(),
             AppContext(llm_client=llm_client, settings=settings),
+            tracer,
         )
+        if tracer.enabled:
+            log.info("tracing runs to Langfuse at %s", settings.langfuse_host)
         recovered = await service.recover()
         if recovered:
             log.info("resumed %d runs left running by the previous process", recovered)
@@ -82,6 +86,7 @@ def create_app() -> FastAPI:
             await asyncio.wait_for(service.wait_idle(), timeout=10)
         except TimeoutError:
             log.warning("shutting down with runs still in progress; they resume on next start")
+        tracer.shutdown()
         await pool.close()
         await llm_client.close()
 
