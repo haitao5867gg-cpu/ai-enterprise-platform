@@ -1,5 +1,5 @@
 # Local development stack: `docker compose up --build`
-# Web UI http://localhost:3000 · API http://localhost:8000/docs
+# Web UI http://localhost:3000 · API http://localhost:8000/docs · model gateway http://localhost:4000
 name: aep
 
 services:
@@ -29,6 +29,28 @@ services:
       timeout: 3s
       retries: 20
 
+  litellm:
+    build: ./infra/litellm
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
+      OPENAI_MODEL: ${OPENAI_MODEL:-openai/gpt-5}
+      AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-azure/gpt-5}
+      AZURE_API_VERSION: ${AZURE_API_VERSION:-2025-04-01-preview}
+      BEDROCK_CLAUDE_MODEL: ${BEDROCK_CLAUDE_MODEL:-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0}
+      AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
+      QWEN_MODEL: ${QWEN_MODEL:-dashscope/qwen-plus}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek/deepseek-chat}
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
   api:
     build: ./backend
     env_file:
@@ -37,12 +59,16 @@ services:
     environment:
       AEP_DATABASE_URL: postgresql://aep:aep@postgres:5432/aep
       AEP_REDIS_URL: redis://redis:6379/0
+      AEP_LLM_GATEWAY_URL: http://litellm:4000
+      AEP_LLM_GATEWAY_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      litellm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]

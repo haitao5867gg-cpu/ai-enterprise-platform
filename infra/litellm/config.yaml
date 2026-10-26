@@ -1,0 +1,41 @@
+# Model aliases the platform calls. Business code only ever uses these names.
+# Provider settings come from environment variables (see .env.example); a model
+# whose key is missing still loads and only fails when it is called.
+model_list:
+  # No key needed. Default for local development and CI.
+  - model_name: mock
+    litellm_params:
+      model: openai/mock
+      api_key: none
+      mock_response: "这是 mock 模型的回复。"
+
+  - model_name: gpt
+    litellm_params:
+      model: os.environ/OPENAI_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: azure-gpt
+    litellm_params:
+      model: os.environ/AZURE_OPENAI_MODEL
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      api_version: os.environ/AZURE_API_VERSION
+
+  # Uses AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the environment.
+  - model_name: claude-bedrock
+    litellm_params:
+      model: os.environ/BEDROCK_CLAUDE_MODEL
+      aws_region_name: os.environ/AWS_REGION_NAME
+
+  - model_name: qwen
+    litellm_params:
+      model: os.environ/QWEN_MODEL
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+  - model_name: deepseek
+    litellm_params:
+      model: os.environ/DEEPSEEK_MODEL
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
