@@ -1,0 +1,61 @@
+import { defineConfig, devices } from "@playwright/test";
+
+export default defineConfig({
+  testDir: "./tests",
+  fullyParallel: false,
+  workers: 1,
+  forbidOnly: Boolean(process.env.CI),
+  timeout: 30_000,
+  expect: { timeout: 10_000 },
+  reporter: process.env.CI ? "github" : "list",
+  use: {
+    ...devices["Desktop Chrome"],
+    viewport: { width: 1360, height: 960 },
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+  },
+  projects: [
+    {
+      name: "workbench",
+      testMatch: "workbench.spec.ts",
+      use: { baseURL: "http://127.0.0.1:3100" },
+    },
+    {
+      name: "production-proxy",
+      testMatch: "proxy.spec.ts",
+      use: { baseURL: "http://127.0.0.1:3101" },
+    },
+  ],
+  webServer: [
+    {
+      command: "node tests/fixtures/backend.mjs",
+      url: "http://127.0.0.1:3102/internal/v1/readyz",
+      reuseExistingServer: false,
+    },
+    {
+      command: "npm run dev -- --hostname 127.0.0.1 --port 3100",
+      url: "http://127.0.0.1:3100",
+      env: {
+        NODE_ENV: "development",
+        AEP_MOCK_RUNS: "true",
+        AEP_API_INTERNAL_URL: "http://127.0.0.1:3102/internal/v1/",
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
+      reuseExistingServer: false,
+    },
+    // Deliberately enable the flag: production must still forward to the fixture.
+    {
+      command: "node tests/fixtures/start-production.mjs",
+      url: "http://127.0.0.1:3101",
+      env: {
+        NODE_ENV: "production",
+        HOSTNAME: "127.0.0.1",
+        PORT: "3101",
+        AEP_MOCK_RUNS: "true",
+        AEP_API_INTERNAL_URL: "http://127.0.0.1:3102/internal/v1/",
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
+      reuseExistingServer: false,
+    },
+  ],
+});
