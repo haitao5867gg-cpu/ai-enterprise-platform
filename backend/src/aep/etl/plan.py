@@ -99,41 +99,49 @@ def compared_literals(expression: str) -> list[tuple[str, str]]:
     return [(column.lower(), value) for column, value in pairs]
 
 
-def _value_problems(plan: EtlPlan, known: Mapping[str, KnownValues]) -> list[str]:
-    """Literals the plan compares a column with that the data does not have.
+def _value_problems(
+    plan: EtlPlan, known: Mapping[str, KnownValues], trust_assumptions: bool
+) -> list[str]:
+    """Literals the plan compares a column with that the profile never saw in it.
 
-    When the whole table was read the value cannot exist, so the plan must change; when
-    only a sample was read it may be rare, so the plan must at least say so in assumptions.
+    Such a value is usually made up, so it goes back to the model with the actual values.
+    It can still be right (rare, or only in a part of the table the sample missed, or the
+    user said so), so once ``trust_assumptions`` is set a value the assumptions name stays.
     """
     explained = " ".join(plan.assumptions).lower()
     problems = []
     for target in plan.targets:
         expressions = [c.source for c in target.columns]
         expressions += [q.condition for q in target.quality_rules]
-        for column, literal in {p for e in expressions for p in compared_literals(e)}:
+        pairs = dict.fromkeys(p for e in expressions for p in compared_literals(e))
+        for column, literal in pairs:
             seen = known.get(column)
             if seen is None or _normal(literal) in seen.values:
                 continue
+            if trust_assumptions and _normal(literal) in explained:
+                continue
             actual = "、".join(sorted(seen.values)) or "（全是空值）"
-            if seen.complete:
-                problems.append(
-                    f"{target.name} 拿 {column} 和 '{literal}' 比较，但 {column} 的全部取值只有 "
-                    f"{actual}，数据里没有这个取值。请改用实际取值；需求要的数据确实没有时，"
-                    "不要编造取值，去掉这部分或留空，并在 assumptions 里说明"
-                )
-            elif _normal(literal) not in explained:
-                problems.append(
-                    f"{target.name} 拿 {column} 和 '{literal}' 比较，但样本里 {column} 只有 "
-                    f"{actual}。请改用实际取值，或者在 assumptions 里写明为什么用 '{literal}'"
-                )
+            where = "整张表" if seen.complete else "样本"
+            problems.append(
+                f"{target.name} 拿 {column} 和 '{literal}' 比较，但{where}里 {column} 的取值只有 "
+                f"{actual}。需求说的取值对应其中某个时请改用实际取值；数据里确实没有时，"
+                "不要编造取值，做不了的指标去掉或给 null，并在 assumptions 里说明；"
+                f"确定要用 '{literal}'（比如用户指定了）就在 assumptions 里写明原因"
+            )
     return problems
 
 
 def validate_plan(
-    raw: Any, source_tables: Collection[str], known: Mapping[str, KnownValues] | None = None
+    raw: Any,
+    source_tables: Collection[str],
+    known: Mapping[str, KnownValues] | None = None,
+    trust_assumptions: bool = True,
 ) -> EtlPlan:
     """Parse the model's plan and check it against the profiled ``source_tables`` (schema.table)
-    and the ``known`` values of their columns (by column name, see ``aep.etl.profile``)."""
+    and the ``known`` values of their columns (by column name, see ``aep.etl.profile``).
+
+    ``trust_assumptions`` false: a value the data lacks goes back even if the assumptions name
+    it, so the model looks at the actual values once before keeping it."""
     try:
         plan = EtlPlan.model_validate(raw)
     except ValidationError as exc:
@@ -172,7 +180,7 @@ def validate_plan(
                     f"（{quality.condition}）；质量规则逐行判断，不能用聚合，"
                     "唯一性请用 primary_key 表达"
                 )
-    problems += _value_problems(plan, known or {})
+    problems += _value_problems(plan, known or {}, trust_assumptions)
     if problems:
         raise PlanError("；".join(dict.fromkeys(problems)))
     return plan

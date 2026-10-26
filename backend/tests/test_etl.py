@@ -335,28 +335,23 @@ def returns_plan(assumptions=()):
     return value
 
 
-def test_plan_cannot_compare_with_a_value_the_data_does_not_have():
-    whole = {"status": KnownValues(frozenset({"paid", "cancelled"}), complete=True)}
-    with pytest.raises(PlanError, match="status 的全部取值只有 cancelled、paid"):
-        validate_plan(
-            returns_plan(["退货按 returned 算"]), ["sales.orders", "sales.customers"], whole
-        )
+@pytest.mark.parametrize(("complete", "where"), [(True, "整张表"), (False, "样本")])
+def test_a_value_the_data_lacks_goes_back_until_explained(complete, where):
+    tables = ["sales.orders", "sales.customers"]
+    known = {"status": KnownValues(frozenset({"paid", "cancelled"}), complete)}
+    with pytest.raises(PlanError, match=f"{where}里 status 的取值只有 cancelled、paid"):
+        validate_plan(returns_plan(), tables, known)
+    explained = returns_plan(["源库没有退货状态，按用户说的 returned 统计"])
+    # The first answer goes back even when explained, so the model sees the actual values.
+    with pytest.raises(PlanError, match="'returned'"):
+        validate_plan(explained, tables, known, trust_assumptions=False)
+    validate_plan(explained, tables, known)
+
     fine = plan()
     fine["targets"][0]["quality_rules"] = [
         {"name": "paid_only", "condition": "lower(status) IN (' Paid ')", "on_violation": "drop"}
     ]
-    validate_plan(fine, ["sales.orders", "sales.customers"], whole)
-
-
-def test_a_value_missing_from_a_sample_must_be_explained():
-    sampled = {"status": KnownValues(frozenset({"paid"}), complete=False)}
-    with pytest.raises(PlanError, match="在 assumptions 里写明为什么用 'returned'"):
-        validate_plan(returns_plan(), ["sales.orders", "sales.customers"], sampled)
-    validate_plan(
-        returns_plan(["样本里没有 returned，按约定的退货状态 returned 统计"]),
-        ["sales.orders", "sales.customers"],
-        sampled,
-    )
+    validate_plan(fine, tables, known, trust_assumptions=False)
 
 
 def test_known_values_from_the_profile():
@@ -398,4 +393,4 @@ async def test_a_made_up_value_goes_back_to_the_model():
     view = await service.get(run_id)
     assert view.record.status == "waiting", view.record.error
     feedback = gateway.requests[1]["body"]["messages"][-1]["content"]
-    assert "status 的全部取值只有 paid，数据里没有这个取值" in feedback
+    assert "整张表里 status 的取值只有 paid。" in feedback
