@@ -1,4 +1,4 @@
-"""Dev validation on an existing cluster (AEP_DATABRICKS_CLUSTER_ID), against the fake workspace.
+"""Dev validation on an existing cluster without deploying (AEP_DATABRICKS_DEPLOY=cluster).
 
 The harness itself needs Spark and is checked on a real cluster; here we check
 what is sent to the cluster and how its outcome is read.
@@ -35,6 +35,9 @@ FAILED = {
 }
 
 
+CLUSTER_MODE = {"databricks_cluster_id": fake_databricks.CLUSTER_ID, "databricks_deploy": "cluster"}
+
+
 @pytest.fixture(autouse=True)
 def no_waiting(monkeypatch):
     monkeypatch.setattr("aep.databricks.POLL_SECONDS", 0)
@@ -42,7 +45,7 @@ def no_waiting(monkeypatch):
 
 
 def on_cluster(workspace: fake_databricks.FakeWorkspace):
-    return workspace.target(databricks_cluster_id=fake_databricks.CLUSTER_ID)
+    return workspace.target(**CLUSTER_MODE)
 
 
 def sent_spec(command: str) -> dict:
@@ -128,7 +131,9 @@ async def test_a_broken_command_is_not_blamed_on_the_code(tmp_path):
 async def test_an_unknown_cluster_is_reported(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
 
-    dev = await workspace.target(databricks_cluster_id="nope").run(bundle())
+    dev = await workspace.target(databricks_cluster_id="nope", databricks_deploy="cluster").run(
+        bundle()
+    )
 
     assert (dev.status, dev.fixable) == ("failed", False)
     assert "HTTP 400" in dev.errors[0]
@@ -143,7 +148,7 @@ async def test_failed_cluster_run_goes_back_to_codegen_and_passes(tmp_path):
             reply({"targets": {"order_facts": BAD_BODY}}),
             reply({"targets": {"order_facts": PYSPARK_BODY}}),
         ],
-        settings=workspace.settings(databricks_cluster_id=fake_databricks.CLUSTER_ID),
+        settings=workspace.settings(**CLUSTER_MODE),
         databricks=on_cluster(workspace),
     )
 
@@ -206,9 +211,7 @@ def test_sql_pipeline_parses_back_into_its_targets():
 async def test_the_source_catalog_is_required(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
 
-    target = workspace.target(
-        databricks_cluster_id=fake_databricks.CLUSTER_ID, databricks_source_catalog=""
-    )
+    target = workspace.target(**CLUSTER_MODE, databricks_source_catalog="")
     dev = await target.run(bundle())
 
     assert (dev.status, dev.fixable) == ("failed", False)

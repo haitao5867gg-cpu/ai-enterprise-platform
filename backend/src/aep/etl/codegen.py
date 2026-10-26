@@ -1,5 +1,9 @@
 """Code for a confirmed ETL plan: a Lakeflow declarative pipeline in a Databricks bundle.
 
+The bundle deploys the pipeline file as a Lakeflow pipeline, or, where pipelines
+cannot start clusters, as a notebook job on an existing cluster that runs the
+same file through ``aep.cluster_harness``.
+
 The model writes only the transformation of each target table (a PySpark
 function body or a SQL SELECT). Everything around it (decorators, quality
 rules, how sources are read, the bundle) comes from templates here, and
@@ -15,13 +19,18 @@ import json
 import re
 import textwrap
 from dataclasses import dataclass
+from pathlib import Path
 
 import yaml
 
+from aep import cluster_harness
 from aep.etl.plan import EtlPlan, QualityRule, Target
 
 PIPELINE_PY = "src/pipeline.py"
 PIPELINE_SQL = "src/pipeline.sql"
+# A bundle deployed as a job: a notebook running the pipeline file through the harness.
+JOB_NOTEBOOK = "src/run.py"
+JOB_HARNESS = "src/aep_harness.py"
 
 SYSTEM_PROMPT = """你是资深 Databricks 数据工程师，按已确认的 ETL 方案为每张目标表写转换逻辑。
 只输出一个 JSON 对象：{"targets": {"目标表名": "代码"}}，每张目标表都要有，不要输出其他文字。
@@ -132,31 +141,12 @@ def render_sql(plan: EtlPlan, queries: dict[str, str]) -> str:
     return "\n".join(parts) + "\n"
 
 
-_SQL_TARGET = re.compile(
-    r"^CREATE OR REFRESH MATERIALIZED VIEW (\w+)(?: \(\n(.*?)\n\))?\n"
-    r"COMMENT '(?:[^']|'')*'\nAS\n(.*?);\n(?=\n|\Z)",
-    re.S | re.M,
-)
-_SQL_RULE = re.compile(
-    r"^  CONSTRAINT (\w+) EXPECT \((.*)\)( ON VIOLATION (?:DROP ROW|FAIL UPDATE))?,?$"
-)
-_SQL_ACTION = {None: "warn", " ON VIOLATION DROP ROW": "drop", " ON VIOLATION FAIL UPDATE": "fail"}
-
-
 def parse_sql(pipeline: str) -> list[dict[str, object]]:
     """The targets of a pipeline written by ``render_sql``: name, query and quality rules."""
-    targets: list[dict[str, object]] = []
-    for match in _SQL_TARGET.finditer(pipeline):
-        rules = []
-        for line in (match[2] or "").splitlines():
-            rule = _SQL_RULE.match(line)
-            if rule is None:
-                raise CodeError(f"{match[1]}: 读不懂这条质量规则：{line.strip()}")
-            rules.append(
-                {"name": rule[1], "condition": rule[2], "on_violation": _SQL_ACTION[rule[3]]}
-            )
-        targets.append({"name": match[1], "query": match[3], "rules": rules})
-    return targets
+    try:
+        return cluster_harness.parse_sql(pipeline)
+    except ValueError as exc:
+        raise CodeError(str(exc)) from exc
 
 
 def _pipeline(name: str, library: str, compute: Compute | None) -> dict[str, object]:
@@ -181,23 +171,74 @@ def _pipeline(name: str, library: str, compute: Compute | None) -> dict[str, obj
     return pipeline
 
 
+def _job(name: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "max_concurrent_runs": 1,
+        "tasks": [
+            {
+                "task_key": "run",
+                "existing_cluster_id": "${var.cluster_id}",
+                "notebook_task": {
+                    "notebook_path": JOB_NOTEBOOK,
+                    "base_parameters": {
+                        "catalog": "${var.catalog}",
+                        "schema": "${var.schema}",
+                        "source_catalog": "${var.source_catalog}",
+                    },
+                },
+                "max_retries": 1,
+                "min_retry_interval_millis": 60000,
+            }
+        ],
+    }
+
+
+def _job_notebook(library: str) -> str:
+    return "\n".join(
+        [
+            "# Databricks notebook source",
+            "# Generated, do not edit. Runs the transformations in "
+            f"{library.removeprefix('src/')} on the job's cluster",
+            "# and writes each table that passes its quality rules to the catalog and schema",
+            "# given as job parameters; a table that fails fails the run.",
+            "from aep_harness import run_notebook",
+            "",
+            f'run_notebook(spark, dbutils, "{library.removeprefix("src/")}")',
+            "",
+        ]
+    )
+
+
 def render_bundle(
-    name: str, plan: EtlPlan, source_name: str, compute: Compute | None = None
+    name: str,
+    plan: EtlPlan,
+    source_name: str,
+    compute: Compute | None = None,
+    job: bool = False,
 ) -> dict[str, str]:
+    """The bundle around the pipeline file: a Lakeflow pipeline, or with ``job`` a
+    notebook job on an existing cluster (``aep.cluster_harness`` runs the file)."""
     library = PIPELINE_PY if plan.language == "pyspark" else PIPELINE_SQL
+    variables: dict[str, object] = {
+        "catalog": {
+            "description": "Unity Catalog catalog for the target tables",
+            "default": "main",
+        },
+        "schema": {"description": "Schema for the target tables", "default": name},
+        "source_catalog": {
+            "description": f"Lakehouse Federation catalog for the source {source_name}"
+        },
+    }
+    if job:
+        variables["cluster_id"] = {"description": "Existing cluster the job runs on"}
+        resources: dict[str, object] = {"jobs": {name: _job(name)}}
+    else:
+        resources = {"pipelines": {name: _pipeline(name, library, compute)}}
     config = {
         "bundle": {"name": name},
-        "variables": {
-            "catalog": {
-                "description": "Unity Catalog catalog for the target tables",
-                "default": "main",
-            },
-            "schema": {"description": "Schema for the target tables", "default": name},
-            "source_catalog": {
-                "description": f"Lakehouse Federation catalog for the source {source_name}"
-            },
-        },
-        "resources": {"pipelines": {name: _pipeline(name, library, compute)}},
+        "variables": variables,
+        "resources": resources,
         "targets": {
             "dev": {
                 "mode": "development",
@@ -222,16 +263,26 @@ def render_bundle(
             "`source_catalog` 指定它：",
             "",
             "```bash",
-            "databricks bundle deploy -t dev --var source_catalog=<外部目录名>",
+            "databricks bundle deploy -t dev --var source_catalog=<外部目录名>"
+            + (" --var cluster_id=<集群 id>" if job else ""),
             f"databricks bundle run -t dev {name}",
             "```",
             "",
         ]
     )
-    return {
+    if job:
+        readme += (
+            "\n这个 bundle 部署成一个 Job，跑在已有的集群上：`src/run.py` 用"
+            f" `src/aep_harness.py` 执行 `{library}`，\n按质量规则检查后整表覆盖写入目标表。\n"
+        )
+    files = {
         "databricks.yml": yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
         "README.md": readme,
     }
+    if job:
+        files[JOB_NOTEBOOK] = _job_notebook(library)
+        files[JOB_HARNESS] = Path(cluster_harness.__file__).read_text()
+    return files
 
 
 def render(
@@ -240,8 +291,9 @@ def render(
     code: dict[str, str],
     source_name: str,
     compute: Compute | None = None,
+    job: bool = False,
 ) -> Bundle:
-    files = render_bundle(name, plan, source_name, compute)
+    files = render_bundle(name, plan, source_name, compute, job)
     if plan.language == "pyspark":
         files[PIPELINE_PY] = render_pyspark(plan, code)
     else:
@@ -330,12 +382,17 @@ def check_bundle(bundle: Bundle) -> list[str]:
     problems = []
     try:
         config = yaml.safe_load(bundle.files["databricks.yml"])
-        pipeline = config["resources"]["pipelines"][bundle.name]
         if set(config["targets"]) != {"dev", "prod"}:
             problems.append("databricks.yml 需要 dev 和 prod 两个目标")
-        for lib in pipeline["libraries"]:
-            if lib["file"]["path"] not in bundle.files:
-                problems.append(f"databricks.yml 引用的 {lib['file']['path']} 不存在")
+        if "jobs" in config["resources"]:
+            job = config["resources"]["jobs"][bundle.name]
+            paths = [task["notebook_task"]["notebook_path"] for task in job["tasks"]]
+        else:
+            pipeline = config["resources"]["pipelines"][bundle.name]
+            paths = [lib["file"]["path"] for lib in pipeline["libraries"]]
+        for path in paths:
+            if path not in bundle.files:
+                problems.append(f"databricks.yml 引用的 {path} 不存在")
     except (yaml.YAMLError, KeyError, TypeError) as exc:
         problems.append(f"databricks.yml 结构不对：{exc}")
     if PIPELINE_PY in bundle.files:

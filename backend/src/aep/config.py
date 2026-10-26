@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -41,9 +42,14 @@ class Settings(BaseSettings):
     databricks_pipeline_node_type: str = ""
     databricks_pipeline_workers: int = 1
     databricks_pipeline_policy_id: str = ""
-    # An existing cluster to run the generated transformations on instead of
-    # deploying a pipeline, for users who cannot create pipeline clusters.
+    # An existing (all-purpose) cluster, for users who cannot create clusters.
     databricks_cluster_id: str = ""
+    # How generated code reaches the dev target: "pipeline" (a Lakeflow pipeline,
+    # deployed with the bundle CLI), "job" (a notebook job on databricks_cluster_id,
+    # deployed through the REST API) or "cluster" (the transformations run once on
+    # databricks_cluster_id, nothing deployed or written). Empty means "job" when
+    # a cluster is given, otherwise "pipeline".
+    databricks_deploy: Literal["", "pipeline", "job", "cluster"] = ""
     databricks_cli: str = "databricks"
     databricks_timeout_seconds: float = 3600.0
 
@@ -52,6 +58,12 @@ class Settings(BaseSettings):
     langfuse_public_key: str = Field("", validation_alias="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: str = Field("", validation_alias="LANGFUSE_SECRET_KEY")
     langfuse_host: str = Field("http://localhost:3100", validation_alias="LANGFUSE_HOST")
+
+    @property
+    def databricks_deploy_mode(self) -> Literal["pipeline", "job", "cluster"]:
+        if self.databricks_deploy:
+            return self.databricks_deploy
+        return "job" if self.databricks_cluster_id else "pipeline"
 
 
 @lru_cache

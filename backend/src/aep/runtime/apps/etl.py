@@ -4,8 +4,9 @@ profile (read the source through its connector) → plan (the model proposes an
 ETL plan) → review (the user confirms or sends it back with comments) →
 codegen (the model writes each table's transformation, checked statically,
 retried with the problems) → package (bundle files as the run result) → verify
-(deploy to the Databricks dev target and run it, or run the transformations
-on an existing cluster; a failed run goes back to codegen with its errors).
+(deploy the pipeline, or a notebook job on an existing cluster, to the
+Databricks dev target and run it, or only run the transformations on an existing
+cluster; a failed run goes back to codegen with its errors).
 Without a configured workspace, verify is skipped and the result says so.
 
 Input: ``datasource_id`` and ``request``; optional ``tables`` (schema.table to
@@ -62,6 +63,9 @@ def _dev_message(name: str, dev: DevRun, retry: bool) -> str:
     if dev.status == "passed":
         if on_cluster:
             head = f"已在集群 {dev.cluster_id} 上试跑通过 {name}（只执行了转换逻辑，没有部署管道）"
+        elif dev.mode == "job":
+            head = f"已在 Databricks dev 目标上部署并运行 Job {name}（集群 {dev.cluster_id}）"
+            head += f"：{dev.url}" if dev.url else ""
         else:
             head = f"已在 Databricks dev 目标上跑通 {name}" + (f"：{dev.url}" if dev.url else "")
         lines = [head]
@@ -72,6 +76,8 @@ def _dev_message(name: str, dev: DevRun, retry: bool) -> str:
     else:
         stage = {"validate": "校验", "deploy": "部署", "run": "运行"}[dev.stage]
         where = f"在集群 {dev.cluster_id} 上试跑" if on_cluster else f"Databricks dev 目标{stage}"
+        if dev.mode == "job":
+            where = f"Databricks dev 目标上的 Job {stage}"
         lines = [f"{where}失败："]
         lines += [f"- {e[:500]}" for e in dev.errors[:5]]
         if retry:
@@ -81,6 +87,7 @@ def _dev_message(name: str, dev: DevRun, retry: bool) -> str:
 
 
 def build(ctx: AppContext) -> StateGraph:
+    job = ctx.settings.databricks_deploy_mode == "job"
     compute = None
     if ctx.settings.databricks_pipeline_node_type or ctx.settings.databricks_pipeline_policy_id:
         compute = codegen.Compute(
@@ -210,7 +217,9 @@ def build(ctx: AppContext) -> StateGraph:
         if not IDENTIFIER.match(name):
             name = "etl_" + config["configurable"]["thread_id"].replace("-", "")[:8]
         if not problems:
-            bundle = codegen.render(name, confirmed, state["code"], state["source_name"], compute)
+            bundle = codegen.render(
+                name, confirmed, state["code"], state["source_name"], compute, job
+            )
             problems = codegen.check_bundle(bundle)
             files = bundle.files
         verification: dict[str, Any] | None = None
