@@ -14,6 +14,48 @@ x-langfuse-client: &langfuse-client
   LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
 
 services:
+  source-postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: source_admin
+      POSTGRES_PASSWORD: ${AEP_SOURCE_POSTGRES_ADMIN_PASSWORD:-local-source-admin}
+      POSTGRES_DB: aep_source
+      AEP_POSTGRES_PASSWORD: ${AEP_POSTGRES_PASSWORD:-local-source-reader}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - source-postgres-data:/var/lib/postgresql/data
+      - ./connectors/postgres/seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U source_admin -d aep_source"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  connector-postgres:
+    build: ./connectors/postgres
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AEP_POSTGRES_HOST: source-postgres
+      AEP_POSTGRES_PORT: 5432
+      AEP_POSTGRES_DATABASE: aep_source
+      AEP_POSTGRES_USER: source_reader
+      AEP_POSTGRES_PASSWORD: ${AEP_POSTGRES_PASSWORD:-local-source-reader}
+      AEP_POSTGRES_MCP_HOST: 0.0.0.0
+      AEP_POSTGRES_MCP_PORT: 8001
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      source-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   postgres:
     image: pgvector/pgvector:pg17
     environment:
@@ -101,3 +143,4 @@ services:
 
 volumes:
   postgres-data:
+  source-postgres-data:

@@ -49,10 +49,26 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
+  connectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --project connectors/postgres
+      - run: uv run --frozen --project connectors/postgres ruff check connectors/postgres
+      - run: uv run --frozen --project connectors/postgres ruff format --check connectors/postgres
+      - run: docker compose up --build -d --wait source-postgres connector-postgres
+      - run: uv run --frozen --project connectors/postgres pytest connectors/postgres/tests -q
+      - run: uv run --frozen --project connectors/postgres aep-postgres-smoke
+      - if: failure()
+        run: docker compose logs source-postgres connector-postgres
+      - if: always()
+        run: docker compose down -v
+
   stack:
     # Boots the whole local stack the same way a developer does, then checks readiness.
     runs-on: ubuntu-latest
-    needs: [backend, frontend]
+    needs: [backend, frontend, connectors]
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up --build -d --wait
