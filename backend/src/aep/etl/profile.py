@@ -71,6 +71,13 @@ def describe_for_model(tables: list[dict[str, Any]]) -> str:
                 flags.append(f"空值率 {s.get('null_fraction') or 0:.0%}")
                 flags.append(f"不同值 {s.get('distinct_count')}")
             lines.append(f"  - {col['name']}：{'，'.join(flags)}")
+            if s.get("top_values"):
+                values = "，".join(
+                    f"{json.dumps(v['value'], ensure_ascii=False)}"
+                    f"{'…（已截断，不能当作取值使用）' if v.get('truncated') else ''} {v['count']}"
+                    for v in s["top_values"]
+                )
+                lines.append(f"    取值分布（样本）：{values}")
         for fk in t["foreign_keys"]:
             ref = f"{fk['referenced_schema']}.{fk['referenced_table']}"
             cols, ref_cols = ", ".join(fk["columns"]), ", ".join(fk["referenced_columns"])

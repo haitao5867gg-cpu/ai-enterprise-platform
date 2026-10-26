@@ -34,6 +34,7 @@ TABLES = {
             _col("order_id", "bigint", nullable=False, primary_key=True),
             _col("customer_id", "bigint", nullable=False),
             _col("quantity", "integer"),
+            _col("status", "text"),
             _col("ordered_at", "timestamp with time zone", nullable=False),
         ],
         "foreign_keys": [
@@ -46,17 +47,25 @@ TABLES = {
             }
         ],
         "rows": [
-            {"order_id": 10, "customer_id": 1, "quantity": 2, "ordered_at": "2026-10-01T00:00:00Z"},
+            {
+                "order_id": 10,
+                "customer_id": 1,
+                "quantity": 2,
+                "status": "paid",
+                "ordered_at": "2026-10-01T00:00:00Z",
+            },
             {
                 "order_id": 11,
                 "customer_id": 2,
                 "quantity": -1,
+                "status": "Paid",
                 "ordered_at": "2026-10-02T00:00:00Z",
             },
             {
                 "order_id": 12,
                 "customer_id": 3,
                 "quantity": None,
+                "status": None,
                 "ordered_at": "2026-10-03T00:00:00Z",
             },
         ],
@@ -103,19 +112,24 @@ def build(delay_seconds: float = 0) -> MCPServer:
 
     @server.tool()
     def table_stats(schema: str, table: str) -> dict:
-        """Row estimate, and per column the null fraction and distinct count of a sample."""
+        """Row estimate, per column the null fraction and distinct count of a sample, and
+        value counts of text columns."""
         t = _table(schema, table)
         rows = t["rows"]
         columns = []
         for col in t["columns"]:
             values = [r[col["name"]] for r in rows]
-            columns.append(
-                {
-                    "name": col["name"],
-                    "null_fraction": sum(v is None for v in values) / len(values),
-                    "distinct_count": len({v for v in values if v is not None}),
-                }
-            )
+            stats = {
+                "name": col["name"],
+                "null_fraction": sum(v is None for v in values) / len(values),
+                "distinct_count": len({v for v in values if v is not None}),
+            }
+            if col["data_type"] == "text":
+                present = [v for v in values if v is not None]
+                stats["top_values"] = [
+                    {"value": v, "count": present.count(v)} for v in sorted(set(present))
+                ]
+            columns.append(stats)
         return {
             "schema": schema,
             "table": table,

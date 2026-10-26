@@ -95,6 +95,7 @@ async def test_call_returns_plain_data():
         "order_id",
         "customer_id",
         "quantity",
+        "status",
         "ordered_at",
     ]
     assert schemas == {"schemas": ["sales"]}

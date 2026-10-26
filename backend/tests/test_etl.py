@@ -121,6 +121,7 @@ async def test_request_to_bundle_with_one_rejection():
     assert view.pending["details"]["plan"]["targets"][0]["load"]["mode"] == "incremental"
     profiled = gateway.requests[0]["body"]["messages"][1]["content"]
     assert "sales.orders" in profiled and "空值率" in profiled
+    assert '取值分布（样本）："Paid" 1，"paid" 1' in profiled
 
     view = await decide(service, run_id, "reject", "先做全量")
     assert view.record.status == "waiting"
@@ -165,6 +166,17 @@ async def test_sql_pipeline_reads_sources_through_the_source_catalog():
     assert (
         "FROM `${source_catalog}`.sales.orders o JOIN `${source_catalog}`.sales.customers c" in sql
     )
+
+
+async def test_plan_assumptions_are_shown_for_confirmation():
+    guess = "数据里没有“已完成”状态，按 lower(trim(status)) = 'paid' 统计"
+    service, _, ds = await make_service([reply(plan(assumptions=[guess]))])
+
+    run_id = await start(service, ds)
+
+    view = await service.get(run_id)
+    assert view.pending["details"]["plan"]["assumptions"] == [guess]
+    assert f"请确认这些假设：\n- {guess}" in view.messages[-1]["content"]
 
 
 async def test_unusable_plan_is_repaired_once():

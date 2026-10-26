@@ -10,6 +10,11 @@ from psycopg.rows import dict_row
 
 from aep_postgres.config import Settings, validate_identifier
 
+# Low-cardinality columns (at most this many distinct values in the sample) also get
+# their value counts, so a caller can see the real spellings of statuses and codes.
+TOP_VALUES_MAX = 20
+TOP_VALUE_CHARS = 80
+
 
 class ConnectorError(ValueError):
     """A safe error message that can be returned to an MCP caller."""
@@ -260,7 +265,40 @@ class Database:
                     (self.settings.postgres_stats_sample_size, *[c["name"] for c in columns]),
                 )
             ).fetchone()
-        assert stats is not None
+            assert stats is not None
+            low = [
+                c["name"]
+                for c in stats["columns"]
+                if 0 < (c["distinct_count"] or 0) <= TOP_VALUES_MAX
+            ]
+            top: dict[str, list[dict[str, Any]]] = {name: [] for name in low}
+            if low:
+                # Counted by the whole value; only the returned text is shortened.
+                counts = sql.SQL(" UNION ALL ").join(
+                    sql.SQL(
+                        "SELECT %s::text AS name, left(value, %s) AS value, "
+                        "length(value) > %s AS truncated, count FROM ("
+                        "SELECT {column}::text AS value, count(*) AS count FROM sample "
+                        "WHERE {column} IS NOT NULL GROUP BY 1) AS counted"
+                    ).format(column=sql.Identifier(name))
+                    for name in low
+                )
+                query = sql.SQL(
+                    "WITH sample AS MATERIALIZED (SELECT * FROM {table} LIMIT %s) {counts}"
+                ).format(table=sql.Identifier(schema, table), counts=counts)
+                params: list[Any] = [self.settings.postgres_stats_sample_size]
+                for name in low:
+                    params += [name, TOP_VALUE_CHARS, TOP_VALUE_CHARS]
+                for row in await (await conn.execute(query, params)).fetchall():
+                    value = {"value": row["value"], "count": row["count"]}
+                    if row["truncated"]:
+                        value["truncated"] = True
+                    top[row["name"]].append(value)
+            for column in stats["columns"]:
+                if column["name"] in top:
+                    column["top_values"] = sorted(
+                        top[column["name"]], key=lambda v: (-v["count"], v["value"])
+                    )
         return {
             "schema": schema,
             "table": table,

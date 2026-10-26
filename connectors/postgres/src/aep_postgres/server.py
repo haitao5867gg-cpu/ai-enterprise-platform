@@ -67,7 +67,12 @@ def create_server(settings: Settings | None = None) -> MCPServer:
 
     @server.tool(annotations=READ_ONLY)
     async def table_stats(schema: str, table: str) -> dict[str, Any]:
-        """Return a planner row estimate and bounded-sample null fractions/distinct counts."""
+        """Return a planner row estimate and bounded-sample null fractions/distinct counts.
+
+        Columns with at most 20 distinct values in the sample also list their value counts
+        (``top_values``), most frequent first; values longer than 80 characters are
+        shortened and marked ``truncated``.
+        """
         return await call(database.table_stats(schema, table))
 
     @server.custom_route("/healthz", methods=["GET"])
