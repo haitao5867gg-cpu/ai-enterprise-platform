@@ -71,6 +71,17 @@ AEP_DATABRICKS_PROD_SCHEMA=<prod schema>
 # AEP_DATABRICKS_PROD_TIMEZONE=Asia/Shanghai
 ```
 
+### 评测
+
+`evals/etl/cases.yaml` 是 ETL 评测集：示例库上的一组需求，以及好的结果要满足什么（目标表、列、假设、试跑行数等，写法见文件开头）。平台起来之后：
+
+```bash
+make eval MODEL=company                       # 全部用例
+make eval MODEL=company ONLY="two-layer"      # 只跑某几个
+```
+
+每个用例起一次 etl run，自动确认方案，只在 Databricks dev 上试跑、不上线（`input.release = false`），然后按方案、代码、结果三层打分，打印表格，JSON 报告写到 `evals/reports/`。没配 Databricks 时结果层跳过。换模型或改提示词之前先跑一遍对比分数。
+
 ### 追踪（Langfuse）
 
 ```bash

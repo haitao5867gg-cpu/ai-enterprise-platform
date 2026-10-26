@@ -16,7 +16,8 @@ Every decision is kept in ``result.approvals``.
 Input: ``datasource_id`` and ``request``; optional ``tables`` (schema.table to
 limit profiling), ``language`` ("pyspark" by default, or "sql"), ``name`` (the
 bundle name), ``models`` (a model alias per step: ``plan``, ``codegen``) and
-``schedule`` (Quartz cron for prod; AEP_DATABRICKS_PROD_SCHEDULE by default).
+``schedule`` (Quartz cron for prod; AEP_DATABRICKS_PROD_SCHEDULE by default) and
+``release`` (false: stop after the dev run, as the eval runner does).
 """
 
 import json
@@ -315,6 +316,8 @@ def build(ctx: AppContext) -> StateGraph:
             update["attempts"] = 0
         elif dev.status != "passed":
             result["release"] = {"status": "skipped", "reason": "dev 试跑没有通过，不能上线"}
+        elif state["input"].get("release") is False:
+            result["release"] = {"status": "skipped", "reason": "这次运行只试跑，不上线"}
         elif blocker := ctx.settings.databricks_release_blocker:
             result["release"] = {"status": "skipped", "reason": blocker}
         return update

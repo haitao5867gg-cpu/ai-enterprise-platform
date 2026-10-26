@@ -1,26 +1,88 @@
-# ETL eval seed (issue #11): a request on the sample database (connectors/postgres
-# seed, schema "sales") and the points a good plan must cover. M3 adds the runner
-# that scores model + prompt versions against these.
-- id: order-facts
+# ETL 评测集：示例库（connectors/postgres/seed，schema sales）上的需求，以及好的结果要满足什么。
+# `make eval MODEL=<模型别名>` 对每条起一次 etl run，自动确认方案，只在 dev 试跑、不上线，
+# 然后逐项打分（aep.evals）。
+#
+# expect 里每一项都是一个得分点，没写的不打分：
+#   方案层 sources      方案用到的源表必须包含这些
+#          targets      目标表个数 {min, max}
+#          layered      至少一张目标表建在另一张目标表上
+#          columns      每个关键词都要出现在某张目标表的某个列名里（子串，不分大小写）
+#          mention      每个关键词都要出现在方案的某处（logic、列表达式、质量规则……）
+#          forbid       这些关键词都不能出现在目标表的定义里（例如编造的取值）
+#          assumptions  每个关键词都要出现在方案的 assumptions 里
+#                       关键词可以写成 a|b，表示出现其中一个即可
+#          load         某张目标表的加载方式 {mode, key}
+#   代码层 run 完成，静态检查通过（总是打分）
+#   结果层 有 Databricks 时：dev 试跑通过（总是打分），以及 rows：
+#          列名包含 columns 里全部关键词的目标表，写入行数在 [min, max] 内
+# review 是给人看的要点，不打分。
+#
+# 示例库的数据：订单 5000 条（status 只有 paid / Paid / 空值，数量有负数和空值，
+# 下单日期 2026-01-01 到 01-04），客户 1000 个（城市只有 Shanghai 和空值），
+# 商品 200 个（类目 Category 0–4 和空值）。
+
+- id: order-details
   request: 做一张订单明细宽表，每行一个订单，带上客户城市和商品类目，金额按数量乘单价算。
   expect:
     sources: [sales.orders, sales.customers, sales.products]
-    targets_min: 1
-    must_mention: [order_id, city, category]
-    quality_rules: [数量为负或为空的订单要处理, 关联不上客户或商品的订单要处理]
+    targets: {min: 1, max: 1}
+    columns: [order_id, city, category, amount]
+    rows:
+      - {columns: [order_id], min: 4000, max: 5000}
+  review: [数量为负或为空的订单要处理, 关联不上客户或商品的订单要处理]
+
+- id: daily-summary-unknown-status
+  # 需求里的“已完成、已发货”在数据里不存在
+  request: 做一张每日销售汇总表：按下单日期、客户城市、商品类目汇总订单数、销售数量和销售额（数量乘单价），只统计已完成或已发货的订单。
+  expect:
+    targets: {min: 1, max: 1}
+    columns: [date, city, category, quantity]
+    assumptions: [paid]
+    rows:
+      - {columns: [date, city, category], min: 1, max: 48}
+
+- id: customer-dimension
+  request: 做一张客户维度表：每个客户一行，带上首次下单日期、最近下单日期、累计订单数、累计消费金额，以及按累计消费金额分的客户等级（高/中/低，自己定阈值）。
+  expect:
+    sources: [sales.customers, sales.orders]
+    targets: {min: 1, max: 1}
+    columns: [customer_id, first, last, amount|spend|消费]
+    mention: [lower]  # status 有 paid / Paid 两种写法
+    rows:
+      - {columns: [customer_id], min: 1000, max: 1000}
+
+- id: two-layer
+  request: 做两层表：先做一张清洗后的订单明细表（去掉数量或单价不合法的行，带客户城市和商品类目），再基于这张明细表做一张按月、按商品类目的销售汇总表。
+  expect:
+    targets: {min: 2, max: 2}
+    layered: true
+    columns: [order_id, month, category]
+    rows:
+      - {columns: [order_id], min: 4000, max: 5000}
+      - {columns: [month, category], min: 1, max: 12}
 
 - id: customer-cleanup
   request: 清洗客户表：邮箱统一小写去空格，城市去掉首尾空格，重复邮箱只保留最新一条。
   expect:
     sources: [sales.customers]
-    targets_min: 1
-    must_mention: [lower, trim, email]
-    quality_rules: [邮箱为空的行]
+    targets: {min: 1, max: 1}
+    columns: [email, city]
+    mention: [lower, trim]
+    rows:
+      - {columns: [email], min: 1, max: 1000}
+  review: [邮箱为空的行怎么处理]
 
 - id: daily-sales-incremental
   request: 按天统计每个城市的订单数和销售额，订单表数据每天新增，用增量方式处理。
   expect:
-    sources: [sales.orders, sales.customers, sales.products]
-    targets_min: 1
+    sources: [sales.orders]
+    columns: [city]
+    mention: [ordered_at]
     load: {mode: incremental, key: ordered_at}
-    must_mention: [ordered_at, city]
+
+- id: missing-data
+  # 源库里没有退货数据：方案要在假设里说清楚，不能编造
+  request: 按商品类目统计每个月的退货率（退货订单数除以订单数）。
+  expect:
+    assumptions: [退货]
+    forbid: [returned, refund, return_flag]  # 数据里没有这样的取值或列

@@ -13,3 +13,6 @@ node_modules/
 .next/
 next-env.d.ts
 *.tsbuildinfo
+
+# Eval reports (make eval)
+evals/reports/
