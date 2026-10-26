@@ -5,7 +5,10 @@ Callers name a model alias from infra/litellm/config.yaml (``mock``, ``gpt``,
 else in the platform talks to a model provider directly.
 """
 
+import json
+import re
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
@@ -61,3 +64,13 @@ async def chat(
             total_tokens=usage.total_tokens if usage else 0,
         ),
     )
+
+
+def parse_json(text: str) -> Any:
+    """The JSON object in a model reply, tolerating code fences and text around it."""
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    candidate = fenced.group(1) if fenced else text
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start == -1 or end < start:
+        raise ValueError("回复里没有 JSON 对象")
+    return json.loads(candidate[start : end + 1])

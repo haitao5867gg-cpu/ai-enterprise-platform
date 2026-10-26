@@ -1,0 +1,26 @@
+# ETL eval seed (issue #11): a request on the sample database (connectors/postgres
+# seed, schema "sales") and the points a good plan must cover. M3 adds the runner
+# that scores model + prompt versions against these.
+- id: order-facts
+  request: 做一张订单明细宽表，每行一个订单，带上客户城市和商品类目，金额按数量乘单价算。
+  expect:
+    sources: [sales.orders, sales.customers, sales.products]
+    targets_min: 1
+    must_mention: [order_id, city, category]
+    quality_rules: [数量为负或为空的订单要处理, 关联不上客户或商品的订单要处理]
+
+- id: customer-cleanup
+  request: 清洗客户表：邮箱统一小写去空格，城市去掉首尾空格，重复邮箱只保留最新一条。
+  expect:
+    sources: [sales.customers]
+    targets_min: 1
+    must_mention: [lower, trim, email]
+    quality_rules: [邮箱为空的行]
+
+- id: daily-sales-incremental
+  request: 按天统计每个城市的订单数和销售额，订单表数据每天新增，用增量方式处理。
+  expect:
+    sources: [sales.orders, sales.customers, sales.products]
+    targets_min: 1
+    load: {mode: incremental, key: ordered_at}
+    must_mention: [ordered_at, city]

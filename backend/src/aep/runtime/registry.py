@@ -29,6 +29,6 @@ AppBuilder = Callable[[AppContext], StateGraph]
 
 
 def default_apps() -> dict[str, AppBuilder]:
-    from aep.runtime.apps import hello
+    from aep.runtime.apps import etl, hello
 
-    return {"hello": hello.build}
+    return {"hello": hello.build, "etl": etl.build}
