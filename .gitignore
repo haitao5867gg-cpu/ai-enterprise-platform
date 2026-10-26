@@ -1,0 +1,15 @@
+.env
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
