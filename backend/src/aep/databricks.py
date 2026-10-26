@@ -6,17 +6,23 @@ files. The generated code itself runs on Databricks, never here. After the run,
 the pipeline's event log (REST API) says what each table wrote, what its quality
 rules caught and, when the update failed, why.
 
-With ``AEP_DATABRICKS_CLUSTER_ID`` set, nothing is deployed: the bundle's
-transformations run on that existing cluster instead (``aep.cluster_harness``),
-for workspaces where pipelines cannot start their own clusters. That checks the
-generated code and its quality rules, not the pipeline configuration.
+For workspaces where pipelines cannot start their own clusters there are two
+modes on an existing cluster (``AEP_DATABRICKS_CLUSTER_ID``), chosen by
+``AEP_DATABRICKS_DEPLOY``. ``job`` (the default when a cluster is given) deploys
+the bundle's job through the REST API, no CLI needed: its files go where
+``bundle deploy`` would put them and the job is created or updated like a dev
+target would, then run once; the job's notebook reports the outcome. ``cluster``
+deploys nothing: the transformations run once on the cluster through the
+Command Execution API (``aep.cluster_harness``) and nothing is written.
 
 Off unless ``AEP_DATABRICKS_HOST`` and ``AEP_DATABRICKS_TOKEN`` are set.
 """
 
 import asyncio
+import base64
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -24,6 +30,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+import yaml
 
 from aep import cluster_harness
 from aep.config import Settings
@@ -66,8 +73,9 @@ class DevRun:
     ``stage`` is the step that failed (or ``run`` when everything passed).
     ``fixable`` means the pipeline itself failed, so its ``errors`` are worth
     handing back to code generation; a failed validate or deploy is about the
-    workspace or the configuration, not the generated code. In ``cluster`` mode
-    there is only the ``run`` stage, on ``cluster_id``.
+    workspace or the configuration, not the generated code. In ``job`` mode the
+    stages are ``deploy`` (files and job) and ``run`` (``job_id``, ``run_id``) on
+    ``cluster_id``; in ``cluster`` mode there is only the ``run`` stage.
     """
 
     status: Literal["passed", "failed"]
@@ -80,8 +88,10 @@ class DevRun:
     url: str | None = None
     tables: list[TableResult] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    mode: Literal["pipeline", "cluster"] = "pipeline"
+    mode: Literal["pipeline", "job", "cluster"] = "pipeline"
     cluster_id: str | None = None
+    job_id: int | None = None
+    run_id: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -245,8 +255,11 @@ class DevTarget:
         return updates[0].get("update_id"), events.get("events") or []
 
     async def run(self, bundle: Bundle) -> DevRun:
-        if self._settings.databricks_cluster_id:
+        mode = self._settings.databricks_deploy_mode
+        if mode == "cluster":
             return await self._run_on_cluster(bundle)
+        if mode == "job":
+            return await self._run_job(bundle)
         with tempfile.TemporaryDirectory(prefix="aep-bundle-") as scratch:
             root = Path(scratch) / bundle.name
             home = Path(scratch) / "home"
@@ -409,19 +422,173 @@ class DevTarget:
             dev.errors = [str(exc)]
             return dev
         dev.steps.append(Step("cluster", True, _tail(output)))
-        line = next((x for x in output.splitlines() if x.startswith(cluster_harness.MARKER)), None)
-        if line is None:
+        outcome = _outcome(output)
+        if outcome is None:
             dev.errors = ["集群上的试跑没有输出结果"]
             return dev
-        outcome = json.loads(line.removeprefix(cluster_harness.MARKER))
-        dev.tables = [TableResult(**t) for t in outcome["tables"]]
-        dev.errors = outcome["errors"]
-        if not dev.errors:
-            dev.status = "passed"
-        else:
-            # Every error here comes from running the generated code.
-            dev.fixable = True
-        for table in dev.tables:
-            if table.rows == 0:
-                dev.warnings.append(f"{table.name} 结果是 0 行")
+        _apply(dev, outcome)
         return dev
+
+    # --- job mode -----------------------------------------------------------
+
+    async def _upload(self, root: str, files: dict[str, str]) -> None:
+        """Puts the bundle's files under ``root``; a notebook source becomes a notebook."""
+        for folder in sorted({str(Path(root, path).parent) for path in files}):
+            await self._post("/api/2.0/workspace/mkdirs", {"path": folder})
+        for path, content in files.items():
+            body = {
+                "path": f"{root}/{path}",
+                "format": "AUTO",
+                "overwrite": True,
+                "content": base64.b64encode(content.encode()).decode(),
+            }
+            await self._post("/api/2.0/workspace/import", body)
+
+    def _job_settings(
+        self, config: dict[str, Any], name: str, short_name: str, root: str
+    ) -> dict[str, Any]:
+        """The bundle's job as the dev target deploys it, its variables filled in."""
+        values = {k: str(v.get("default", "")) for k, v in config["variables"].items()}
+        dev_values = (config["targets"].get(TARGET) or {}).get("variables") or {}
+        values |= {
+            k: str(v).replace("${workspace.current_user.short_name}", short_name)
+            for k, v in dev_values.items()
+        }
+        values |= {
+            k: v
+            for k, v in {
+                "catalog": self._settings.databricks_catalog,
+                "schema": self._settings.databricks_schema,
+                "source_catalog": self._settings.databricks_source_catalog,
+                "cluster_id": self._settings.databricks_cluster_id,
+            }.items()
+            if v
+        }
+
+        def fill(node: Any) -> Any:
+            if isinstance(node, dict):
+                return {k: fill(v) for k, v in node.items()}
+            if isinstance(node, list):
+                return [fill(v) for v in node]
+            if isinstance(node, str):
+                return re.sub(r"\$\{var\.(\w+)\}", lambda m: values.get(m[1], m[0]), node)
+            return node
+
+        job = fill(config["resources"]["jobs"][name])
+        # Development mode, as bundle deploy does it: the job is named and tagged
+        # for its user. A failure goes back to code generation at once, so the
+        # dev job does not retry.
+        job["name"] = f"[dev {short_name}] {job.get('name', name)}"
+        job["tags"] = {**job.get("tags", {}), "dev": short_name, "aep_bundle": name}
+        for task in job.get("tasks", []):
+            task.pop("max_retries", None)
+            task.pop("min_retry_interval_millis", None)
+            notebook = task.get("notebook_task")
+            if notebook and not notebook["notebook_path"].startswith("/"):
+                # Imported notebooks lose their extension.
+                path = notebook["notebook_path"].removesuffix(".py")
+                notebook["notebook_path"] = f"{root}/{path}"
+        return job
+
+    async def _put_job(self, settings: dict[str, Any]) -> int:
+        """Updates the job of that name, or creates it."""
+        found = await self._get("/api/2.1/jobs/list", name=settings["name"])
+        jobs = found.get("jobs") or []
+        if jobs:
+            job_id = int(jobs[0]["job_id"])
+            await self._post("/api/2.1/jobs/reset", {"job_id": job_id, "new_settings": settings})
+            return job_id
+        return int((await self._post("/api/2.1/jobs/create", settings))["job_id"])
+
+    async def _wait_run(self, run_id: int) -> dict[str, Any]:
+        deadline = time.monotonic() + self._settings.databricks_timeout_seconds
+        while True:
+            run = await self._get("/api/2.1/jobs/runs/get", run_id=run_id)
+            state = (run.get("state") or {}).get("life_cycle_state")
+            if state in ("TERMINATED", "SKIPPED", "INTERNAL_ERROR"):
+                return run
+            if time.monotonic() > deadline:
+                await self._post("/api/2.1/jobs/runs/cancel", {"run_id": run_id})
+                limit = self._settings.databricks_timeout_seconds
+                raise DatabricksError(f"Job 运行超过 {limit:g} 秒没有结束，已取消")
+            await asyncio.sleep(CLUSTER_POLL_SECONDS)
+
+    async def _run_job(self, bundle: Bundle) -> DevRun:
+        cluster_id = self._settings.databricks_cluster_id
+        dev = DevRun("failed", "deploy", [], mode="job", cluster_id=cluster_id or None)
+        if not cluster_id or not self._settings.databricks_source_catalog:
+            dev.errors = [
+                "部署成 Job 需要设置 AEP_DATABRICKS_CLUSTER_ID（Job 跑在哪台集群上）和"
+                " AEP_DATABRICKS_SOURCE_CATALOG（源表所在的 catalog）"
+            ]
+            return dev
+        try:
+            config = yaml.safe_load(bundle.files["databricks.yml"])
+            config["resources"]["jobs"][bundle.name]
+        except (yaml.YAMLError, KeyError, TypeError):
+            dev.errors = ["bundle 里没有这个 Job 的定义（databricks.yml 的 resources.jobs）"]
+            return dev
+        try:
+            user = (await self._get("/api/2.0/preview/scim/v2/Me"))["userName"]
+            short_name = re.sub(r"[^a-z0-9]+", "_", user.split("@")[0].lower()).strip("_")
+            root = f"/Users/{user}/.bundle/{bundle.name}/{TARGET}/files"
+            await self._upload(root, bundle.files)
+            dev.job_id = await self._put_job(
+                self._job_settings(config, bundle.name, short_name, root)
+            )
+        except DatabricksError as exc:
+            dev.steps.append(Step("deploy", False, _tail(str(exc))))
+            dev.errors = [str(exc)]
+            return dev
+        dev.steps.append(Step("deploy", True, f"job {dev.job_id}，文件在 {root}"))
+        dev.stage = "run"
+        try:
+            dev.run_id = int(
+                (await self._post("/api/2.1/jobs/run-now", {"job_id": dev.job_id}))["run_id"]
+            )
+            run = await self._wait_run(dev.run_id)
+            dev.url = run.get("run_page_url")
+            tasks = sorted(run.get("tasks") or [], key=lambda t: t.get("attempt_number", 0))
+            output = await self._get("/api/2.1/jobs/runs/get-output", run_id=tasks[-1]["run_id"])
+        except (DatabricksError, IndexError, KeyError) as exc:
+            dev.steps.append(Step("run", False, _tail(str(exc))))
+            dev.errors = [str(exc) or "Job 运行失败，没有拿到报错信息"]
+            return dev
+        state = run.get("state") or {}
+        text = (output.get("notebook_output") or {}).get("result") or output.get("error") or ""
+        dev.steps.append(Step("run", state.get("result_state") == "SUCCESS", _tail(text)))
+        outcome = _outcome(text)
+        if outcome is None:
+            # The job failed before the harness could report: the cluster, the
+            # notebook or the workspace, not the generated code.
+            message = output.get("error") or state.get("state_message") or "Job 没有输出结果"
+            dev.errors = [str(message)]
+            return dev
+        _apply(dev, outcome)
+        return dev
+
+
+def _outcome(text: str) -> dict[str, Any] | None:
+    """The harness's ``AEP_RESULT`` JSON in an output or error message."""
+    at = text.find(cluster_harness.MARKER)
+    if at < 0:
+        return None
+    try:
+        outcome, _ = json.JSONDecoder().raw_decode(text, at + len(cluster_harness.MARKER))
+    except ValueError:
+        return None
+    return outcome if isinstance(outcome, dict) else None
+
+
+def _apply(dev: DevRun, outcome: dict[str, Any]) -> None:
+    dev.tables = [TableResult(**t) for t in outcome.get("tables", [])]
+    code_errors = outcome.get("errors", [])
+    dev.errors = code_errors + outcome.get("write_errors", [])
+    if not dev.errors:
+        dev.status = "passed"
+    # Errors from running the generated code are worth regenerating it for;
+    # failing to store a table is about the workspace.
+    dev.fixable = bool(code_errors)
+    for table in dev.tables:
+        if table.rows == 0:
+            dev.warnings.append(f"{table.name} 结果是 0 行")

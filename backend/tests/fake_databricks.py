@@ -12,8 +12,15 @@ The workspace also has one all-purpose cluster (``CLUSTER_ID``) answering the
 Command Execution API: each command gets the next of ``cluster_outputs`` (an
 outcome as ``aep.cluster_harness`` prints it, or an error string), and is kept
 in ``commands``.
+
+For job deploys it keeps imported files in ``files`` (a notebook under its path
+without ``.py``) and jobs in ``jobs`` (id → settings). Each job run ends with
+the next of ``job_outputs``: an outcome as the job's notebook reports it (the
+run fails when it has errors), or an error string from a run that failed before
+the notebook could report.
 """
 
+import base64
 import json
 import stat
 import sys
@@ -28,6 +35,8 @@ from aep.databricks import DevTarget
 HOST = "https://adb-1.test.databricks.azure.cn"
 PIPELINE_ID = "pipe-1"
 CLUSTER_ID = "0101-000000-abcdefgh"
+USER = "dev.user@example.com"
+JOB_PATHS = ("/api/2.0/workspace/", "/api/2.1/jobs/", "/api/2.0/preview/scim/")
 CLUSTER_DENIED = (
     "Failed to create a pipeline cluster: PERMISSION_DENIED: You are not authorized to create "
     "clusters. Please contact your administrator."
@@ -82,6 +91,11 @@ class FakeWorkspace:
         self.cluster_outputs: list[dict[str, Any] | str] = []
         self.commands: list[dict[str, Any]] = []
         self.contexts: set[str] = set()
+        self.files: dict[str, str] = {}
+        self.folders: set[str] = set()
+        self.jobs: dict[int, dict[str, Any]] = {}
+        self.job_runs: list[int] = []
+        self.job_outputs: list[dict[str, Any] | str] = []
         self.cli = tmp_path / "databricks"
         self.cli.write_text(
             CLI.format(
@@ -226,6 +240,8 @@ class FakeWorkspace:
             return httpx.Response(401, json={"error_code": "UNAUTHENTICATED"})
         if "/clusters/" in request.url.path or request.url.path.startswith("/api/1.2/"):
             return self._cluster(request)
+        if request.url.path.startswith(JOB_PATHS):
+            return self._jobs(request)
         updates = self._state()["updates"]
         if request.url.path == f"/api/2.0/pipelines/{PIPELINE_ID}":
             latest = [{"update_id": f"update-{updates}"}] if updates else []
@@ -272,3 +288,74 @@ class FakeWorkspace:
                 results = {"resultType": "text", "data": "AEP_RESULT " + json.dumps(outcome)}
             return httpx.Response(200, json={"status": "Finished", "results": results})
         return httpx.Response(404, json={"error_code": "ENDPOINT_NOT_FOUND"})
+
+    def _jobs(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path.removeprefix("/api/")
+        body = json.loads(request.content) if request.content else {}
+        params = request.url.params
+        if path == "2.0/preview/scim/v2/Me":
+            return httpx.Response(200, json={"userName": USER})
+        if path == "2.0/workspace/mkdirs":
+            self.folders.add(body["path"])
+            return httpx.Response(200, json={})
+        if path == "2.0/workspace/import":
+            folder = body["path"].rsplit("/", 1)[0]
+            if folder not in self.folders:
+                return httpx.Response(404, json={"error_code": "RESOURCE_DOES_NOT_EXIST"})
+            content = base64.b64decode(body["content"]).decode()
+            target = body["path"]
+            if content.startswith("# Databricks notebook source"):
+                target = target.removesuffix(".py")
+            self.files[target] = content
+            return httpx.Response(200, json={})
+        if path == "2.1/jobs/list":
+            jobs = [
+                {"job_id": job_id, "settings": job}
+                for job_id, job in self.jobs.items()
+                if job["name"] == params.get("name")
+            ]
+            return httpx.Response(200, json={"jobs": jobs} if jobs else {})
+        if path == "2.1/jobs/create":
+            job_id = 100 + len(self.jobs)
+            self.jobs[job_id] = body
+            return httpx.Response(200, json={"job_id": job_id})
+        if path == "2.1/jobs/reset":
+            self.jobs[body["job_id"]] = body["new_settings"]
+            return httpx.Response(200, json={})
+        if path == "2.1/jobs/run-now":
+            if body["job_id"] not in self.jobs:
+                return httpx.Response(400, json={"error_code": "INVALID_PARAMETER_VALUE"})
+            self.job_runs.append(body["job_id"])
+            return httpx.Response(200, json={"run_id": 500 + len(self.job_runs)})
+        if path == "2.1/jobs/runs/get":
+            run_id = int(params["run_id"])
+            output = self._job_output(run_id - 500)
+            passed = isinstance(output, dict) and not output.get("errors")
+            state = {
+                "life_cycle_state": "TERMINATED",
+                "result_state": "SUCCESS" if passed else "FAILED",
+                "state_message": "" if passed else "Workload failed, see run output for details",
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": run_id,
+                    "state": state,
+                    "run_page_url": f"{HOST}/#job/{self.job_runs[run_id - 501]}/run/{run_id}",
+                    "tasks": [{"run_id": run_id + 1000, "task_key": "run", "attempt_number": 0}],
+                },
+            )
+        if path == "2.1/jobs/runs/get-output":
+            output = self._job_output(int(params["run_id"]) - 1500)
+            if isinstance(output, str):
+                return httpx.Response(200, json={"error": output})
+            outcome = {"tables": [], "errors": [], "write_errors": []} | output
+            text = "AEP_RESULT " + json.dumps(outcome)
+            if outcome["errors"] or outcome["write_errors"]:
+                return httpx.Response(200, json={"error": f"RuntimeError: {text}"})
+            return httpx.Response(200, json={"notebook_output": {"result": text}})
+        return httpx.Response(404, json={"error_code": "ENDPOINT_NOT_FOUND"})
+
+    def _job_output(self, number: int) -> dict[str, Any] | str:
+        index = number - 1
+        return self.job_outputs[index] if index < len(self.job_outputs) else {}

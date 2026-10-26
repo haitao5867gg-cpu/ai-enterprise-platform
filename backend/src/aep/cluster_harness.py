@@ -1,12 +1,17 @@
 """Runs a generated pipeline's transformations on an existing Databricks cluster.
 
-This file is sent as source to the cluster (``aep.databricks`` appends the call
-to ``main``) and runs there; it imports nothing from ``aep``. It evaluates each
-target table like a pipeline update would, without writing anything: PySpark
-code runs with a stand-in for ``pyspark.pipelines`` that collects the tables and
-their quality rules, SQL targets arrive already parsed. A table read by another
-target is the transformed result with its drop rules applied, as it would be
-stored. The outcome is printed as one ``AEP_RESULT`` line of JSON.
+This file runs on Databricks and imports nothing from ``aep``. It evaluates each
+target table like a pipeline update would: PySpark code runs with a stand-in
+for ``pyspark.pipelines`` that collects the tables and their quality rules, SQL
+targets are parsed from the pipeline file. A table read by another target is the
+transformed result with its drop rules applied, as it would be stored. The
+outcome is printed as one ``AEP_RESULT`` line of JSON.
+
+It is used two ways. ``aep.databricks`` sends it as source to the cluster with a
+call to ``main`` appended, to check the code without writing anything. And a
+bundle deployed as a job carries it as ``aep_harness.py`` next to the pipeline
+file; the job's notebook calls ``run_notebook``, which writes each table that
+passed its quality rules and fails the run when any table failed.
 """
 
 import json
@@ -17,6 +22,33 @@ from typing import Any
 
 MARKER = "AEP_RESULT "
 KINDS = {"expect": "warn", "expect_or_drop": "drop", "expect_or_fail": "fail"}
+
+# The SQL pipeline as aep.etl.codegen.render_sql writes it.
+_SQL_TARGET = re.compile(
+    r"^CREATE OR REFRESH MATERIALIZED VIEW (\w+)(?: \(\n(.*?)\n\))?\n"
+    r"COMMENT '(?:[^']|'')*'\nAS\n(.*?);\n(?=\n|\Z)",
+    re.S | re.M,
+)
+_SQL_RULE = re.compile(
+    r"^  CONSTRAINT (\w+) EXPECT \((.*)\)( ON VIOLATION (?:DROP ROW|FAIL UPDATE))?,?$"
+)
+_SQL_ACTION = {None: "warn", " ON VIOLATION DROP ROW": "drop", " ON VIOLATION FAIL UPDATE": "fail"}
+
+
+def parse_sql(pipeline: str) -> list[dict[str, Any]]:
+    """The targets of a SQL pipeline: name, query and quality rules."""
+    targets: list[dict[str, Any]] = []
+    for match in _SQL_TARGET.finditer(pipeline):
+        rules = []
+        for line in (match[2] or "").splitlines():
+            rule = _SQL_RULE.match(line)
+            if rule is None:
+                raise ValueError(f"{match[1]}: 读不懂这条质量规则：{line.strip()}")
+            rules.append(
+                {"name": rule[1], "condition": rule[2], "on_violation": _SQL_ACTION[rule[3]]}
+            )
+        targets.append({"name": match[1], "query": match[3], "rules": rules})
+    return targets
 
 
 class _Conf:
@@ -62,13 +94,29 @@ def _error(name: str, exc: BaseException) -> str:
     return f"{name}: {type(exc).__name__}: {first.strip()[:1000]}"
 
 
-def main(spark: Any, spec: dict[str, Any]) -> None:
+def _quote(*parts: str) -> str:
+    return ".".join("`" + part.replace("`", "``") + "`" for part in parts)
+
+
+def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
+    """Evaluates every target; with ``spec["write"]`` (catalog, schema) also stores them.
+
+    ``errors`` in the outcome come from the generated code or its quality rules,
+    ``write_errors`` from storing a table that passed (permissions, the schema).
+    """
     from pyspark.sql import functions as F
 
     defs: dict[str, tuple[Any, list[tuple[str, str, str]]]] = {}
     done: dict[str, Any] = {}
     results: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
+    write_errors: list[str] = []
+    write = spec.get("write")
+    if write:
+        try:
+            spark.sql(f"CREATE SCHEMA IF NOT EXISTS {_quote(write['catalog'], write['schema'])}")
+        except Exception:  # noqa: BLE001 - an existing schema may still be written to
+            pass
 
     def table(name: str) -> Any:
         if name not in defs:
@@ -120,9 +168,18 @@ def main(spark: Any, spec: dict[str, Any]) -> None:
                 f"{name}: 质量规则 {r} 要求整次更新失败，有 {n} 行违反" for r, n in failing
             )
             return None
+        kept = df.filter(keep)
+        if write:
+            stored = _quote(write["catalog"], write["schema"], name)
+            try:
+                kept.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(stored)
+            except Exception as exc:  # noqa: BLE001
+                write_errors.append(_error(name, exc))
+                return None
+            kept = spark.read.table(stored)
         result["status"] = "COMPLETED"
         result["rows"] = total - result["dropped"]
-        return df.filter(keep)
+        return kept
 
     conf = {"source_catalog": spec["source_catalog"]}
     if spec["language"] == "pyspark":
@@ -196,4 +253,29 @@ def main(spark: Any, spec: dict[str, Any]) -> None:
         if name not in done:
             done[name] = materialize(name)
 
-    print(MARKER + json.dumps({"tables": list(results.values()), "errors": errors}))
+    outcome = {"tables": list(results.values()), "errors": errors, "write_errors": write_errors}
+    print(MARKER + json.dumps(outcome))
+    return outcome
+
+
+def run_notebook(spark: Any, dbutils: Any, library: str) -> None:
+    """The job notebook's body: runs ``library`` (a path next to the notebook).
+
+    The notebook's widgets name the source catalog and where the tables go. A
+    failed table fails the run, with the outcome in the error message.
+    """
+    arg = dbutils.widgets.get
+    with open(library, encoding="utf-8") as f:  # notebooks run in their own folder
+        code = f.read()
+    spec: dict[str, Any] = {
+        "source_catalog": arg("source_catalog"),
+        "write": {"catalog": arg("catalog"), "schema": arg("schema")},
+    }
+    if library.endswith(".sql"):
+        spec |= {"language": "sql", "targets": parse_sql(code)}
+    else:
+        spec |= {"language": "pyspark", "code": code}
+    outcome = main(spark, spec)
+    if outcome["errors"] or outcome["write_errors"]:
+        raise RuntimeError(MARKER + json.dumps(outcome))
+    dbutils.notebook.exit(MARKER + json.dumps(outcome))
