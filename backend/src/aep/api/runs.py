@@ -14,10 +14,12 @@ A finished ``etl`` run's ``result`` has ``bundle``, ``language``, ``plan``,
 ``files`` (path → content), ``checks`` (``passed``, ``problems``: the static
 checks) and ``verification``, the run on the Databricks dev target:
 ``status`` is ``skipped`` (with ``reason``), ``passed`` or ``failed``; a run that
-happened also has ``stage`` (validate, deploy or run), ``attempt``, ``errors``,
-``warnings``, ``url`` (the pipeline in the workspace) and ``tables`` (``name``,
-``status``, ``rows``, ``dropped``, ``expectations`` with ``name``, ``passed`` and
-``failed`` row counts). ``GET /runs/{id}/files.zip`` downloads the files.
+happened also has ``mode`` (``pipeline``: the bundle was deployed and run;
+``cluster``: only its transformations ran, on ``cluster_id``), ``stage``
+(validate, deploy or run), ``attempt``, ``errors``, ``warnings``, ``url`` (the
+pipeline, or the cluster, in the workspace) and ``tables`` (``name``, ``status``,
+``rows``, ``dropped``, ``expectations`` with ``name``, ``passed`` and ``failed``
+row counts). ``GET /runs/{id}/files.zip`` downloads the files.
 """
 
 import io

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     databricks_pipeline_node_type: str = ""
     databricks_pipeline_workers: int = 1
     databricks_pipeline_policy_id: str = ""
+    # An existing cluster to run the generated transformations on instead of
+    # deploying a pipeline, for users who cannot create pipeline clusters.
+    databricks_cluster_id: str = ""
     databricks_cli: str = "databricks"
     databricks_timeout_seconds: float = 3600.0
 

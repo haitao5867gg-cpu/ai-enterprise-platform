@@ -132,6 +132,33 @@ def render_sql(plan: EtlPlan, queries: dict[str, str]) -> str:
     return "\n".join(parts) + "\n"
 
 
+_SQL_TARGET = re.compile(
+    r"^CREATE OR REFRESH MATERIALIZED VIEW (\w+)(?: \(\n(.*?)\n\))?\n"
+    r"COMMENT '(?:[^']|'')*'\nAS\n(.*?);\n(?=\n|\Z)",
+    re.S | re.M,
+)
+_SQL_RULE = re.compile(
+    r"^  CONSTRAINT (\w+) EXPECT \((.*)\)( ON VIOLATION (?:DROP ROW|FAIL UPDATE))?,?$"
+)
+_SQL_ACTION = {None: "warn", " ON VIOLATION DROP ROW": "drop", " ON VIOLATION FAIL UPDATE": "fail"}
+
+
+def parse_sql(pipeline: str) -> list[dict[str, object]]:
+    """The targets of a pipeline written by ``render_sql``: name, query and quality rules."""
+    targets: list[dict[str, object]] = []
+    for match in _SQL_TARGET.finditer(pipeline):
+        rules = []
+        for line in (match[2] or "").splitlines():
+            rule = _SQL_RULE.match(line)
+            if rule is None:
+                raise CodeError(f"{match[1]}: 读不懂这条质量规则：{line.strip()}")
+            rules.append(
+                {"name": rule[1], "condition": rule[2], "on_violation": _SQL_ACTION[rule[3]]}
+            )
+        targets.append({"name": match[1], "query": match[3], "rules": rules})
+    return targets
+
+
 def _pipeline(name: str, library: str, compute: Compute | None) -> dict[str, object]:
     pipeline: dict[str, object] = {
         "name": name,

@@ -6,6 +6,11 @@ files. The generated code itself runs on Databricks, never here. After the run,
 the pipeline's event log (REST API) says what each table wrote, what its quality
 rules caught and, when the update failed, why.
 
+With ``AEP_DATABRICKS_CLUSTER_ID`` set, nothing is deployed: the bundle's
+transformations run on that existing cluster instead (``aep.cluster_harness``),
+for workspaces where pipelines cannot start their own clusters. That checks the
+generated code and its quality rules, not the pipeline configuration.
+
 Off unless ``AEP_DATABRICKS_HOST`` and ``AEP_DATABRICKS_TOKEN`` are set.
 """
 
@@ -13,21 +18,25 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 
+from aep import cluster_harness
 from aep.config import Settings
-from aep.etl.codegen import Bundle
+from aep.etl.codegen import PIPELINE_PY, PIPELINE_SQL, Bundle, CodeError, parse_sql
 
 TARGET = "dev"
 OUTPUT_TAIL = 4000
 EVENT_PAGE = 250
 # Connections to the workspace can drop mid-request (seen through egress proxies
-# to Azure China); reads are retried this many times before giving up.
-GET_ATTEMPTS = 4
+# to Azure China); requests are retried this many times before giving up.
+REQUEST_ATTEMPTS = 4
+POLL_SECONDS = 3.0
+CLUSTER_POLL_SECONDS = 15.0
 
 
 class DatabricksError(Exception):
@@ -57,7 +66,8 @@ class DevRun:
     ``stage`` is the step that failed (or ``run`` when everything passed).
     ``fixable`` means the pipeline itself failed, so its ``errors`` are worth
     handing back to code generation; a failed validate or deploy is about the
-    workspace or the configuration, not the generated code.
+    workspace or the configuration, not the generated code. In ``cluster`` mode
+    there is only the ``run`` stage, on ``cluster_id``.
     """
 
     status: Literal["passed", "failed"]
@@ -70,6 +80,8 @@ class DevRun:
     url: str | None = None
     tables: list[TableResult] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    mode: Literal["pipeline", "cluster"] = "pipeline"
+    cluster_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -194,17 +206,21 @@ class DevTarget:
             return False, f"databricks {' '.join(args[:2])} 超过 {limit:g} 秒没有结束"
         return proc.returncode == 0, out.decode(errors="replace")
 
-    async def _get(self, path: str, **params: Any) -> dict[str, Any]:
-        for attempt in range(1, GET_ATTEMPTS + 1):
+    async def _request(
+        self, method: str, path: str, body: dict[str, Any] | None = None, **params: Any
+    ) -> dict[str, Any]:
+        for attempt in range(1, REQUEST_ATTEMPTS + 1):
             try:
-                resp = await self._http.get(
+                resp = await self._http.request(
+                    method,
                     f"{self._host}{path}",
-                    params=params,
+                    params=params or None,
+                    json=body,
                     headers={"Authorization": f"Bearer {self._settings.databricks_token}"},
                 )
                 break
             except httpx.TransportError as exc:
-                if attempt == GET_ATTEMPTS:
+                if attempt == REQUEST_ATTEMPTS:
                     raise DatabricksError(f"{path}: {exc!r}") from exc
                 await asyncio.sleep(attempt)
             except httpx.HTTPError as exc:
@@ -212,6 +228,12 @@ class DevTarget:
         if resp.status_code != 200:
             raise DatabricksError(f"{path}: HTTP {resp.status_code} {resp.text[:500]}")
         return resp.json()
+
+    async def _get(self, path: str, **params: Any) -> dict[str, Any]:
+        return await self._request("GET", path, **params)
+
+    async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        return await self._request("POST", path, body)
 
     async def _update_outcome(self, pipeline_id: str) -> tuple[str | None, list[dict[str, Any]]]:
         """The latest update of the pipeline and the event log entries around it."""
@@ -223,6 +245,8 @@ class DevTarget:
         return updates[0].get("update_id"), events.get("events") or []
 
     async def run(self, bundle: Bundle) -> DevRun:
+        if self._settings.databricks_cluster_id:
+            return await self._run_on_cluster(bundle)
         with tempfile.TemporaryDirectory(prefix="aep-bundle-") as scratch:
             root = Path(scratch) / bundle.name
             home = Path(scratch) / "home"
@@ -279,4 +303,125 @@ class DevTarget:
         for table in dev.tables:
             if table.rows == 0:
                 dev.warnings.append(f"{table.name} 写入了 0 行")
+        return dev
+
+    # --- cluster mode -------------------------------------------------------
+
+    def _harness_spec(self, bundle: Bundle) -> dict[str, Any]:
+        source_catalog = self._settings.databricks_source_catalog
+        if PIPELINE_PY in bundle.files:
+            return {
+                "language": "pyspark",
+                "source_catalog": source_catalog,
+                "code": bundle.files[PIPELINE_PY],
+            }
+        return {
+            "language": "sql",
+            "source_catalog": source_catalog,
+            "targets": parse_sql(bundle.files[PIPELINE_SQL]),
+        }
+
+    async def _cluster_running(self, cluster_id: str, dev: DevRun) -> None:
+        """Waits for the cluster to run, starting it once if it is stopped."""
+        deadline = time.monotonic() + self._settings.databricks_timeout_seconds
+        started = False
+        while True:
+            cluster = await self._get("/api/2.0/clusters/get", cluster_id=cluster_id)
+            state = cluster.get("state")
+            if state == "RUNNING":
+                return
+            if state == "TERMINATED" and not started:
+                await self._post("/api/2.0/clusters/start", {"cluster_id": cluster_id})
+                dev.warnings.append(f"集群 {cluster_id} 原本是停止的，已启动它来试跑")
+                started = True
+            elif state == "TERMINATED" or state == "ERROR":
+                raise DatabricksError(f"集群 {cluster_id} 没能启动：{cluster.get('state_message')}")
+            if time.monotonic() > deadline:
+                raise DatabricksError(f"集群 {cluster_id} 一直没有就绪（{state}）")
+            await asyncio.sleep(CLUSTER_POLL_SECONDS)
+
+    async def _execute(self, cluster_id: str, command: str) -> str:
+        """Runs Python on the cluster (Command Execution API) and returns its output."""
+        context = await self._post(
+            "/api/1.2/contexts/create", {"clusterId": cluster_id, "language": "python"}
+        )
+        ids = {"clusterId": cluster_id, "contextId": context["id"]}
+        deadline = time.monotonic() + self._settings.databricks_timeout_seconds
+        try:
+            while (await self._get("/api/1.2/contexts/status", **ids)).get("status") != "Running":
+                if time.monotonic() > deadline:
+                    raise DatabricksError("集群上的执行环境一直没有就绪")
+                await asyncio.sleep(POLL_SECONDS)
+            cmd = await self._post(
+                "/api/1.2/commands/execute", ids | {"language": "python", "command": command}
+            )
+            while True:
+                status = await self._get("/api/1.2/commands/status", **ids, commandId=cmd["id"])
+                if status.get("status") in ("Finished", "Error", "Cancelled"):
+                    break
+                if time.monotonic() > deadline:
+                    await self._post("/api/1.2/commands/cancel", ids | {"commandId": cmd["id"]})
+                    limit = self._settings.databricks_timeout_seconds
+                    raise DatabricksError(f"集群上的试跑超过 {limit:g} 秒没有结束")
+                await asyncio.sleep(POLL_SECONDS)
+        finally:
+            try:
+                await self._post("/api/1.2/contexts/destroy", ids)
+            except DatabricksError:
+                pass
+        results = status.get("results") or {}
+        if status.get("status") != "Finished" or results.get("resultType") == "error":
+            cause = results.get("summary") or results.get("cause") or status.get("status")
+            raise DatabricksError(f"集群上的试跑程序出错：{str(cause)[:2000]}")
+        return str(results.get("data") or "")
+
+    async def _run_on_cluster(self, bundle: Bundle) -> DevRun:
+        cluster_id = self._settings.databricks_cluster_id
+        dev = DevRun(
+            "failed",
+            "run",
+            [],
+            mode="cluster",
+            cluster_id=cluster_id,
+            url=f"{self._host}/compute/clusters/{cluster_id}",
+        )
+        if not self._settings.databricks_source_catalog:
+            dev.errors = [
+                "在集群上试跑需要设置 AEP_DATABRICKS_SOURCE_CATALOG（源表所在的 catalog）"
+            ]
+            return dev
+        try:
+            spec = self._harness_spec(bundle)
+        except CodeError as exc:
+            dev.errors = [str(exc)]
+            return dev
+        command = "\n".join(
+            [
+                Path(cluster_harness.__file__).read_text(),
+                f"main(spark, json.loads({json.dumps(json.dumps(spec))}))",
+            ]
+        )
+        try:
+            await self._cluster_running(cluster_id, dev)
+            output = await self._execute(cluster_id, command)
+        except DatabricksError as exc:
+            dev.steps.append(Step("cluster", False, _tail(str(exc))))
+            dev.errors = [str(exc)]
+            return dev
+        dev.steps.append(Step("cluster", True, _tail(output)))
+        line = next((x for x in output.splitlines() if x.startswith(cluster_harness.MARKER)), None)
+        if line is None:
+            dev.errors = ["集群上的试跑没有输出结果"]
+            return dev
+        outcome = json.loads(line.removeprefix(cluster_harness.MARKER))
+        dev.tables = [TableResult(**t) for t in outcome["tables"]]
+        dev.errors = outcome["errors"]
+        if not dev.errors:
+            dev.status = "passed"
+        else:
+            # Every error here comes from running the generated code.
+            dev.fixable = True
+        for table in dev.tables:
+            if table.rows == 0:
+                dev.warnings.append(f"{table.name} 结果是 0 行")
         return dev

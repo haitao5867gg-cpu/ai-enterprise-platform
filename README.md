@@ -29,7 +29,7 @@ curl -s localhost:8000/runs -H 'content-type: application/json' \
 
 工作流会先探查数据、给出方案，然后等待确认（`POST /runs/{id}/resume`）。确认后生成 Databricks bundle，用 `GET /runs/{id}/files.zip` 下载。`mock` 模型不会输出方案，这个应用要在 `.env` 里配好一个真实模型，并把 `AEP_DEFAULT_MODEL` 设成它的别名（例如 `qwen`）；也可以在 `input.models` 里为 `plan` 和 `codegen` 分别指定模型。
 
-在 `.env` 里填了 `AEP_DATABRICKS_HOST` 和 `AEP_DATABRICKS_TOKEN` 之后，生成的 bundle 会在 API 容器里用 Databricks CLI 部署到 dev 目标并试跑一次（`bundle validate`、`deploy -t dev`、`run -t dev`），然后从管道事件日志读出每张表写入的行数和质量规则的结果，写进 run 结果的 `verification`。试跑失败时，报错会交回代码生成重写，最多试跑三次。目标 catalog、schema、源表所在的 catalog 和经典计算的节点类型见 `.env.example`。不填就跳过这一步，结果里会写明跳过的原因。
+在 `.env` 里填了 `AEP_DATABRICKS_HOST` 和 `AEP_DATABRICKS_TOKEN` 之后，生成的 bundle 会在 API 容器里用 Databricks CLI 部署到 dev 目标并试跑一次（`bundle validate`、`deploy -t dev`、`run -t dev`），然后从管道事件日志读出每张表写入的行数和质量规则的结果，写进 run 结果的 `verification`。试跑失败时，报错会交回代码生成重写，最多试跑三次。目标 catalog、schema、源表所在的 catalog 和经典计算的节点类型见 `.env.example`。不填就跳过这一步，结果里会写明跳过的原因。没有建管道集群的权限时，可以填 `AEP_DATABRICKS_CLUSTER_ID`，改为在这台现有集群上执行生成的转换逻辑，核对行数和质量规则，不部署管道。
 
 ### 追踪（Langfuse）
 
