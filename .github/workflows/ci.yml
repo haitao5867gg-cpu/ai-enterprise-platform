@@ -57,16 +57,20 @@ jobs:
           make up
           docker compose up -d --wait
       - name: Create, approve and reject runs against the real backend
+        id: live_acceptance
         env:
           AEP_LIVE_BASE_URL: http://localhost:3000
           AEP_CAPTURE_SCREENSHOTS: "1"
-        run: npm run test:live
+        run: |
+          rm -f docs/screenshots/*.png
+          npm run test:live
       - name: Upload workbench screenshots
-        if: always()
+        if: ${{ always() && steps.live_acceptance.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: chat-workbench-screenshots
           path: frontend/docs/screenshots/
+          if-no-files-found: error
       - name: Stop the browser acceptance stack
         if: always()
         working-directory: .

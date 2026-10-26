@@ -64,3 +64,5 @@ AEP_LIVE_BASE_URL=http://localhost:3000 AEP_CAPTURE_SCREENSHOTS=1 npm run test:l
 ```
 
 此命令仅允许本机 HTTP 地址，会创建合成测试运行；不会替换或 mock 后端 API。
+
+本次真实验收的 CI 运行、截图来源和完整性校验见 [验收记录](docs/VERIFICATION.md)。
