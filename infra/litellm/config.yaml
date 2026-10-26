@@ -37,6 +37,19 @@ model_list:
       model: os.environ/DEEPSEEK_MODEL
       api_key: os.environ/DEEPSEEK_API_KEY
 
+  # A company-run OpenAI-compatible gateway in front of many models (DeepSeek,
+  # GLM, Qwen, ...). COMPANY_MODEL is "openai/<model id>" with the id exactly as
+  # its /v1/models lists it. Thinking is switched off: the platform's steps ask
+  # for JSON, not reasoning, and it saves tokens and latency.
+  - model_name: company
+    litellm_params:
+      model: os.environ/COMPANY_MODEL
+      api_base: os.environ/COMPANY_API_BASE
+      api_key: os.environ/COMPANY_API_KEY
+      extra_body:
+        thinking:
+          type: disabled
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 

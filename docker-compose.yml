@@ -97,6 +97,7 @@ services:
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
       QWEN_MODEL: ${QWEN_MODEL:-dashscope/qwen-plus}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek/deepseek-chat}
+      COMPANY_MODEL: ${COMPANY_MODEL:-openai/deepseek-v4.1-flash-new}
     ports:
       - "4000:4000"
     healthcheck:

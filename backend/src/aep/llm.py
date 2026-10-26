@@ -1,7 +1,7 @@
 """Model calls through the LiteLLM gateway.
 
 Callers name a model alias from infra/litellm/config.yaml (``mock``, ``gpt``,
-``claude-bedrock``, ``qwen``, ...); the gateway maps it to a provider. Nothing
+``claude-bedrock``, ``qwen``, ``company``, ...); the gateway maps it to a provider. Nothing
 else in the platform talks to a model provider directly.
 """
 
