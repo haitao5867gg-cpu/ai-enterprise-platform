@@ -55,6 +55,9 @@ def _plan_message(plan: EtlPlan) -> str:
     for t in plan.targets:
         load = "增量" if t.load.mode == "incremental" else "全量"
         lines.append(f"- {t.name}（{load}，来自 {', '.join(t.sources)}）：{t.description}")
+    if plan.assumptions:
+        lines += ["", "请确认这些假设："]
+        lines += [f"- {a}" for a in plan.assumptions]
     return "\n".join(lines)
 
 

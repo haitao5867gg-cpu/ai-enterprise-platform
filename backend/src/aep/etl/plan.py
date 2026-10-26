@@ -51,6 +51,11 @@ class EtlPlan(BaseModel):
     summary: str
     language: Language = "pyspark"
     targets: list[Target] = Field(min_length=1)
+    assumptions: list[str] = Field(
+        default=[],
+        description="Where the request is unclear or does not match the data, and what the plan "
+        "assumed instead; the user checks these before confirming",
+    )
 
 
 # Quality rules are checked row by row (expectations); an aggregate there cannot run.
@@ -114,6 +119,10 @@ SYSTEM_PROMPT = """你是资深数据工程师，负责把业务需求变成
 Databricks Lakeflow 声明式管道的 ETL 方案。
 只根据给出的源表结构、统计和样本设计方案，不要编造不存在的表或列。
 清洗规则要针对样本和统计里看到的问题（空值、重复、大小写和空格不一致、负数等）。
+需求里提到的取值（状态、类型、类目等）要对照“取值分布”映射成数据里的实际取值，
+logic 和表达式里写实际取值；同一取值有大小写或空格不同的写法时，先 lower(trim(...)) 再比较。
+数据里找不到需求提到的取值、需求有歧义、或者你加了需求没提的业务过滤时，
+在 assumptions 里逐条写明你的理解和做法，交给用户确认，不要编造数据里没有的取值。
 质量规则对目标表的每一行单独判断，条件里只能用这一行的列，不能用 count、sum 等聚合函数；
 唯一性用 primary_key 表达，不要写成质量规则。
 目标表放在 Unity Catalog 的同一个 schema 里，表名和列名用小写蛇形命名。
@@ -134,5 +143,6 @@ Databricks Lakeflow 声明式管道的 ETL 方案。
       "quality_rules": [{"name": "规则名", "condition": "Spark SQL 布尔表达式",
                          "on_violation": "warn、drop 或 fail"}]
     }
-  ]
+  ],
+  "assumptions": ["需求和数据对不上、或需要用户确认的地方，一条一句；没有就给空数组"]
 }"""

@@ -47,7 +47,7 @@ uv run --frozen --project connectors/postgres aep-postgres-smoke
 | `list_tables` | `schema` | `schema`、`tables`：有 SELECT 权限的普通表和分区表名称 |
 | `describe_table` | `schema`, `table` | `columns`：名称、PostgreSQL 类型、`nullable`、`primary_key`；`foreign_keys`：名称、源列、目标 schema/表/列 |
 | `sample_rows` | `schema`, `table`, `limit=10` | `rows`：最多 100 行 JSON；日期时间为字符串，numeric 为 JSON 数值 |
-| `table_stats` | `schema`, `table` | `estimated_row_count`、`sample_limit`、`sample_row_count`、每列的 `null_fraction` / `distinct_count` |
+| `table_stats` | `schema`, `table` | `estimated_row_count`、`sample_limit`、`sample_row_count`、每列的 `null_fraction` / `distinct_count`；样本里不同值不超过 20 个的列另有 `top_values`（取值和次数，按次数降序） |
 
 `limit` 必须是 1–100 的整数，布尔值、字符串、浮点数和越界值都会被拒绝。
 主键通过各列的 `primary_key` 标识；复合外键的源列和目标列按约束顺序一一对应。

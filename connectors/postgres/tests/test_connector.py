@@ -25,6 +25,11 @@ async def test_seed_data_and_metadata(database: Database) -> None:
         assert all(c["name"] for c in stats["columns"])
         assert any(0 < (c["null_fraction"] or 0) < 1 for c in stats["columns"])
 
+    orders = {c["name"]: c for c in (await database.table_stats("sales", "orders"))["columns"]}
+    statuses = {v["value"] for v in orders["status"]["top_values"]}
+    assert "paid" in statuses
+    assert "top_values" not in orders["order_id"]  # Too many distinct values.
+
     description = await database.describe_table("sales", "orders")
     columns = {c["name"]: c for c in description["columns"]}
     assert columns["quantity"] == {
@@ -67,6 +72,13 @@ async def test_quoted_identifiers_types_and_exact_sample_statistics(
     assert columns["nullable"]["distinct_count"] == 2  # NULL excluded; empty string included.
     assert columns["payload"]["distinct_count"] == 1  # json has no native equality operator.
     assert columns["id 'column"]["distinct_count"] == 3
+    # Value counts for low-cardinality columns: NULL left out, ties ordered by value.
+    assert columns["nullable"]["top_values"] == [
+        {"value": "", "count": 1},
+        {"value": "x", "count": 1},
+    ]
+    assert columns["payload"]["top_values"] == [{"value": '{"a":1}', "count": 2}]
+    assert columns["t"]["top_values"] == [{"value": "shadow", "count": 3}]
     empty = await database.table_stats(schema, "empty")
     assert empty["estimated_row_count"] == empty["sample_row_count"] == 0
     assert all(c["null_fraction"] is None and c["distinct_count"] == 0 for c in empty["columns"])
