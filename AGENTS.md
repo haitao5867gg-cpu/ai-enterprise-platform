@@ -16,7 +16,7 @@
 
 - 编排内核：LangGraph（只用核心库，不依赖 LangSmith）。状态用 Postgres checkpointer，人工确认用 `interrupt`。
 - 工具接入：一律做成 MCP Server。数据源连接器只读。
-- 模型调用：一律经过 LiteLLM 网关，不在业务代码里直接调用某家 SDK。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
+- 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
 - 观测：Langfuse 自托管。
 - Databricks：查询走托管 MCP（dbsql），部署走 Declarative Automation Bundles（原 Asset Bundles），分 dev / prod 目标。
 - 部署：本地 `docker compose`，生产 Azure（AKS + Helm，Terraform 建环境，Entra ID 登录）。本地和 Azure 用同一套镜像，差异只在配置。
@@ -28,6 +28,7 @@
 ```
 backend/    Python 3.12 + FastAPI，包名 aep（src 布局），uv 管理依赖
 frontend/   Next.js（App Router）+ TypeScript
+infra/      基础设施配置（litellm/ 为模型网关）
 .github/    CI
 ```
 
@@ -36,7 +37,7 @@ frontend/   Next.js（App Router）+ TypeScript
 ```bash
 cp .env.example .env        # 可选
 make up                     # 等同 docker compose up --build -d
-# Web http://localhost:3000   API http://localhost:8000/docs
+# Web http://localhost:3000   API http://localhost:8000/docs   模型网关 http://localhost:4000
 make test                   # 后端测试 + 前端类型检查
 make lint
 ```

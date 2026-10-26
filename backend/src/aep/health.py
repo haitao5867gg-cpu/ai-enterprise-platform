@@ -1,5 +1,6 @@
 """Liveness and readiness checks for the platform's backing services."""
 
+import httpx
 import psycopg
 import redis.asyncio as redis
 
@@ -27,4 +28,16 @@ async def check_redis(settings: Settings) -> str | None:
         return str(exc)
     finally:
         await client.aclose()
+    return None
+
+
+async def check_llm_gateway(settings: Settings) -> str | None:
+    """Return None when the model gateway is up, otherwise the error message."""
+    url = f"{settings.llm_gateway_url.rstrip('/')}/health/liveliness"
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        return str(exc)
     return None
