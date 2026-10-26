@@ -53,6 +53,14 @@ class EtlPlan(BaseModel):
     targets: list[Target] = Field(min_length=1)
 
 
+# Quality rules are checked row by row (expectations); an aggregate there cannot run.
+AGGREGATE = re.compile(
+    r"\b(count|count_if|sum|avg|mean|min|max|collect_list|collect_set|approx_count_distinct"
+    r"|stddev|variance|percentile|percentile_approx|median)\s*\(",
+    re.I,
+)
+
+
 class PlanError(ValueError):
     pass
 
@@ -90,6 +98,13 @@ def validate_plan(raw: Any, source_tables: Collection[str]) -> EtlPlan:
                 problems.append(f"{target.name} 的质量规则名 {rule!r} 只能用小写字母、数字和下划线")
             if rule_names.count(rule) > 1:
                 problems.append(f"{target.name} 的质量规则名 {rule!r} 重复")
+        for quality in target.quality_rules:
+            if AGGREGATE.search(quality.condition):
+                problems.append(
+                    f"{target.name} 的质量规则 {quality.name} 用了聚合函数"
+                    f"（{quality.condition}）；质量规则逐行判断，不能用聚合，"
+                    "唯一性请用 primary_key 表达"
+                )
     if problems:
         raise PlanError("；".join(dict.fromkeys(problems)))
     return plan
@@ -99,6 +114,8 @@ SYSTEM_PROMPT = """你是资深数据工程师，负责把业务需求变成
 Databricks Lakeflow 声明式管道的 ETL 方案。
 只根据给出的源表结构、统计和样本设计方案，不要编造不存在的表或列。
 清洗规则要针对样本和统计里看到的问题（空值、重复、大小写和空格不一致、负数等）。
+质量规则对目标表的每一行单独判断，条件里只能用这一行的列，不能用 count、sum 等聚合函数；
+唯一性用 primary_key 表达，不要写成质量规则。
 目标表放在 Unity Catalog 的同一个 schema 里，表名和列名用小写蛇形命名。
 
 只输出一个 JSON 对象，不要输出其他文字，结构如下：

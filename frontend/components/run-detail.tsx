@@ -14,7 +14,7 @@ import {
 } from "../lib/runs";
 import { Icon } from "./icons";
 import { ErrorNotice, StatusBadge } from "./ui";
-import { getEtlPlan, getEtlResult } from "../lib/etl";
+import { etlFailed, getEtlPlan, getEtlResult } from "../lib/etl";
 import { EtlPlanView } from "./etl-plan";
 import { GeneratedFiles } from "./generated-files";
 
@@ -385,13 +385,11 @@ export function RunDetail({ id }: { id: string }) {
                   aria-labelledby="result-title"
                 >
                   <span
-                    className={`result-icon ${etlResult && !etlResult.checks.passed ? "failed" : ""}`}
+                    className={`result-icon ${etlResult && etlFailed(etlResult) ? "failed" : ""}`}
                   >
                     <Icon
                       name={
-                        etlResult && !etlResult.checks.passed
-                          ? "alert"
-                          : "check"
+                        etlResult && etlFailed(etlResult) ? "alert" : "check"
                       }
                       size={20}
                     />
@@ -399,9 +397,13 @@ export function RunDetail({ id }: { id: string }) {
                   <h2 id="result-title">运行结果</h2>
                   {etlResult ? (
                     <p>
-                      {etlResult.checks.passed
-                        ? `已生成 ${Object.keys(etlResult.files).length} 个文件，可查看代码或下载 ZIP。`
-                        : "代码检查未通过，请查看并处理主区域列出的问题。"}
+                      {!etlResult.checks.passed
+                        ? "代码检查未通过，请查看并处理主区域列出的问题。"
+                        : etlResult.verification?.status === "failed"
+                          ? "代码已生成，但 Databricks dev 试跑未通过，请查看主区域列出的报错。"
+                          : etlResult.verification?.status === "passed"
+                            ? `已生成 ${Object.keys(etlResult.files).length} 个文件，并在 Databricks dev 目标上试跑通过。`
+                            : `已生成 ${Object.keys(etlResult.files).length} 个文件，可查看代码或下载 ZIP。`}
                     </p>
                   ) : (
                     <ResultView result={run.result} />

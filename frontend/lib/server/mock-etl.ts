@@ -99,5 +99,14 @@ export function mockEtlResult(plan: EtlPlan): EtlResult & { plan: EtlPlan } {
     plan,
     files,
     checks: { passed: true, problems: [] },
+    verification: {
+      status: "skipped",
+      reason: "本地 mock 不会部署到 Databricks",
+      mode: null,
+      url: null,
+      errors: [],
+      warnings: [],
+      tables: [],
+    },
   };
 }

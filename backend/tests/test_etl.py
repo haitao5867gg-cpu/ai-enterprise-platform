@@ -243,6 +243,27 @@ def test_plan_validation_names_every_problem():
 
 
 @pytest.mark.parametrize(
+    "condition",
+    ["COUNT(*) = COUNT(DISTINCT order_id)", "amount <= max (amount)", "sum(quantity) > 0"],
+)
+def test_quality_rules_cannot_aggregate(condition):
+    bad = plan()
+    bad["targets"][0]["quality_rules"] = [
+        {"name": "order_id_unique", "condition": condition, "on_violation": "warn"}
+    ]
+    with pytest.raises(PlanError, match="order_id_unique 用了聚合函数"):
+        validate_plan(bad, ["sales.orders", "sales.customers"])
+
+
+def test_row_level_rules_pass():
+    good = plan()
+    good["targets"][0]["quality_rules"] = [
+        {"name": "q", "condition": "greatest(quantity, 0) = quantity", "on_violation": "drop"}
+    ]
+    validate_plan(good, ["sales.orders", "sales.customers"])
+
+
+@pytest.mark.parametrize(
     ("body", "problem"),
     [
         ("return source('sales.orders').write", "不允许使用 .write"),
