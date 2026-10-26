@@ -273,10 +273,13 @@ class Database:
             ]
             top: dict[str, list[dict[str, Any]]] = {name: [] for name in low}
             if low:
+                # Counted by the whole value; only the returned text is shortened.
                 counts = sql.SQL(" UNION ALL ").join(
                     sql.SQL(
-                        "SELECT %s::text AS name, left({column}::text, %s) AS value, "
-                        "count(*) AS count FROM sample WHERE {column} IS NOT NULL GROUP BY 2"
+                        "SELECT %s::text AS name, left(value, %s) AS value, "
+                        "length(value) > %s AS truncated, count FROM ("
+                        "SELECT {column}::text AS value, count(*) AS count FROM sample "
+                        "WHERE {column} IS NOT NULL GROUP BY 1) AS counted"
                     ).format(column=sql.Identifier(name))
                     for name in low
                 )
@@ -285,9 +288,12 @@ class Database:
                 ).format(table=sql.Identifier(schema, table), counts=counts)
                 params: list[Any] = [self.settings.postgres_stats_sample_size]
                 for name in low:
-                    params += [name, TOP_VALUE_CHARS]
+                    params += [name, TOP_VALUE_CHARS, TOP_VALUE_CHARS]
                 for row in await (await conn.execute(query, params)).fetchall():
-                    top[row["name"]].append({"value": row["value"], "count": row["count"]})
+                    value = {"value": row["value"], "count": row["count"]}
+                    if row["truncated"]:
+                        value["truncated"] = True
+                    top[row["name"]].append(value)
             for column in stats["columns"]:
                 if column["name"] in top:
                     column["top_values"] = sorted(

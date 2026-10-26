@@ -73,7 +73,8 @@ def describe_for_model(tables: list[dict[str, Any]]) -> str:
             lines.append(f"  - {col['name']}：{'，'.join(flags)}")
             if s.get("top_values"):
                 values = "，".join(
-                    f"{json.dumps(v['value'], ensure_ascii=False)} {v['count']}"
+                    f"{json.dumps(v['value'], ensure_ascii=False)}"
+                    f"{'…（已截断，不能当作取值使用）' if v.get('truncated') else ''} {v['count']}"
                     for v in s["top_values"]
                 )
                 lines.append(f"    取值分布（样本）：{values}")

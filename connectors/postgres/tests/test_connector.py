@@ -370,3 +370,26 @@ async def test_proxy_host_and_origin_are_configurable(mcp_url: str) -> None:
             mcp_url, headers={**headers, "origin": "https://attacker.invalid"}, json=payload
         )
         assert bad_origin.status_code == 403
+
+
+async def test_top_values_count_whole_values_and_mark_shortened_ones(
+    database: Database, admin: AsyncConnection[dict[str, Any]], odd_tables: tuple[str, str]
+) -> None:
+    schema, _ = odd_tables
+    prefix = "x" * 80
+    await admin.execute(
+        sql.SQL("INSERT INTO {} VALUES (1, %s), (2, %s), (3, %s), (4, 'short')").format(
+            sql.Identifier(schema, "empty")
+        ),
+        (prefix + "a", prefix + "b", prefix + "b"),
+    )
+
+    stats = await database.table_stats(schema, "empty")
+
+    [value] = [c for c in stats["columns"] if c["name"] == "value"]
+    # Two different long values that share their first 80 characters stay apart.
+    assert value["top_values"] == [
+        {"value": prefix, "count": 2, "truncated": True},
+        {"value": "short", "count": 1},
+        {"value": prefix, "count": 1, "truncated": True},
+    ]
