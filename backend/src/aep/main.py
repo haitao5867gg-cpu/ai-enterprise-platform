@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -5,12 +7,21 @@ import openai
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from openai import AsyncOpenAI
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm
+from aep.api import runs
 from aep.config import Settings, get_settings
 from aep.health import check_llm_gateway, check_postgres, check_redis
+from aep.runtime.registry import AppContext, default_apps
+from aep.runtime.service import RunService
+from aep.runtime.store import PostgresRunStore
+
+log = logging.getLogger(__name__)
 
 SERVICES = ("postgres", "redis", "llm_gateway")
 
@@ -42,11 +53,40 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.llm_client = llm.make_client(settings)
+        llm_client = llm.make_client(settings)
+        # One pool for run records and LangGraph checkpoints; the saver needs
+        # autocommit and dict rows.
+        pool = AsyncConnectionPool(
+            settings.database_url,
+            open=False,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        )
+        await pool.open(wait=True)
+        checkpointer = AsyncPostgresSaver(pool)
+        await checkpointer.setup()
+        store = PostgresRunStore(pool)
+        await store.setup()
+        service = RunService(
+            store,
+            checkpointer,
+            default_apps(),
+            AppContext(llm_client=llm_client, settings=settings),
+        )
+        recovered = await service.recover()
+        if recovered:
+            log.info("resumed %d runs left running by the previous process", recovered)
+        app.state.llm_client = llm_client
+        app.state.run_service = service
         yield
-        await app.state.llm_client.close()
+        try:
+            await asyncio.wait_for(service.wait_idle(), timeout=10)
+        except TimeoutError:
+            log.warning("shutting down with runs still in progress; they resume on next start")
+        await pool.close()
+        await llm_client.close()
 
     app = FastAPI(title="AI Enterprise Platform", version=__version__, lifespan=lifespan)
+    app.include_router(runs.router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

@@ -17,6 +17,7 @@
 - 编排内核：LangGraph（只用核心库，不依赖 LangSmith）。状态用 Postgres checkpointer，人工确认用 `interrupt`。
 - 工具接入：一律做成 MCP Server。数据源连接器只读。
 - 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
+- 平台应用：每个应用是 `backend/src/aep/runtime/apps/` 下的一张 LangGraph 图，在 `aep.runtime.registry.default_apps` 里注册。节点里调模型只能用 `AppContext.llm_client`。运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`。
 - 观测：Langfuse 自托管。
 - Databricks：查询走托管 MCP（dbsql），部署走 Declarative Automation Bundles（原 Asset Bundles），分 dev / prod 目标。
 - 部署：本地 `docker compose`，生产 Azure（AKS + Helm，Terraform 建环境，Entra ID 登录）。本地和 Azure 用同一套镜像，差异只在配置。
@@ -49,7 +50,7 @@ make lint
 
 - Python：ruff 检查和格式化（行宽 100），类型标注齐全。配置只从 `aep.config.Settings` 读，环境变量统一 `AEP_` 前缀。
 - TypeScript：`strict` 模式，`npm run typecheck` 必须通过。
-- 新功能必须带测试；后端测试放 `backend/tests/`，不得依赖外部网络或真实模型（用替身）。
+- 新功能必须带测试；后端测试放 `backend/tests/`，不得依赖外部网络或真实模型（用 `tests/conftest.py` 里的 `FakeGateway`）。运行时测试用 `MemoryRunStore` + `InMemorySaver`；需要真实 Postgres 的测试读取 `AEP_TEST_DATABASE_URL`，没设置时自动跳过（CI 会设置）。
 - 不提交密钥、`.env`、客户数据。凭据在本地放 `.env`，在 Azure 放 Key Vault。
 - 新依赖要在 PR 描述里写明用途。
 
