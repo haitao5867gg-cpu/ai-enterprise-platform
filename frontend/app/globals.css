@@ -1294,6 +1294,31 @@ textarea::placeholder {
   margin-bottom: 0;
   padding-left: 20px;
 }
+.verification-passed {
+  display: block;
+}
+.verification-passed p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.verification-passed ul {
+  margin: 6px 0 0;
+  padding-left: 24px;
+}
+.checks-passed a,
+.checks-failed a {
+  margin-left: 8px;
+  color: inherit;
+}
+.verification-note {
+  margin: 0;
+  padding: 14px 22px;
+  color: var(--muted);
+  font-size: 11px;
+  border-bottom: 1px solid #ececec;
+}
 .result-icon.failed {
   color: #a74738;
   background: #fbeae5;

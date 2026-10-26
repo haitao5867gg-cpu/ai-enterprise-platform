@@ -30,11 +30,22 @@ export type EtlPlan = {
   language: EtlLanguage;
   targets: EtlTarget[];
 };
+export type EtlVerification = {
+  status: "passed" | "failed" | "skipped";
+  reason: string;
+  mode: "pipeline" | "job" | "cluster" | null;
+  url: string | null;
+  errors: string[];
+  warnings: string[];
+  tables: { name: string; rows: number | null; dropped: number }[];
+};
 export type EtlResult = {
   bundle: string;
   language: EtlLanguage;
   files: Record<string, string>;
   checks: { passed: boolean; problems: string[] };
+  // The Databricks dev run of the bundle; null while it has not happened.
+  verification: EtlVerification | null;
 };
 
 function isLanguage(value: unknown): value is EtlLanguage {
@@ -110,6 +121,48 @@ export function getEtlPlan(details: unknown): EtlPlan | null {
     : null;
 }
 
+// Unknown or partial fields are dropped rather than failing the whole result.
+function readVerification(value: unknown): EtlVerification | null {
+  if (
+    !isRecord(value) ||
+    (value.status !== "passed" &&
+      value.status !== "failed" &&
+      value.status !== "skipped")
+  )
+    return null;
+  const mode =
+    value.mode === "pipeline" ||
+    value.mode === "job" ||
+    value.mode === "cluster"
+      ? value.mode
+      : null;
+  const tables = Array.isArray(value.tables)
+    ? value.tables.flatMap((table: unknown) =>
+        isRecord(table) && typeof table.name === "string"
+          ? [
+              {
+                name: table.name,
+                rows: typeof table.rows === "number" ? table.rows : null,
+                dropped: typeof table.dropped === "number" ? table.dropped : 0,
+              },
+            ]
+          : [],
+      )
+    : [];
+  return {
+    status: value.status,
+    reason: typeof value.reason === "string" ? value.reason : "",
+    mode,
+    url:
+      typeof value.url === "string" && /^https:\/\//.test(value.url)
+        ? value.url
+        : null,
+    errors: isStrings(value.errors) ? value.errors : [],
+    warnings: isStrings(value.warnings) ? value.warnings : [],
+    tables,
+  };
+}
+
 export function getEtlResult(value: unknown): EtlResult | null {
   return isRecord(value) &&
     typeof value.bundle === "string" &&
@@ -121,6 +174,14 @@ export function getEtlResult(value: unknown): EtlResult | null {
     isRecord(value.checks) &&
     typeof value.checks.passed === "boolean" &&
     isStrings(value.checks.problems)
-    ? (value as EtlResult)
+    ? {
+        ...(value as Omit<EtlResult, "verification">),
+        verification: readVerification(value.verification),
+      }
     : null;
+}
+
+// A finished ETL run went wrong when its code failed the checks or its dev run failed.
+export function etlFailed(result: EtlResult): boolean {
+  return !result.checks.passed || result.verification?.status === "failed";
 }

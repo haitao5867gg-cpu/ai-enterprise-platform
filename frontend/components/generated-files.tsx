@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { languageLabels, type EtlResult } from "../lib/etl";
+import {
+  languageLabels,
+  type EtlResult,
+  type EtlVerification,
+} from "../lib/etl";
 import { CodeView, codeLanguage } from "./code-view";
 import { Icon } from "./icons";
 
@@ -72,6 +76,70 @@ function FileTree({
   );
 }
 
+const modeLabels: Record<NonNullable<EtlVerification["mode"]>, string> = {
+  pipeline: "Lakeflow 管道",
+  job: "Job（已有集群）",
+  cluster: "集群试跑，不写表",
+};
+
+function VerificationView({ verification }: { verification: EtlVerification }) {
+  const mode = verification.mode ? ` · ${modeLabels[verification.mode]}` : "";
+  const link = verification.url && (
+    <a href={verification.url} target="_blank" rel="noopener noreferrer">
+      在 Databricks 中查看
+    </a>
+  );
+  if (verification.status === "skipped")
+    return (
+      <p className="verification-note">
+        没有在 Databricks dev 目标上试跑
+        {verification.reason ? `：${verification.reason}` : "。"}
+      </p>
+    );
+  if (verification.status === "failed")
+    return (
+      <div className="checks-failed" role="alert">
+        <h3>
+          <Icon name="alert" />
+          Databricks dev 试跑未通过{mode}
+        </h3>
+        <p>
+          代码已生成，但在 dev 目标上运行失败，修正前请不要部署到生产。{link}
+        </p>
+        {verification.errors.length > 0 && (
+          <ul>
+            {verification.errors.map((error, i) => (
+              <li key={i}>{error}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  return (
+    <div className="checks-passed verification-passed">
+      <p>
+        <Icon name="check" size={16} />
+        Databricks dev 试跑通过{mode}
+        {link}
+      </p>
+      {verification.tables.length > 0 && (
+        <ul>
+          {verification.tables.map((table) => (
+            <li key={table.name}>
+              {table.name}：
+              {table.rows === null ? "行数未知" : `${table.rows} 行`}
+              {table.dropped > 0 && `，质量规则丢弃 ${table.dropped} 行`}
+            </li>
+          ))}
+        </ul>
+      )}
+      {verification.warnings.map((warning, i) => (
+        <p key={i}>注意：{warning}</p>
+      ))}
+    </div>
+  );
+}
+
 export function GeneratedFiles({
   result,
   runId,
@@ -83,7 +151,9 @@ export function GeneratedFiles({
   const [selection, setSelection] = useState("");
   const selected = paths.includes(selection)
     ? selection
-    : paths.find((path) => /\.(py|sql)$/i.test(path)) || paths[0];
+    : paths.find((path) => /(^|\/)pipeline\.(py|sql)$/i.test(path)) ||
+      paths.find((path) => /\.(py|sql)$/i.test(path)) ||
+      paths[0];
   return (
     <section className="panel generated-files" aria-labelledby="files-title">
       <div className="section-heading files-heading">
@@ -130,6 +200,9 @@ export function GeneratedFiles({
             <p>检查未提供具体问题。</p>
           )}
         </div>
+      )}
+      {result.verification && (
+        <VerificationView verification={result.verification} />
       )}
       {selected ? (
         <div className="file-browser">

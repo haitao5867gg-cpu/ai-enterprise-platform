@@ -364,3 +364,79 @@ for (const hasFiles of [false, true]) {
     ).toBe(true);
   });
 }
+
+for (const status of ["passed", "failed"] as const) {
+  test(`a ${status} Databricks dev run is shown with the result`, async ({
+    page,
+  }) => {
+    await page.route("**/api/runs/dev-run", (route) =>
+      route.fulfill({
+        json: {
+          run_id: "dev-run",
+          app: "etl",
+          status: "done",
+          messages: [],
+          pending: null,
+          error: null,
+          result: {
+            bundle: "etl_dev",
+            language: "pyspark",
+            files: {
+              "src/aep_harness.py": "MARKER = 1\n",
+              "src/pipeline.py": "x = 1\n",
+            },
+            checks: { passed: true, problems: [] },
+            verification: {
+              status,
+              stage: "run",
+              mode: "job",
+              url: "https://adb-1.test.databricks.azure.cn/#job/1/run/2",
+              errors:
+                status === "failed"
+                  ? [
+                      "order_detail: AnalysisException: [NESTED_AGGREGATE_FUNCTION]",
+                    ]
+                  : [],
+              warnings: [],
+              tables: [
+                {
+                  name: "order_detail",
+                  status: status === "passed" ? "COMPLETED" : "FAILED",
+                  rows: status === "passed" ? 4894 : null,
+                  dropped: status === "passed" ? 6 : 0,
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    await page.goto("/runs/dev-run");
+    // The pipeline file opens first, not the harness that sorts before it.
+    await expect(page.locator(".code-toolbar")).toContainText(
+      "src/pipeline.py",
+    );
+    const result = page.locator(".result-card");
+    const link = page.getByRole("link", { name: "在 Databricks 中查看" });
+    await expect(link).toHaveAttribute(
+      "href",
+      "https://adb-1.test.databricks.azure.cn/#job/1/run/2",
+    );
+    if (status === "passed") {
+      await expect(
+        page.getByText("Databricks dev 试跑通过 · Job（已有集群）"),
+      ).toBeVisible();
+      await expect(
+        page.getByText("order_detail：4894 行，质量规则丢弃 6 行"),
+      ).toBeVisible();
+      await expect(result).toContainText("并在 Databricks dev 目标上试跑通过");
+      await expect(result.locator(".result-icon.failed")).toHaveCount(0);
+    } else {
+      const alert = page.getByRole("main").getByRole("alert");
+      await expect(alert).toContainText("Databricks dev 试跑未通过");
+      await expect(alert).toContainText("NESTED_AGGREGATE_FUNCTION");
+      await expect(result).toContainText("Databricks dev 试跑未通过");
+      await expect(result.locator(".result-icon.failed")).toHaveCount(1);
+    }
+  });
+}
