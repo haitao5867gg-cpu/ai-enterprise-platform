@@ -354,6 +354,55 @@ def test_a_value_the_data_lacks_goes_back_until_explained(complete, where):
     validate_plan(fine, tables, known, trust_assumptions=False)
 
 
+def test_values_a_target_computes_are_its_own():
+    tables = ["sales.orders", "sales.customers"]
+    known = {"status": KnownValues(frozenset({"paid"}), complete=True)}
+    relabel = "CASE WHEN lower(trim(o.status)) = 'paid' THEN 'completed' ELSE 'other' END"
+    renamed = plan()
+    first = renamed["targets"][0]
+    first["columns"].append({"name": "status", "source": relabel})
+    first["quality_rules"] = [
+        {"name": "known_status", "condition": "status IN ('completed', 'other')"}
+    ]
+    renamed["targets"].append(
+        {
+            "name": "status_counts",
+            "sources": ["order_facts"],
+            "logic": "按状态计数",
+            "columns": [{"name": "completed", "source": "count_if(status = 'completed')"}],
+        }
+    )
+    validate_plan(renamed, tables, known, trust_assumptions=False)
+
+    copied = plan()
+    copied["targets"][0]["columns"].append({"name": "status", "source": "lower(trim(o.status))"})
+    copied["targets"][0]["quality_rules"] = [
+        {"name": "not_returned", "condition": "status <> 'returned'"}
+    ]
+    with pytest.raises(PlanError, match="'returned'"):
+        validate_plan(copied, tables, known, trust_assumptions=False)
+
+    # Downstream of a copy the input still holds the source's values, whatever the
+    # downstream target makes of them.
+    rewritten = plan()
+    rewritten["targets"][0]["columns"].append({"name": "status", "source": "o.status"})
+    rewritten["targets"].append(
+        {
+            "name": "relabelled",
+            "sources": ["order_facts"],
+            "logic": "改写状态",
+            "columns": [
+                {
+                    "name": "status",
+                    "source": "CASE WHEN status = 'returned' THEN 'completed' ELSE status END",
+                }
+            ],
+        }
+    )
+    with pytest.raises(PlanError, match="relabelled 拿 status 和 'returned' 比较"):
+        validate_plan(rewritten, tables, known, trust_assumptions=False)
+
+
 def test_known_values_from_the_profile():
     def table(rows, limit, columns):
         return {"sample_row_count": rows, "sample_limit": limit, "column_stats": columns}

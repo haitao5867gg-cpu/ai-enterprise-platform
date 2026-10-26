@@ -119,18 +119,20 @@ def score_plan(expect: dict[str, Any], plan: dict[str, Any] | None) -> list[Chec
         missing = [w for w in expect["mention"] if not _has([text], w)]
         checks.append(Check("plan", "mention", not missing, f"没提到 {missing}" if missing else ""))
     if "forbid" in expect:
-        # What the tables compute (column expressions and the literals in quality rules),
-        # not what the names, logic or assumptions say about it.
-        text = json.dumps(
-            [c.get("source", "") for t in targets for c in t.get("columns", [])]
-            + [
-                literal
-                for t in targets
-                for q in t.get("quality_rules", [])
-                for literal in re.findall(r"'([^']*)'", q.get("condition", ""))
-            ],
-            ensure_ascii=False,
-        )
+        # What the tables compute: column expressions, and quality rules without the names
+        # of the output columns they check. Not the names, logic or assumptions.
+        computed = []
+        for t in targets:
+            columns = [c.get("name", "") for c in t.get("columns", [])]
+            computed += [c.get("source", "") for c in t.get("columns", [])]
+            own = re.compile(r"\b(?:" + "|".join(map(re.escape, columns)) + r")\b", re.I)
+            for q in t.get("quality_rules", []):
+                # Odd parts are string literals: kept whole, names are dropped only outside.
+                parts = re.split(r"('(?:[^']|'')*')", q.get("condition", ""))
+                computed.append(
+                    "".join(p if i % 2 else own.sub("", p) for i, p in enumerate(parts))
+                )
+        text = json.dumps(computed, ensure_ascii=False)
         found = [w for w in expect["forbid"] if _has([text], w)]
         checks.append(Check("plan", "forbid", not found, f"用了 {found}" if found else ""))
     if "assumptions" in expect:
