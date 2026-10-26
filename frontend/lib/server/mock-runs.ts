@@ -1,12 +1,16 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { isRecord, type Decision, type Run } from "../runs";
+import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
+import { mockDataSources, mockEtlPlan, mockEtlResult } from "./mock-etl";
+import { mockZip } from "./mock-zip";
 
 type StoredRun = {
   run: Run;
   readyAt: number;
   decision?: Decision;
   comment?: string;
+  etl?: { language: EtlLanguage; plan?: EtlPlan };
 };
 // Next dev may reload this module. One process-wide store keeps route requests consistent.
 const globalStore = globalThis as typeof globalThis & {
@@ -17,6 +21,28 @@ const store = (globalStore.aepMockRuns ??= new Map<string, StoredRun>());
 function refresh(entry: StoredRun): Run {
   const { run } = entry;
   if (run.status !== "running" || Date.now() < entry.readyAt) return run;
+  if (entry.etl) {
+    if (entry.decision !== "approve") {
+      const plan = mockEtlPlan(entry.etl.language, entry.comment);
+      entry.etl.plan = plan;
+      run.status = "waiting";
+      run.messages.push({ role: "assistant", content: plan.summary });
+      run.pending = {
+        kind: "approval",
+        prompt: "请检查 ETL 方案，确认后生成管道代码。",
+        options: ["approve", "reject"],
+        details: { type: "etl_plan", plan },
+      };
+    } else if (entry.etl.plan) {
+      run.status = "done";
+      run.result = mockEtlResult(entry.etl.plan);
+      run.messages.push({
+        role: "assistant",
+        content: "已生成 ETL bundle，可查看或下载文件。",
+      });
+    }
+    return run;
+  }
   if (entry.decision !== "approve") {
     run.status = "waiting";
     run.messages.push({
@@ -50,6 +76,7 @@ function json(value: unknown, status = 200) {
 }
 
 export async function mockRuns(request: Request, path: string[]) {
+  if (path[0] === "datasources") return json(mockDataSources);
   if (request.method === "GET" && path.length === 1) {
     return json([...store.values()].reverse().map(refresh));
   }
@@ -62,30 +89,63 @@ export async function mockRuns(request: Request, path: string[]) {
     }
   }
   if (request.method === "POST" && path.length === 1) {
-    if (
-      !isRecord(body) ||
-      body.app !== "hello" ||
-      !isRecord(body.input) ||
-      typeof body.input.text !== "string" ||
-      !body.input.text.trim()
-    ) {
-      return json({ detail: "Provide app=hello and input.text" }, 422);
+    if (!isRecord(body) || !isRecord(body.input)) {
+      return json({ detail: "Provide app and input" }, 422);
     }
+    const input = body.input;
+    const isEtl = body.app === "etl";
+    const text = isEtl ? input.request : input.text;
+    if (
+      (body.app !== "hello" && !isEtl) ||
+      typeof text !== "string" ||
+      !text.trim() ||
+      (isEtl &&
+        (!mockDataSources.some(
+          (source) => source.datasource_id === input.datasource_id,
+        ) ||
+          (input.language !== undefined &&
+            input.language !== "pyspark" &&
+            input.language !== "sql")))
+    )
+      return json({ detail: "Invalid app or input" }, 422);
     const run: Run = {
       run_id: randomUUID(),
-      app: "hello",
+      app: isEtl ? "etl" : "hello",
       status: "running",
-      messages: [{ role: "user", content: body.input.text.trim() }],
+      messages: [{ role: "user", content: text.trim() }],
       pending: null,
       result: null,
       error: null,
+      trace_id: isEtl ? randomUUID().replaceAll("-", "") : null,
     };
-    store.set(run.run_id, { run, readyAt: Date.now() + 600 });
+    store.set(run.run_id, {
+      run,
+      readyAt: Date.now() + 600,
+      etl: isEtl
+        ? { language: input.language === "sql" ? "sql" : "pyspark" }
+        : undefined,
+    });
     return json({ run_id: run.run_id, status: run.status }, 201);
   }
   const entry = store.get(path[1]);
   if (!entry) return json({ detail: "Run not found" }, 404);
   const run = refresh(entry);
+  if (request.method === "GET" && path[2] === "files.zip") {
+    const result = getEtlResult(run.result);
+    if (
+      run.status !== "done" ||
+      !result ||
+      Object.keys(result.files).length === 0
+    )
+      return json({ detail: "This run has no files" }, 404);
+    return new Response(mockZip(result.files), {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${result.bundle}.zip"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  }
   if (request.method === "GET") return json(run);
   if (
     !isRecord(body) ||

@@ -6,6 +6,8 @@ export type Approval = {
   kind: "approval";
   prompt: string;
   options: Decision[];
+  // Apps may add new detail types; the generic approval remains usable.
+  details?: unknown;
 };
 export type RunSummary = {
   run_id: string;
@@ -18,6 +20,7 @@ export type Run = RunSummary & {
   pending: Approval | null;
   result: unknown;
   error: string | null;
+  trace_id?: string | null;
 };
 
 export const statusLabels: Record<RunStatus, string> = {
@@ -121,6 +124,11 @@ export function readRun(value: unknown): Run {
     !isSummary(value) ||
     !isMessages(value.messages) ||
     !(value.error === null || typeof value.error === "string") ||
+    !(
+      value.trace_id === undefined ||
+      value.trace_id === null ||
+      typeof value.trace_id === "string"
+    ) ||
     !("result" in value) ||
     !(
       value.pending === null ||

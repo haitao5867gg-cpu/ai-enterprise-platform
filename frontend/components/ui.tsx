@@ -23,7 +23,7 @@ export function ErrorNotice({
       <Icon name="alert" />
       <span>{message}</span>
       {onRetry && (
-        <button className="text-button" onClick={onRetry}>
+        <button type="button" className="text-button" onClick={onRetry}>
           重试
           <Icon name="refresh" size={14} />
         </button>

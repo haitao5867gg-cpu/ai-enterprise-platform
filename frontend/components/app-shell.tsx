@@ -90,8 +90,8 @@ export function AppShell({
             <Icon name="spark" />
           </span>
           <div>
-            <strong>hello</strong>
-            <small>示例应用 · M1</small>
+            <strong>hello / etl</strong>
+            <small>示例与数据工作流 · M2</small>
           </div>
           <span className="version">v0.1</span>
         </div>

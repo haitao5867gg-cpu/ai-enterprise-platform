@@ -17,8 +17,9 @@ async function handle(request: Request, context: Context) {
   const endpoint = path.join("/");
   const allowed =
     endpoint === "readyz" ||
+    endpoint === "datasources" ||
     endpoint === "runs" ||
-    /^runs\/[a-zA-Z0-9_-]{1,128}(\/resume)?$/.test(endpoint);
+    /^runs\/[a-zA-Z0-9_-]{1,128}(\/(resume|files\.zip))?$/.test(endpoint);
   if (!allowed) return jsonError("Not found", 404);
   const isResume = path.length === 3 && path[2] === "resume";
   const canGet = !isResume;
@@ -72,14 +73,15 @@ async function handle(request: Request, context: Context) {
         signal: AbortSignal.timeout(10_000),
       },
     );
-    return new Response(response.body, {
-      status: response.status,
-      headers: {
-        "Content-Type":
-          response.headers.get("Content-Type") ?? "application/json",
-        "Cache-Control": "no-store",
-      },
+    const headers = new Headers({
+      "Content-Type":
+        response.headers.get("Content-Type") ?? "application/json",
+      "Cache-Control": "no-store",
     });
+    const disposition = response.headers.get("Content-Disposition");
+    if (disposition) headers.set("Content-Disposition", disposition);
+    // Stream upstream bytes unchanged, including ZIP archives and error responses.
+    return new Response(response.body, { status: response.status, headers });
   } catch (error) {
     return jsonError(
       "Internal API is unavailable",

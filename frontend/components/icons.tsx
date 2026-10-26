@@ -10,6 +10,7 @@ type IconName =
   | "close"
   | "spark"
   | "refresh"
+  | "download"
   | "alert";
 const paths: Record<IconName, string> = {
   grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
@@ -23,6 +24,7 @@ const paths: Record<IconName, string> = {
   refresh:
     "M20 7v5h-5 M4 17v-5h5 M6.1 7a7 7 0 0 1 11.6-1L20 9 M4 15l2.3 3A7 7 0 0 0 17.9 17",
   alert: "M12 3 2 21h20z M12 9v5 M12 17v1",
+  download: "M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5",
 };
 
 export function Icon({
