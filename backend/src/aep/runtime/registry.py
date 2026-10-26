@@ -7,6 +7,7 @@ from langgraph.graph import StateGraph
 from openai import AsyncOpenAI
 
 from aep.config import Settings
+from aep.databricks import DevTarget
 from aep.datasources import DataSourceStore, MemoryDataSourceStore
 from aep.tools.mcp import McpTools
 
@@ -17,12 +18,14 @@ class AppContext:
 
     Model calls go through ``llm_client`` only; data sources are read through
     their connectors with ``tools`` (look the connector up in ``datasources``).
+    ``databricks`` is the workspace's dev target, or None when none is configured.
     """
 
     llm_client: AsyncOpenAI
     settings: Settings
     datasources: DataSourceStore = field(default_factory=MemoryDataSourceStore)
     tools: McpTools = field(default_factory=McpTools)
+    databricks: DevTarget | None = None
 
 
 AppBuilder = Callable[[AppContext], StateGraph]

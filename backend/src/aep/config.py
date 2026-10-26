@@ -27,6 +27,21 @@ class Settings(BaseSettings):
     # as JSON: [{"name": ..., "kind": ..., "connector_url": ..., "description": ...}].
     default_datasources: list[dict[str, str]] = []
 
+    # Databricks dev validation of generated bundles (aep.databricks). Off unless
+    # host and token are set. Empty catalog / schema / source_catalog keep the
+    # bundle's defaults.
+    databricks_host: str = ""
+    databricks_token: str = ""
+    databricks_catalog: str = ""
+    databricks_schema: str = ""
+    databricks_source_catalog: str = ""
+    # Pipelines run on serverless compute unless a node type is given; then each
+    # update starts a classic job cluster of that type.
+    databricks_pipeline_node_type: str = ""
+    databricks_pipeline_workers: int = 1
+    databricks_cli: str = "databricks"
+    databricks_timeout_seconds: float = 3600.0
+
     # Langfuse tracing. Off unless both keys are set; the names are shared with
     # the gateway, which reports model calls to the same project.
     langfuse_public_key: str = Field("", validation_alias="LANGFUSE_PUBLIC_KEY")

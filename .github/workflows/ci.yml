@@ -107,6 +107,10 @@ jobs:
       - run: curl -sf http://localhost:3000 | grep -q "后端状态"
       - name: Run survives an API restart while waiting for approval
         run: scripts/smoke-runs.sh
+      - name: The API image carries the Databricks CLI and its Terraform
+        run: |
+          docker compose exec -T api databricks --version
+          docker compose exec -T api sh -c '"$DATABRICKS_TF_EXEC_PATH" version && cat "$DATABRICKS_TF_CLI_CONFIG_FILE"'
       - name: The sample data source is registered and its connector answers
         run: |
           id=$(curl -sf http://localhost:8000/datasources |

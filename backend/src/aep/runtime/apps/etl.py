@@ -3,7 +3,10 @@
 profile (read the source through its connector) → plan (the model proposes an
 ETL plan) → review (the user confirms or sends it back with comments) →
 codegen (the model writes each table's transformation, checked statically,
-retried with the problems) → package (bundle files as the run result).
+retried with the problems) → package (bundle files as the run result) → verify
+(deploy to the Databricks dev target and run it; a failed run goes back to
+codegen with its errors). Without a configured workspace, verify is skipped and
+the result says so.
 
 Input: ``datasource_id`` and ``request``; optional ``tables`` (schema.table to
 limit profiling), ``language`` ("pyspark" by default, or "sql"), ``name`` (the
@@ -19,6 +22,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from aep import llm
+from aep.databricks import DevRun
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.plan import SYSTEM_PROMPT as PLAN_PROMPT
@@ -27,6 +31,8 @@ from aep.runtime.registry import AppContext
 
 CODEGEN_ATTEMPTS = 3
 PLAN_ATTEMPTS = 2
+DEV_RUN_ATTEMPTS = 3
+ERROR_CHARS = 1500
 
 
 class EtlState(TypedDict, total=False):
@@ -39,6 +45,7 @@ class EtlState(TypedDict, total=False):
     code: dict[str, str]
     problems: list[str]
     attempts: int
+    dev_runs: int
     result: dict[str, Any] | None
 
 
@@ -50,7 +57,30 @@ def _plan_message(plan: EtlPlan) -> str:
     return "\n".join(lines)
 
 
+def _dev_message(name: str, dev: DevRun, retry: bool) -> str:
+    if dev.status == "passed":
+        lines = [f"已在 Databricks dev 目标上跑通 {name}" + (f"：{dev.url}" if dev.url else "")]
+        for t in dev.tables:
+            rows = "未知" if t.rows is None else str(t.rows)
+            dropped = f"，质量规则丢弃 {t.dropped} 行" if t.dropped else ""
+            lines.append(f"- {t.name}：写入 {rows} 行{dropped}")
+    else:
+        stage = {"validate": "校验", "deploy": "部署", "run": "运行"}[dev.stage]
+        lines = [f"Databricks dev 目标{stage}失败："]
+        lines += [f"- {e[:500]}" for e in dev.errors[:5]]
+        if retry:
+            lines.append("带着报错重新生成代码。")
+    lines += [f"注意：{w}" for w in dev.warnings]
+    return "\n".join(lines)
+
+
 def build(ctx: AppContext) -> StateGraph:
+    compute = None
+    if ctx.settings.databricks_pipeline_node_type:
+        compute = codegen.Compute(
+            ctx.settings.databricks_pipeline_node_type, ctx.settings.databricks_pipeline_workers
+        )
+
     def model_for(state: EtlState, step: str) -> str:
         return (state["input"].get("models") or {}).get(step) or ctx.settings.default_model
 
@@ -172,23 +202,62 @@ def build(ctx: AppContext) -> StateGraph:
         if not IDENTIFIER.match(name):
             name = "etl_" + config["configurable"]["thread_id"].replace("-", "")[:8]
         if not problems:
-            bundle = codegen.render(name, confirmed, state["code"], state["source_name"])
+            bundle = codegen.render(name, confirmed, state["code"], state["source_name"], compute)
             problems = codegen.check_bundle(bundle)
             files = bundle.files
+        verification: dict[str, Any] | None = None
         if problems:
             text = "代码没有通过检查，已停止：\n" + "\n".join(f"- {p}" for p in problems)
+            verification = {"status": "skipped", "reason": "代码没有通过静态检查"}
         else:
             text = f"已生成 Databricks bundle {name}：" + "、".join(sorted(files))
+            if ctx.databricks is None:
+                verification = {
+                    "status": "skipped",
+                    "reason": "没有配置 Databricks 工作区（AEP_DATABRICKS_HOST、"
+                    "AEP_DATABRICKS_TOKEN），跳过 dev 试跑",
+                }
+            else:
+                text += "\n接下来部署到 Databricks dev 目标试跑。"
         return {
             "messages": [{"role": "assistant", "content": text}],
+            "problems": problems,
             "result": {
                 "bundle": name,
                 "language": confirmed.language,
                 "plan": state["plan"],
                 "files": files,
                 "checks": {"passed": not problems, "problems": problems},
+                "verification": verification,
             },
         }
+
+    def after_package(state: EtlState) -> str:
+        result = state["result"] or {}
+        return "verify" if result.get("verification") is None else END
+
+    async def verify(state: EtlState) -> dict[str, Any]:
+        assert ctx.databricks is not None
+        result = dict(state["result"] or {})
+        dev = await ctx.databricks.run(codegen.Bundle(result["bundle"], result["files"]))
+        runs = state.get("dev_runs", 0) + 1
+        retry = dev.status == "failed" and dev.fixable and runs < DEV_RUN_ATTEMPTS
+        result["verification"] = dev.as_dict() | {"attempt": runs}
+        update: dict[str, Any] = {
+            "result": result,
+            "dev_runs": runs,
+            "messages": [
+                {"role": "assistant", "content": _dev_message(result["bundle"], dev, retry)}
+            ],
+        }
+        if retry:
+            errors = [e[:ERROR_CHARS] for e in dev.errors[:10]]
+            update["problems"] = ["代码在 Databricks dev 目标上运行失败，报错如下：", *errors]
+            update["attempts"] = 0
+        return update
+
+    def after_verify(state: EtlState) -> str:
+        return "codegen" if state.get("problems") else END
 
     def after_review(state: EtlState) -> str:
         return "plan" if state.get("feedback") else "codegen"
@@ -199,10 +268,12 @@ def build(ctx: AppContext) -> StateGraph:
     graph.add_node("review", review)
     graph.add_node("codegen", write_code)
     graph.add_node("package", package)
+    graph.add_node("verify", verify)
     graph.add_edge(START, "profile")
     graph.add_edge("profile", "plan")
     graph.add_edge("plan", "review")
     graph.add_conditional_edges("review", after_review, ["plan", "codegen"])
     graph.add_conditional_edges("codegen", after_code, ["codegen", "package"])
-    graph.add_edge("package", END)
+    graph.add_conditional_edges("package", after_package, ["verify", END])
+    graph.add_conditional_edges("verify", after_verify, ["codegen", END])
     return graph
