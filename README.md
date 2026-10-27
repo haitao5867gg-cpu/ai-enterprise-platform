@@ -2,7 +2,7 @@
 
 企业 AI 应用平台：帮助 FDE 和 AI PM 交付企业 AI 需求，并把交付成果沉淀为可复用的公司资产。
 
-当前进度：M0 工程骨架已完成，M1 进行中。第一版范围与里程碑见 [AGENTS.md](AGENTS.md) 中的设计文档链接。
+当前进度：M1、M2 已完成，M3 进行中。第一版范围与里程碑见 [AGENTS.md](AGENTS.md) 中的设计文档链接。
 
 ## 快速开始
 
@@ -91,6 +91,8 @@ make up-full
 在上面的基础上再启动一套自托管 Langfuse：http://localhost:3100，账号 `admin@aep.local`，密码 `aep-local-dev`。每次 run 是一条 trace，`GET /runs/{id}` 返回的 `trace_id` 就是它的 id；里面能看到每个节点、人工确认前后的每一段，以及模型调用的输入、输出、耗时、token 和模型名。
 
 想用 Langfuse Cloud 或其他 Langfuse 服务，在 `.env` 里填 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST` 后用 `make up`。不填就不追踪。
+
+工作台的「在 Langfuse 中查看」链接由 web 服务运行时的 `AEP_LANGFUSE_UI_URL`（默认 `http://localhost:3100`）和 `AEP_LANGFUSE_PROJECT_ID`（默认 `aep-local`）配置；地址填写浏览器可访问的 URL，设为 `AEP_LANGFUSE_UI_URL=` 时隐藏链接。修改配置后重建 web 容器即可，无需重新构建镜像。
 
 停止：`make down`（包括 Langfuse，数据会保留）。
 

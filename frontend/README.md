@@ -39,7 +39,7 @@ AEP_MOCK_RUNS=false AEP_API_INTERNAL_URL=http://localhost:8000 npm run dev
 
 完成页提供按目录组织的文件按钮、代码视图和 ZIP 下载。内置词法高亮支持 Python、SQL、YAML，其他文件按纯文本展示，不新增依赖。所有内容通过 React 文本节点呈现，不执行生成代码或 HTML。`checks.passed=false` 时列出全部问题；即使未生成文件，也会展示检查失败详情，不提供无效的下载链接。
 
-`trace_id` 非空时显示“在 Langfuse 中查看”，指向本地 `make up-full` 的 `http://localhost:3100/project/aep-local/traces/{trace_id}`。
+`trace_id` 非空且未禁用链接时显示“在 Langfuse 中查看”。详情页服务端按请求读取 `AEP_LANGFUSE_UI_URL`（默认 `http://localhost:3100`）和 `AEP_LANGFUSE_PROJECT_ID`（默认 `aep-local`），链接为 `<地址>/project/<项目 id>/traces/<trace_id>`。地址末尾的斜杠会去除，项目 id 和 trace id 按路径段编码。`AEP_LANGFUSE_UI_URL=` 隐藏链接。它们是服务端运行时配置，同一个生产镜像可以在本地和 Azure 使用不同值，修改后重启服务即可。
 
 ## 验证
 
@@ -51,7 +51,9 @@ npx playwright install chromium
 npm test
 ```
 
-`npm test` 启动独立端口 3100–3102：3100 是开发 mock，3101 是生产前端，3102 是仅供测试的本地契约服务。请先完成 build 并确保端口空闲。测试不使用数据库、外部网络或真实模型；覆盖确认、带意见驳回、刷新详情、列表筛选、故障恢复、两秒轮询、重复提交保护、终态停止轮询、手机布局和键盘操作。生产前端测试故意传入 `AEP_MOCK_RUNS=true`，验证它仍向配置的后端基础路径转发。
+`npm test` 启动独立端口 3100–3103：3100 是开发 mock，3101 是生产前端，3102 是仅供测试的本地契约服务，3103 用同一份生产构建验证禁用 Langfuse 链接。请先完成 build 并确保端口空闲。测试不使用数据库、外部网络或真实模型；覆盖确认、带意见驳回、刷新详情、列表筛选、故障恢复、两秒轮询、重复提交保护、终态停止轮询、手机布局和键盘操作。生产前端测试故意传入 `AEP_MOCK_RUNS=true`，验证它仍向配置的后端基础路径转发。
+
+`tests/langfuse.spec.ts` 验证默认链接、生产运行时自定义地址和项目 id（含地址尾斜杠与路径段编码）、空地址隐藏链接，以及没有 trace id 时隐藏链接。
 
 `tests/etl.spec.ts` 额外覆盖 ETL 完整流程、默认 PySpark / 可选 SQL、数据源故障与空状态、未知 details、检查失败、纯文本安全呈现、手机布局及 ZIP 下载后的全部文件内容。生产转发测试核对 ZIP 原始字节（含非 UTF-8 字节）和下载响应头。
 

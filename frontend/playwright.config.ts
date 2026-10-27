@@ -17,13 +17,26 @@ export default defineConfig({
   projects: [
     {
       name: "workbench",
-      testMatch: ["workbench.spec.ts", "etl.spec.ts"],
+      testMatch: ["workbench.spec.ts", "etl.spec.ts", "langfuse.spec.ts"],
       use: { baseURL: "http://127.0.0.1:3100" },
+      metadata: {
+        langfuseTraceBaseUrl: "http://localhost:3100/project/aep-local/traces/",
+      },
     },
     {
       name: "production-proxy",
-      testMatch: "proxy.spec.ts",
+      testMatch: ["proxy.spec.ts", "langfuse.spec.ts"],
       use: { baseURL: "http://127.0.0.1:3101" },
+      metadata: {
+        langfuseTraceBaseUrl:
+          "https://traces.example.com/langfuse/project/azure%20project%2F%E6%B5%8B%E8%AF%95/traces/",
+      },
+    },
+    {
+      name: "langfuse-disabled",
+      testMatch: "langfuse.spec.ts",
+      use: { baseURL: "http://127.0.0.1:3103" },
+      metadata: { langfuseTraceBaseUrl: null },
     },
   ],
   webServer: [
@@ -53,6 +66,23 @@ export default defineConfig({
         PORT: "3101",
         AEP_MOCK_RUNS: "true",
         AEP_API_INTERNAL_URL: "http://127.0.0.1:3102/internal/v1/",
+        AEP_LANGFUSE_UI_URL: "https://traces.example.com/langfuse/",
+        AEP_LANGFUSE_PROJECT_ID: "azure project/测试",
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
+      reuseExistingServer: false,
+    },
+    // Reuse the same standalone build with a different runtime configuration.
+    {
+      command: "node tests/fixtures/start-production.mjs",
+      url: "http://127.0.0.1:3103",
+      env: {
+        NODE_ENV: "production",
+        HOSTNAME: "127.0.0.1",
+        PORT: "3103",
+        AEP_API_INTERNAL_URL: "http://127.0.0.1:3102/internal/v1/",
+        AEP_LANGFUSE_UI_URL: "",
+        AEP_LANGFUSE_PROJECT_ID: "aep-local",
         NEXT_TELEMETRY_DISABLED: "1",
       },
       reuseExistingServer: false,

@@ -138,6 +138,9 @@ services:
     build: ./frontend
     environment:
       AEP_API_INTERNAL_URL: http://api:8000
+      # Browser-facing Langfuse URL/project; an empty UI URL hides the trace link.
+      AEP_LANGFUSE_UI_URL: ${AEP_LANGFUSE_UI_URL-http://localhost:3100}
+      AEP_LANGFUSE_PROJECT_ID: ${AEP_LANGFUSE_PROJECT_ID-aep-local}
     ports:
       - "3000:3000"
     depends_on:
