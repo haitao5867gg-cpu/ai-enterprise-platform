@@ -6,11 +6,14 @@ codegen (the model writes each table's transformation, checked statically,
 retried with the problems) → package (bundle files as the run result) → verify
 (deploy the pipeline, or a notebook job on an existing cluster, to the
 Databricks dev target and run it, or only run the transformations on an existing
-cluster; a failed run goes back to codegen with its errors) → release (a person
-approves going to prod, or sends the code back with comments) → deploy_prod (the
-bundle goes to the prod target, on a schedule).
+cluster; a failed run goes back to codegen with its errors) → publish (the bundle
+goes to the assets repository as a pull request, see ``aep.assets``) → release (a
+person approves going to prod, or sends the code back with comments; either way
+the decision is added to the PR) → deploy_prod (the bundle goes to the prod
+target, on a schedule).
 Without a configured workspace, verify is skipped and the result says so; without
-a prod target, the run ends after verify and ``result.release`` says why.
+an assets repository, publish is skipped and ``result.asset`` says why; without a
+prod target, the run ends after publish and ``result.release`` says why.
 Every decision is kept in ``result.approvals``.
 
 Input: ``datasource_id`` and ``request``; optional ``tables`` (schema.table to
@@ -29,7 +32,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from aep import llm
+from aep import llm, tracing
+from aep.assets import AssetRepoError, AssetStatus
 from aep.databricks import DevRun, Release
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
@@ -117,6 +121,60 @@ def _release_message(name: str, release: Release) -> str:
     head = f"已上线到 prod：{name} 部署为 {what}，写入 {where}"
     head += f"，按计划 `{release.schedule}`（{release.timezone}）运行"
     return head + (f"：{release.url}" if release.url else "")
+
+
+def _decision(approval: dict[str, Any]) -> str:
+    verdict = "通过" if approval.get("decision") == "approve" else "驳回"
+    who = approval.get("actor") or "未署名"
+    line = f"{verdict}（{who}，{approval.get('at', '')}）"
+    return line + (f"，意见：{approval['comment']}" if approval.get("comment") else "")
+
+
+def _cell(text: Any) -> str:
+    return str(text or "").replace("|", "\\|").replace("\n", " ")
+
+
+def _asset_body(state: "EtlState", result: dict[str, Any], run_url: str, trace: str | None) -> str:
+    """The PR description: what was asked, what was confirmed, how dev went, who decided."""
+    confirmed = EtlPlan.model_validate(result["plan"])
+    lines = ["## 需求", "", state["input"].get("request", ""), "", "## 确认后的方案", ""]
+    lines.append(confirmed.summary)
+    lines.append("")
+    for t in confirmed.targets:
+        load = "增量" if t.load.mode == "incremental" else "全量"
+        lines.append(f"- `{t.name}`（{load}，来自 {', '.join(t.sources)}）：{t.description}")
+    if confirmed.assumptions:
+        lines += ["", "需要确认的假设：", ""]
+        lines += [f"- {a}" for a in confirmed.assumptions]
+    dev = result.get("verification") or {}
+    lines += ["", "## dev 试跑", ""]
+    lines.append(f"状态：{dev.get('status')}，方式：{dev.get('mode')}，第 {dev.get('attempt')} 次")
+    if dev.get("url"):
+        lines.append(f"Databricks：{dev['url']}")
+    for t in dev.get("tables", []):
+        rows = "未知" if t.get("rows") is None else t["rows"]
+        dropped = f"，质量规则丢弃 {t['dropped']} 行" if t.get("dropped") else ""
+        lines.append(f"- `{t.get('name')}`：{rows} 行{dropped}")
+    lines += [
+        "",
+        "## 审批记录",
+        "",
+        "| 步骤 | 结论 | 审批人 | 时间 | 意见 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    steps = {"plan": "方案确认", "release": "上线审批"}
+    for a in state.get("approvals", []):
+        verdict = "通过" if a.get("decision") == "approve" else "驳回"
+        lines.append(
+            f"| {steps.get(a.get('step'), a.get('step'))} | {verdict} | {_cell(a.get('actor'))}"
+            f" | {_cell(a.get('at'))} | {_cell(a.get('comment'))} |"
+        )
+    lines += ["", "## 来源", "", f"- 数据源：{state.get('source_name', '')}"]
+    lines.append(f"- 平台运行：{run_url}")
+    if trace:
+        lines.append(f"- Langfuse trace：`{trace}`")
+    lines += ["", "上线审批的结论会以评论补在这个 PR 上；是否合并由人决定。"]
+    return "\n".join(lines)
 
 
 def build(ctx: AppContext) -> StateGraph:
@@ -328,7 +386,75 @@ def build(ctx: AppContext) -> StateGraph:
             return "codegen"
         result = state["result"] or {}
         passed = (result.get("verification") or {}).get("status") == "passed"
-        return "release" if passed and "release" not in result else END
+        return "publish" if passed else END
+
+    async def publish(state: EtlState, config: RunnableConfig) -> dict[str, Any]:
+        result = dict(state["result"] or {})
+        name = result["bundle"]
+        if state["input"].get("release") is False:
+            result["asset"] = {"status": "skipped", "reason": "这次运行只试跑，不提交资产"}
+            return {"result": result}
+        if ctx.assets is None:
+            result["asset"] = {
+                "status": "skipped",
+                "reason": "没有配置资产仓库（AEP_ASSETS_REPO、AEP_ASSETS_GITHUB_TOKEN）",
+            }
+            return {"result": result}
+        run_id = config["configurable"]["thread_id"]
+        s = ctx.settings
+        trace = (
+            tracing.trace_id(run_id) if s.langfuse_public_key and s.langfuse_secret_key else None
+        )
+        run_url = f"{s.web_url.rstrip('/')}/runs/{run_id}"
+        version = await ctx.asset_store.next_version(name)
+        summary = EtlPlan.model_validate(result["plan"]).summary
+        directory = f"pipelines/{name}"
+        try:
+            published = await ctx.assets.open_pr(
+                directory,
+                result["files"],
+                # The run in the name keeps two runs of one bundle off each other's PRs.
+                branch=f"aep/{name}/v{version}-{run_id[:8]}",
+                title=f"{name} v{version}：{summary[:60]}",
+                body=_asset_body(state, result, run_url, trace),
+                message=f"{name} v{version}（平台运行 {run_id}）",
+            )
+        except AssetRepoError as exc:
+            result["asset"] = {"status": "failed", "repo": ctx.assets.repo, "errors": [str(exc)]}
+            text = f"提交到资产仓库 {ctx.assets.repo} 失败：{exc}"
+            return {"result": result, "messages": [{"role": "assistant", "content": text}]}
+        await ctx.asset_store.add(name, version, run_id, published)
+        result["asset"] = {
+            "status": "proposed",
+            "repo": ctx.assets.repo,
+            "path": directory,
+            "version": version,
+            "pr_number": published.number,
+            "pr_url": published.url,
+            "branch": published.branch,
+            "commit": published.commit,
+        }
+        text = f"已在资产仓库 {ctx.assets.repo} 开 PR #{published.number}（{name} v{version}）"
+        return {
+            "result": result,
+            "messages": [{"role": "assistant", "content": f"{text}：{published.url}"}],
+        }
+
+    def after_publish(state: EtlState) -> str:
+        return END if "release" in (state["result"] or {}) else "release"
+
+    async def note_on_pr(result: dict[str, Any], body: str, status: AssetStatus) -> None:
+        """Add a decision to the bundle's PR and the index; a failure is kept, not raised."""
+        asset = result.get("asset") or {}
+        if asset.get("status") != "proposed" or ctx.assets is None:
+            return
+        await ctx.asset_store.set_status(result["bundle"], asset["version"], status)
+        try:
+            await ctx.assets.comment(asset["pr_number"], body)
+        except AssetRepoError as exc:
+            result["asset"] = asset | {"errors": [*asset.get("errors", []), str(exc)]}
+        else:
+            result["asset"] = asset | {"status": status}
 
     def release_target(state: EtlState) -> dict[str, Any]:
         s = ctx.settings
@@ -344,7 +470,7 @@ def build(ctx: AppContext) -> StateGraph:
             target["cluster_id"] = s.databricks_prod_cluster_id or s.databricks_cluster_id
         return target
 
-    def release(state: EtlState) -> dict[str, Any]:
+    async def release(state: EtlState) -> dict[str, Any]:
         result = dict(state["result"] or {})
         target = release_target(state)
         answer = interrupt(
@@ -371,6 +497,12 @@ def build(ctx: AppContext) -> StateGraph:
                 "messages": [{"role": "user", "content": "确认上线"}],
             }
         comment = answer.get("comment") or "请改进代码"
+        await note_on_pr(
+            result,
+            f"**上线审批：{_decision(approval)}**\n\n"
+            "代码会按意见重写，dev 试跑通过后另开新版本的 PR。",
+            "rejected",
+        )
         return {
             "result": result,
             "approvals": [approval],
@@ -389,11 +521,16 @@ def build(ctx: AppContext) -> StateGraph:
         bundle = codegen.Bundle(result["bundle"], result["files"])
         shipped = await ctx.databricks.release(bundle, state["input"].get("schedule"))
         result["release"] = shipped.as_dict()
+        message = _release_message(result["bundle"], shipped)
+        approval = (state.get("approvals") or [{}])[-1]
+        await note_on_pr(
+            result,
+            f"**上线审批：{_decision(approval)}**\n\n{message}",
+            "released" if shipped.status == "deployed" else "release_failed",
+        )
         return {
             "result": result,
-            "messages": [
-                {"role": "assistant", "content": _release_message(result["bundle"], shipped)}
-            ],
+            "messages": [{"role": "assistant", "content": message}],
         }
 
     def after_review(state: EtlState) -> str:
@@ -406,6 +543,7 @@ def build(ctx: AppContext) -> StateGraph:
     graph.add_node("codegen", write_code)
     graph.add_node("package", package)
     graph.add_node("verify", verify)
+    graph.add_node("publish", publish)
     graph.add_node("release", release)
     graph.add_node("deploy_prod", deploy_prod)
     graph.add_edge(START, "profile")
@@ -414,7 +552,8 @@ def build(ctx: AppContext) -> StateGraph:
     graph.add_conditional_edges("review", after_review, ["plan", "codegen"])
     graph.add_conditional_edges("codegen", after_code, ["codegen", "package"])
     graph.add_conditional_edges("package", after_package, ["verify", END])
-    graph.add_conditional_edges("verify", after_verify, ["codegen", "release", END])
+    graph.add_conditional_edges("verify", after_verify, ["codegen", "publish", END])
+    graph.add_conditional_edges("publish", after_publish, ["release", END])
     graph.add_conditional_edges("release", after_release, ["codegen", "deploy_prod"])
     graph.add_edge("deploy_prod", END)
     return graph

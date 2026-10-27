@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     databricks_cli: str = "databricks"
     databricks_timeout_seconds: float = 3600.0
 
+    # The assets repository (aep.assets): bundles that passed on dev are opened there
+    # as pull requests under pipelines/<name>/. Off unless repo (owner/name) and token
+    # are set; the token needs contents and pull requests read/write on that repo only.
+    assets_repo: str = ""
+    assets_github_token: str = ""
+    assets_base_branch: str = "main"
+    assets_api_url: str = "https://api.github.com"
+    # Where people open the workbench, for links back to a run (in PRs, for example).
+    web_url: str = "http://localhost:3000"
+
     # Langfuse tracing. Off unless both keys are set; the names are shared with
     # the gateway, which reports model calls to the same project.
     langfuse_public_key: str = Field("", validation_alias="LANGFUSE_PUBLIC_KEY")

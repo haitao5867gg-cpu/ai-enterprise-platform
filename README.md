@@ -71,6 +71,21 @@ AEP_DATABRICKS_PROD_SCHEMA=<prod schema>
 # AEP_DATABRICKS_PROD_TIMEZONE=Asia/Shanghai
 ```
 
+#### 生成的代码以 PR 进资产仓库
+
+配上资产仓库后，dev 试跑通过的 bundle 会提交到这个仓库的 `pipelines/<bundle 名>/` 下：每个版本新开一个分支（`aep/<bundle 名>/v<版本>-<run id 前 8 位>`）和一个 PR。PR 描述里写着原始需求、确认后的方案和假设、dev 试跑结果、审批记录、平台 run 链接和 Langfuse trace id；上线审批的结论（通过并部署、或驳回）会以评论补在 PR 上。PR 合不合并由人决定。驳回后重写的代码试跑通过，会作为下一个版本另开 PR。
+
+平台在资产索引里记下每个版本（bundle 名、版本、PR、commit、来源 run、状态），`GET /assets?name=<bundle 名>` 可以按名称查。不配就跳过，run 结果的 `asset` 里写明原因；评测（`input.release = false`）不提交。
+
+资产仓库要先有一个初始提交（新建时勾选「Add a README」）。令牌用 fine-grained token，只授权这一个仓库，给 Contents 和 Pull requests 读写：
+
+```bash
+AEP_ASSETS_REPO=<owner>/<仓库名>
+AEP_ASSETS_GITHUB_TOKEN=<令牌>
+# AEP_ASSETS_BASE_BRANCH=main
+# AEP_WEB_URL=http://localhost:3000   # PR 里 run 链接的地址
+```
+
 ### 评测
 
 `evals/etl/cases.yaml` 是 ETL 评测集：示例库上的一组需求，以及好的结果要满足什么（目标表、列、假设、试跑行数等，写法见文件开头）。平台起来之后：

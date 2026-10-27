@@ -14,7 +14,8 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import datasources, runs
+from aep.api import assets, datasources, runs
+from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
@@ -72,6 +73,9 @@ def create_app() -> FastAPI:
         sources = PostgresDataSourceStore(pool)
         await sources.setup()
         await register_defaults(sources, settings.default_datasources)
+        asset_store = PostgresAssetStore(pool)
+        await asset_store.setup()
+        asset_repo = AssetRepo.from_settings(settings)
         tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
         databricks = DevTarget.from_settings(settings)
@@ -80,7 +84,13 @@ def create_app() -> FastAPI:
             checkpointer,
             default_apps(),
             AppContext(
-                llm_client, settings, datasources=sources, tools=tools, databricks=databricks
+                llm_client,
+                settings,
+                datasources=sources,
+                tools=tools,
+                databricks=databricks,
+                assets=asset_repo,
+                asset_store=asset_store,
             ),
             tracer,
         )
@@ -88,12 +98,15 @@ def create_app() -> FastAPI:
             log.info("tracing runs to Langfuse at %s", settings.langfuse_host)
         if databricks is not None:
             log.info("validating ETL bundles on Databricks at %s", settings.databricks_host)
+        if asset_repo is not None:
+            log.info("opening ETL bundles as pull requests in %s", settings.assets_repo)
         recovered = await service.recover()
         if recovered:
             log.info("resumed %d runs left running by the previous process", recovered)
         app.state.llm_client = llm_client
         app.state.run_service = service
         app.state.datasources = sources
+        app.state.asset_store = asset_store
         app.state.mcp_tools = tools
         yield
         try:
@@ -103,12 +116,15 @@ def create_app() -> FastAPI:
         tracer.shutdown()
         if databricks is not None:
             await databricks.close()
+        if asset_repo is not None:
+            await asset_repo.close()
         await pool.close()
         await llm_client.close()
 
     app = FastAPI(title="AI Enterprise Platform", version=__version__, lifespan=lifespan)
     app.include_router(runs.router)
     app.include_router(datasources.router)
+    app.include_router(assets.router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
