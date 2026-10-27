@@ -30,16 +30,20 @@ test: test-connectors      ## Connector + backend tests + frontend type check
 lint:
 	cd backend && uv run ruff check . && uv run ruff format --check .
 	cd connectors/postgres && uv run ruff check . && uv run ruff format --check .
+	cd connectors/mysql && uv run ruff check . && uv run ruff format --check .
 
 fmt:
 	cd backend && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/postgres && uv run ruff check --fix . && uv run ruff format .
+	cd connectors/mysql && uv run ruff check --fix . && uv run ruff format .
 
 .PHONY: test-connectors smoke-connectors
 
 test-connectors:  ## Integration tests against the synthetic source database
-	docker compose up -d --wait source-postgres
+	docker compose up -d --wait source-postgres source-mysql
 	uv run --frozen --project connectors/postgres pytest connectors/postgres/tests -q
+	uv run --frozen --project connectors/mysql pytest connectors/mysql/tests -q
 
 smoke-connectors: ## Call all five tools on the running Streamable HTTP server
 	uv run --frozen --project connectors/postgres aep-postgres-smoke
+	uv run --frozen --project connectors/mysql aep-mysql-smoke

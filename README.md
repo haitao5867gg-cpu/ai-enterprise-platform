@@ -19,7 +19,7 @@ make up
 
 ### ETL 应用
 
-`make up` 会自动登记一个本地示例库（客户、商品、订单）。`mock` 模型不会输出方案，ETL 要用真实模型：把 `.env.example` 复制为 `.env`，填好一个模型并把 `AEP_DEFAULT_MODEL` 设成它的别名。例如用公司的 OpenAI 兼容网关：
+`make up` 会自动登记两个本地示例库：「示例库」（PostgreSQL）和「MySQL 示例库」。两者都有同样的客户、商品、订单及脏数据，连接器均只读。MySQL 的运行、权限和验证说明见 [connectors/mysql](connectors/mysql/README.md)。`mock` 模型不会输出方案，ETL 要用真实模型：把 `.env.example` 复制为 `.env`，填好一个模型并把 `AEP_DEFAULT_MODEL` 设成它的别名。例如用公司的 OpenAI 兼容网关：
 
 ```bash
 AEP_DEFAULT_MODEL=company
@@ -28,7 +28,7 @@ COMPANY_API_KEY=<密钥>
 # COMPANY_MODEL=openai/deepseek-v4.1-flash-new   # 默认值，模型 id 以网关 /v1/models 为准
 ```
 
-改完 `.env` 后重新执行 `make up`，打开 http://localhost:3000 →「新建运行」→ 应用选 `etl`、数据源选「示例库」、写下需求 →「开始运行」。工作流先探查数据、给出方案，在页面上确认（或写意见驳回）后生成 Databricks bundle，可以在页面上看代码、下载 ZIP。
+改完 `.env` 后重新执行 `make up`，打开 http://localhost:3000 →「新建运行」→ 应用选 `etl`、数据源选「示例库」或「MySQL 示例库」、写下需求 →「开始运行」。工作流先探查数据、给出方案，在页面上确认（或写意见驳回）后生成 Databricks bundle，可以在页面上看代码、下载 ZIP。
 
 也可以直接用 API：
 

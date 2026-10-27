@@ -14,6 +14,49 @@ x-langfuse-client: &langfuse-client
   LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
 
 services:
+  source-mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${AEP_SOURCE_MYSQL_ADMIN_PASSWORD:-local-source-admin}
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: sales
+      AEP_MYSQL_PASSWORD: ${AEP_MYSQL_PASSWORD:-local-source-reader}
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - source-mysql-data:/var/lib/mysql
+      - ./connectors/mysql/seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysql --protocol=tcp -h 127.0.0.1 -uroot -e 'SELECT 1 FROM sales.orders LIMIT 1'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  connector-mysql:
+    build: ./connectors/mysql
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AEP_MYSQL_HOST: source-mysql
+      AEP_MYSQL_PORT: 3306
+      AEP_MYSQL_DATABASE: sales
+      AEP_MYSQL_USER: source_reader
+      AEP_MYSQL_PASSWORD: ${AEP_MYSQL_PASSWORD:-local-source-reader}
+      AEP_MYSQL_MCP_HOST: 0.0.0.0
+      AEP_MYSQL_MCP_PORT: 8002
+    ports:
+      - "127.0.0.1:8002:8002"
+    depends_on:
+      source-mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   source-postgres:
     image: postgres:17-alpine
     environment:
@@ -117,8 +160,10 @@ services:
       AEP_REDIS_URL: redis://redis:6379/0
       AEP_LLM_GATEWAY_URL: http://litellm:4000
       AEP_LLM_GATEWAY_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
-      # The sample source database, through its read-only connector.
-      AEP_DEFAULT_DATASOURCES: '[{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"}]'
+      # Sample sources, registered through the existing startup mechanism.
+      AEP_DEFAULT_DATASOURCES: >-
+        [{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"},
+         {"name": "MySQL 示例库", "kind": "mysql", "connector_url": "http://connector-mysql:8002/mcp", "description": "本地 MySQL 示例源库：客户、商品、订单（含脏数据）"}]
     ports:
       - "8000:8000"
     depends_on:
@@ -150,3 +195,4 @@ services:
 volumes:
   postgres-data:
   source-postgres-data:
+  source-mysql-data:
