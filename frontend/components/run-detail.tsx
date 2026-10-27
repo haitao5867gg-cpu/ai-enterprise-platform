@@ -45,7 +45,13 @@ function ResultView({ result }: { result: unknown }) {
   );
 }
 
-export function RunDetail({ id }: { id: string }) {
+export function RunDetail({
+  id,
+  langfuseTraceBaseUrl,
+}: {
+  id: string;
+  langfuseTraceBaseUrl: string | null;
+}) {
   const [run, setRun] = useState<Run | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -290,12 +296,12 @@ export function RunDetail({ id }: { id: string }) {
                     <dd className="monospace">{run.run_id}</dd>
                   </div>
                 </dl>
-                {run.trace_id && (
+                {langfuseTraceBaseUrl && run.trace_id && (
                   <a
                     className="trace-link"
                     target="_blank"
                     rel="noopener noreferrer"
-                    href={`http://localhost:3100/project/aep-local/traces/${encodeURIComponent(run.trace_id)}`}
+                    href={`${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`}
                   >
                     在 Langfuse 中查看
                     <Icon name="arrow" size={14} />
