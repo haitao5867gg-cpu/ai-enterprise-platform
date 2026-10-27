@@ -5,6 +5,7 @@ deployed and how the run's outcome is read, against the fake workspace.
 """
 
 import ast
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import yaml
 
 from aep import cluster_harness
 from aep.config import Settings
+from aep.databricks import DevTarget
 from aep.etl import codegen
 from aep.etl.plan import EtlPlan
 from tests import fake_databricks
@@ -244,3 +246,27 @@ async def test_failed_job_goes_back_to_codegen_and_passes(tmp_path):
     assert any(t.startswith("Databricks dev 目标上的 Job 运行失败") for t in texts)
     assert "已在 Databricks dev 目标上部署并运行 Job shop_orders" in texts[-1]
     assert "写入 4761 行" in texts[-1]
+
+
+async def test_runs_of_one_bundle_verify_one_at_a_time(tmp_path, monkeypatch):
+    wait_run = DevTarget._wait_run
+
+    async def slow_job(self, run_id):
+        await asyncio.sleep(0.01)  # the job takes a while: room for another run to start
+        return await wait_run(self, run_id)
+
+    monkeypatch.setattr(DevTarget, "_wait_run", slow_job)
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.job_outputs = [PASSED, PASSED]
+    target = as_job(workspace)
+    first = job_bundle()
+    second = codegen.Bundle(first.name, first.files | {"src/pipeline.py": "# changed\n"})
+
+    runs = await asyncio.gather(target.run(first), target.run(second))
+
+    assert [run.status for run in runs] == ["passed", "passed"]
+    paths = [r.url.path for r in workspace.requests]
+    first_output = paths.index("/api/2.1/jobs/runs/get-output")
+    imports = [i for i, path in enumerate(paths) if path.endswith("/workspace/import")]
+    # The second run's files go up only after the first run's job has reported.
+    assert imports[len(first.files)] > first_output
