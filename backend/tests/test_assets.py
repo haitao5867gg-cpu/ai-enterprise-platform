@@ -66,14 +66,30 @@ async def test_errors_say_what_github_answered():
         await github.repo().open_pr("pipelines/shop", FILES, "b", "t", "", "m")
 
 
-def services(workspace, github, **settings):
+async def test_versions_are_reserved_once_per_run_and_revision():
+    store = MemoryAssetStore()
+
+    assert await store.reserve("shop", "run-a", "r1") == 1
+    assert await store.reserve("shop", "run-b", "r1") == 2  # another run: the next version
+    assert await store.reserve("shop", "run-a", "r1") == 1  # the same step again: the same
+    assert await store.reserve("shop", "run-a", "r2") == 3  # new code: a new version
+    assert await store.reserve("other", "run-a", "r1") == 1
+    assert [(a.version, a.status) for a in await store.find("shop")] == [
+        (3, "pending"),
+        (2, "pending"),
+        (1, "pending"),
+    ]
+
+
+def services(workspace, github, assets=None, **settings):
     gateway = FakeGateway(
         [
             reply(plan(assumptions=["数量为负的订单视为无效"])),
             reply({"targets": {"order_facts": PYSPARK_BODY}}),
         ]
     )
-    store, sources, assets = MemoryRunStore(), MemoryDataSourceStore(), MemoryAssetStore()
+    store, sources = MemoryRunStore(), MemoryDataSourceStore()
+    assets = assets or MemoryAssetStore()
     connector = fake_connector.build()
     values = {"databricks_cluster_id": fake_databricks.CLUSTER_ID} | PROD | settings
     ctx = AppContext(
@@ -162,6 +178,47 @@ async def test_each_passing_version_becomes_a_pr_with_its_approval_trail(tmp_pat
     assert other == []
 
 
+class Crash(BaseException):
+    """The process going away: not an error the run records, so the run stays running."""
+
+
+class CrashOnFirstRecord(MemoryAssetStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.crashed = False
+
+    async def record(self, name, version, published):
+        if not self.crashed:
+            self.crashed = True
+            raise Crash
+        return await super().record(name, version, published)
+
+
+async def test_a_publish_cut_short_reuses_its_version_and_pr_when_recovered(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.job_outputs = [PASSED]
+    github = fake_github.FakeGitHub()
+    service, sources, assets = services(workspace, github, CrashOnFirstRecord())
+    shop = await sources.create("示例库", "postgres", fake_connector.URL)
+
+    # The PR is open but the step never finished: the run is left running.
+    run_id = await start(service, shop.datasource_id, name="shop_orders")
+    await service.resume(run_id, "approve", None)
+    await service.wait_idle()
+    assert (await service.get(run_id)).record.status == "running"
+    assert len(github.pulls) == 1
+
+    assert await service.recover() == 1
+    await service.wait_idle()
+    view = await service.get(run_id)
+
+    assert view.record.status == "waiting", view.record.error
+    assert view.result["asset"]["version"] == 1 and view.result["asset"]["pr_number"] == 1
+    assert len(github.pulls) == 1  # the same PR, not a second one
+    found = [(a.version, a.status, a.pr_number) for a in await assets.find()]
+    assert found == [(1, "proposed", 1)]
+
+
 async def test_without_an_assets_repository_the_run_says_so(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.job_outputs = [PASSED]
@@ -206,7 +263,8 @@ async def test_a_failed_publish_is_reported_and_the_release_still_waits(tmp_path
     asset = view.result["asset"]
     assert asset["status"] == "failed" and "403" in asset["errors"][0]
     assert "提交到资产仓库 acme/aep-assets 失败" in view.messages[-1]["content"]
-    assert await assets.find() == []
+    ((version, status, pr),) = [(a.version, a.status, a.pr_number) for a in await assets.find()]
+    assert (version, status, pr) == (1, "pending", None)  # reserved, no PR
 
     view = await decide(service, run_id, "approve")
     assert view.record.status == "done", view.record.error

@@ -1,5 +1,6 @@
 """Asset index on real Postgres. Runs when AEP_TEST_DATABASE_URL is set (CI sets it)."""
 
+import asyncio
 import os
 import uuid
 
@@ -28,18 +29,34 @@ async def store():
 
 async def test_versions_by_name(store):
     name = f"shop_{uuid.uuid4().hex[:8]}"
-    assert await store.next_version(name) == 1
-    first = await store.add(name, 1, "run-1", Published(7, "https://pr/7", f"aep/{name}/v1", "a1"))
-    assert (first.version, first.status, first.pr_number) == (1, "proposed", 7)
-    assert await store.next_version(name) == 2
+    assert await store.reserve(name, "run-1", "r1") == 1
+    assert await store.reserve(name, "run-1", "r1") == 1  # the same step again
+    assert await store.reserve(name, "run-2", "r1") == 2
+    (pending,) = [a for a in await store.find(name) if a.version == 1]
+    assert (pending.status, pending.pr_number, pending.branch) == ("pending", None, "")
 
-    # Recording a version again (a retried step) keeps one row, with the latest PR.
-    again = await store.add(name, 1, "run-1", Published(8, "https://pr/8", f"aep/{name}/v1", "a2"))
-    assert (again.asset_id, again.pr_number, again.commit_sha) == (first.asset_id, 8, "a2")
+    first = await store.record(name, 1, Published(7, "https://pr/7", f"aep/{name}/v1", "a1"))
+    assert (first.version, first.status, first.pr_number, first.run_id) == (
+        1,
+        "proposed",
+        7,
+        "run-1",
+    )
+    # Recording again (a retried step) keeps one row, with the latest commit.
+    again = await store.record(name, 1, Published(7, "https://pr/7", f"aep/{name}/v1", "a2"))
+    assert (again.asset_id, again.commit_sha) == (first.asset_id, "a2")
 
-    await store.add(name, 2, "run-2", Published(9, "https://pr/9", f"aep/{name}/v2", "b1"))
+    await store.record(name, 2, Published(9, "https://pr/9", f"aep/{name}/v2", "b1"))
     await store.set_status(name, 1, "rejected")
     found = [(a.version, a.status, a.run_id) for a in await store.find(name)]
     assert found == [(2, "proposed", "run-2"), (1, "rejected", "run-1")]
     assert name in {a.name for a in await store.find()}
     assert await store.find(f"{name}_other") == []
+
+
+async def test_concurrent_runs_get_different_versions(store):
+    name = f"shop_{uuid.uuid4().hex[:8]}"
+
+    versions = await asyncio.gather(*(store.reserve(name, f"run-{i}", "r") for i in range(8)))
+
+    assert sorted(versions) == list(range(1, 9))

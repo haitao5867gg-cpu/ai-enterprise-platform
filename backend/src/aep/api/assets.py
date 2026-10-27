@@ -22,7 +22,7 @@ class AssetOut(BaseModel):
     version: int
     status: AssetStatus
     run_id: str
-    pr_number: int
+    pr_number: int | None
     pr_url: str
     branch: str
     commit: str
@@ -47,5 +47,6 @@ def _out(a: Asset) -> AssetOut:
 
 @router.get("")
 async def list_assets(store: Store, name: str | None = None) -> list[AssetOut]:
-    """Every version, by name and newest version first; ``name`` keeps one bundle's versions."""
+    """Every version, by name and newest version first; ``name`` keeps one bundle's versions.
+    A ``pending`` version is reserved but its PR is not open (yet, or it failed)."""
     return [_out(a) for a in await store.find(name)]

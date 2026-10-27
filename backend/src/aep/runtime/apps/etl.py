@@ -23,6 +23,7 @@ bundle name), ``models`` (a model alias per step: ``plan``, ``codegen``) and
 ``release`` (false: stop after the dev run, as the eval runner does).
 """
 
+import hashlib
 import json
 import operator
 from datetime import UTC, datetime
@@ -406,7 +407,12 @@ def build(ctx: AppContext) -> StateGraph:
             tracing.trace_id(run_id) if s.langfuse_public_key and s.langfuse_secret_key else None
         )
         run_url = f"{s.web_url.rstrip('/')}/runs/{run_id}"
-        version = await ctx.asset_store.next_version(name)
+        # The same code after the same decisions is the same revision: running this step
+        # again (after a restart) gets the same version, branch and PR.
+        revision = hashlib.sha256(
+            json.dumps([result["files"], len(state.get("approvals", []))], sort_keys=True).encode()
+        ).hexdigest()[:16]
+        version = await ctx.asset_store.reserve(name, run_id, revision)
         summary = EtlPlan.model_validate(result["plan"]).summary
         directory = f"pipelines/{name}"
         try:
@@ -423,7 +429,7 @@ def build(ctx: AppContext) -> StateGraph:
             result["asset"] = {"status": "failed", "repo": ctx.assets.repo, "errors": [str(exc)]}
             text = f"提交到资产仓库 {ctx.assets.repo} 失败：{exc}"
             return {"result": result, "messages": [{"role": "assistant", "content": text}]}
-        await ctx.asset_store.add(name, version, run_id, published)
+        await ctx.asset_store.record(name, version, published)
         result["asset"] = {
             "status": "proposed",
             "repo": ctx.assets.repo,

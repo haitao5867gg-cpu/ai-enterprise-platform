@@ -20,10 +20,10 @@ from psycopg_pool import AsyncConnectionPool
 from aep.config import Settings
 from aep.runtime.store import DEFAULT_TENANT
 
-# proposed: the PR is open; released: approved and deployed to prod; rejected: the
-# release was turned down (a later version replaces it); release_failed: approved,
-# but the prod deploy failed.
-AssetStatus = Literal["proposed", "released", "rejected", "release_failed"]
+# pending: the version is reserved, the PR not opened yet; proposed: the PR is open;
+# released: approved and deployed to prod; rejected: the release was turned down (a
+# later version replaces it); release_failed: approved, but the prod deploy failed.
+AssetStatus = Literal["pending", "proposed", "released", "rejected", "release_failed"]
 
 
 class AssetRepoError(Exception):
@@ -44,11 +44,12 @@ class Asset:
     name: str
     version: int
     run_id: str
+    revision: str
     status: AssetStatus
-    pr_number: int
-    pr_url: str
-    branch: str
-    commit_sha: str
+    pr_number: int | None = None
+    pr_url: str = ""
+    branch: str = ""
+    commit_sha: str = ""
     tenant_id: str = DEFAULT_TENANT
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -156,9 +157,13 @@ class AssetRepo:
 
 
 class AssetStore(Protocol):
+    """Versions are reserved before anything goes to GitHub: ``reserve`` hands out the next
+    version of a bundle, and the same one again for the same run and code ``revision``, so
+    a step that runs again (after a restart) reuses its version, branch and PR."""
+
     async def setup(self) -> None: ...
-    async def next_version(self, name: str) -> int: ...
-    async def add(self, name: str, version: int, run_id: str, published: Published) -> Asset: ...
+    async def reserve(self, name: str, run_id: str, revision: str) -> int: ...
+    async def record(self, name: str, version: int, published: Published) -> Asset: ...
     async def set_status(self, name: str, version: int, status: AssetStatus) -> None: ...
     async def find(self, name: str | None = None) -> list[Asset]: ...
 
@@ -172,29 +177,35 @@ class MemoryAssetStore:
     async def setup(self) -> None:
         return None
 
-    async def next_version(self, name: str) -> int:
-        return max((v for n, v in self._items if n == name), default=0) + 1
+    async def reserve(self, name: str, run_id: str, revision: str) -> int:
+        for asset in self._items.values():
+            if (asset.name, asset.run_id, asset.revision) == (name, run_id, revision):
+                return asset.version
+        version = max((v for n, v in self._items if n == name), default=0) + 1
+        self._items[(name, version)] = Asset(
+            str(uuid.uuid4()), name, version, run_id, revision, "pending"
+        )
+        return version
 
-    async def add(self, name: str, version: int, run_id: str, published: Published) -> Asset:
-        asset = Asset(
-            str(uuid.uuid4()),
+    def _update(self, name: str, version: int, **changes: Any) -> Asset:
+        asset = self._items[(name, version)]
+        changes["updated_at"] = datetime.now(UTC)
+        self._items[(name, version)] = Asset(**{**asset.__dict__, **changes})
+        return self._items[(name, version)]
+
+    async def record(self, name: str, version: int, published: Published) -> Asset:
+        return self._update(
             name,
             version,
-            run_id,
-            "proposed",
-            published.number,
-            published.url,
-            published.branch,
-            published.commit,
+            status="proposed",
+            pr_number=published.number,
+            pr_url=published.url,
+            branch=published.branch,
+            commit_sha=published.commit,
         )
-        self._items[(name, version)] = asset
-        return asset
 
     async def set_status(self, name: str, version: int, status: AssetStatus) -> None:
-        asset = self._items[(name, version)]
-        self._items[(name, version)] = Asset(
-            **{**asset.__dict__, "status": status, "updated_at": datetime.now(UTC)}
-        )
+        self._update(name, version, status=status)
 
     async def find(self, name: str | None = None) -> list[Asset]:
         found = [a for a in self._items.values() if name is None or a.name == name]
@@ -209,20 +220,22 @@ CREATE TABLE IF NOT EXISTS assets (
     name       text NOT NULL,
     version    integer NOT NULL,
     run_id     text NOT NULL,
+    revision   text NOT NULL,
     status     text NOT NULL,
-    pr_number  integer NOT NULL,
-    pr_url     text NOT NULL,
-    branch     text NOT NULL,
-    commit_sha text NOT NULL,
+    pr_number  integer,
+    pr_url     text NOT NULL DEFAULT '',
+    branch     text NOT NULL DEFAULT '',
+    commit_sha text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, name, version)
+    UNIQUE (tenant_id, name, version),
+    UNIQUE (tenant_id, name, run_id, revision)
 )""",
 ]
 
 COLUMNS = (
-    "asset_id::text, name, version, run_id, status, pr_number, pr_url, branch, commit_sha,"
-    " tenant_id, created_at, updated_at"
+    "asset_id::text, name, version, run_id, revision, status, pr_number, pr_url, branch,"
+    " commit_sha, tenant_id, created_at, updated_at"
 )
 
 
@@ -237,34 +250,42 @@ class PostgresAssetStore:
             for statement in SCHEMA:
                 await conn.execute(statement)
 
-    async def next_version(self, name: str) -> int:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT coalesce(max(version), 0) + 1 AS next FROM assets"
-                " WHERE tenant_id = %s AND name = %s",
-                (DEFAULT_TENANT, name),
+    async def reserve(self, name: str, run_id: str, revision: str) -> int:
+        async with self._pool.connection() as conn, conn.transaction():
+            # One reservation of a bundle at a time, so two runs never read the same max().
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"assets:{DEFAULT_TENANT}:{name}",),
             )
-            return (await cur.fetchone())["next"]
-
-    async def add(self, name: str, version: int, run_id: str, published: Published) -> Asset:
-        async with self._pool.connection() as conn:
-            # A retried step records the same version again: keep one row, with the new PR.
+            # Already reserved for this run and revision (the step running again): keep it.
+            await conn.execute(
+                "INSERT INTO assets (asset_id, tenant_id, name, version, run_id, revision, status)"
+                " SELECT %s, %s, %s, coalesce(max(version), 0) + 1, %s, %s, 'pending'"
+                " FROM assets WHERE tenant_id = %s AND name = %s"
+                " ON CONFLICT (tenant_id, name, run_id, revision) DO NOTHING",
+                (uuid.uuid4(), DEFAULT_TENANT, name, run_id, revision, DEFAULT_TENANT, name),
+            )
             cur = await conn.execute(
-                "INSERT INTO assets (asset_id, name, version, run_id, status, pr_number, pr_url,"
-                " branch, commit_sha) VALUES (%s, %s, %s, %s, 'proposed', %s, %s, %s, %s)"
-                " ON CONFLICT (tenant_id, name, version) DO UPDATE SET run_id = EXCLUDED.run_id,"
-                " pr_number = EXCLUDED.pr_number, pr_url = EXCLUDED.pr_url,"
-                " branch = EXCLUDED.branch, commit_sha = EXCLUDED.commit_sha, updated_at = now()"
-                f" RETURNING {COLUMNS}",
+                "SELECT version FROM assets"
+                " WHERE tenant_id = %s AND name = %s AND run_id = %s AND revision = %s",
+                (DEFAULT_TENANT, name, run_id, revision),
+            )
+            return (await cur.fetchone())["version"]
+
+    async def record(self, name: str, version: int, published: Published) -> Asset:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE assets SET status = 'proposed', pr_number = %s, pr_url = %s, branch = %s,"
+                " commit_sha = %s, updated_at = now()"
+                f" WHERE tenant_id = %s AND name = %s AND version = %s RETURNING {COLUMNS}",
                 (
-                    uuid.uuid4(),
-                    name,
-                    version,
-                    run_id,
                     published.number,
                     published.url,
                     published.branch,
                     published.commit,
+                    DEFAULT_TENANT,
+                    name,
+                    version,
                 ),
             )
             return Asset(**await cur.fetchone())
