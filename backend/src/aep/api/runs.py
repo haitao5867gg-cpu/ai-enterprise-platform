@@ -38,6 +38,12 @@ target configured, or the dev run did not pass), ``deployed`` or ``failed``,
 with ``mode``, ``catalog``, ``schema``, ``schedule``, ``timezone``, ``job_id``,
 ``pipeline_id``, ``cluster_id``, ``url``, ``steps`` and ``errors``; it is absent
 while the run waits for the release approval.
+``asset`` is the bundle's PR in the assets repository (after a passing dev run):
+``status`` ``skipped`` (with ``reason``), ``failed`` (with ``errors``), or
+``proposed`` (the PR is open), then ``released``, ``rejected`` or
+``release_failed`` once the release decision is noted on it; with ``repo``,
+``path``, ``version``, ``pr_number``, ``pr_url``, ``branch`` and ``commit``, and
+``errors`` if noting a decision on the PR failed. ``GET /assets`` lists them.
 ``GET /runs/{id}/files.zip`` downloads the files.
 """
 
