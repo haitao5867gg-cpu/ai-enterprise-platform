@@ -14,10 +14,30 @@ import {
 } from "../lib/runs";
 import { Icon } from "./icons";
 import { ErrorNotice, StatusBadge } from "./ui";
-import { etlFailed, getEtlPlan, getEtlResult } from "../lib/etl";
+import { etlFailed, getEtlPlan, getEtlRelease, getEtlResult } from "../lib/etl";
 import { EtlPlanView } from "./etl-plan";
+import { EtlReleaseView, EtlTrail } from "./etl-release";
 import { GeneratedFiles } from "./generated-files";
 import { RunFlow } from "./run-flow";
+
+// Until sign-in exists, approvers type their name once and the browser remembers it.
+const ACTOR_KEY = "aep.actor";
+
+function savedActor(): string {
+  try {
+    return localStorage.getItem(ACTOR_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveActor(actor: string) {
+  try {
+    localStorage.setItem(ACTOR_KEY, actor);
+  } catch {
+    // Private windows may refuse storage; the name is then asked for again next time.
+  }
+}
 
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;
@@ -58,6 +78,8 @@ export function RunDetail({
   const [error, setError] = useState("");
   const [mutationError, setMutationError] = useState("");
   const [comment, setComment] = useState("");
+  // On the server there is no storage and "" comes back; the field only renders after loading.
+  const [actor, setActor] = useState(savedActor);
   const [submitting, setSubmitting] = useState<Decision | null>(null);
   const [rechecking, setRechecking] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -130,6 +152,7 @@ export function RunDetail({
           body: JSON.stringify({
             decision,
             comment: decision === "reject" ? comment.trim() : "",
+            ...(actor.trim() ? { actor: actor.trim() } : {}),
           }),
         }),
       );
@@ -161,10 +184,15 @@ export function RunDetail({
   const controlsDisabled = submitting !== null || rechecking || Boolean(error);
   const plan =
     run?.status === "waiting" ? getEtlPlan(run.pending?.details) : null;
+  const release =
+    run?.status === "waiting" ? getEtlRelease(run.pending?.details) : null;
+  // The code waiting for the release approval is shown with it.
   const etlResult =
-    run?.app === "etl" && run.status === "done"
+    run?.app === "etl" && (run.status === "done" || release)
       ? getEtlResult(run.result)
       : null;
+  // A rejected release sends the code back to be rewritten, so the reason must be given.
+  const commentRequired = release !== null;
   return (
     <>
       <Link className="back-link" href="/">
@@ -198,6 +226,8 @@ export function RunDetail({
           <div className="detail-grid">
             <div className="run-main">
               {plan && <EtlPlanView plan={plan} />}
+              {release && <EtlReleaseView request={release} />}
+              {etlResult && <EtlTrail result={etlResult} />}
               {etlResult && <GeneratedFiles result={etlResult} runId={id} />}
               <RunFlow
                 runId={id}
@@ -206,7 +236,7 @@ export function RunDetail({
               />
               <details
                 className={`conversation-history ${run.app === "etl" ? "collapsible" : ""}`}
-                open={run.app !== "etl" || (!plan && !etlResult)}
+                open={run.app !== "etl" || (!plan && !release && !etlResult)}
               >
                 <summary>查看对话过程 · {run.messages.length} 条消息</summary>
                 <section
@@ -326,8 +356,25 @@ export function RunDetail({
                   {run.pending ? (
                     <>
                       <p className="message-content">{run.pending.prompt}</p>
+                      <label htmlFor="approval-actor">
+                        审批人<span className="muted">（浏览器会记住）</span>
+                      </label>
+                      <input
+                        id="approval-actor"
+                        placeholder="你的姓名"
+                        value={actor}
+                        maxLength={80}
+                        onChange={(e) => {
+                          setActor(e.target.value);
+                          saveActor(e.target.value.trim());
+                        }}
+                        disabled={controlsDisabled}
+                      />
                       <label htmlFor="rejection-comment">
-                        驳回意见<span className="muted">（选填）</span>
+                        驳回意见
+                        <span className="muted">
+                          {commentRequired ? "（驳回时必填）" : "（选填）"}
+                        </span>
                       </label>
                       <textarea
                         id="rejection-comment"
@@ -354,7 +401,7 @@ export function RunDetail({
                           ) : (
                             <>
                               <Icon name="check" size={16} />
-                              确认
+                              {release ? "确认上线" : "确认"}
                             </>
                           )}
                         </button>
@@ -362,7 +409,8 @@ export function RunDetail({
                           className="button reject"
                           disabled={
                             controlsDisabled ||
-                            !run.pending.options.includes("reject")
+                            !run.pending.options.includes("reject") ||
+                            (commentRequired && !comment.trim())
                           }
                           onClick={() => void resume("reject")}
                         >
@@ -409,13 +457,17 @@ export function RunDetail({
                   <h2 id="result-title">运行结果</h2>
                   {etlResult ? (
                     <p>
-                      {!etlResult.checks.passed
-                        ? "代码检查未通过，请查看并处理主区域列出的问题。"
-                        : etlResult.verification?.status === "failed"
-                          ? "代码已生成，但 Databricks dev 试跑未通过，请查看主区域列出的报错。"
-                          : etlResult.verification?.status === "passed"
-                            ? `已生成 ${Object.keys(etlResult.files).length} 个文件，并在 Databricks dev 目标上试跑通过。`
-                            : `已生成 ${Object.keys(etlResult.files).length} 个文件，可查看代码或下载 ZIP。`}
+                      {etlResult.release?.status === "deployed"
+                        ? `已上线到 prod（${etlResult.release.catalog}.${etlResult.release.schema}）。`
+                        : etlResult.release?.status === "failed"
+                          ? "审批已通过，但上线 prod 失败，请查看主区域列出的报错。"
+                          : !etlResult.checks.passed
+                            ? "代码检查未通过，请查看并处理主区域列出的问题。"
+                            : etlResult.verification?.status === "failed"
+                              ? "代码已生成，但 Databricks dev 试跑未通过，请查看主区域列出的报错。"
+                              : etlResult.verification?.status === "passed"
+                                ? `已生成 ${Object.keys(etlResult.files).length} 个文件，并在 Databricks dev 目标上试跑通过。`
+                                : `已生成 ${Object.keys(etlResult.files).length} 个文件，可查看代码或下载 ZIP。`}
                     </p>
                   ) : (
                     <ResultView result={run.result} />

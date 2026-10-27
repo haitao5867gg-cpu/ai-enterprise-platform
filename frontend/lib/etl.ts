@@ -29,6 +29,8 @@ export type EtlPlan = {
   summary: string;
   language: EtlLanguage;
   targets: EtlTarget[];
+  // What the model assumed where the request and the data did not line up; may be empty.
+  assumptions: string[];
 };
 export type EtlVerification = {
   status: "passed" | "failed" | "skipped";
@@ -39,6 +41,51 @@ export type EtlVerification = {
   warnings: string[];
   tables: { name: string; rows: number | null; dropped: number }[];
 };
+export const deployModeLabels: Record<
+  NonNullable<EtlVerification["mode"]>,
+  string
+> = {
+  pipeline: "Lakeflow 管道",
+  job: "Job（已有集群）",
+  cluster: "集群试跑，不写表",
+};
+export type EtlApproval = {
+  step: string;
+  decision: string;
+  comment: string;
+  actor: string;
+  at: string;
+};
+export type EtlProdTarget = {
+  mode: "job" | "pipeline" | null;
+  catalog: string;
+  schema: string;
+  schedule: string;
+  timezone: string;
+};
+// The prod deploy after the release approval.
+export type EtlRelease = EtlProdTarget & {
+  status: "deployed" | "failed" | "skipped";
+  reason: string;
+  url: string | null;
+  errors: string[];
+};
+// The bundle's pull request in the assets repository.
+export type EtlAsset = {
+  status: string;
+  reason: string;
+  repo: string;
+  version: number | null;
+  prNumber: number | null;
+  prUrl: string | null;
+  errors: string[];
+};
+// What the release approval shows: the dev run that passed and where prod is.
+export type EtlReleaseRequest = {
+  bundle: string;
+  verification: EtlVerification | null;
+  target: EtlProdTarget;
+};
 export type EtlResult = {
   bundle: string;
   language: EtlLanguage;
@@ -46,6 +93,9 @@ export type EtlResult = {
   checks: { passed: boolean; problems: string[] };
   // The Databricks dev run of the bundle; null while it has not happened.
   verification: EtlVerification | null;
+  approvals: EtlApproval[];
+  release: EtlRelease | null;
+  asset: EtlAsset | null;
 };
 
 function isLanguage(value: unknown): value is EtlLanguage {
@@ -117,8 +167,91 @@ export function getEtlPlan(details: unknown): EtlPlan | null {
     Array.isArray(plan.targets) &&
     plan.targets.length > 0 &&
     plan.targets.every(isTarget)
-    ? (plan as EtlPlan)
+    ? {
+        ...(plan as Omit<EtlPlan, "assumptions">),
+        // Runs from before assumptions existed have none.
+        assumptions: isStrings(plan.assumptions) ? plan.assumptions : [],
+      }
     : null;
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+function httpsUrl(value: unknown): string | null {
+  return typeof value === "string" && /^https:\/\//.test(value) ? value : null;
+}
+
+function readProdTarget(value: Record<string, unknown>): EtlProdTarget {
+  return {
+    mode: value.mode === "job" || value.mode === "pipeline" ? value.mode : null,
+    catalog: text(value.catalog),
+    schema: text(value.schema),
+    schedule: text(value.schedule),
+    timezone: text(value.timezone),
+  };
+}
+
+export function getEtlRelease(details: unknown): EtlReleaseRequest | null {
+  if (
+    !isRecord(details) ||
+    details.type !== "etl_release" ||
+    typeof details.bundle !== "string" ||
+    !isRecord(details.target)
+  )
+    return null;
+  return {
+    bundle: details.bundle,
+    verification: readVerification(details.verification),
+    target: readProdTarget(details.target),
+  };
+}
+
+function readApprovals(value: unknown): EtlApproval[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: unknown) =>
+    isRecord(item) && typeof item.step === "string"
+      ? [
+          {
+            step: item.step,
+            decision: text(item.decision),
+            comment: text(item.comment),
+            actor: text(item.actor),
+            at: text(item.at),
+          },
+        ]
+      : [],
+  );
+}
+
+function readRelease(value: unknown): EtlRelease | null {
+  if (
+    !isRecord(value) ||
+    (value.status !== "deployed" &&
+      value.status !== "failed" &&
+      value.status !== "skipped")
+  )
+    return null;
+  return {
+    ...readProdTarget(value),
+    status: value.status,
+    reason: text(value.reason),
+    url: httpsUrl(value.url),
+    errors: isStrings(value.errors) ? value.errors : [],
+  };
+}
+
+function readAsset(value: unknown): EtlAsset | null {
+  if (!isRecord(value) || typeof value.status !== "string") return null;
+  return {
+    status: value.status,
+    reason: text(value.reason),
+    repo: text(value.repo),
+    version: typeof value.version === "number" ? value.version : null,
+    prNumber: typeof value.pr_number === "number" ? value.pr_number : null,
+    prUrl: httpsUrl(value.pr_url),
+    errors: isStrings(value.errors) ? value.errors : [],
+  };
 }
 
 // Unknown or partial fields are dropped rather than failing the whole result.
@@ -153,10 +286,7 @@ function readVerification(value: unknown): EtlVerification | null {
     status: value.status,
     reason: typeof value.reason === "string" ? value.reason : "",
     mode,
-    url:
-      typeof value.url === "string" && /^https:\/\//.test(value.url)
-        ? value.url
-        : null,
+    url: httpsUrl(value.url),
     errors: isStrings(value.errors) ? value.errors : [],
     warnings: isStrings(value.warnings) ? value.warnings : [],
     tables,
@@ -175,13 +305,24 @@ export function getEtlResult(value: unknown): EtlResult | null {
     typeof value.checks.passed === "boolean" &&
     isStrings(value.checks.problems)
     ? {
-        ...(value as Omit<EtlResult, "verification">),
+        bundle: value.bundle,
+        language: value.language,
+        files: value.files as Record<string, string>,
+        checks: value.checks as EtlResult["checks"],
         verification: readVerification(value.verification),
+        approvals: readApprovals(value.approvals),
+        release: readRelease(value.release),
+        asset: readAsset(value.asset),
       }
     : null;
 }
 
-// A finished ETL run went wrong when its code failed the checks or its dev run failed.
+// A finished ETL run went wrong when its code failed the checks, or its dev run or
+// prod deploy failed.
 export function etlFailed(result: EtlResult): boolean {
-  return !result.checks.passed || result.verification?.status === "failed";
+  return (
+    !result.checks.passed ||
+    result.verification?.status === "failed" ||
+    result.release?.status === "failed"
+  );
 }

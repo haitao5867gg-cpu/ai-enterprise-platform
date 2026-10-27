@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  deployModeLabels,
   languageLabels,
   type EtlResult,
   type EtlVerification,
@@ -76,14 +77,10 @@ function FileTree({
   );
 }
 
-const modeLabels: Record<NonNullable<EtlVerification["mode"]>, string> = {
-  pipeline: "Lakeflow 管道",
-  job: "Job（已有集群）",
-  cluster: "集群试跑，不写表",
-};
-
 function VerificationView({ verification }: { verification: EtlVerification }) {
-  const mode = verification.mode ? ` · ${modeLabels[verification.mode]}` : "";
+  const mode = verification.mode
+    ? ` · ${deployModeLabels[verification.mode]}`
+    : "";
   const link = verification.url && (
     <a href={verification.url} target="_blank" rel="noopener noreferrer">
       在 Databricks 中查看

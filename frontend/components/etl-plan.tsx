@@ -16,6 +16,25 @@ export function EtlPlanView({ plan }: { plan: EtlPlan }) {
         </span>
       </div>
       <p className="plan-summary">{plan.summary}</p>
+      {plan.assumptions.length > 0 && (
+        <section
+          className="plan-assumptions"
+          aria-labelledby="assumptions-title"
+        >
+          <h3 id="assumptions-title">
+            <Icon name="alert" size={16} />
+            请确认这些假设
+          </h3>
+          <p>
+            需求和数据对不上或有歧义的地方，方案是这样理解的。不对的话请驳回并写明。
+          </p>
+          <ul>
+            {plan.assumptions.map((assumption, i) => (
+              <li key={i}>{assumption}</li>
+            ))}
+          </ul>
+        </section>
+      )}
       <div className="plan-targets">
         {plan.targets.map((target, index) => (
           <article

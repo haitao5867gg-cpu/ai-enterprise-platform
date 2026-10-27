@@ -33,7 +33,7 @@ function readStoredZip(bytes: Buffer) {
   return files;
 }
 
-test("ETL: choose source → request → plan → reject → approve → code → ZIP", async ({
+test("ETL: source → request → plan → reject → approve → release → reject → approve → ZIP", async ({
   page,
   request,
 }, testInfo) => {
@@ -85,6 +85,23 @@ test("ETL: choose source → request → plan → reject → approve → code �
   });
   await expect(customers).toContainText("全量加载");
   await expect(customers).toContainText("不满足时：告警");
+  const assumptions = plan.getByRole("region", { name: "请确认这些假设" });
+  await expect(assumptions.getByRole("listitem")).toHaveCount(2);
+  await expect(assumptions).toContainText("金额为负的订单视为退款");
+  // Shown above the targets and before the confirm button.
+  expect(
+    await assumptions.evaluate((node) => {
+      const confirm = [...document.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "确认",
+      )!;
+      const firstTarget = document.querySelector(".plan-target")!;
+      const before = Node.DOCUMENT_POSITION_FOLLOWING;
+      return (
+        Boolean(node.compareDocumentPosition(confirm) & before) &&
+        Boolean(node.compareDocumentPosition(firstTarget) & before)
+      );
+    }),
+  ).toBe(true);
   const id = new URL(page.url()).pathname.split("/").at(-1)!;
   expect((await request.get(`/api/runs/${id}/files.zip`)).status()).toBe(404);
   const detail = await (await request.get(`/api/runs/${id}`)).json();
@@ -118,10 +135,71 @@ test("ETL: choose source → request → plan → reject → approve → code �
   await page.reload();
   await expect(plan).toContainText(comment);
   await page.getByRole("button", { name: "确认", exact: true }).click();
+
+  // dev passed: the release approval shows what ran and where it would go.
+  const release = page.getByRole("region", {
+    name: "上线审批",
+    exact: true,
+  });
+  await expect(release).toContainText("prod_catalog.etl");
+  await expect(release).toContainText("Job（已有集群）");
+  await expect(release).toContainText(
+    "orders_clean：1000 行，质量规则丢弃 12 行",
+  );
+  await expect(page.getByRole("heading", { name: "ETL 方案" })).toHaveCount(0);
   const generated = page.getByRole("region", { name: "生成的文件" });
   await expect(generated).toBeVisible();
+  const trail = page.getByRole("region", { name: "审批与上线" });
+  const timeline = trail.getByRole("list", { name: "审批记录" });
+  await expect(timeline.getByRole("listitem")).toHaveCount(2);
+  await expect(timeline.getByRole("listitem").first()).toContainText(
+    `方案确认驳回未署名`,
+  );
+  await expect(trail).toContainText("本地 mock 不提交资产仓库");
+  await capture(page, "etl-release");
+
+  // Rejecting the release needs a reason; the approver's name is remembered.
+  await page.getByLabel("审批人").fill("张三");
+  const rejectRelease = page.getByRole("button", { name: "驳回", exact: true });
+  await expect(rejectRelease).toBeDisabled();
+  await page.getByLabel("驳回意见").fill("城市统一成大写");
+  const turnedDown = page.waitForRequest(
+    (r) => r.url().endsWith("/resume") && r.method() === "POST",
+  );
+  await rejectRelease.click();
+  expect((await turnedDown).postDataJSON()).toEqual({
+    decision: "reject",
+    comment: "城市统一成大写",
+    actor: "张三",
+  });
+  await expect(timeline.getByRole("listitem")).toHaveCount(3);
+  await expect(timeline.getByRole("listitem").last()).toContainText(
+    "上线审批驳回张三",
+  );
+  await expect(timeline.getByRole("listitem").last()).toContainText(
+    "意见：城市统一成大写",
+  );
+  await expect(generated.locator(".code-content")).toContainText("第 2 版");
+  await page.reload();
+  await expect(page.getByLabel("审批人")).toHaveValue("张三");
+  const approved = page.waitForRequest(
+    (r) => r.url().endsWith("/resume") && r.method() === "POST",
+  );
+  await page.getByRole("button", { name: "确认上线", exact: true }).click();
+  expect((await approved).postDataJSON()).toEqual({
+    decision: "approve",
+    comment: "",
+    actor: "张三",
+  });
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "ETL 方案" })).toHaveCount(0);
+  await expect(page.locator(".result-card")).toContainText(
+    "已上线到 prod（prod_catalog.etl）",
+  );
+  await expect(trail).toContainText("已上线到 prod：prod_catalog.etl");
+  await expect(timeline.getByRole("listitem").last()).toContainText(
+    "上线审批通过张三",
+  );
+  await expect(release).toHaveCount(0);
   await expect(generated).toContainText("代码检查通过");
   await expect(generated.locator(".code-content")).toContainText(
     "def customers_clean",
@@ -438,5 +516,154 @@ for (const status of ["passed", "failed"] as const) {
       await expect(result).toContainText("Databricks dev 试跑未通过");
       await expect(result.locator(".result-icon.failed")).toHaveCount(1);
     }
+  });
+}
+
+test("a plan from before assumptions existed shows no assumptions block", async ({
+  page,
+}) => {
+  await page.route("**/api/runs/old-plan", (route) =>
+    route.fulfill({
+      json: {
+        run_id: "old-plan",
+        app: "etl",
+        status: "waiting",
+        messages: [],
+        pending: {
+          kind: "approval",
+          prompt: "请检查 ETL 方案",
+          options: ["approve", "reject"],
+          details: {
+            type: "etl_plan",
+            plan: {
+              summary: "旧方案",
+              language: "pyspark",
+              targets: [
+                {
+                  name: "orders_clean",
+                  description: "",
+                  sources: ["public.orders"],
+                  logic: "去重",
+                  columns: [],
+                  primary_key: [],
+                  load: { mode: "full", key: null },
+                  quality_rules: [],
+                },
+              ],
+            },
+          },
+        },
+        result: null,
+        error: null,
+        trace_id: null,
+      },
+    }),
+  );
+  await page.goto("/runs/old-plan");
+  const plan = page.getByRole("region", { name: "ETL 方案" });
+  await expect(plan).toContainText("旧方案");
+  await expect(
+    plan.getByRole("region", { name: "请确认这些假设" }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("main").getByRole("alert")).toHaveCount(0);
+});
+
+for (const outcome of ["deployed", "failed"] as const) {
+  test(`a released run shows its approvals, the ${outcome} prod deploy and its PR`, async ({
+    page,
+  }) => {
+    await page.route("**/api/runs/released", (route) =>
+      route.fulfill({
+        json: {
+          run_id: "released",
+          app: "etl",
+          status: "done",
+          messages: [],
+          pending: null,
+          error: null,
+          trace_id: null,
+          result: {
+            bundle: "order_facts",
+            language: "pyspark",
+            files: { "src/pipeline.py": "x = 1\n" },
+            checks: { passed: true, problems: [] },
+            verification: { status: "passed", mode: "job", tables: [] },
+            approvals: [
+              {
+                step: "plan",
+                decision: "approve",
+                comment: null,
+                actor: "张三",
+                at: "2026-10-27T07:12:30+00:00",
+              },
+              {
+                step: "release",
+                decision: "approve",
+                comment: "可以上线",
+                actor: "李四",
+                at: "2026-10-27T08:00:00+00:00",
+              },
+            ],
+            release:
+              outcome === "deployed"
+                ? {
+                    status: "deployed",
+                    mode: "job",
+                    catalog: "prod",
+                    schema: "sales",
+                    schedule: "0 0 2 * * ?",
+                    url: "https://adb-1.test.databricks.azure.cn/#job/101",
+                    errors: [],
+                  }
+                : {
+                    status: "failed",
+                    mode: "job",
+                    catalog: "prod",
+                    schema: "sales",
+                    errors: ["PERMISSION_DENIED: 没有 prod.sales 的写权限"],
+                  },
+            asset: {
+              status: outcome === "deployed" ? "released" : "release_failed",
+              repo: "acme/aep-assets",
+              path: "pipelines/order_facts",
+              version: 2,
+              pr_number: 7,
+              pr_url: "https://github.com/acme/aep-assets/pull/7",
+            },
+          },
+        },
+      }),
+    );
+    await page.goto("/runs/released");
+    const trail = page.getByRole("region", { name: "审批与上线" });
+    const items = trail
+      .getByRole("list", { name: "审批记录" })
+      .getByRole("listitem");
+    await expect(items).toHaveCount(2);
+    await expect(items.first()).toContainText("方案确认通过张三");
+    await expect(items.last()).toContainText("上线审批通过李四");
+    await expect(items.last()).toContainText("意见：可以上线");
+    await expect(
+      trail.getByRole("link", { name: "acme/aep-assets PR #7（v2）" }),
+    ).toHaveAttribute("href", "https://github.com/acme/aep-assets/pull/7");
+    const result = page.locator(".result-card");
+    if (outcome === "deployed") {
+      await expect(trail).toContainText("已上线到 prod：prod.sales");
+      await expect(result).toContainText("已上线到 prod（prod.sales）");
+      await expect(result.locator(".result-icon.failed")).toHaveCount(0);
+    } else {
+      const alert = trail.getByRole("alert");
+      await expect(alert).toContainText("上线 prod 失败（prod.sales）");
+      await expect(alert).toContainText("PERMISSION_DENIED");
+      await expect(trail).toContainText("上线失败");
+      await expect(result).toContainText("上线 prod 失败");
+      await expect(result.locator(".result-icon.failed")).toHaveCount(1);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
   });
 }
