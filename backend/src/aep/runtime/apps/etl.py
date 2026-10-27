@@ -455,12 +455,11 @@ def build(ctx: AppContext) -> StateGraph:
         if asset.get("status") != "proposed" or ctx.assets is None:
             return
         await ctx.asset_store.set_status(result["bundle"], asset["version"], status)
+        result["asset"] = asset | {"status": status}
         try:
             await ctx.assets.comment(asset["pr_number"], body)
         except AssetRepoError as exc:
-            result["asset"] = asset | {"errors": [*asset.get("errors", []), str(exc)]}
-        else:
-            result["asset"] = asset | {"status": status}
+            result["asset"]["errors"] = [*asset.get("errors", []), str(exc)]
 
     def release_target(state: EtlState) -> dict[str, Any]:
         s = ctx.settings

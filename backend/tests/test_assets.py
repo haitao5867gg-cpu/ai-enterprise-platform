@@ -270,3 +270,22 @@ async def test_a_failed_publish_is_reported_and_the_release_still_waits(tmp_path
     assert view.record.status == "done", view.record.error
     assert view.result["release"]["status"] == "deployed"
     assert github.comments == {}  # no PR to note the decision on
+
+
+async def test_a_failed_pr_comment_keeps_the_release_outcome(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.job_outputs = [PASSED]
+    github = fake_github.FakeGitHub()
+    service, sources, assets = services(workspace, github)
+    shop = await sources.create("示例库", "postgres", fake_connector.URL)
+    run_id = await start(service, shop.datasource_id, name="shop_orders")
+    await decide(service, run_id, "approve")
+
+    github.fail("/comments", 502, "Bad Gateway")
+    view = await decide(service, run_id, "approve")
+
+    assert view.record.status == "done", view.record.error
+    assert view.result["release"]["status"] == "deployed"
+    asset = view.result["asset"]
+    assert asset["status"] == "released" and "502" in asset["errors"][0]
+    assert [a.status for a in await assets.find()] == ["released"]
