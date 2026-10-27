@@ -17,6 +17,7 @@ import { ErrorNotice, StatusBadge } from "./ui";
 import { etlFailed, getEtlPlan, getEtlResult } from "../lib/etl";
 import { EtlPlanView } from "./etl-plan";
 import { GeneratedFiles } from "./generated-files";
+import { RunFlow } from "./run-flow";
 
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;
@@ -198,6 +199,11 @@ export function RunDetail({
             <div className="run-main">
               {plan && <EtlPlanView plan={plan} />}
               {etlResult && <GeneratedFiles result={etlResult} runId={id} />}
+              <RunFlow
+                runId={id}
+                version={`${run.status}:${run.messages.length}`}
+                live={run.status === "running"}
+              />
               <details
                 className={`conversation-history ${run.app === "etl" ? "collapsible" : ""}`}
                 open={run.app !== "etl" || (!plan && !etlResult)}

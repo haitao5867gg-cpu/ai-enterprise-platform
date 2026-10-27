@@ -45,6 +45,22 @@ while the run waits for the release approval.
 ``path``, ``version``, ``pr_number``, ``pr_url``, ``branch`` and ``commit``, and
 ``errors`` if noting a decision on the PR failed. ``GET /assets`` lists them.
 ``GET /runs/{id}/files.zip`` downloads the files.
+
+``GET /runs/{id}/flow`` shows how the run's app is built and what this run did,
+for explaining it (see ``aep.runtime.design``). ``design`` is the app as a whole
+(``title``, ``summary``, ``pattern``: a fixed workflow or an agent, ``knowledge``,
+``skills``), or null. ``nodes`` are the graph's nodes in order, ``__start__`` and
+``__end__`` included: ``id``, ``title``, ``kind`` (``tool``, ``model``, ``human``,
+``code``, or ``terminal`` for start and end), ``model`` (the alias this run uses,
+for model nodes) and ``design`` (``summary``, ``inputs``, ``outputs``, ``tools``,
+``model_step``, ``prompt``, ``knowledge``, ``checks``, ``retry``; null if the node
+has none). ``edges`` have ``source``, ``target`` and ``conditional`` (taken only
+when its condition holds). ``steps`` is every node this run executed, oldest first:
+``id``, ``node``, ``status`` (``done``, ``running``, ``waiting`` for a person,
+``error``, or ``stopped``), ``started_at``, ``input`` (the state the node saw,
+without the conversation), ``output`` (what it wrote; null until it finishes),
+``error`` and ``interrupt`` (what it asked a person, if it did). ``current`` is
+the node the run is at, or null once it is done.
 """
 
 import io
@@ -125,6 +141,39 @@ class RunDetail(BaseModel):
     trace_id: str | None = None
 
 
+class FlowNode(BaseModel):
+    id: str
+    title: str
+    kind: str
+    model: str | None = None
+    design: dict[str, Any] | None = None
+
+
+class FlowEdge(BaseModel):
+    source: str
+    target: str
+    conditional: bool
+
+
+class FlowStep(BaseModel):
+    id: str
+    node: str
+    status: Literal["done", "running", "waiting", "error", "stopped"]
+    started_at: str | None
+    input: dict[str, Any]
+    output: Any
+    error: str | None
+    interrupt: Any
+
+
+class Flow(BaseModel):
+    design: dict[str, Any] | None
+    nodes: list[FlowNode]
+    edges: list[FlowEdge]
+    steps: list[FlowStep]
+    current: str | None
+
+
 def _summary(r: RunRecord) -> RunSummary:
     return RunSummary(
         run_id=r.run_id,
@@ -166,6 +215,14 @@ async def list_runs(service: Service, limit: int = 50) -> list[RunSummary]:
 async def get_run(run_id: str, service: Service) -> RunDetail:
     try:
         return _detail(await service.get(run_id))
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+
+
+@router.get("/{run_id}/flow")
+async def get_flow(run_id: str, service: Service) -> Flow:
+    try:
+        return Flow(**await service.flow(run_id))
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
 

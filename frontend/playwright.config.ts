@@ -17,7 +17,12 @@ export default defineConfig({
   projects: [
     {
       name: "workbench",
-      testMatch: ["workbench.spec.ts", "etl.spec.ts", "langfuse.spec.ts"],
+      testMatch: [
+        "workbench.spec.ts",
+        "etl.spec.ts",
+        "flow.spec.ts",
+        "langfuse.spec.ts",
+      ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {
         langfuseTraceBaseUrl: "http://localhost:3100/project/aep-local/traces/",

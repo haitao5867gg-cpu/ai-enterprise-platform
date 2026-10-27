@@ -12,9 +12,18 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from aep import llm
+from aep.runtime.design import AppDesign, NodeDesign
 from aep.runtime.registry import AppContext
 
 SYSTEM_PROMPT = "你是一个乐于助人的助手，用中文简洁地回答。"
+
+DESIGN = AppDesign(
+    title="问答示例",
+    summary="用模型回答一个问题，请人确认；驳回时按意见重写。",
+    pattern="固定流程的工作流：回答、确认，驳回就回到回答。",
+    knowledge="没有接知识库，只用模型自身的知识。",
+    skills="没有使用 Skill。",
+)
 
 APPROVAL = {
     "kind": "approval",
@@ -58,8 +67,29 @@ def build(ctx: AppContext) -> StateGraph:
         return END if state.get("result") else "draft"
 
     graph = StateGraph(HelloState)
-    graph.add_node("draft", draft)
-    graph.add_node("review", review)
+    graph.add_node(
+        "draft",
+        draft,
+        metadata=NodeDesign(
+            title="回答",
+            kind="model",
+            summary="模型回答用户的问题；被驳回时带着意见重写。",
+            inputs="问题；驳回时还有上一版回答和意见",
+            outputs="回答",
+            prompt=SYSTEM_PROMPT,
+        ).metadata(),
+    )
+    graph.add_node(
+        "review",
+        review,
+        metadata=NodeDesign(
+            title="确认",
+            kind="human",
+            summary="运行暂停，等人确认回答；驳回就回到“回答”。",
+            inputs="回答",
+            outputs="确认或驳回的决定",
+        ).metadata(),
+    )
     graph.add_edge(START, "draft")
     graph.add_edge("draft", "review")
     graph.add_conditional_edges("review", after_review, ["draft", END])

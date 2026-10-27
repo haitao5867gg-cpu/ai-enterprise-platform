@@ -39,13 +39,129 @@ from aep.databricks import DevRun, Release
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.plan import SYSTEM_PROMPT as PLAN_PROMPT
-from aep.etl.profile import describe_for_model, known_values, profile_tables
+from aep.etl.profile import MAX_TABLES, describe_for_model, known_values, profile_tables
+from aep.runtime.design import AppDesign, NodeDesign
 from aep.runtime.registry import AppContext
 
 CODEGEN_ATTEMPTS = 3
 PLAN_ATTEMPTS = 3
 DEV_RUN_ATTEMPTS = 3
 ERROR_CHARS = 1500
+
+DESIGN = AppDesign(
+    title="自然语言 ETL 工作流",
+    summary="连接一个关系型数据库，用自然语言描述需求：平台探查数据、给出方案，经人确认后"
+    "生成 Databricks 管道代码（默认 PySpark），在 dev 目标试跑，代码以 PR 提交到资产仓库，"
+    "审批通过后上线到 prod。",
+    pattern="固定流程的工作流（LangGraph 图），不是自主决定下一步的 agent。节点和走向由图事先"
+    "定好，模型只在“出方案”和“写代码”两个节点里生成内容，每次输出都要经过平台校验，不合格就"
+    "带着问题让模型重做；方案和上线各有一个人工确认点。这样做是为了让企业 ETL 可控、可审批、"
+    "可复现：同样的需求走同样的步骤，每一步做了什么都有记录。",
+    knowledge="没有接知识库。模型用到的知识是“探查数据”节点现场读到的源表结构、空值率、取值"
+    "分布和样本行，每次运行都重新读取，作为上下文交给模型；再加上写在提示词里的 Databricks "
+    "编码规范。",
+    skills="没有使用 Skill。两个模型节点的提示词写在代码里（可在节点详情里查看全文），还不是"
+    "可单独复用、可版本管理的资产。",
+)
+
+NODES = {
+    "profile": NodeDesign(
+        title="探查数据",
+        kind="tool",
+        summary="通过数据源的只读连接器读取源表：列出库和表，读取每张表的结构、外键、行数、"
+        "每列的空值率和取值分布，以及几行样本。",
+        inputs="选择的数据源和需求；可以指定只看哪些表",
+        outputs="每张源表的探查结果",
+        tools=[
+            "数据源连接器（MCP，只读）：list_schemas、list_tables、describe_table、"
+            "table_stats、sample_rows"
+        ],
+        checks=f"数据源必须已登记，需求不能为空；一次最多探查 {MAX_TABLES} 张表",
+    ),
+    "plan": NodeDesign(
+        title="出方案",
+        kind="model",
+        summary="模型根据需求和探查结果写出 ETL 方案：要建哪些目标表、从哪些源表来、每列怎么算、"
+        "全量还是增量加载、数据质量规则，以及需要人确认的假设。被驳回时带着修改意见重写。",
+        inputs="需求、期望的代码语言、探查结果；驳回时还有上一版方案和修改意见",
+        outputs="ETL 方案（JSON）",
+        model_step="plan",
+        prompt=PLAN_PROMPT,
+        knowledge="探查结果（源表结构、统计、取值分布、样本行），没有知识库",
+        checks="平台校验方案：只能用探查到的表和列，目标表名合法，比较用到的取值必须在数据里"
+        "出现过（否则要写进假设让人确认）",
+        retry=f"校验不通过时把问题告诉模型重写，最多 {PLAN_ATTEMPTS} 次",
+    ),
+    "review": NodeDesign(
+        title="确认方案",
+        kind="human",
+        summary="运行暂停，等人看方案。确认后开始写代码；驳回并写下意见，就回到“出方案”按意见重写。",
+        inputs="方案",
+        outputs="确认或驳回的决定（谁、何时、意见）",
+    ),
+    "codegen": NodeDesign(
+        title="写代码",
+        kind="model",
+        summary="模型按确认的方案为每张目标表写转换代码（PySpark 函数体或 SQL 查询）。代码检查、"
+        "dev 试跑或上线审批发现问题时，带着问题回到这里重写。",
+        inputs="确认的方案、源表的列；重写时还有上一版代码和问题",
+        outputs="每张目标表的代码",
+        model_step="codegen",
+        prompt=codegen.SYSTEM_PROMPT,
+        knowledge="确认的方案和源表的列，没有知识库",
+        checks="静态检查：每张目标表都有代码且语法正确；只读方案里列出的源表；不许写数据、"
+        "执行任意 SQL、import 或碰系统（如 .write、spark.sql、dbutils）；SQL 只能是一条 SELECT",
+        retry=f"检查不通过时把问题告诉模型重写，最多 {CODEGEN_ATTEMPTS} 次",
+    ),
+    "package": NodeDesign(
+        title="打包",
+        kind="code",
+        summary="把代码套进平台的模板，生成 Databricks bundle：databricks.yml（dev、prod 两个"
+        "目标）、管道代码和说明，再整体检查一遍。没配 Databricks 工作区时运行到这里结束。",
+        inputs="方案和通过检查的代码",
+        outputs="bundle 文件，作为运行结果",
+        checks="bundle 文件能解析、彼此对得上",
+    ),
+    "verify": NodeDesign(
+        title="dev 试跑",
+        kind="tool",
+        summary="把 bundle 部署到 Databricks dev 目标并实际运行，收集每张表的行数、被丢弃的行"
+        "和质量规则结果。",
+        inputs="bundle 文件",
+        outputs="试跑结果：状态、各表行数、质量规则、报错",
+        tools=[
+            "Databricks REST API（按配置的方式：集群上的 notebook Job、Lakeflow 管道，"
+            "或只在集群上跑转换）"
+        ],
+        retry=f"可修的报错带回“写代码”重写，最多试跑 {DEV_RUN_ATTEMPTS} 次",
+    ),
+    "publish": NodeDesign(
+        title="提交资产",
+        kind="tool",
+        summary="试跑通过的代码以新版本提交到资产仓库，开一个 PR，PR 里写明需求、方案、试跑结果"
+        "和这次运行的链接，沉淀为公司资产。",
+        inputs="bundle 文件和试跑结果",
+        outputs="资产仓库里的 PR 和版本号",
+        tools=["资产仓库（GitHub）：建分支、提交文件、开 PR"],
+    ),
+    "release": NodeDesign(
+        title="上线审批",
+        kind="human",
+        summary="运行暂停，等审批者决定是否上线到 prod。批准就上线；驳回并写下意见，代码回到"
+        "“写代码”重写，重新试跑并开新版本的 PR。决定会写到 PR 评论里。",
+        inputs="试跑结果、prod 目标和运行计划",
+        outputs="批准或驳回的决定（谁、何时、意见）",
+        tools=["资产仓库（GitHub）：在 PR 上记录审批决定"],
+    ),
+    "deploy_prod": NodeDesign(
+        title="上线 prod",
+        kind="tool",
+        summary="把审批通过的 bundle 部署到 Databricks prod 目标，按计划定时运行，结果写回 PR。",
+        inputs="bundle 文件和运行计划",
+        outputs="上线结果：作业或管道、计划、链接",
+        tools=["Databricks REST API", "资产仓库（GitHub）：在 PR 上记录上线结果"],
+    ),
+}
 
 
 class EtlState(TypedDict, total=False):
@@ -542,15 +658,19 @@ def build(ctx: AppContext) -> StateGraph:
         return "plan" if state.get("feedback") else "codegen"
 
     graph = StateGraph(EtlState)
-    graph.add_node("profile", profile)
-    graph.add_node("plan", plan)
-    graph.add_node("review", review)
-    graph.add_node("codegen", write_code)
-    graph.add_node("package", package)
-    graph.add_node("verify", verify)
-    graph.add_node("publish", publish)
-    graph.add_node("release", release)
-    graph.add_node("deploy_prod", deploy_prod)
+    steps = {
+        "profile": profile,
+        "plan": plan,
+        "review": review,
+        "codegen": write_code,
+        "package": package,
+        "verify": verify,
+        "publish": publish,
+        "release": release,
+        "deploy_prod": deploy_prod,
+    }
+    for name, step in steps.items():
+        graph.add_node(name, step, metadata=NODES[name].metadata())
     graph.add_edge(START, "profile")
     graph.add_edge("profile", "plan")
     graph.add_edge("plan", "review")

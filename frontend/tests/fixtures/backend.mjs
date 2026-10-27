@@ -37,6 +37,10 @@ createServer(async (request, response) => {
   if (path === "/runs/unavailable-run") return request.socket.destroy();
   if (path === "/runs/timeout-run") return;
   if (path === "/runs/fixture") return json({ source: "contract-fixture" });
+  if (path === "/runs/fixture/flow")
+    return json({ source: "contract-fixture-flow" });
+  // Other runs have no flow here: the run page leaves the panel out.
+  if (path?.endsWith("/flow")) return json({ detail: "Not found" }, 404);
   let body;
   if (request.method === "POST") {
     try {
