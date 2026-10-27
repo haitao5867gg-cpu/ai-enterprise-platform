@@ -4,6 +4,7 @@ import { isRecord, type Decision, type Run } from "../runs";
 import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
 import { mockDataSources, mockEtlPlan, mockEtlResult } from "./mock-etl";
 import { mockZip } from "./mock-zip";
+import { addStep, decideStep, mockFlow, type MockSteps } from "./mock-flow";
 
 type StoredRun = {
   run: Run;
@@ -11,6 +12,7 @@ type StoredRun = {
   decision?: Decision;
   comment?: string;
   etl?: { language: EtlLanguage; plan?: EtlPlan };
+  steps: MockSteps;
 };
 // Next dev may reload this module. One process-wide store keeps route requests consistent.
 const globalStore = globalThis as typeof globalThis & {
@@ -24,6 +26,13 @@ function refresh(entry: StoredRun): Run {
   if (entry.etl) {
     if (entry.decision !== "approve") {
       const plan = mockEtlPlan(entry.etl.language, entry.comment);
+      const input = { input: { request: run.messages[0].content } };
+      if (!entry.decision)
+        addStep(entry.steps, "profile", input, {
+          source_name: "示例库",
+          profile: [{ name: "public.orders" }, { name: "public.customers" }],
+        });
+      addStep(entry.steps, "plan", input, { plan });
       entry.etl.plan = plan;
       run.status = "waiting";
       run.messages.push({ role: "assistant", content: plan.summary });
@@ -33,9 +42,15 @@ function refresh(entry: StoredRun): Run {
         options: ["approve", "reject"],
         details: { type: "etl_plan", plan },
       };
+      addStep(entry.steps, "review", { ...input, plan }, null, run.pending);
     } else if (entry.etl.plan) {
       run.status = "done";
       run.result = mockEtlResult(entry.etl.plan);
+      const input = { plan: entry.etl.plan };
+      addStep(entry.steps, "codegen", input, { code: {}, problems: [] });
+      addStep(entry.steps, "package", input, {
+        result: { bundle: "etl_demo" },
+      });
       run.messages.push({
         role: "assistant",
         content: "已生成 ETL bundle，可查看或下载文件。",
@@ -57,6 +72,11 @@ function refresh(entry: StoredRun): Run {
       prompt: "确认这个回答吗？驳回时可以写下修改意见。",
       options: ["approve", "reject"],
     };
+    const input = { input: { text: run.messages[0].content } };
+    addStep(entry.steps, "draft", input, {
+      draft: run.messages.at(-1)?.content,
+    });
+    addStep(entry.steps, "review", input, null, run.pending);
   } else {
     run.status = "done";
     run.result = {
@@ -121,6 +141,7 @@ export async function mockRuns(request: Request, path: string[]) {
     store.set(run.run_id, {
       run,
       readyAt: Date.now() + 600,
+      steps: [],
       etl: isEtl
         ? { language: input.language === "sql" ? "sql" : "pyspark" }
         : undefined,
@@ -146,6 +167,8 @@ export async function mockRuns(request: Request, path: string[]) {
       },
     });
   }
+  if (request.method === "GET" && path[2] === "flow")
+    return json(mockFlow(run.app, entry.steps, run.status === "done"));
   if (request.method === "GET") return json(run);
   if (
     !isRecord(body) ||
@@ -159,6 +182,10 @@ export async function mockRuns(request: Request, path: string[]) {
   entry.decision = body.decision as Decision;
   entry.comment =
     typeof body.comment === "string" ? body.comment.trim() : undefined;
+  decideStep(entry.steps, {
+    decision: entry.decision,
+    comment: entry.comment ?? null,
+  });
   run.pending = null;
   run.status = "running";
   run.messages.push({

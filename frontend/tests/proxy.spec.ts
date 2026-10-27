@@ -8,6 +8,8 @@ test("production ignores mock flag and forwards health and configured API base p
   expect(response.status()).toBe(200);
   expect(await response.json()).toEqual({ source: "contract-fixture" });
   expect(response.headers()["cache-control"]).toBe("no-store");
+  const flow = await request.get("/api/runs/fixture/flow");
+  expect(await flow.json()).toEqual({ source: "contract-fixture-flow" });
   const health = await request.get("/api/readyz");
   expect(await health.json()).toEqual({
     status: "ok",

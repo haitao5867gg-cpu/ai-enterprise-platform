@@ -17,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from aep import tracing
+from aep.runtime import design
 from aep.runtime.registry import AppBuilder, AppContext
 from aep.runtime.store import RunRecord, RunStore
 
@@ -66,6 +67,8 @@ class RunService:
         self._graphs: dict[str, CompiledStateGraph] = {
             name: build(ctx).compile(checkpointer=checkpointer) for name, build in apps.items()
         }
+        self._designs = {name: design.app_design(build) for name, build in apps.items()}
+        self._default_model = ctx.settings.default_model
         self._tasks: set[asyncio.Task] = set()
 
     @property
@@ -94,6 +97,19 @@ class RunService:
             pending=pending,
             result=values.get("result"),
             trace_id=tracing.trace_id(run_id) if self._tracer.enabled else None,
+        )
+
+    async def flow(self, run_id: str) -> dict[str, Any]:
+        """How the run's app is built and every step this run took (see aep.runtime.design)."""
+        record = await self._store.get(run_id)
+        if record is None:
+            raise RunNotFound(run_id)
+        return await design.flow(
+            self._graphs[record.app],
+            _config(run_id),
+            {"status": record.status, "input": record.input},
+            self._designs[record.app],
+            self._default_model,
         )
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:

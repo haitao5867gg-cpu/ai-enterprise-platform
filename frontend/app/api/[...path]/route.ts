@@ -19,7 +19,7 @@ async function handle(request: Request, context: Context) {
     endpoint === "readyz" ||
     endpoint === "datasources" ||
     endpoint === "runs" ||
-    /^runs\/[a-zA-Z0-9_-]{1,128}(\/(resume|files\.zip))?$/.test(endpoint);
+    /^runs\/[a-zA-Z0-9_-]{1,128}(\/(resume|files\.zip|flow))?$/.test(endpoint);
   if (!allowed) return jsonError("Not found", 404);
   const isResume = path.length === 3 && path[2] === "resume";
   const canGet = !isResume;
