@@ -2,7 +2,14 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { isRecord, type Decision, type Run } from "../runs";
 import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
-import { mockDataSources, mockEtlPlan, mockEtlResult } from "./mock-etl";
+import {
+  mockDataSources,
+  mockDeployed,
+  mockEtlPlan,
+  mockEtlResult,
+  mockProdTarget,
+  type MockApproval,
+} from "./mock-etl";
 import { mockZip } from "./mock-zip";
 import { addStep, decideStep, mockFlow, type MockSteps } from "./mock-flow";
 
@@ -11,7 +18,14 @@ type StoredRun = {
   readyAt: number;
   decision?: Decision;
   comment?: string;
-  etl?: { language: EtlLanguage; plan?: EtlPlan };
+  etl?: {
+    language: EtlLanguage;
+    plan?: EtlPlan;
+    // Which approval the run is at: the plan, then the release to prod.
+    stage: "plan" | "release";
+    version: number;
+    approvals: MockApproval[];
+  };
   steps: MockSteps;
 };
 // Next dev may reload this module. One process-wide store keeps route requests consistent.
@@ -24,8 +38,9 @@ function refresh(entry: StoredRun): Run {
   const { run } = entry;
   if (run.status !== "running" || Date.now() < entry.readyAt) return run;
   if (entry.etl) {
-    if (entry.decision !== "approve") {
-      const plan = mockEtlPlan(entry.etl.language, entry.comment);
+    const etl = entry.etl;
+    if (etl.stage === "plan" && entry.decision !== "approve") {
+      const plan = mockEtlPlan(etl.language, entry.comment);
       const input = { input: { request: run.messages[0].content } };
       if (!entry.decision)
         addStep(entry.steps, "profile", input, {
@@ -33,7 +48,7 @@ function refresh(entry: StoredRun): Run {
           profile: [{ name: "public.orders" }, { name: "public.customers" }],
         });
       addStep(entry.steps, "plan", input, { plan });
-      entry.etl.plan = plan;
+      etl.plan = plan;
       run.status = "waiting";
       run.messages.push({ role: "assistant", content: plan.summary });
       run.pending = {
@@ -43,17 +58,62 @@ function refresh(entry: StoredRun): Run {
         details: { type: "etl_plan", plan },
       };
       addStep(entry.steps, "review", { ...input, plan }, null, run.pending);
-    } else if (entry.etl.plan) {
-      run.status = "done";
-      run.result = mockEtlResult(entry.etl.plan);
-      const input = { plan: entry.etl.plan };
+    } else if (
+      etl.plan &&
+      (etl.stage === "plan" || entry.decision === "reject")
+    ) {
+      // The plan was approved, or the release was turned down and the code rewritten.
+      if (etl.stage === "release") etl.version += 1;
+      etl.stage = "release";
+      const result = mockEtlResult(etl.plan, etl.approvals, etl.version);
+      const input = { plan: etl.plan };
       addStep(entry.steps, "codegen", input, { code: {}, problems: [] });
       addStep(entry.steps, "package", input, {
         result: { bundle: "etl_demo" },
       });
+      addStep(entry.steps, "verify", input, {
+        result: { verification: result.verification },
+      });
+      addStep(entry.steps, "publish", input, {
+        result: { asset: result.asset },
+      });
+      run.status = "waiting";
+      run.result = result;
       run.messages.push({
         role: "assistant",
-        content: "已生成 ETL bundle，可查看或下载文件。",
+        content: "dev 试跑通过（本地模拟）。",
+      });
+      run.pending = {
+        kind: "approval",
+        prompt:
+          "dev 试跑已通过。确认把 etl_demo 上线到 prod（prod_catalog.etl，按计划 0 0 2 * * ? 运行）吗？" +
+          "驳回时写下修改意见，代码会按意见重写。",
+        options: ["approve", "reject"],
+        details: {
+          type: "etl_release",
+          bundle: "etl_demo",
+          verification: result.verification,
+          target: mockProdTarget,
+        },
+      };
+      addStep(entry.steps, "release", input, null, run.pending);
+    } else if (etl.plan) {
+      run.status = "done";
+      run.result = {
+        ...mockEtlResult(etl.plan, etl.approvals, etl.version),
+        release: mockDeployed,
+      };
+      addStep(
+        entry.steps,
+        "deploy_prod",
+        { plan: etl.plan },
+        {
+          result: { release: mockDeployed },
+        },
+      );
+      run.messages.push({
+        role: "assistant",
+        content: "已上线到 prod：etl_demo 部署为 Job 101（本地模拟）。",
       });
     }
     return run;
@@ -143,7 +203,12 @@ export async function mockRuns(request: Request, path: string[]) {
       readyAt: Date.now() + 600,
       steps: [],
       etl: isEtl
-        ? { language: input.language === "sql" ? "sql" : "pyspark" }
+        ? {
+            language: input.language === "sql" ? "sql" : "pyspark",
+            stage: "plan",
+            version: 1,
+            approvals: [],
+          }
         : undefined,
     });
     return json({ run_id: run.run_id, status: run.status }, 201);
@@ -153,11 +218,7 @@ export async function mockRuns(request: Request, path: string[]) {
   const run = refresh(entry);
   if (request.method === "GET" && path[2] === "files.zip") {
     const result = getEtlResult(run.result);
-    if (
-      run.status !== "done" ||
-      !result ||
-      Object.keys(result.files).length === 0
-    )
+    if (!result || Object.keys(result.files).length === 0)
       return json({ detail: "This run has no files" }, 404);
     return new Response(mockZip(result.files), {
       headers: {
@@ -173,19 +234,25 @@ export async function mockRuns(request: Request, path: string[]) {
   if (
     !isRecord(body) ||
     (body.decision !== "approve" && body.decision !== "reject") ||
-    (body.comment !== undefined && typeof body.comment !== "string")
+    (body.comment !== undefined && typeof body.comment !== "string") ||
+    (body.actor !== undefined && typeof body.actor !== "string")
   ) {
-    return json({ detail: "Invalid decision or comment" }, 422);
+    return json({ detail: "Invalid decision, comment or actor" }, 422);
   }
   if (run.status !== "waiting")
     return json({ detail: "Run is not waiting for approval" }, 409);
   entry.decision = body.decision as Decision;
   entry.comment =
     typeof body.comment === "string" ? body.comment.trim() : undefined;
-  decideStep(entry.steps, {
+  const approval: MockApproval = {
+    step: entry.etl?.stage ?? "plan",
     decision: entry.decision,
-    comment: entry.comment ?? null,
-  });
+    comment: entry.comment ?? "",
+    actor: typeof body.actor === "string" ? body.actor.trim() : "",
+    at: new Date().toISOString(),
+  };
+  entry.etl?.approvals.push(approval);
+  decideStep(entry.steps, approval);
   run.pending = null;
   run.status = "running";
   run.messages.push({

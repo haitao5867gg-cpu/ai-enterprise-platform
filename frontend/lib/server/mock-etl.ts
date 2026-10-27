@@ -1,5 +1,5 @@
 import "server-only";
-import type { DataSource, EtlLanguage, EtlPlan, EtlResult } from "../etl";
+import type { DataSource, EtlLanguage, EtlPlan } from "../etl";
 
 export const mockDataSources: DataSource[] = [
   {
@@ -16,6 +16,10 @@ export function mockEtlPlan(language: EtlLanguage, feedback?: string): EtlPlan {
       "清洗客户与订单数据，为分析准备两张目标表。" +
       (feedback ? `已根据意见调整：${feedback}` : ""),
     language,
+    assumptions: [
+      "需求说的“有效订单”理解为订单号不为空，样本里有 2% 的订单号为空。",
+      "金额为负的订单视为退款，保留但不计入销售额。",
+    ],
     targets: [
       {
         name: "orders_clean",
@@ -79,8 +83,32 @@ export function mockEtlPlan(language: EtlLanguage, feedback?: string): EtlPlan {
   };
 }
 
-export function mockEtlResult(plan: EtlPlan): EtlResult & { plan: EtlPlan } {
+export type MockApproval = {
+  step: "plan" | "release";
+  decision: string;
+  comment: string;
+  actor: string;
+  at: string;
+};
+
+export const mockProdTarget = {
+  mode: "job",
+  catalog: "prod_catalog",
+  schema: "etl",
+  schedule: "0 0 2 * * ?",
+  timezone: "Asia/Shanghai",
+  cluster_id: "mock-cluster",
+};
+
+// The run result as the backend returns it: what a passing dev run leaves for the release
+// approval. Version 2 and later are the code rewritten after a rejected release.
+export function mockEtlResult(
+  plan: EtlPlan,
+  approvals: MockApproval[],
+  version = 1,
+): Record<string, unknown> {
   const python = plan.language === "pyspark";
+  const rewrite = version > 1 ? `# 第 ${version} 版：按上线审批意见重写\n` : "";
   const files: Record<string, string> = {
     "databricks.yml":
       "bundle:\n  name: etl_demo\ninclude:\n  - resources/*.yml\ntargets:\n  dev:\n    default: true\n",
@@ -90,8 +118,8 @@ export function mockEtlResult(plan: EtlPlan): EtlResult & { plan: EtlPlan } {
   };
   for (const target of plan.targets) {
     files[`src/${target.name}.${python ? "py" : "sql"}`] = python
-      ? `# 本地模拟代码：${target.description}\nfrom pyspark import pipelines as dp\n\n\n@dp.table\ndef ${target.name}():\n    return spark.read.table(\"${target.sources[0]}\")\n`
-      : `-- 本地模拟代码：${target.description}\nCREATE OR REFRESH MATERIALIZED VIEW ${target.name}\nAS SELECT * FROM ${target.sources[0]};\n`;
+      ? `${rewrite}# 本地模拟代码：${target.description}\nfrom pyspark import pipelines as dp\n\n\n@dp.table\ndef ${target.name}():\n    return spark.read.table(\"${target.sources[0]}\")\n`
+      : `${rewrite.replace("#", "--")}-- 本地模拟代码：${target.description}\nCREATE OR REFRESH MATERIALIZED VIEW ${target.name}\nAS SELECT * FROM ${target.sources[0]};\n`;
   }
   return {
     bundle: "etl_demo",
@@ -100,13 +128,33 @@ export function mockEtlResult(plan: EtlPlan): EtlResult & { plan: EtlPlan } {
     files,
     checks: { passed: true, problems: [] },
     verification: {
-      status: "skipped",
-      reason: "本地 mock 不会部署到 Databricks",
-      mode: null,
+      status: "passed",
+      reason: "",
+      mode: "job",
       url: null,
+      attempt: 1,
       errors: [],
       warnings: [],
-      tables: [],
+      tables: plan.targets.map((target, index) => ({
+        name: target.name,
+        status: "COMPLETED",
+        rows: 1000 - index * 200,
+        dropped: index === 0 ? 12 : 0,
+      })),
+    },
+    approvals,
+    asset: {
+      status: "skipped",
+      reason: "本地 mock 不提交资产仓库",
     },
   };
 }
+
+export const mockDeployed = {
+  status: "deployed",
+  ...mockProdTarget,
+  job_id: 101,
+  url: null,
+  steps: [],
+  errors: [],
+};

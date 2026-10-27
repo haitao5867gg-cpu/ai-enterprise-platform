@@ -61,8 +61,15 @@ test("ETL flow view: design, path, current node and each step's input and output
     "5. 确认方案",
     "6. 写代码",
     "7. 打包",
+    "8. dev 试跑",
+    "9. 提交资产",
+    "10. 上线审批",
   ]);
-  await expect(chart.locator(".flow-node.current")).toHaveCount(0);
+  // Now it waits for the release approval.
+  await expect(chart.locator(".flow-node.current.waiting")).toHaveAttribute(
+    "aria-label",
+    /上线审批/,
+  );
   // The first review's decision is its output.
   await path.getByRole("button", { name: "3. 确认方案" }).click();
   const review = flow.getByRole("region", { name: "节点 确认方案" });
@@ -73,8 +80,13 @@ test("ETL flow view: design, path, current node and each step's input and output
   await expect(review.locator(".flow-step .flow-json").first()).toContainText(
     "改成全量",
   );
-  await chart.getByRole("button", { name: /^上线审批/ }).click();
+  await chart.getByRole("button", { name: /^上线 prod/ }).click();
   await expect(
-    flow.getByRole("region", { name: "节点 上线审批" }),
+    flow.getByRole("region", { name: "节点 上线 prod" }),
   ).toContainText("这次运行没有走到这个节点");
+
+  await page.getByRole("button", { name: "确认上线", exact: true }).click();
+  await expect(path.getByRole("button")).toHaveCount(11);
+  await expect(path.getByRole("button").last()).toHaveText("11. 上线 prod");
+  await expect(chart.locator(".flow-node.current")).toHaveCount(0);
 });
