@@ -20,7 +20,8 @@ services:
       MYSQL_ROOT_PASSWORD: ${AEP_SOURCE_MYSQL_ADMIN_PASSWORD:-local-source-admin}
       MYSQL_ROOT_HOST: "%"
       MYSQL_DATABASE: sales
-      AEP_MYSQL_PASSWORD: ${AEP_MYSQL_PASSWORD:-local-source-reader}
+      MYSQL_USER: source_reader
+      MYSQL_PASSWORD: ${AEP_MYSQL_PASSWORD:-local-source-reader}
     ports:
       - "127.0.0.1:3307:3306"
     volumes:

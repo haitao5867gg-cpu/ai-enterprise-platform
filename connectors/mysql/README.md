@@ -62,7 +62,8 @@ JSON 使用稳定的键排序。展示值超过 80 个字符时，只返回前 8
 ## 只读保护
 
 - 种子只授予 `source_reader` 对 `sales.*` 的 SELECT，无写权限、管理权限或角色。
-  `002-reader.sh` 用十六进制传入配置密码，不把密码拼接成 SQL 语法。
+  账号由镜像按 `MYSQL_USER` / `MYSQL_PASSWORD` 创建，`002-reader.sql` 再把权限收窄为 SELECT，
+  密码不进入 SQL 文本；种子只用纯 SQL，不依赖在挂载目录里执行脚本（macOS 上会被拒绝）。
 - 启动时、每次连接时和 `/healthz` 都检查权限；有写权限时启动失败。
   `SHOW GRANTS` 只允许直接的 USAGE / SELECT / SHOW VIEW，拒绝 GRANT OPTION、FILE、EXECUTE、
   临时表权限、动态管理权限、PROXY，以及任何可切换的角色（包括未激活角色）。

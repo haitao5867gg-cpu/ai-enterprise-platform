@@ -101,6 +101,8 @@ jobs:
           MYSQL_ROOT_PASSWORD: local-source-admin
           MYSQL_ROOT_HOST: "%"
           MYSQL_DATABASE: sales
+          MYSQL_USER: source_reader
+          MYSQL_PASSWORD: local-source-reader
         ports:
           - 3307:3306
         options: >-
@@ -116,8 +118,8 @@ jobs:
         run: |
           docker exec -i -e MYSQL_PWD=local-source-admin ${{ job.services.mysql.id }} \
             mysql -uroot sales < connectors/mysql/seed/001-source.sql
-          docker exec -i -e AEP_MYSQL_PASSWORD=local-source-reader ${{ job.services.mysql.id }} \
-            sh < connectors/mysql/seed/002-reader.sh
+          docker exec -i -e MYSQL_PWD=local-source-admin ${{ job.services.mysql.id }} \
+            mysql -uroot sales < connectors/mysql/seed/002-reader.sql
       # The tests start a real HTTP listener and call all five MCP tools as well.
       - run: uv run --frozen --project connectors/mysql pytest connectors/mysql/tests -q
       - if: failure()
