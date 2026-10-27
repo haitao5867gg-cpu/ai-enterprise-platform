@@ -12,6 +12,8 @@ import {
 } from "./mock-etl";
 import { mockZip } from "./mock-zip";
 import { addStep, decideStep, mockFlow, type MockSteps } from "./mock-flow";
+import { mockUpload, mockUploads, mockUploadedPlan } from "./mock-uploads";
+import type { UploadedDataset } from "../uploads";
 
 type StoredRun = {
   run: Run;
@@ -25,6 +27,7 @@ type StoredRun = {
     stage: "plan" | "release";
     version: number;
     approvals: MockApproval[];
+    upload?: UploadedDataset;
   };
   steps: MockSteps;
 };
@@ -40,12 +43,18 @@ function refresh(entry: StoredRun): Run {
   if (entry.etl) {
     const etl = entry.etl;
     if (etl.stage === "plan" && entry.decision !== "approve") {
-      const plan = mockEtlPlan(etl.language, entry.comment);
+      const plan = etl.upload
+        ? mockUploadedPlan(etl.upload, etl.language, entry.comment)
+        : mockEtlPlan(etl.language, entry.comment);
       const input = { input: { request: run.messages[0].content } };
       if (!entry.decision)
         addStep(entry.steps, "profile", input, {
-          source_name: "示例库",
-          profile: [{ name: "public.orders" }, { name: "public.customers" }],
+          source_name: etl.upload?.datasource.name ?? "示例库",
+          profile: etl.upload
+            ? etl.upload.tables.map((table) => ({
+                name: `${etl.upload!.schema}.${table.table}`,
+              }))
+            : [{ name: "public.orders" }, { name: "public.customers" }],
         });
       addStep(entry.steps, "plan", input, { plan });
       etl.plan = plan;
@@ -156,7 +165,13 @@ function json(value: unknown, status = 200) {
 }
 
 export async function mockRuns(request: Request, path: string[]) {
-  if (path[0] === "datasources") return json(mockDataSources);
+  if (path[0] === "datasources") {
+    if (path[1] === "files") return mockUpload(request);
+    return json([
+      ...mockDataSources,
+      ...[...mockUploads.values()].map((item) => item.datasource),
+    ]);
+  }
   if (request.method === "GET" && path.length === 1) {
     return json([...store.values()].reverse().map(refresh));
   }
@@ -180,9 +195,10 @@ export async function mockRuns(request: Request, path: string[]) {
       typeof text !== "string" ||
       !text.trim() ||
       (isEtl &&
-        (!mockDataSources.some(
-          (source) => source.datasource_id === input.datasource_id,
-        ) ||
+        (![
+          ...mockDataSources,
+          ...[...mockUploads.values()].map((item) => item.datasource),
+        ].some((source) => source.datasource_id === input.datasource_id) ||
           (input.language !== undefined &&
             input.language !== "pyspark" &&
             input.language !== "sql")))
@@ -208,6 +224,10 @@ export async function mockRuns(request: Request, path: string[]) {
             stage: "plan",
             version: 1,
             approvals: [],
+            upload:
+              typeof input.datasource_id === "string"
+                ? mockUploads.get(input.datasource_id)
+                : undefined,
           }
         : undefined,
     });

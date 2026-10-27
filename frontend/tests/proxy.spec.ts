@@ -155,3 +155,41 @@ test("network and timeout errors are bounded and hide internal connection detail
   const timeout = await request.get("/api/runs/timeout-run");
   expect(timeout.status()).toBe(504);
 });
+
+test("multipart proxy preserves names, boundaries, binary bytes and validation errors", async ({
+  request,
+}) => {
+  const bytes = Buffer.from([0x50, 0x4b, 0, 0xff, 0xfe, 0x80, 0xc3, 0x28, 0]);
+  const response = await request.post("/api/datasources/files", {
+    multipart: {
+      name: "中文数据集",
+      files: {
+        name: "测试.xlsx",
+        mimeType:
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        buffer: bytes,
+      },
+    },
+  });
+  expect(response.status()).toBe(201);
+  expect(await response.json()).toEqual({
+    name: "中文数据集",
+    files: [{ name: "测试.xlsx", bytes: [...bytes] }],
+  });
+  const invalid = await request.post("/api/datasources/files", {
+    multipart: {
+      name: "invalid",
+      files: {
+        name: "bad.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from("id,id\n1,2"),
+      },
+    },
+  });
+  expect(invalid.status()).toBe(422);
+  expect((await invalid.json()).detail).toContain("bad.csv");
+  expect((await request.get("/api/datasources/files")).status()).toBe(405);
+  expect(
+    (await request.post("/api/datasources/files", { data: {} })).status(),
+  ).toBe(415);
+});

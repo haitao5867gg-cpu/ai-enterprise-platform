@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -27,6 +28,9 @@ class Settings(BaseSettings):
     # Data sources registered at startup when no source of that name exists yet,
     # as JSON: [{"name": ..., "kind": ..., "connector_url": ..., "description": ...}].
     default_datasources: list[dict[str, str]] = []
+    # Shared with the read-only files connector; each upload gets a UUID directory.
+    uploads_dir: Path = Path("/data/uploads")
+    files_connector_url: str = "http://connector-files:8003"
 
     # Databricks dev validation of generated bundles (aep.databricks). Off unless
     # host and token are set. Empty catalog / schema / source_catalog keep the

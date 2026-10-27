@@ -1,12 +1,16 @@
 """Data sources API: register connectors and see what tools they offer."""
 
+import shutil
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from aep.config import Settings, get_settings
 from aep.datasources import DataSource, DataSourceKind, DataSourceStore, DuplicateName
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError
+from aep.uploads import MAX_FILES, UploadError, stage_dataset
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 
@@ -45,6 +49,13 @@ class ToolOut(BaseModel):
     input_schema: dict[str, Any]
 
 
+class FileDataSourceOut(BaseModel):
+    datasource: DataSourceOut
+    dataset_id: str
+    schema_name: str = Field(alias="schema")
+    tables: list[dict[str, Any]]
+
+
 def _out(d: DataSource) -> DataSourceOut:
     return DataSourceOut(
         datasource_id=d.datasource_id,
@@ -75,6 +86,48 @@ async def create_datasource(body: CreateDataSource, store: Store) -> DataSourceO
 @router.get("")
 async def list_datasources(store: Store) -> list[DataSourceOut]:
     return [_out(d) for d in await store.all()]
+
+
+@router.post("/files", status_code=status.HTTP_201_CREATED)
+async def upload_files(
+    store: Store,
+    settings: Annotated[Settings, Depends(get_settings)],
+    name: Annotated[str, Form()] = "",
+    files: Annotated[list[UploadFile] | None, File()] = None,
+) -> FileDataSourceOut:
+    name = name.strip()
+    if not name or len(name) > 100:
+        raise HTTPException(422, "数据集名称必须为 1～100 个字符")
+    if not files:
+        raise HTTPException(422, "请选择至少一个 CSV 或 XLSX 文件")
+    if len(files) > MAX_FILES:
+        raise HTTPException(422, "单次最多上传 20 个文件")
+    try:
+        staged = await run_in_threadpool(stage_dataset, files, settings)
+    except UploadError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    final = settings.uploads_dir / staged.dataset_id
+    registered = False
+    try:
+        staged.path.rename(final)
+        ds = await store.create(
+            name,
+            "file",
+            f"{settings.files_connector_url.rstrip('/')}/datasets/{staged.dataset_id}/mcp",
+            "上传文件：" + "、".join(t["table"] for t in staged.tables),
+        )
+        registered = True
+    except DuplicateName as exc:
+        raise HTTPException(409, f"已存在名为「{name}」的数据源") from exc
+    finally:
+        if not registered:
+            await run_in_threadpool(shutil.rmtree, final if final.exists() else staged.path)
+    return FileDataSourceOut(
+        datasource=_out(ds),
+        dataset_id=staged.dataset_id,
+        schema=staged.schema,
+        tables=staged.tables,
+    )
 
 
 @router.get("/{datasource_id}")

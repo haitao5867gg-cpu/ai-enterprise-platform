@@ -624,6 +624,77 @@ nav {
 .form-section {
   margin-bottom: 30px;
 }
+.source-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.upload-panel {
+  margin-top: 16px;
+  padding: 18px;
+  background: #f9f7fc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.upload-name {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #e2ddea;
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: white;
+  color: #524a61;
+  margin-bottom: 16px;
+}
+.upload-dropzone {
+  border: 1px dashed #b3a7ca;
+  border-radius: 7px;
+  padding: 16px;
+}
+.upload-dropzone.dragging {
+  background: #ece3f8;
+  border-color: var(--purple);
+}
+.upload-dropzone input {
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+}
+.upload-files,
+.upload-result ul {
+  padding-left: 18px;
+  margin: 12px 0;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.upload-progress {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  font-size: 12px;
+}
+.upload-progress progress {
+  width: 100%;
+  accent-color: var(--purple);
+}
+.upload-result {
+  margin: 16px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.upload-result li span {
+  display: block;
+  color: #81718e;
+}
+.upload-panel > .button {
+  margin-top: 12px;
+  max-width: 100%;
+  white-space: normal;
+}
 .step-label {
   display: flex;
   align-items: center;

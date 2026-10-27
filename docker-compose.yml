@@ -100,6 +100,22 @@ services:
       timeout: 5s
       retries: 20
 
+  connector-files:
+    build: ./connectors/files
+    environment:
+      AEP_UPLOADS_DIR: ${AEP_UPLOADS_DIR:-/data/uploads}
+      AEP_FILES_MCP_HOST: 0.0.0.0
+      AEP_FILES_MCP_PORT: 8003
+    volumes:
+      - uploads:${AEP_UPLOADS_DIR:-/data/uploads}:ro
+    ports:
+      - "127.0.0.1:8003:8003"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   postgres:
     image: pgvector/pgvector:pg17
     environment:
@@ -161,18 +177,24 @@ services:
       AEP_REDIS_URL: redis://redis:6379/0
       AEP_LLM_GATEWAY_URL: http://litellm:4000
       AEP_LLM_GATEWAY_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
+      AEP_UPLOADS_DIR: ${AEP_UPLOADS_DIR:-/data/uploads}
+      AEP_FILES_CONNECTOR_URL: ${AEP_FILES_CONNECTOR_URL:-http://connector-files:8003}
       # Sample sources, registered through the existing startup mechanism.
       AEP_DEFAULT_DATASOURCES: >-
         [{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"},
          {"name": "MySQL 示例库", "kind": "mysql", "connector_url": "http://connector-mysql:8002/mcp", "description": "本地 MySQL 示例源库：客户、商品、订单（含脏数据）"}]
     ports:
       - "8000:8000"
+    volumes:
+      - uploads:${AEP_UPLOADS_DIR:-/data/uploads}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       litellm:
+        condition: service_healthy
+      connector-files:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
@@ -197,3 +219,4 @@ volumes:
   postgres-data:
   source-postgres-data:
   source-mysql-data:
+  uploads:

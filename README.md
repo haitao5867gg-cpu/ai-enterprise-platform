@@ -40,6 +40,29 @@ curl -s localhost:8000/runs -H 'content-type: application/json' \
 
 确认用 `POST /runs/{id}/resume`，下载用 `GET /runs/{id}/files.zip`；`input.models` 可以为 `plan` 和 `codegen` 分别指定模型。
 
+#### 用上传的文件试跑
+
+`make up` 后打开「新建运行」，应用选择 `etl`，点击数据源旁的「上传文件」。输入数据集名称，
+选择或拖入 CSV / XLSX（每次最多 20 个、单文件最多 50 MB），点击「上传并创建数据源」。
+上传完成会显示每张表的名称、列名、列数与行数，并自动选中这个数据源；填写需求后开始运行，
+查看探查结果和方案，停在方案确认这一步即可。
+
+CSV 支持 UTF-8、UTF-8 BOM 和 GBK，Excel 每个工作表生成一张表，第一行必须是非空且不重复的
+表头，表头后至少有一行数据；类型自动推断。表名转小写、特殊字符替换为下划线，重名追加序号，
+全中文名使用 `table` 等名称，原始文件名和工作表名保存在 manifest。数据持久保存在 `uploads`
+卷中，API 读写、文件连接器只读；目录位置和连接器地址见 `.env.example`。
+上传文件同步到 Databricks 不属于此功能范围。
+
+```bash
+curl -sSf localhost:8000/datasources/files \
+  -F 'name=本月订单' -F 'files=@orders.csv' -F 'files=@customers.xlsx'
+```
+
+只想验证工作台交互和方案确认时，可在前端开发模式启用 `AEP_MOCK_RUNS=true npm run dev`。
+本地模拟支持上传 CSV / XLSX、中文校验、自动选择和基于上传表的模拟方案；模拟数据仅保留在
+前端进程内。Compose 默认的 LiteLLM `mock` 仅回复固定文本，不生成真实 ETL 方案；实际探查与
+模型规划使用上文配置的模型，自动化测试使用脚本化 mock 模型且不依赖真实模型。
+
 #### Databricks dev 试跑
 
 在 `.env` 里填了 `AEP_DATABRICKS_HOST` 和 `AEP_DATABRICKS_TOKEN` 之后，生成的 bundle 会部署到 dev 目标并运行一次，每张表的行数和质量规则结果写进 run 结果的 `verification`，页面上也会显示。试跑失败时，报错交回代码生成重写，最多试跑三次。不填就跳过这一步，结果里写明原因。部署方式由 `AEP_DATABRICKS_DEPLOY` 决定（不填时：有 `AEP_DATABRICKS_CLUSTER_ID` 就用 `job`，否则用 `pipeline`）：
