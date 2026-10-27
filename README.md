@@ -73,7 +73,7 @@ AEP_DATABRICKS_PROD_SCHEMA=<prod schema>
 
 #### 生成的代码以 PR 进资产仓库
 
-配上资产仓库后，dev 试跑通过的 bundle 会提交到这个仓库的 `pipelines/<bundle 名>/` 下：每个版本新开一个分支（`aep/<bundle 名>/v<版本>-<run id 前 8 位>`）和一个 PR。PR 描述里写着原始需求、确认后的方案和假设、dev 试跑结果、审批记录、平台 run 链接和 Langfuse trace id；上线审批的结论（通过并部署、或驳回）会以评论补在 PR 上。PR 合不合并由人决定。驳回后重写的代码试跑通过，会作为下一个版本另开 PR。
+配上资产仓库后，dev 试跑通过的 bundle 会提交到这个仓库的 `pipelines/<bundle 名>/` 下：每个版本新开一个分支（`aep/<bundle 名>/v<版本>-<run id 前 8 位>`）和一个 PR。PR 描述里写着原始需求、确认后的方案和假设、dev 试跑结果、审批记录、平台 run 链接和 Langfuse trace id；上线审批的结论（通过并部署、或驳回）会以评论补在 PR 上。PR 合不合并由人决定。驳回后重写的代码试跑通过，会作为下一个版本另开 PR。bundle 名取 run 输入里的 `name`，没给就用第一张目标表的表名，所以针对同一张表的多次运行会累加成同一个资产的不同版本。
 
 平台在资产索引里记下每个版本（bundle 名、版本、PR、commit、来源 run、状态）。版本号在开 PR 之前就预留好：并发的 run 拿到不同版本，同一步骤重跑（比如进程重启后恢复）沿用原来的版本、分支和 PR；预留了但 PR 没开成的版本状态是 `pending`。`GET /assets?name=<bundle 名>` 可以按名称查。不配就跳过，run 结果的 `asset` 里写明原因；评测（`input.release = false`）不提交。
 

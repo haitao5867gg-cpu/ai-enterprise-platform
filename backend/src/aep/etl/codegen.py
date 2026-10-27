@@ -79,7 +79,8 @@ def _target_header(target: Target) -> list[str]:
     lines = [f"{target.name}: {target.description}".rstrip(": "), f"做法：{target.logic}"]
     if target.load.mode == "incremental":
         lines.append(
-            f"增量键：{target.load.key}（serverless 上的物化视图会尽量只处理新增和变更的数据）"
+            f"增量键：{target.load.key}（部署成 Lakeflow 管道时，物化视图会尽量只处理新增和变更的"
+            "数据；Job 模式每次整表重算）"
         )
     return lines
 

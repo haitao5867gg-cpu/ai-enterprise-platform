@@ -32,6 +32,7 @@ import re
 import tempfile
 import time
 import uuid
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -192,6 +193,10 @@ class DevTarget:
         self._settings = settings
         self._host = settings.databricks_host.rstrip("/")
         self._http = http or httpx.AsyncClient(timeout=60)
+        # Dev deployments of one bundle share its workspace files, job or pipeline, so runs of
+        # the same bundle verify one at a time (a later run would overwrite an earlier one's
+        # code before it ran).
+        self._dev_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "DevTarget | None":
@@ -306,6 +311,10 @@ class DevTarget:
         return updates[0].get("update_id"), events.get("events") or []
 
     async def run(self, bundle: Bundle) -> DevRun:
+        async with self._dev_locks[bundle.name]:
+            return await self._run_dev(bundle)
+
+    async def _run_dev(self, bundle: Bundle) -> DevRun:
         mode = self._settings.databricks_deploy_mode
         if mode == "cluster":
             return await self._run_on_cluster(bundle)

@@ -7,6 +7,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from aep.assets import AssetRepoError, MemoryAssetStore
 from aep.datasources import MemoryDataSourceStore
 from aep.main import app
+from aep.runtime.apps.etl import _shorten
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import MemoryRunStore
@@ -81,12 +82,13 @@ async def test_versions_are_reserved_once_per_run_and_revision():
     ]
 
 
-def services(workspace, github, assets=None, **settings):
+def services(workspace, github, assets=None, runs=1, **settings):
     gateway = FakeGateway(
         [
             reply(plan(assumptions=["数量为负的订单视为无效"])),
             reply({"targets": {"order_facts": PYSPARK_BODY}}),
         ]
+        * runs
     )
     store, sources = MemoryRunStore(), MemoryDataSourceStore()
     assets = assets or MemoryAssetStore()
@@ -289,3 +291,30 @@ async def test_a_failed_pr_comment_keeps_the_release_outcome(tmp_path):
     asset = view.result["asset"]
     assert asset["status"] == "released" and "502" in asset["errors"][0]
     assert [a.status for a in await assets.find()] == ["released"]
+
+
+async def test_unnamed_runs_for_the_same_table_are_versions_of_one_asset(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.job_outputs = [PASSED, PASSED]
+    github = fake_github.FakeGitHub()
+    service, sources, assets = services(workspace, github, runs=2)
+    shop = await sources.create("示例库", "postgres", fake_connector.URL)
+
+    for _ in range(2):
+        run_id = await start(service, shop.datasource_id)
+        view = await decide(service, run_id, "approve")
+        assert view.record.status == "waiting", view.record.error
+
+    assert view.result["bundle"] == "order_facts"  # named after its target table
+    assert view.result["asset"]["path"] == "pipelines/order_facts"
+    assert [a.version for a in await assets.find("order_facts")] == [2, 1]
+    assert github.pulls[2]["title"].startswith("order_facts v2：")
+
+
+def test_titles_are_cut_at_punctuation():
+    assert _shorten("短的。", 60) == "短的。"
+    long = (
+        "从 orders 关联 customers 和 products，筛选已支付订单，清洗城市和状态，过滤脏数据并按天汇总"
+    )
+    assert _shorten(long, 45) == "从 orders 关联 customers 和 products，筛选已支付订单…"
+    assert _shorten("a" * 50, 40) == "a" * 40 + "…"

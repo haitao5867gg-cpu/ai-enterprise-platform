@@ -240,6 +240,15 @@ def _release_message(name: str, release: Release) -> str:
     return head + (f"：{release.url}" if release.url else "")
 
 
+def _shorten(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters at a punctuation mark where it can be."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    stop = max(cut.rfind(mark) for mark in "，。；、,;")
+    return (cut[:stop] if stop >= limit // 2 else cut).rstrip() + "…"
+
+
 def _decision(approval: dict[str, Any]) -> str:
     verdict = "通过" if approval.get("decision") == "approve" else "驳回"
     who = approval.get("actor") or "未署名"
@@ -431,7 +440,9 @@ def build(ctx: AppContext) -> StateGraph:
         confirmed = EtlPlan.model_validate(state["plan"])
         problems = list(state["problems"])
         files: dict[str, str] = {}
-        name = state["input"].get("name") or ""
+        # Without a name the bundle is named after its first target table, so later runs for
+        # the same table add versions to the same asset rather than starting new ones.
+        name = state["input"].get("name") or confirmed.targets[0].name
         if not IDENTIFIER.match(name):
             name = "etl_" + config["configurable"]["thread_id"].replace("-", "")[:8]
         if not problems:
@@ -537,7 +548,7 @@ def build(ctx: AppContext) -> StateGraph:
                 result["files"],
                 # The run in the name keeps two runs of one bundle off each other's PRs.
                 branch=f"aep/{name}/v{version}-{run_id[:8]}",
-                title=f"{name} v{version}：{summary[:60]}",
+                title=f"{name} v{version}：{_shorten(summary, 60)}",
                 body=_asset_body(state, result, run_url, trace),
                 message=f"{name} v{version}（平台运行 {run_id}）",
             )
