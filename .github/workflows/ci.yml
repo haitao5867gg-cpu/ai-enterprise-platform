@@ -92,10 +92,41 @@ jobs:
       - if: always()
         run: docker compose down -v
 
+  connector-mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: local-source-admin
+          MYSQL_ROOT_HOST: "%"
+          MYSQL_DATABASE: sales
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 5s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --project connectors/mysql
+      - run: uv run --frozen --project connectors/mysql ruff check connectors/mysql
+      - run: uv run --frozen --project connectors/mysql ruff format --check connectors/mysql
+      - name: Seed the synthetic MySQL source and SELECT-only account
+        run: |
+          docker exec -i -e MYSQL_PWD=local-source-admin ${{ job.services.mysql.id }} \
+            mysql -uroot sales < connectors/mysql/seed/001-source.sql
+          docker exec -i -e AEP_MYSQL_PASSWORD=local-source-reader ${{ job.services.mysql.id }} \
+            sh < connectors/mysql/seed/002-reader.sh
+      # The tests start a real HTTP listener and call all five MCP tools as well.
+      - run: uv run --frozen --project connectors/mysql pytest connectors/mysql/tests -q
+      - if: failure()
+        run: docker logs ${{ job.services.mysql.id }}
+
   stack:
     # Boots the whole local stack the same way a developer does, then checks readiness.
     runs-on: ubuntu-latest
-    needs: [backend, frontend, connectors]
+    needs: [backend, frontend, connectors, connector-mysql]
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up --build -d --wait
@@ -117,6 +148,12 @@ jobs:
             python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["name"] == "示例库"))')
           curl -sf "http://localhost:8000/datasources/$id/tools" |
             python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert {"describe_table", "sample_rows", "table_stats"} <= names'
+      - name: MySQL is registered as the second source and exposes the same tools
+        run: |
+          id=$(curl -sf http://localhost:8000/datasources |
+            python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["kind"] == "mysql" and d["name"] == "MySQL 示例库"))')
+          curl -sf "http://localhost:8000/datasources/$id/tools" |
+            python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert names == {"list_schemas", "list_tables", "describe_table", "sample_rows", "table_stats"}'
       - if: failure()
         run: docker compose logs
       - if: always()
