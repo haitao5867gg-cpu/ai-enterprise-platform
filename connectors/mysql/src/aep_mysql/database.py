@@ -254,13 +254,21 @@ class Database:
         }
 
     async def _sample(
-        self, conn: Connection, schema: str, table: str, limit: int
+        self,
+        conn: Connection,
+        schema: str,
+        table: str,
+        columns: list[dict[str, Any]],
+        limit: int,
     ) -> list[dict[str, Any]]:
         qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
+        # Name every column: SELECT * leaves out INVISIBLE columns, which
+        # information_schema.COLUMNS still lists.
+        projection = ", ".join(quote_identifier(column["name"]) for column in columns)
         # PyMySQL applies %-formatting when binding parameters. Literal percent
         # signs inside quoted identifiers must survive that formatting as well.
-        qualified = qualified.replace("%", "%%")
-        return await self._query(conn, f"SELECT * FROM {qualified} LIMIT %s", (limit,))
+        select = f"SELECT {projection} FROM {qualified}".replace("%", "%%")
+        return await self._query(conn, f"{select} LIMIT %s", (limit,))
 
     async def sample_rows(self, schema: str, table: str, limit: int = 10) -> dict[str, Any]:
         if type(limit) is not int or not 1 <= limit <= 100:
@@ -268,7 +276,7 @@ class Database:
         async with self.connect() as conn:
             await self._table(conn, schema, table)
             columns = await self._columns(conn, schema, table)
-            sample = await self._sample(conn, schema, table, limit)
+            sample = await self._sample(conn, schema, table, columns, limit)
         rows = [
             {
                 column["name"]: _json_value(row[column["name"]], column["data_type"])
@@ -282,7 +290,9 @@ class Database:
         async with self.connect() as conn:
             relation = await self._table(conn, schema, table)
             columns = await self._columns(conn, schema, table)
-            sample = await self._sample(conn, schema, table, self.settings.mysql_stats_sample_size)
+            sample = await self._sample(
+                conn, schema, table, columns, self.settings.mysql_stats_sample_size
+            )
         stats = []
         for column in columns:
             name = column["name"]

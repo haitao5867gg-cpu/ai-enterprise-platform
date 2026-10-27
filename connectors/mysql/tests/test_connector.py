@@ -236,6 +236,22 @@ async def test_stats_sample_bound_and_wide_table(
     assert all(c["null_fraction"] == 1 and c["distinct_count"] == 0 for c in stats["columns"])
 
 
+async def test_invisible_columns_are_sampled(
+    database: Database, admin: Connection, odd_tables: tuple[str, str]
+) -> None:
+    schema = odd_tables[0]
+    table = f"{quote_identifier(schema)}.{quote_identifier('invisible %s')}"
+    await query(admin, f"CREATE TABLE {table} (id int, `secret %` text INVISIBLE)")
+    await query(admin, f"INSERT INTO {table} (id, `secret %`) VALUES (1, 'x'), (2, NULL)")
+    await query(admin, f"GRANT SELECT ON {table} TO 'source_reader'@'%'")
+    rows = (await database.sample_rows(schema, "invisible %s"))["rows"]
+    assert rows == [{"id": 1, "secret %": "x"}, {"id": 2, "secret %": None}]
+    stats = await database.table_stats(schema, "invisible %s")
+    columns = {c["name"]: c for c in stats["columns"]}
+    assert columns["secret %"]["null_fraction"] == 0.5
+    assert columns["secret %"]["top_values"] == [{"value": "x", "count": 1}]
+
+
 def writer_settings(settings: Settings) -> Settings:
     return settings.model_copy(
         update={"mysql_user": "root", "mysql_password": SeedSettings().mysql_admin_password}
