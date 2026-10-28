@@ -59,9 +59,10 @@ async def test_run_is_one_trace_across_approval(tracer, exporter):
     spans = exporter.get_finished_spans()
     tid = trace_id(record.run_id)
     assert {hex_id(s.context.trace_id, 32) for s in spans} == {tid}
-    segments = sorted(
-        (s for s in spans if s.name in ("start", "resume")), key=lambda s: s.start_time
-    )
+    # Segments are the top-level spans (a node may be called "start" too).
+    ids = {s.context.span_id for s in spans}
+    top = [s for s in spans if s.parent is None or s.parent.span_id not in ids]
+    segments = sorted(top, key=lambda s: s.start_time)
     assert [s.name for s in segments] == ["start", "resume"]
     assert {"draft", "review"} <= {s.name for s in spans}
 

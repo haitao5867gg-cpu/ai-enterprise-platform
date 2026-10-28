@@ -1,7 +1,9 @@
-"""App registry: each platform app is a named builder that returns a LangGraph graph."""
+"""App registry: the code apps (each a named builder that returns a LangGraph graph) and
+the flow apps the platform ships."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from langgraph.graph import StateGraph
 from openai import AsyncOpenAI
@@ -36,7 +38,10 @@ class AppContext:
 AppBuilder = Callable[[AppContext], StateGraph]
 
 
-def default_apps() -> dict[str, AppBuilder]:
-    from aep.runtime.apps import etl, hello
+def default_apps() -> dict[str, Any]:
+    """The apps the platform ships: code apps by builder, flow apps by configuration
+    (``aep.runtime.flow.builtin.BuiltinFlow``)."""
+    from aep.runtime.apps import etl
+    from aep.runtime.flow.builtin import HELLO
 
-    return {"hello": hello.build, "etl": etl.build}
+    return {"hello": HELLO, "etl": etl.build}

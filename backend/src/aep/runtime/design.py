@@ -53,6 +53,8 @@ class NodeDesign:
     knowledge: str | None = None
     checks: str | None = None
     retry: str | None = None
+    # The node type, for flow apps (aep.runtime.flow); None in code apps.
+    type: str | None = None
 
     def metadata(self) -> dict[str, Any]:
         return {"design": asdict(self)}

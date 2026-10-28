@@ -14,13 +14,14 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import apps, assets, datasources, runs, skills
+from aep.api import apps, assets, datasources, flows, runs, skills
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
 from aep.runtime.catalog import AppCatalog, GatewayModels
+from aep.runtime.flow.store import PostgresFlowAppStore
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
@@ -83,6 +84,8 @@ def create_app() -> FastAPI:
         await skill_store.register_builtins()
         version_store = PostgresAppVersionStore(pool)
         await version_store.setup()
+        flow_store = PostgresFlowAppStore(pool)
+        await flow_store.setup()
         asset_repo = AssetRepo.from_settings(settings)
         tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
@@ -103,6 +106,7 @@ def create_app() -> FastAPI:
             tracer,
             versions=version_store,
             skills=skill_store,
+            flows=flow_store,
         )
         catalog = AppCatalog(service, sources, settings, GatewayModels(llm_client))
         if tracer.enabled:
@@ -141,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(datasources.router)
     app.include_router(assets.router)
     app.include_router(apps.router)
+    app.include_router(flows.router)
     app.include_router(skills.router)
     app.add_middleware(
         CORSMiddleware,

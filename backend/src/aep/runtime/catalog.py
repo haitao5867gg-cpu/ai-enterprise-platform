@@ -8,6 +8,9 @@ after the draft passed it: ``start_eval`` runs every case of the set in the
 background, as real runs of the draft's configuration that never go to prod, scores
 them like ``aep-eval`` (``aep.evals``) and keeps the result on the draft. The draft
 passes when the average case score reaches AEP_EVAL_PUBLISH_THRESHOLD.
+
+Flow apps (``aep.runtime.flow``) are also created, renamed and archived here; their
+configuration is their whole structure, checked by ``aep.runtime.flow.check``.
 """
 
 import asyncio
@@ -24,6 +27,11 @@ from aep import evals
 from aep.config import Settings
 from aep.datasources import DataSourceStore
 from aep.runtime import appconfig, design
+from aep.runtime.flow import builtin as flowbuiltin
+from aep.runtime.flow import graph as flowgraph
+from aep.runtime.flow.check import check_config
+from aep.runtime.flow.nodes import CheckEnv
+from aep.runtime.flow.store import AppExists
 from aep.runtime.service import RunService, RunView
 from aep.runtime.versions import AppVersion, Draft
 from aep.skills import Skill
@@ -44,6 +52,14 @@ class EvalUnavailable(Exception):
 
 class NotPublishable(Exception):
     """The draft cannot be published now; the message says why."""
+
+
+class NotAFlowApp(Exception):
+    """Only flow apps can be changed this way; the message says why."""
+
+
+class BadSource(Exception):
+    """A new app's source (template, app or version) does not exist."""
 
 
 def _now() -> str:
@@ -88,13 +104,19 @@ class AppCatalog:
 
     # Reading
 
-    def _check(self, app: str) -> None:
-        if app not in self._runs.apps:
+    async def _check(self, app: str) -> str:
+        """The app's kind (``code`` or ``flow``)."""
+        kind = await self._runs.kind(app)
+        if kind is None:
             raise AppNotFound(app)
+        return kind
 
     def eval_set(self, app: str) -> Path | None:
         """Where the app's eval set is, if the app has one. The file may be missing (a
-        wrong AEP_EVALS_DIR); the gate still applies, and evals fail until it is there."""
+        wrong AEP_EVALS_DIR); the gate still applies, and evals fail until it is there.
+        Flow apps have none yet."""
+        if app not in self._runs.code_apps:
+            return None
         build = self._runs.builder(app)
         name = getattr(sys.modules.get(build.__module__), "EVAL_SET", None)
         return Path(self._settings.evals_dir) / name if name else None
@@ -103,25 +125,38 @@ class AppCatalog:
         return await self._models() if self._models else None
 
     async def summaries(self) -> list[dict[str, Any]]:
-        return [await self._summary(app) for app in self._runs.apps]
+        return [await self._summary(app) for app in await self._runs.app_names()]
 
     async def _summary(self, app: str) -> dict[str, Any]:
         await self._runs.ensure_versions(app)
-        d = self._runs.app_design(app)
+        if app in self._runs.code_apps:
+            d = self._runs.app_design(app)
+            title, summary, created_at = (d.title if d else app), (d.summary if d else ""), None
+            kind = "code"
+        else:
+            flow = await self._runs.flows.get(app)
+            assert flow is not None
+            title, summary, created_at = flow.title, flow.summary, flow.created_at.isoformat()
+            kind = "flow"
         return {
             "app": app,
-            "title": d.title if d else app,
-            "summary": d.summary if d else "",
+            "kind": kind,
+            "title": title,
+            "summary": summary,
+            "created_at": created_at,
             "current_version": await self._runs.versions.current(app),
             "has_draft": await self._runs.versions.draft(app) is not None,
             "has_eval_set": self.eval_set(app) is not None,
         }
 
+    def _config(self, app: str, config: dict[str, Any]) -> dict[str, Any]:
+        return config if app in self._runs.code_apps else self._runs.flow_config(app, config)
+
     def _version_out(self, v: AppVersion, current: int) -> dict[str, Any]:
         return {
             "version": v.version,
             "status": "current" if v.version == current else "previous",
-            "config": v.config,
+            "config": self._config(v.app, v.config),
             "note": v.note,
             "created_by": v.created_by,
             "created_at": v.created_at.isoformat(),
@@ -140,65 +175,97 @@ class AppCatalog:
         }
 
     async def versions(self, app: str) -> list[dict[str, Any]]:
-        self._check(app)
+        await self._check(app)
         await self._runs.ensure_versions(app)
         current = await self._runs.versions.current(app)
         return [self._version_out(v, current) for v in await self._runs.versions.versions(app)]
 
     async def detail(self, app: str) -> dict[str, Any]:
-        self._check(app)
+        kind = await self._check(app)
         summary = await self._summary(app)
         store = self._runs.versions
         current = await store.version(app, summary["current_version"])
         assert current is not None
         draft = await store.draft(app)
-        options = self._runs.options[app]
-        configs = await appconfig.load(current.config, options, self._runs.skills)
-        nodes, edges = design.shape(self._runs.graph(app), configs)
-        d = self._runs.app_design(app)
+        if kind == "code":
+            options = self._runs.options[app]
+            configs = await appconfig.load(current.config, options, self._runs.skills)
+            nodes, edges = design.shape(self._runs.graph(app), configs)
+            for e in edges:
+                e["label"] = None
+            d = self._runs.app_design(app)
+            texts = {
+                "pattern": d.pattern if d else "",
+                "knowledge": d.knowledge if d else "",
+                "skills_text": d.skills if d else "",
+            }
+            inputs = None
+        else:
+            config = self._runs.flow_config(app, current.config)
+            options = {}
+            nodes, edges = flowgraph.shape(config, await self._runs.runtime(config))
+            texts = {
+                "pattern": flowgraph.DESIGN["pattern"],
+                "knowledge": flowgraph.DESIGN["knowledge"],
+                "skills_text": flowgraph.DESIGN["skills"],
+            }
+            inputs = flowgraph.inputs(config)
         skills: list[Skill] = await self._runs.skills.all()
         models = await self.models()
         default = self._runs.default_model
-        return summary | {
-            "pattern": d.pattern if d else "",
-            "knowledge": d.knowledge if d else "",
-            "skills_text": d.skills if d else "",
-            "nodes": [
-                {
-                    "id": n["id"],
-                    "title": n["title"],
-                    "kind": n["kind"],
-                    "design": n["design"],
-                    "settings": options[n["id"]].settings() if n["id"] in options else [],
-                }
-                for n in nodes
-            ],
-            "edges": edges,
-            "current": self._version_out(current, current.version),
-            "draft": self._draft_out(draft) if draft else None,
-            "options": {
-                "models": models if models is not None else [default],
-                "default_model": default,
-                "skills": [
+        return (
+            summary
+            | texts
+            | {
+                "inputs": inputs,
+                "nodes": [
                     {
-                        "name": s.name,
-                        "description": s.description,
-                        "published_version": s.published_version,
+                        "id": n["id"],
+                        "title": n["title"],
+                        "kind": n["kind"],
+                        "type": n.get("type"),
+                        "design": n["design"],
+                        "settings": options[n["id"]].settings() if n["id"] in options else [],
                     }
-                    for s in skills
-                    if s.published_version is not None
+                    for n in nodes
                 ],
-            },
-        }
+                "edges": edges,
+                "secrets": [],
+                "current": self._version_out(current, current.version),
+                "draft": self._draft_out(draft) if draft else None,
+                "options": {
+                    "models": models if models is not None else [default],
+                    "default_model": default,
+                    "skills": [
+                        {
+                            "name": s.name,
+                            "description": s.description,
+                            "published_version": s.published_version,
+                        }
+                        for s in skills
+                        if s.published_version is not None
+                    ],
+                    "datasources": [
+                        {"datasource_id": d.datasource_id, "name": d.name, "kind": d.kind}
+                        for d in await self._datasources.all()
+                    ],
+                },
+            }
+        )
 
     async def used_by(self) -> dict[str, list[dict[str, Any]]]:
         """Per skill, the app nodes whose current version uses it."""
         found: dict[str, list[dict[str, Any]]] = {}
-        for app in self._runs.apps:
+        for app in await self._runs.app_names():
             await self._runs.ensure_versions(app)
             number = await self._runs.versions.current(app)
             current = await self._runs.versions.version(app, number)
-            for node, value in ((current.config if current else {}).get("nodes") or {}).items():
+            config = self._config(app, current.config) if current else {}
+            if app in self._runs.code_apps:
+                settings = list((config.get("nodes") or {}).items())
+            else:
+                settings = [(n["id"], n) for n in flowgraph.nodes(config)]
+            for node, value in settings:
                 for ref in value.get("skills") or []:
                     use = {"app": app, "node": node, "version": number}
                     use["skill_version"] = ref["version"]
@@ -208,19 +275,73 @@ class AppCatalog:
     # Changing
 
     async def save_draft(self, app: str, raw: Any, actor: str | None) -> None:
-        self._check(app)
+        kind = await self._check(app)
         await self._runs.ensure_versions(app)
-        config = await appconfig.validate_config(
-            raw, self._runs.options[app], self._runs.skills, await self.models()
-        )
+        if kind == "flow":
+            config = await self.check_flow(raw)
+        else:
+            config = await appconfig.validate_config(
+                raw, self._runs.options[app], self._runs.skills, await self.models()
+            )
         await self._runs.versions.save_draft(app, config, actor)
 
+    async def check_flow(self, raw: Any) -> dict[str, Any]:
+        return await check_config(raw, CheckEnv(await self.models(), self._runs.skills))
+
     async def discard_draft(self, app: str) -> None:
-        self._check(app)
+        await self._check(app)
         await self._runs.versions.discard_draft(app)
 
+    # Flow apps
+
+    async def create(
+        self,
+        app: str,
+        title: str,
+        summary: str,
+        source: dict[str, Any],
+        actor: str | None,
+    ) -> None:
+        """A new flow app; its version 1 is a blank app, a template or a copy of a flow
+        app's version."""
+        if app in self._runs.code_apps or await self._runs.flows.get(app) is not None:
+            raise AppExists(app)
+        if source.get("template"):
+            template = flowbuiltin.TEMPLATES.get(source["template"])
+            if template is None:
+                raise BadSource(f"没有模板 {source['template']}")
+            raw, note = template.config, f"从模板「{template.title}」新建"
+        elif source.get("app"):
+            original = source["app"]
+            if await self._runs.kind(original) != "flow":
+                raise BadSource(f"没有编排应用 {original}，代码应用不能复制")
+            await self._runs.ensure_versions(original)
+            number = source.get("version") or await self._runs.versions.current(original)
+            found = await self._runs.versions.version(original, number)
+            if found is None:
+                raise BadSource(f"应用 {original} 没有版本 {number}")
+            raw = self._runs.flow_config(original, found.config)
+            note = f"复制自 {original} 版本 {number}"
+        else:
+            raw, note = flowbuiltin.blank(), "新建空白应用"
+        config = await self.check_flow(raw)
+        await self._runs.flows.create(app, title, summary, actor)
+        await self._runs.versions.ensure(app, config, note, actor)
+
+    async def _flow(self, app: str) -> None:
+        if await self._check(app) != "flow":
+            raise NotAFlowApp("代码应用的名称和流程由代码定义，不能在这里修改或删除")
+
+    async def update(self, app: str, title: str | None, summary: str | None) -> None:
+        await self._flow(app)
+        await self._runs.flows.update(app, title, summary)
+
+    async def archive(self, app: str) -> None:
+        await self._flow(app)
+        await self._runs.flows.archive(app)
+
     async def publish(self, app: str, note: str, actor: str | None) -> None:
-        self._check(app)
+        await self._check(app)
         draft = await self._runs.versions.draft(app)
         if draft is None:
             raise NotPublishable("没有草稿")
@@ -239,14 +360,14 @@ class AppCatalog:
         await self._runs.versions.publish(app, note, actor, draft.revision)
 
     async def activate(self, app: str, version: int) -> None:
-        self._check(app)
+        await self._check(app)
         await self._runs.ensure_versions(app)
         await self._runs.versions.activate(app, version)
 
     # The eval gate
 
     async def start_eval(self, app: str) -> None:
-        self._check(app)
+        await self._check(app)
         # One start at a time per app, so two requests cannot both pass the check below.
         async with self._starting.setdefault(app, asyncio.Lock()):
             await self._start_eval(app)
@@ -283,7 +404,7 @@ class AppCatalog:
     async def recover(self) -> int:
         """Mark evals left running by the previous process as interrupted."""
         stopped = 0
-        for app in self._runs.apps:
+        for app in await self._runs.app_names():
             draft = await self._runs.versions.draft(app)
             if draft and (draft.eval or {}).get("status") == "running":
                 interrupted = draft.eval | {

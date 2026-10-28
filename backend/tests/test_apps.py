@@ -1,6 +1,7 @@
 """App versions: drafts, the eval gate, publishing, rollback, and runs keeping their version."""
 
 import asyncio
+import copy
 
 import httpx
 import pytest
@@ -13,6 +14,7 @@ from aep.datasources import MemoryDataSourceStore
 from aep.main import app
 from aep.runtime import catalog, human
 from aep.runtime.catalog import AppCatalog
+from aep.runtime.flow.builtin import HELLO
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import CommentRequired, RunService
 from aep.runtime.store import MemoryRunStore
@@ -89,7 +91,10 @@ def models_used(gateway: FakeGateway) -> list[str]:
 
 
 def hello_config(model=None, skills=()) -> dict:
-    return {"nodes": {"draft": {"model": model, "skills": list(skills), "params": {}}}}
+    config = copy.deepcopy(HELLO.config)
+    draft = next(n for n in config["graph"]["nodes"] if n["id"] == "draft")
+    draft |= {"model": model, "skills": list(skills)}
+    return config
 
 
 async def test_apps_list_and_detail(tmp_path):

@@ -1,9 +1,10 @@
 """App versions: the configurations an app has had, which one is current, and its draft.
 
-An app gets version 1 (its defaults, see ``aep.runtime.appconfig``) the first
-time it is used. People change the draft; publishing it makes the next version
-current, and activating an older version makes that one current again (a
-rollback). Published versions never change. A draft carries its latest eval
+An app gets version 1 the first time it is used (a code app's defaults, see
+``aep.runtime.appconfig``), or when it is created (a flow app). People change
+the draft; publishing it makes the next version current, and activating an
+older version makes that one current again (a rollback). Published versions
+never change. A draft carries its latest eval
 (see ``aep.runtime.catalog``); saving the draft again drops it, and an eval
 finishing after that is not kept (``revision`` tells them apart).
 """
@@ -56,7 +57,13 @@ class Draft:
 
 class AppVersionStore(Protocol):
     async def setup(self) -> None: ...
-    async def ensure(self, app: str, config: dict[str, Any]) -> None: ...
+    async def ensure(
+        self,
+        app: str,
+        config: dict[str, Any],
+        note: str = DEFAULT_NOTE,
+        actor: str | None = None,
+    ) -> None: ...
     async def current(self, app: str) -> int: ...
     async def versions(self, app: str) -> list[AppVersion]: ...
     async def version(self, app: str, version: int) -> AppVersion | None: ...
@@ -81,9 +88,15 @@ class MemoryAppVersionStore:
     async def setup(self) -> None:
         return None
 
-    async def ensure(self, app: str, config: dict[str, Any]) -> None:
+    async def ensure(
+        self,
+        app: str,
+        config: dict[str, Any],
+        note: str = DEFAULT_NOTE,
+        actor: str | None = None,
+    ) -> None:
         if app not in self._versions:
-            self._versions[app] = [AppVersion(app, 1, config, DEFAULT_NOTE)]
+            self._versions[app] = [AppVersion(app, 1, config, note, actor)]
             self._current[app] = 1
 
     async def current(self, app: str) -> int:
@@ -189,12 +202,18 @@ class PostgresAppVersionStore:
             (f"apps:{DEFAULT_TENANT}:{app}",),
         )
 
-    async def ensure(self, app: str, config: dict[str, Any]) -> None:
+    async def ensure(
+        self,
+        app: str,
+        config: dict[str, Any],
+        note: str = DEFAULT_NOTE,
+        actor: str | None = None,
+    ) -> None:
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute(
-                "INSERT INTO app_versions (tenant_id, app, version, config, note)"
-                " VALUES (%s, %s, 1, %s, %s) ON CONFLICT DO NOTHING",
-                (DEFAULT_TENANT, app, Jsonb(config), DEFAULT_NOTE),
+                "INSERT INTO app_versions (tenant_id, app, version, config, note, created_by)"
+                " VALUES (%s, %s, 1, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (DEFAULT_TENANT, app, Jsonb(config), note, actor),
             )
             await conn.execute(
                 "INSERT INTO app_heads (tenant_id, app, current) VALUES (%s, %s, 1)"

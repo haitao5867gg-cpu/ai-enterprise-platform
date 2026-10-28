@@ -1,6 +1,7 @@
-"""Apps API: each app's design, configuration versions, draft, eval gate and rollback.
+"""Apps API: each app's design, configuration versions, draft, eval gate and rollback,
+and creating, renaming and archiving flow apps.
 
-Contract: docs/api/apps-and-skills.md.
+Contracts: docs/api/apps-and-skills.md and docs/api/flow-apps.md.
 """
 
 from typing import Annotated, Any
@@ -10,7 +11,15 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from aep.runtime.appconfig import ConfigError
-from aep.runtime.catalog import AppCatalog, AppNotFound, EvalUnavailable, NotPublishable
+from aep.runtime.catalog import (
+    AppCatalog,
+    AppNotFound,
+    BadSource,
+    EvalUnavailable,
+    NotAFlowApp,
+    NotPublishable,
+)
+from aep.runtime.flow.store import AppExists
 from aep.runtime.versions import DraftChanged, NoDraft, VersionNotFound
 
 router = APIRouter(prefix="/apps", tags=["apps"])
@@ -37,13 +46,89 @@ class Activate(BaseModel):
     actor: str | None = None
 
 
+class Source(BaseModel):
+    blank: bool | None = None
+    template: str | None = None
+    app: str | None = None
+    version: int | None = Field(default=None, ge=1)
+
+
+class CreateApp(BaseModel):
+    app: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    title: str = Field(min_length=1, max_length=50)
+    summary: str = Field(default="", max_length=500)
+    source: Source = Field(default_factory=lambda: Source(blank=True), alias="from")
+    actor: str | None = None
+
+
+class UpdateApp(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=50)
+    summary: str | None = Field(default=None, max_length=500)
+
+
 def _not_found(app: str) -> HTTPException:
     return HTTPException(404, f"没有应用 {app}")
+
+
+def _invalid(exc: ConfigError) -> RequestValidationError:
+    return RequestValidationError(
+        [
+            {"loc": ["body", *loc], "msg": message, "type": "value_error"}
+            for loc, message in exc.problems
+        ]
+    )
 
 
 @router.get("")
 async def list_apps(catalog: Catalog) -> list[dict[str, Any]]:
     return await catalog.summaries()
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_app(body: CreateApp, catalog: Catalog) -> dict[str, Any]:
+    if not body.title.strip():
+        raise HTTPException(422, "名称不能为空")
+    try:
+        await catalog.create(
+            body.app,
+            body.title.strip(),
+            body.summary.strip(),
+            body.source.model_dump(exclude_none=True),
+            body.actor,
+        )
+    except AppExists as exc:
+        raise HTTPException(409, f"已经有应用 {body.app}") from exc
+    except BadSource as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ConfigError as exc:
+        raise _invalid(exc) from exc
+    return await catalog.detail(body.app)
+
+
+@router.patch("/{app}")
+async def update_app(app: str, body: UpdateApp, catalog: Catalog) -> dict[str, Any]:
+    try:
+        await catalog.update(
+            app,
+            body.title.strip() if body.title is not None else None,
+            body.summary.strip() if body.summary is not None else None,
+        )
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return await catalog.detail(app)
+
+
+@router.delete("/{app}", status_code=status.HTTP_204_NO_CONTENT)
+async def archive_app(app: str, catalog: Catalog) -> Response:
+    try:
+        await catalog.archive(app)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{app}")
@@ -69,12 +154,7 @@ async def save_draft(app: str, body: SaveDraft, catalog: Catalog) -> dict[str, A
     except AppNotFound as exc:
         raise _not_found(app) from exc
     except ConfigError as exc:
-        raise RequestValidationError(
-            [
-                {"loc": ["body", *loc], "msg": message, "type": "value_error"}
-                for loc, message in exc.problems
-            ]
-        ) from exc
+        raise _invalid(exc) from exc
     return await catalog.detail(app)
 
 
