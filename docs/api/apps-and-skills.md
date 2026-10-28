@@ -1,6 +1,6 @@
 # 应用配置与 Skill 接口（第 1 阶段）
 
-后端（Claude）和前端（Codex）按这份约定并行开发。字段名一律 snake_case，时间是 ISO 8601 字符串。错误沿用 FastAPI 格式：`{"detail": "中文说明"}`，校验错误为 422，`detail` 是 `[{"loc": [...], "msg": "..."}]`。
+后端（Claude）和前端（Codex）按这份约定并行开发。编排应用（在页面上增删节点的应用）的新增部分见 [flow-apps.md](flow-apps.md)。字段名一律 snake_case，时间是 ISO 8601 字符串。错误沿用 FastAPI 格式：`{"detail": "中文说明"}`，校验错误为 422，`detail` 是 `[{"loc": [...], "msg": "..."}]`。
 
 ## 概念
 
