@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from aep.knowledge.citations import IndexedHit
+
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 # Names the generated pipeline code already uses (see aep.etl.codegen).
 RESERVED = {"source", "spark", "dp", "f", "window", "source_catalog"}
@@ -57,6 +59,34 @@ class EtlPlan(BaseModel):
         description="Where the request is unclear or does not match the data, and what the plan "
         "assumed instead; the user checks these before confirming",
     )
+    references: list[IndexedHit] = []
+
+
+CITATION = re.compile(r"\[([0-9]+)\]")
+
+
+def _references(plan: EtlPlan, hits: list[IndexedHit]) -> None:
+    """Keep only citations to retrieved hits; references are assigned by the backend."""
+    allowed = {str(hit.index): hit for hit in hits}
+    used: set[str] = set()
+
+    def replace(match: re.Match[str]) -> str:
+        number = match[1]
+        if number in allowed:
+            used.add(number)
+            return match[0]
+        return ""
+
+    def clean(text: str) -> str:
+        return CITATION.sub(replace, text)
+
+    plan.summary = clean(plan.summary)
+    plan.assumptions = [clean(text) for text in plan.assumptions]
+    for target in plan.targets:
+        target.description = clean(target.description)
+        for column in target.columns:
+            column.description = clean(column.description)
+    plan.references = sorted((allowed[n] for n in used), key=lambda hit: hit.index)
 
 
 # Quality rules are checked row by row (expectations); an aggregate there cannot run.
@@ -172,6 +202,7 @@ def validate_plan(
     source_tables: Collection[str],
     known: Mapping[str, KnownValues] | None = None,
     trust_assumptions: bool = True,
+    references: list[IndexedHit] | None = None,
 ) -> EtlPlan:
     """Parse the model's plan and check it against the profiled ``source_tables`` (schema.table)
     and the ``known`` values of their columns (by column name, see ``aep.etl.profile``).
@@ -179,9 +210,12 @@ def validate_plan(
     ``trust_assumptions`` false: a value the data lacks goes back even if the assumptions name
     it, so the model looks at the actual values once before keeping it."""
     try:
+        if isinstance(raw, dict):
+            raw = {**raw, "references": []}
         plan = EtlPlan.model_validate(raw)
     except ValidationError as exc:
         raise PlanError(f"方案格式不符合要求：{exc.errors(include_url=False)}") from exc
+    _references(plan, references or [])
     problems = []
     names = [t.name for t in plan.targets]
     for target in plan.targets:

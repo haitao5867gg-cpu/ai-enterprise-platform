@@ -331,6 +331,7 @@ async def test_export_and_import():
         assert data["requires"] == {
             "skills": [{"name": "polite", "version": 1}],
             "datasources": [{"datasource_id": p.crm, "name": "CRM", "kind": "postgres"}],
+            "knowledge_bases": [],
             "secrets": ["crm_token"],
         }
         assert (await p.api.get("/apps/orders/versions/9/export")).status_code == 404

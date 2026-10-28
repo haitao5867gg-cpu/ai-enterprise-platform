@@ -22,7 +22,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -31,6 +31,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from aep import tracing
+from aep.knowledge.store import KnowledgeStore
 from aep.runtime import appconfig, design
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import nodes as flownodes
@@ -92,6 +93,7 @@ class RunView:
     pending: dict[str, Any] | None
     result: dict[str, Any] | None
     trace_id: str | None = None
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _config(run_id: str) -> dict[str, Any]:
@@ -137,6 +139,10 @@ class RunService:
     def tools(self) -> Any:
         """The MCP client nodes call tools with (``aep.tools.mcp.McpTools``)."""
         return self._ctx.tools
+
+    @property
+    def knowledge(self) -> KnowledgeStore:
+        return self._ctx.knowledge
 
     @property
     def code_apps(self) -> list[str]:
@@ -198,6 +204,7 @@ class RunService:
             tools=self._ctx.tools,
             secret=secret,
             sandbox_url=self._ctx.settings.sandbox_url,
+            knowledge=self.knowledge,
         )
 
     async def _graph(self, record: RunRecord) -> CompiledStateGraph:
@@ -288,6 +295,11 @@ class RunService:
             pending=pending,
             result=values.get("result"),
             trace_id=tracing.trace_id(run_id) if self._tracer.enabled else None,
+            sources=(
+                sorted((values.get("sources") or {}).values(), key=lambda hit: hit["index"])
+                if record.app not in self._graphs
+                else []
+            ),
         )
 
     async def flow(self, run_id: str) -> dict[str, Any]:

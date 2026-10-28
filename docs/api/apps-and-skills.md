@@ -112,7 +112,7 @@
 {"key": "skills", "label": "Skill", "type": "skills"}
 {"key": "max_attempts", "label": "最多重写次数", "type": "integer", "min": 1, "max": 5, "help": "校验不通过时让模型重写的次数"}
 {"key": "language", "label": "默认代码语言", "type": "enum", "choices": [{"value": "pyspark", "label": "PySpark"}, {"value": "sql", "label": "SQL"}]}
-// type 还可以是 "boolean"、"string"（可带 "max_length"）
+// type 还可以是 "boolean"、"string"（可带 "max_length"）、"knowledge_bases"（知识库标识的字符串列表，每个知识库必须存在）
 
 // AppDetail
 {

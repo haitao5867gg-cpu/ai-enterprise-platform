@@ -13,6 +13,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from aep.datasources import MemoryDataSourceStore
+from aep.knowledge.store import Document, PostgresKnowledgeStore
+from aep.knowledge.worker import KnowledgeWorker
 from aep.runtime.catalog import AppCatalog
 from aep.runtime.flow.store import AppExists, PostgresFlowAppStore, PostgresSecretStore
 from aep.runtime.registry import AppContext, default_apps
@@ -20,6 +22,7 @@ from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
 from aep.runtime.versions import PostgresAppVersionStore
 from tests.conftest import SETTINGS, FakeGateway
+from tests.test_flow_knowledge import POLICY, knowledge_flow
 
 DATABASE_URL = os.environ.get("AEP_TEST_DATABASE_URL")
 
@@ -44,11 +47,13 @@ async def platform(gateway: FakeGateway):
         await versions.setup()
         flows = PostgresFlowAppStore(pool)
         await flows.setup()
+        knowledge = PostgresKnowledgeStore(pool)
+        await knowledge.setup()
         service = RunService(
             store,
             checkpointer,
             default_apps(),
-            AppContext(llm_client=gateway.client, settings=SETTINGS),
+            AppContext(llm_client=gateway.client, settings=SETTINGS, knowledge=knowledge),
             versions=versions,
             flows=flows,
         )
@@ -140,3 +145,60 @@ async def test_secret_store():
         await store.delete(app, "token")
         assert [s.name for s in await store.names(app)] == ["other"]
         assert await store.names(f"{app}-none") == []
+
+
+async def test_knowledge_node_citations_survive_a_postgres_restart(tmp_path):
+    name = f"knowledge-{uuid.uuid4().hex[:8]}"
+    gateway = FakeGateway()
+    async with platform(gateway) as (service, catalog):
+        base = await service.knowledge.create(name)
+        path = tmp_path / "政策.md"
+        path.write_text("# 退货期限\n\n" + POLICY)
+        document = Document(
+            str(uuid.uuid4()), base.kb_id, path.name, "md", path.stat().st_size, str(path)
+        )
+        await service.knowledge.add_documents(base.kb_id, [document])
+        worker = KnowledgeWorker(service.knowledge, gateway.client, retry_delays=(0, 0))
+        assert await worker.process_once()
+        assert (
+            await service.knowledge.get_document(base.kb_id, document.document_id)
+        ).status == "ready"
+        config = knowledge_flow([base.kb_id])
+        kb2 = {**config["graph"]["nodes"][1], "id": "kb2", "title": "再次检索"}
+        review = {
+            "id": "review",
+            "type": "human",
+            "title": "继续",
+            "prompt": "继续？",
+            "options": [{"key": "approve", "label": "继续"}, {"key": "reject", "label": "重查"}],
+        }
+        config["graph"]["nodes"][2:2] = [review, kb2]
+        config["graph"]["nodes"][-1]["outputs"] = [{"key": "hits", "from": ["{{kb2.hits}}"]}]
+        config["graph"]["edges"] = [
+            {"from": "start", "to": "kb"},
+            {"from": "kb", "to": "review"},
+            {"from": "review", "to": "kb2", "branch": "approve"},
+            {"from": "review", "to": "kb", "branch": "reject"},
+            {"from": "kb2", "to": "end"},
+        ]
+        await catalog.create(name, "知识问答", "", {"blank": True}, None)
+        await catalog.save_draft(name, config, None)
+        await catalog.publish(name, "选择知识库", None)
+        record = await service.create(name, {"question": POLICY})
+        await service.wait_idle()
+        view = await service.get(record.run_id)
+        assert view.record.status == "waiting", view.record.error
+        [first] = view.sources
+        assert first["index"] == 1
+    async with platform(gateway) as (service, _):
+        try:
+            await service.resume(record.run_id, "approve", None)
+            await service.wait_idle()
+            view = await service.get(record.run_id)
+            assert view.record.status == "done", view.record.error
+            assert view.result["hits"][0]["index"] == 1
+            assert view.sources == [{**first, "node": "kb2", "node_title": "再次检索"}]
+            assert view.sources[0]["score"] == pytest.approx(1)
+        finally:
+            await service.knowledge.delete(base.kb_id)
+            await gateway.client.close()

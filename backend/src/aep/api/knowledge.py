@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
+from aep.api.apps import Catalog
 from aep.config import Settings, get_settings
 from aep.knowledge.search import search
 from aep.knowledge.store import (
@@ -245,9 +246,11 @@ async def update_base(kb: str, body: UpdateBase, store: Store, settings: Config)
 
 
 @router.delete("/{kb}", status_code=204)
-async def delete_base(kb: str, store: Store, settings: Config) -> Response:
+async def delete_base(kb: str, store: Store, settings: Config, catalog: Catalog) -> Response:
     base = await _base(store, kb)
-    # TODO(#66): reject deletion when an app's current version references this base.
+    users = await catalog.knowledge_users(kb)
+    if users:
+        raise HTTPException(409, "知识库被这些应用引用：" + "、".join(users))
     await store.delete(kb)
     await asyncio.to_thread(shutil.rmtree, settings.knowledge_dir / base.kb_id, True)
     return Response(status_code=204)

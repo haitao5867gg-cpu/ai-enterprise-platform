@@ -108,6 +108,7 @@ def create_app() -> FastAPI:
                 databricks=databricks,
                 assets=asset_repo,
                 asset_store=asset_store,
+                knowledge=knowledge_store,
             ),
             tracer,
             versions=version_store,

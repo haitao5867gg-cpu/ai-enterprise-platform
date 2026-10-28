@@ -40,7 +40,7 @@
   "type": "llm",              // 见下面的节点类型
   "title": "起草售后回复",     // 1–50 字符
   "max_visits": 3,            // 一次运行里最多跑几次，1–10，不写为 3；超过时运行失败并写明原因
-  "on_error": OnError,        // 只有 llm、classifier、tool、agent、code 可以设；不写等于 {"then": "stop"}
+  "on_error": OnError,        // 只有 llm、classifier、tool、knowledge、agent、code 可以设；不写等于 {"then": "stop"}
   "ui": {"x": 120, "y": 40}   // 留给以后的画布，平台原样保存，不参与运行
 }
 
@@ -52,7 +52,7 @@
 }
 ```
 
-节点出错并且 `then` 是 `default` 或 `branch` 时，这个节点除了产出（`default` 时是默认值，`branch` 时为空），还有 `error_type` 和 `error_message` 两个变量，后面的节点可以引用。`error_type` 取值：`timeout`、`model_error`（网关或模型报错）、`output_format`（JSON 输出不合格式）、`tool_error`、`code_error`、`sandbox_unavailable`、`step_limit`（Agent 达到步数上限）。
+节点出错并且 `then` 是 `default` 或 `branch` 时，这个节点除了产出（`default` 时是默认值，`branch` 时为空），还有 `error_type` 和 `error_message` 两个变量，后面的节点可以引用。`error_type` 取值：`timeout`、`model_error`（网关或模型报错）、`output_format`（JSON 输出不合格式）、`tool_error`、`knowledge_error`（知识库不存在或检索失败）、`code_error`、`sandbox_unavailable`、`step_limit`（Agent 达到步数上限）。
 
 ### 变量引用
 
@@ -66,6 +66,8 @@
 ### 节点类型
 
 每种类型的设置字段如下（公共字段不再重复）。“产出”是这个节点写进变量池的字段，“分支”是它的出边要用的 `branch` 名。
+
+**knowledge 知识检索**的设置、产出和引用编号规则见 [knowledge.md](knowledge.md#编排应用知识检索节点)。
 
 **start 开始**：恰好一个。
 
@@ -267,7 +269,7 @@
 | DELETE | `/apps/{app}/secrets/{name}` | | 204；没有设过也是 204 |
 
 - `app` 符合 `^[a-z][a-z0-9-]{1,63}$`，`title` 1–50 字符，`summary` 最多 500 字符。
-- 模板有 3 个：`qa-approval`（问答加确认，和 hello 一样）、`intent-routing`（意图分类路由）、`datasource-qa`（数据源问答，Agent 调只读数据源工具，`needs` 含 `datasource`：开始节点有一个 `datasource` 类型的输入，Agent 的工具引用它，每次运行时由使用者选数据源，所以平台上至少要登记一个数据源）。
+- 模板有 4 个：`qa-approval`（问答加确认，和 hello 一样）、`intent-routing`（意图分类路由）、`datasource-qa`（数据源问答，Agent 调只读数据源工具，`needs` 含 `datasource`：开始节点有一个 `datasource` 类型的输入，Agent 的工具引用它，每次运行时由使用者选数据源，所以平台上至少要登记一个数据源）、`knowledge-qa`（知识问答，`needs` 含 `knowledge_base`：新建时版本 1 为空白应用，模板配置进入草稿；选好知识库后保存、发布，详见 [knowledge.md](knowledge.md#编排应用知识检索节点)）。
 - `From`：`{"blank": true}`（开始 → LLM → 结束，可以直接运行）、`{"template": "intent-routing"}`、`{"app": "hello", "version": 2}`（复制已有编排应用的某个版本，`version` 不写为当前版本；不能复制代码应用）。
 - 归档的应用不再出现在 `GET /apps`，`GET /apps/{app}` 返回 404，`POST /runs` 返回 404；它的运行记录照常可以查看。
 - `PUT /apps/{app}/draft` 对编排应用同样只管配置；改名称、简介用 `PATCH`。
@@ -279,7 +281,7 @@
 
 - `config`：要试的配置，一般是编辑页里还没保存的配置；不传时用草稿，没有草稿用当前版本。只校验被试的这个节点，图的其他问题不影响试跑。
 - `values`：这个节点引用的变量的测试值，键是 `"节点.字段"`，如 `{"start.question": "我要退货", "review.comment": ""}`。没给的变量按空值。常量取配置里的值，密钥取已设的值。
-- 可以试跑的类型：llm、classifier、condition、tool、agent、template、code。start、human、end 返回 422。
+- 可以试跑的类型：llm、classifier、condition、tool、knowledge、agent、template、code。start、human、end 返回 422。
 - 超时：整个请求最多 120 秒。
 
 ```jsonc
@@ -360,6 +362,6 @@ requires:                 # 方便导入时核对
 
 `GET /runs/{id}/flow` 对编排应用：
 
-- `nodes` 是 `__start__`、配置里的节点（按配置顺序）、`__end__`。每个节点新增 `type`（节点类型，代码应用为 null）；`kind` 照旧：llm、classifier、agent 为 `model`，tool 为 `tool`，human 为 `human`，condition、template、code 为 `code`，start、end 为 `terminal`。
+- `nodes` 是 `__start__`、配置里的节点（按配置顺序）、`__end__`。每个节点新增 `type`（节点类型，代码应用为 null）；`kind` 照旧：llm、classifier、agent 为 `model`，tool、knowledge 为 `tool`，human 为 `human`，condition、template、code 为 `code`，start、end 为 `terminal`。
 - `edges` 新增 `label`：分支边是分支的显示文字（类别名、规则名、选项名，`other` 为“都不是”，`else` 为“否则”，`error` 为“出错”），普通边为 null。
 - `design.prompt` 是这次实际用的提示词（引用替换前的模板）；`steps[].output` 里的密钥显示为 `******`。

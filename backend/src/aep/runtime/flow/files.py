@@ -32,6 +32,18 @@ def datasource_ids(config: dict[str, Any]) -> list[str]:
     return found
 
 
+def knowledge_ids(config: dict[str, Any]) -> list[str]:
+    """The knowledge bases named by retrieval nodes, in first-use order."""
+    return list(
+        dict.fromkeys(
+            kb_id
+            for node in flowgraph.nodes(config)
+            if node["type"] == "knowledge"
+            for kb_id in node.get("knowledge_bases") or []
+        )
+    )
+
+
 def dump(
     title: str,
     summary: str,
@@ -39,8 +51,9 @@ def dump(
     version: int,
     config: dict[str, Any],
     sources: dict[str, dict[str, Any]],
+    knowledge_bases: dict[str, dict[str, Any]],
 ) -> str:
-    """The YAML text; ``sources`` describes the data sources by id."""
+    """The YAML text; ``sources`` and ``knowledge_bases`` describe required resources by id."""
     data = {
         "format": FORMAT,
         "title": title,
@@ -52,6 +65,10 @@ def dump(
             "datasources": [
                 sources.get(d, {"datasource_id": d, "name": None, "kind": None})
                 for d in datasource_ids(config)
+            ],
+            "knowledge_bases": [
+                knowledge_bases.get(kb_id, {"kb_id": kb_id, "name": None})
+                for kb_id in knowledge_ids(config)
             ],
             "secrets": list((config.get("env") or {}).get("secrets") or []),
         },

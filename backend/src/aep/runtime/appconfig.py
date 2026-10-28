@@ -14,17 +14,19 @@ A model node's system prompt is ``NodeConfig.prompt()``: its skills' text, then
 format it parses, the rules its checks enforce).
 """
 
+import copy
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 
+from aep.knowledge.store import KnowledgeStore
 from aep.skills import SkillContent, SkillStore, builtin_skills
 
 CONFIG_KEY = "app_config"
 
-ParamType = Literal["integer", "enum", "boolean", "string"]
+ParamType = Literal["integer", "enum", "boolean", "string", "knowledge_bases"]
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,9 @@ class Param:
         elif self.type == "boolean":
             if not isinstance(value, bool):
                 return f"{self.label}必须是 true 或 false"
+        elif self.type == "knowledge_bases":
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                return f"{self.label}必须是知识库标识的字符串列表"
         elif not isinstance(value, str):
             return f"{self.label}必须是文字"
         elif self.max_length is not None and len(value) > self.max_length:
@@ -95,7 +100,7 @@ class NodeOptions:
         return {
             "model": None,
             "skills": [{"name": name, "version": 1} for name in self.skills or ()],
-            "params": {p.key: p.default for p in self.params},
+            "params": {p.key: copy.deepcopy(p.default) for p in self.params},
         }
 
 
@@ -121,7 +126,11 @@ class ConfigError(ValueError):
 
 
 async def validate_config(
-    raw: Any, options: AppOptions, skills: SkillStore, models: list[str] | None
+    raw: Any,
+    options: AppOptions,
+    skills: SkillStore,
+    models: list[str] | None,
+    knowledge: KnowledgeStore | None = None,
 ) -> dict[str, Any]:
     """``raw`` checked against the app's options and completed with defaults.
 
@@ -188,6 +197,10 @@ async def validate_config(
             elif problem := known[key].problem(v):
                 problems.append(([*loc, "params", key], problem))
             else:
+                if known[key].type == "knowledge_bases":
+                    for i, kb_id in enumerate(v):
+                        if knowledge is None or await knowledge.get(kb_id) is None:
+                            problems.append(([*loc, "params", key, i], f"没有知识库 {kb_id}"))
                 value["params"][key] = v
         out[node] = value
     if problems:

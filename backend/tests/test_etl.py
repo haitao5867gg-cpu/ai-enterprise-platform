@@ -4,17 +4,25 @@ import ast
 import io
 import json
 import zipfile
+from dataclasses import asdict
+from uuid import uuid4
 
 import httpx
 import pytest
 import yaml
 from langgraph.checkpoint.memory import InMemorySaver
 
+from aep import llm
 from aep.datasources import MemoryDataSourceStore
 from aep.etl import codegen
 from aep.etl.plan import EtlPlan, KnownValues, PlanError, compared_literals, validate_plan
 from aep.etl.profile import known_values
+from aep.knowledge.citations import IndexedHit
+from aep.knowledge.search import search
+from aep.knowledge.store import Chunk, Document
 from aep.main import app
+from aep.runtime import appconfig
+from aep.runtime.apps import etl
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import MemoryRunStore
@@ -178,6 +186,143 @@ async def test_plan_assumptions_are_shown_for_confirmation():
     view = await service.get(run_id)
     assert view.pending["details"]["plan"]["assumptions"] == [guess]
     assert f"请确认这些假设：\n- {guess}" in view.messages[-1]["content"]
+
+
+async def reference_material(service, gateway):
+    """Three distinct chunks with matching mock embeddings, all above the score cutoff."""
+    store = service.knowledge
+    base = await store.create("建表约定")
+    document = Document(str(uuid4()), base.kb_id, "建表.md", "md", 100, "/unused.md")
+    await store.add_documents(base.kb_id, [document])
+    claimed = await store.claim()
+    text = "做一张订单明细宽表"
+    [vector] = await llm.embed(gateway.client, [text], "mock-embed")
+    await store.replace_chunks(
+        claimed,
+        [
+            Chunk(
+                str(uuid4()),
+                document.document_id,
+                base.kb_id,
+                i,
+                text,
+                heading=f"规则 {i}",
+                embedding=vector,
+            )
+            for i in range(3)
+        ],
+    )
+    config = appconfig.default_config(etl.CONFIG)
+    config["nodes"]["plan"]["params"].update(knowledge_bases=[base.kb_id], knowledge_top_k=3)
+    return config
+
+
+async def test_plan_references_come_from_actual_citations_and_survive_confirmation():
+    proposed = plan(
+        summary="订单宽表[3]，保留依据[1]；不支持的标记[0][4][999]。",
+        assumptions=["按约定[1][3]。"],
+    )
+    proposed["targets"][0]["description"] = "目标表说明[3][5]"
+    proposed["targets"][0]["columns"][0]["description"] = "订单标识[1][99]"
+    # The model cannot inject references, even malformed ones.
+    proposed["references"] = "模型伪造的出处"
+    service, gateway, ds = await make_service(
+        [reply(proposed), reply({"targets": {"order_facts": PYSPARK_BODY}})]
+    )
+    config = await reference_material(service, gateway)
+    record = await service.create(
+        "etl", {"datasource_id": ds, "request": "做一张订单明细宽表"}, config=config
+    )
+    await service.wait_idle()
+    view = await service.get(record.run_id)
+    assert view.record.status == "waiting", view.record.error
+    actual = view.pending["details"]["plan"]
+    assert [r["index"] for r in actual["references"]] == [1, 3]
+    assert actual["summary"] == "订单宽表[3]，保留依据[1]；不支持的标记。"
+    assert actual["assumptions"] == ["按约定[1][3]。"]
+    assert actual["targets"][0]["description"] == "目标表说明[3]"
+    assert actual["targets"][0]["columns"][0]["description"] == "订单标识[1]"
+    assert all(r["document_name"] == "建表.md" for r in actual["references"])
+    prompt = gateway.requests[0]["body"]["messages"]
+    assert "references" not in prompt[0]["content"]
+    assert all(f"[{n}]《建表.md》" in prompt[1]["content"] for n in (1, 2, 3))
+    assert "没有资料依据的内容不要编号" in prompt[1]["content"]
+    done = await decide(service, record.run_id, "approve")
+    assert done.record.status == "done", done.record.error
+    assert done.result["plan"]["references"] == actual["references"]
+    assert done.sources == []  # Code apps do not use the flow run's sources.
+
+
+@pytest.mark.parametrize("material", ["none", "empty", "ready"])
+async def test_plan_without_valid_citations_has_no_references(material):
+    service, gateway, ds = await make_service([reply(plan(summary="方案[99]"))])
+    config = None
+    if material == "ready":
+        config = await reference_material(service, gateway)
+    elif material == "empty":
+        base = await service.knowledge.create("空的资料库")
+        config = appconfig.default_config(etl.CONFIG)
+        config["nodes"]["plan"]["params"]["knowledge_bases"] = [base.kb_id]
+    record = await service.create(
+        "etl", {"datasource_id": ds, "request": "做一张订单明细宽表"}, config=config
+    )
+    await service.wait_idle()
+    view = await service.get(record.run_id)
+    assert view.record.status == "waiting", view.record.error
+    assert view.pending["details"]["plan"]["references"] == []
+    assert view.pending["details"]["plan"]["summary"] == "方案"
+
+
+@pytest.mark.parametrize("failure", ["missing_base", "gateway"])
+async def test_plan_search_failure_only_warns_in_the_plan_flow_step(monkeypatch, failure):
+    service, gateway, ds = await make_service([reply(plan(summary="方案[1]"))])
+    config = await reference_material(service, gateway)
+    if failure == "missing_base":
+        await service.knowledge.delete(config["nodes"]["plan"]["params"]["knowledge_bases"][0])
+    else:
+
+        async def fail(*args, **kwargs):
+            raise ValueError("向量模型不可用")
+
+        monkeypatch.setattr("aep.runtime.apps.etl.search", fail)
+    record = await service.create(
+        "etl", {"datasource_id": ds, "request": "做一张订单明细宽表"}, config=config
+    )
+    await service.wait_idle()
+    view = await service.get(record.run_id)
+    assert view.record.status == "waiting", view.record.error
+    proposed = view.pending["details"]["plan"]
+    assert proposed["references"] == [] and proposed["summary"] == "方案"
+    flow = await service.flow(record.run_id)
+    step = next(s for s in flow["steps"] if s["node"] == "plan")
+    assert step["status"] == "done"
+    assert "知识库检索失败，继续生成方案" in step["output"]["warnings"][0]
+
+
+async def test_plan_citations_in_each_supported_description_field():
+    service, gateway, _ = await make_service([reply(plan())])
+    config = await reference_material(service, gateway)
+    hits = await search(
+        service.knowledge,
+        gateway.client,
+        config["nodes"]["plan"]["params"]["knowledge_bases"],
+        "做一张订单明细宽表",
+        3,
+    )
+    references = [IndexedHit(**asdict(hit), index=i) for i, hit in enumerate(hits, 1)]
+    for field in ("summary", "assumptions", "table", "column"):
+        raw = plan()
+        if field == "summary":
+            raw["summary"] = "说明[2][9]"
+        elif field == "assumptions":
+            raw["assumptions"] = ["假设[2][9]"]
+        elif field == "table":
+            raw["targets"][0]["description"] = "说明[2][9]"
+        else:
+            raw["targets"][0]["columns"][0]["description"] = "说明[2][9]"
+        result = validate_plan(raw, ["sales.orders", "sales.customers"], references=references)
+        assert [r.index for r in result.references] == [2]
+        assert "[9]" not in json.dumps(result.model_dump())
 
 
 async def test_unusable_plan_is_repaired_once():

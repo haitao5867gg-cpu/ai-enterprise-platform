@@ -25,7 +25,7 @@ MAX_STEPS = 200
 # How every flow app is built, for the run's flow view and the app's page.
 DESIGN = {
     "pattern": "编排应用：按配置里的节点和连线运行，结构可以在页面上修改。",
-    "knowledge": "没有接知识库；用到的数据来自节点里选的数据源工具。",
+    "knowledge": "知识检索节点从所选知识库读取资料，工具节点从所选数据源读取数据。",
     "skills": "Skill 挂在调用模型、意图分类和智能体节点上，每个 Skill 指定版本。",
 }
 
@@ -41,6 +41,8 @@ class FlowState(TypedDict, total=False):
     branch: Annotated[dict[str, str], _merge]
     messages: Annotated[list[dict[str, str]], operator.add]
     result: dict[str, Any] | None
+    citations: Annotated[dict[str, int], _merge]
+    sources: Annotated[dict[str, dict[str, Any]], _merge]
 
 
 class FlowError(Exception):
@@ -150,6 +152,10 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
             update["messages"] = outcome.messages
         if outcome.result is not None:
             update["result"] = outcome.result
+        if outcome.citations:
+            update["citations"] = outcome.citations
+        if outcome.sources:
+            update["sources"] = outcome.sources
         return update
 
     return run

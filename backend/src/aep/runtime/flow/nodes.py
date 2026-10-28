@@ -10,7 +10,7 @@ import ast
 import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 import openai
@@ -18,6 +18,9 @@ from openai import AsyncOpenAI
 
 from aep import llm
 from aep.datasources import DataSource, DataSourceStore
+from aep.knowledge.citations import IndexedHit, Source, context
+from aep.knowledge.search import search
+from aep.knowledge.store import KnowledgeStore
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.skills import SkillContent, SkillStore
@@ -33,6 +36,7 @@ ERROR_TYPES = (
     "model_error",
     "output_format",
     "tool_error",
+    "knowledge_error",
     "code_error",
     "sandbox_unavailable",
     "step_limit",
@@ -67,7 +71,7 @@ class Problems:
 @dataclass(frozen=True)
 class CheckEnv:
     """What checking a node needs: the gateway's model aliases (None: unknown, any
-    alias is taken), the skills and the data sources (with their connectors' tools).
+    alias is taken), the skills, knowledge bases and data sources (with their tools).
     Not ``strict``: only the shape is checked, not whether what it names exists (an
     imported app may name skills or data sources this platform does not have)."""
 
@@ -76,6 +80,7 @@ class CheckEnv:
     datasources: DataSourceStore | None = None
     tools: McpTools | None = None
     strict: bool = True
+    knowledge: KnowledgeStore | None = None
 
 
 @dataclass
@@ -83,7 +88,7 @@ class Runtime:
     """What running a node needs. ``skills`` holds the text of every skill version the
     app uses, loaded before the run; ``env`` the app's constants; ``secret`` reads
     one of the app's secrets when a tool needs it; ``sandbox_url`` is where code
-    nodes run."""
+    nodes run; ``knowledge`` holds the bases and chunks retrieval searches."""
 
     llm_client: AsyncOpenAI
     default_model: str
@@ -93,6 +98,7 @@ class Runtime:
     tools: McpTools | None = None
     secret: Callable[[str], Awaitable[str | None]] | None = None
     sandbox_url: str | None = None
+    knowledge: KnowledgeStore | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -179,6 +185,8 @@ class Outcome:
     branch: str | None = None
     messages: list[dict[str, str]] = field(default_factory=list)
     result: dict[str, Any] | None = None
+    citations: dict[str, int] = field(default_factory=dict)
+    sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 Check = Callable[[dict[str, Any], Problems, CheckEnv], Awaitable[None]]
@@ -778,6 +786,62 @@ async def run_end(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
     return Outcome({}, result=result)
 
 
+# knowledge
+
+
+async def check_knowledge(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+    bases = _list(node, "knowledge_bases", p, "知识库", 1, 5)
+    for i, kb_id in enumerate(bases):
+        if not isinstance(kb_id, str) or not kb_id.strip():
+            p.add(("knowledge_bases", i), "要选择知识库")
+        elif env.strict and (env.knowledge is None or await env.knowledge.get(kb_id) is None):
+            p.add(("knowledge_bases", i), f"没有知识库 {kb_id}")
+    _text(node, "query", p, "检索问题", required=True, max_length=2000)
+    top_k = node.get("top_k", 5)
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 20:
+        p.add(("top_k",), "检索片段数要在 1–20 之间")
+    score = node.get("min_score", 0.3)
+    if isinstance(score, bool) or not isinstance(score, int | float) or not 0 <= score <= 1:
+        p.add(("min_score",), "最低相似度要在 0–1 之间")
+
+
+async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
+    query = refs.render(node["query"], rt.lookup(state)).strip()
+    if not query:
+        return Outcome({"hits": [], "context": ""})
+    try:
+        if rt.knowledge is None:
+            raise ValueError("平台没有配置知识库")
+        found = await search(
+            rt.knowledge,
+            rt.llm_client,
+            node["knowledge_bases"],
+            query,
+            node.get("top_k", 5),
+            node.get("min_score", 0.3),
+        )
+    except Exception as exc:  # noqa: BLE001 - retrieval failures use the node's on_error
+        raise NodeFailure("knowledge_error", f"知识库检索失败：{exc}") from exc
+    citations = dict(state.get("citations") or {})
+    next_index = max(citations.values(), default=0) + 1
+    hits: list[IndexedHit] = []
+    sources: dict[str, dict[str, Any]] = {}
+    for hit in found:
+        if hit.chunk_id not in citations:
+            citations[hit.chunk_id] = next_index
+            next_index += 1
+        indexed = IndexedHit(**asdict(hit), index=citations[hit.chunk_id])
+        hits.append(indexed)
+        sources[hit.chunk_id] = asdict(
+            Source(**asdict(indexed), node=node["id"], node_title=node["title"])
+        )
+    return Outcome(
+        {"hits": [asdict(hit) for hit in hits], "context": context(hits)},
+        citations=citations,
+        sources=sources,
+    )
+
+
 # tool and agent: data source tools
 
 # How much of a tool's result goes back to the agent's model.
@@ -1165,6 +1229,20 @@ TYPES: dict[str, NodeType] = {
                 "tools": [{"datasource": "", "tools": None}],
                 "max_steps": 8,
             },
+            error_handling=True,
+        ),
+        NodeType(
+            "knowledge",
+            "知识检索",
+            "按问题检索知识库，产出带出处编号的片段和提示词上下文",
+            "tool",
+            "tool",
+            check_knowledge,
+            run_knowledge,
+            _none,
+            _fixed("hits", "context"),
+            outputs=(("hits", "命中的片段和出处编号"), ("context", "可放进提示词的资料")),
+            defaults={"knowledge_bases": [], "query": "", "top_k": 5, "min_score": 0.3},
             error_handling=True,
         ),
         NodeType(

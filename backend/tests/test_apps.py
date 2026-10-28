@@ -109,7 +109,13 @@ async def test_apps_list_and_detail(tmp_path):
         assert detail["title"] == "自然语言 ETL 工作流"
         assert "Skill" in detail["skills_text"]
         nodes = {n["id"]: n for n in detail["nodes"]}
-        assert [s["key"] for s in nodes["plan"]["settings"]] == ["model", "skills", "max_attempts"]
+        assert [s["key"] for s in nodes["plan"]["settings"]] == [
+            "model",
+            "skills",
+            "max_attempts",
+            "knowledge_bases",
+            "knowledge_top_k",
+        ]
         assert nodes["plan"]["settings"][2] | {"help": ""} == {
             "key": "max_attempts",
             "label": "最多生成次数",
@@ -124,7 +130,7 @@ async def test_apps_list_and_detail(tmp_path):
         assert detail["current"]["config"]["nodes"]["plan"] == {
             "model": None,
             "skills": [{"name": "etl-plan", "version": 1}],
-            "params": {"max_attempts": 3},
+            "params": {"max_attempts": 3, "knowledge_bases": [], "knowledge_top_k": 5},
         }
         assert detail["current"]["note"] == "平台默认配置"
         assert detail["draft"] is None
@@ -171,7 +177,7 @@ async def test_draft_is_checked_against_the_app_options(tmp_path):
         assert draft["config"]["nodes"]["plan"] == {
             "model": "qwen",
             "skills": [{"name": "etl-plan", "version": 1}],
-            "params": {"max_attempts": 2},
+            "params": {"max_attempts": 2, "knowledge_bases": [], "knowledge_top_k": 5},
         }
         assert draft["config"]["nodes"]["codegen"]["params"] == {"max_attempts": 3}
 
