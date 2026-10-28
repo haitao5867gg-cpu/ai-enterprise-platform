@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from aep.runtime.store import DEFAULT_TENANT
 
-DataSourceKind = Literal["postgres", "mysql", "sqlserver"]
+DataSourceKind = Literal["postgres", "mysql", "sqlserver", "file"]
 
 
 class DuplicateName(Exception):

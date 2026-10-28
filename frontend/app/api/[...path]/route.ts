@@ -17,6 +17,7 @@ async function handle(request: Request, context: Context) {
   const endpoint = path.join("/");
   const routes: [RegExp, string[]][] = [
     [/^(readyz|datasources)$/, ["GET"]],
+    [/^datasources\/files$/, ["POST"]],
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],
@@ -30,6 +31,7 @@ async function handle(request: Request, context: Context) {
     [/^skills\/[a-z][a-z0-9-]{1,63}\/draft$/, ["PUT", "DELETE"]],
     [/^skills\/[a-z][a-z0-9-]{1,63}\/publish$/, ["POST"]],
   ];
+  const isUpload = endpoint === "datasources/files";
   const methods = routes.find(([pattern]) => pattern.test(endpoint))?.[1];
   if (!methods) return jsonError("Not found", 404);
   if (!methods.includes(request.method)) {
@@ -38,6 +40,15 @@ async function handle(request: Request, context: Context) {
       headers: { Allow: methods.join(", ") },
     });
   }
+
+  if (
+    isUpload &&
+    !request.headers
+      .get("content-type")
+      ?.toLowerCase()
+      .startsWith("multipart/form-data;")
+  )
+    return jsonError("请使用 multipart 表单上传文件", 415);
 
   if (endpoint !== "readyz" && isLocalMockEnabled()) {
     if (path[0] === "apps") {
@@ -72,20 +83,28 @@ async function handle(request: Request, context: Context) {
   }
 
   try {
+    const hasBody = ["POST", "PUT"].includes(request.method);
     const response = await fetch(
       `${base.href.replace(/\/$/, "")}/${endpoint}`,
       {
         method: request.method,
-        headers: ["POST", "PUT"].includes(request.method)
-          ? { "Content-Type": "application/json" }
+        headers: hasBody
+          ? {
+              "Content-Type": isUpload
+                ? request.headers.get("content-type")!
+                : "application/json",
+            }
           : undefined,
-        body: ["POST", "PUT"].includes(request.method)
-          ? await request.text()
+        body: hasBody
+          ? isUpload
+            ? request.body
+            : await request.text()
           : undefined,
         cache: "no-store",
         redirect: "manual",
-        signal: AbortSignal.timeout(10_000),
-      },
+        signal: AbortSignal.timeout(isUpload ? 300_000 : 10_000),
+        ...(isUpload ? { duplex: "half" as const } : {}),
+      } as RequestInit & { duplex?: "half" },
     );
     const headers = new Headers({
       "Content-Type":

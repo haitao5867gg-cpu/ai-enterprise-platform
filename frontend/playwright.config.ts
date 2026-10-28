@@ -22,6 +22,7 @@ export default defineConfig({
         "etl.spec.ts",
         "flow.spec.ts",
         "langfuse.spec.ts",
+        "uploads.spec.ts",
         "apps-skills.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
