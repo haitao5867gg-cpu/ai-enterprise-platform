@@ -14,9 +14,13 @@ MAX_VALUE_CHARS = 80
 
 
 async def profile_tables(
-    tools: McpTools, source: DataSource, wanted: list[str] | None = None
+    tools: McpTools,
+    source: DataSource,
+    wanted: list[str] | None = None,
+    sample_rows: int = SAMPLE_ROWS,
 ) -> list[dict[str, Any]]:
-    """Structure, stats and a few sample rows of each table (``wanted``: schema.table names)."""
+    """Structure, stats and ``sample_rows`` sample rows of each table (``wanted``:
+    schema.table names)."""
     url = source.connector_url
     if wanted:
         names = [tuple(name.split(".", 1)) for name in wanted]
@@ -35,7 +39,7 @@ async def profile_tables(
         described, stats, sample = await asyncio.gather(
             tools.call(url, "describe_table", args),
             tools.call(url, "table_stats", args),
-            tools.call(url, "sample_rows", {**args, "limit": SAMPLE_ROWS}),
+            tools.call(url, "sample_rows", {**args, "limit": sample_rows}),
         )
         return {
             "name": f"{schema}.{table}",

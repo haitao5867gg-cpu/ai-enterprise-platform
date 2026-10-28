@@ -222,21 +222,9 @@ def validate_plan(
     return plan
 
 
-SYSTEM_PROMPT = """你是资深数据工程师，负责把业务需求变成
-Databricks Lakeflow 声明式管道的 ETL 方案。
-只根据给出的源表结构、统计和样本设计方案，不要编造不存在的表或列。
-清洗规则要针对样本和统计里看到的问题（空值、重复、大小写和空格不一致、负数等）。
-需求里提到的取值（状态、类型、类目等）要对照“取值分布”映射成数据里的实际取值，
-logic 和表达式里写实际取值；同一取值有大小写或空格不同的写法时，先 lower(trim(...)) 再比较。
-数据里找不到需求提到的取值、需求有歧义、或者你加了需求没提的业务过滤时，
-在 assumptions 里逐条写明你的理解和做法，交给用户确认，不要编造数据里没有的取值。
-需求要的数据源库里根本没有（没有对应的列，取值分布里也没有对应的取值）时，不要拿猜测的取值代替：
-能做的部分照做，做不了的指标去掉或者给 null，并在 assumptions 里说明缺什么数据。
-质量规则对目标表的每一行单独判断，条件里只能用这一行的列，不能用 count、sum 等聚合函数；
-唯一性用 primary_key 表达，不要写成质量规则。
-目标表放在 Unity Catalog 的同一个 schema 里，表名和列名用小写蛇形命名。
-
-只输出一个 JSON 对象，不要输出其他文字，结构如下：
+# The platform's part of the plan node's prompt: the JSON it parses. How to design
+# the plan is the ``etl-plan`` skill (aep/skills/builtin/etl-plan).
+OUTPUT_FORMAT = """只输出一个 JSON 对象，不要输出其他文字，结构如下：
 {
   "summary": "一两句话说明方案",
   "language": "pyspark 或 sql",

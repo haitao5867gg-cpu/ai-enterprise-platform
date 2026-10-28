@@ -32,8 +32,10 @@ PIPELINE_SQL = "src/pipeline.sql"
 JOB_NOTEBOOK = "src/run.py"
 JOB_HARNESS = "src/aep_harness.py"
 
-SYSTEM_PROMPT = """你是资深 Databricks 数据工程师，按已确认的 ETL 方案为每张目标表写转换逻辑。
-只输出一个 JSON 对象：{"targets": {"目标表名": "代码"}}，每张目标表都要有，不要输出其他文字。
+# The platform's part of the codegen node's prompt: the JSON it parses and the rules
+# ``check_code`` enforces. How to write good code is the ``etl-codegen`` skill.
+OUTPUT_FORMAT = """只输出一个 JSON 对象：{"targets": {"目标表名": "代码"}}，\
+每张目标表都要有，不要输出其他文字。
 
 language 是 pyspark 时，代码是一个 Python 函数体（不含 def 那一行），最后 return 一个 DataFrame：
 - 读源表只能用 source("schema.table")；读本管道里的其他目标表用 spark.read.table("目标表名")。
