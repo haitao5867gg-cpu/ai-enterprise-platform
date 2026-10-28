@@ -142,8 +142,15 @@ export async function requestJson(
       }
     }
     const message = messages[response.status] ?? "请求未成功，请稍后重试。";
+    // Creating or importing an app under a taken name: the detail says it all.
+    const creating =
+      init.method === "POST" && (path === "/apps" || path === "/apps/import");
     throw new ApiError(
-      detail ? `${message} ${detail}` : message,
+      detail && creating && response.status === 409
+        ? detail
+        : detail
+          ? `${message} ${detail}`
+          : message,
       response.status,
       issues,
     );

@@ -73,6 +73,19 @@ function layout(flow: FlowGraph) {
   return { routes, left, width, height };
 }
 
+// A flow app has its own start and end nodes, so the graph's __start__ and __end__
+// would only draw a second "开始" and "结束".
+export function withoutGraphEnds(flow: FlowGraph): FlowGraph {
+  if (!flow.nodes.some((node) => node.type === "start")) return flow;
+  const ends = new Set(["__start__", "__end__"]);
+  return {
+    nodes: flow.nodes.filter((node) => !ends.has(node.id)),
+    edges: flow.edges.filter(
+      (edge) => !ends.has(edge.source) && !ends.has(edge.target),
+    ),
+  };
+}
+
 function nodeBox(node: FlowNode, index: number, left: number) {
   const w = node.kind === "terminal" ? TERMINAL_W : NODE_W;
   return { x: left + (NODE_W - w) / 2, y: TOP + index * ROW, w };
@@ -130,7 +143,8 @@ export function FlowDiagram({
   started?: boolean;
   designMode?: boolean;
 }) {
-  const shape = useMemo(() => layout(flow), [flow]);
+  const graph = useMemo(() => withoutGraphEnds(flow), [flow]);
+  const shape = useMemo(() => layout(graph), [graph]);
   const arrowId = useId();
   return (
     <div className="flow-canvas">
@@ -167,8 +181,8 @@ export function FlowDiagram({
         </defs>
         {shape.routes.map((route, index) => {
           const on = walked.has(`${route.edge.source}>${route.edge.target}`);
-          const a = nodeBox(flow.nodes[route.from], route.from, shape.left);
-          const b = nodeBox(flow.nodes[route.to], route.to, shape.left);
+          const a = nodeBox(graph.nodes[route.from], route.from, shape.left);
+          const b = nodeBox(graph.nodes[route.to], route.to, shape.left);
           const labelX =
             route.kind === "down"
               ? shape.left + NODE_W / 2 + 7
@@ -186,7 +200,7 @@ export function FlowDiagram({
           return (
             <g key={`${route.edge.source}>${route.edge.target}:${index}`}>
               <path
-                d={routePath(route, flow, shape.left)}
+                d={routePath(route, graph, shape.left)}
                 className={`flow-edge ${on ? "on" : ""} ${
                   route.edge.conditional ? "conditional" : ""
                 }`}
@@ -205,7 +219,7 @@ export function FlowDiagram({
             </g>
           );
         })}
-        {flow.nodes.map((node, i) => {
+        {graph.nodes.map((node, i) => {
           const box = nodeBox(node, i, shape.left);
           const count = visits.get(node.id) ?? 0;
           const visited =

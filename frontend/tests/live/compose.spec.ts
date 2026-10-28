@@ -23,7 +23,7 @@ test("Compose: create → waiting → approve → done; reload preserves the res
   await expect(page.getByText("后端状态：正常")).toBeVisible();
   await expect(page.getByText("本地模拟模式")).toHaveCount(0);
   await page
-    .getByLabel("你想完成什么？")
+    .getByLabel("问题")
     .fill("请整理一份客户数据清洗方案，并在执行前让我确认。");
   await capture(page, "new-run");
   await page.getByRole("button", { name: "开始运行" }).click();
@@ -60,9 +60,7 @@ test("Compose: reject with feedback → revised answer → approve → done", as
 }, testInfo) => {
   const comment = "请先补充空值与重复数据的处理规则。";
   await page.goto("/runs/new");
-  await page
-    .getByLabel("你想完成什么？")
-    .fill("检查订单数据的字段映射，执行前请确认。");
+  await page.getByLabel("问题").fill("检查订单数据的字段映射，执行前请确认。");
   await page.getByRole("button", { name: "开始运行" }).click();
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),

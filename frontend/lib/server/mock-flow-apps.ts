@@ -496,9 +496,9 @@ export function flowView(
       skills: "由各模型节点引用的 Skill 提供。",
     },
     nodes: [
-      { id: "__start__", title: "运行开始", kind: "terminal", type: null },
+      { id: "__start__", title: "开始", kind: "terminal", type: null },
       ...nodes,
-      { id: "__end__", title: "运行结束", kind: "terminal", type: null },
+      { id: "__end__", title: "结束", kind: "terminal", type: null },
     ],
     edges: [
       ...(start

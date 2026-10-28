@@ -50,6 +50,11 @@ test("intent template → input → after-sales rejection and approval → resul
   await expect(page.getByRole("main").getByRole("alert")).toContainText(
     "标识须以小写字母开头",
   );
+  await page.getByLabel("标识", { exact: true }).fill("hello");
+  await page.getByRole("button", { name: "创建应用", exact: true }).click();
+  await expect(page.getByRole("main").getByRole("alert")).toHaveText(
+    "应用标识已存在",
+  );
   await page.getByLabel("标识", { exact: true }).fill(app);
   await page.getByLabel("名称", { exact: true }).fill("售后分流");
   await page.getByLabel("简介", { exact: true }).fill("退货问题交给售后处理");
@@ -58,6 +63,9 @@ test("intent template → input → after-sales rejection and approval → resul
   await expect(page).toHaveURL(`/apps/${app}`);
   const diagram = page.getByRole("group", { name: "流程图", exact: true });
   await expect(diagram.locator(".flow-edge-label")).toHaveCount(5);
+  // The app's own start and end nodes stand in for the graph's __start__ / __end__.
+  await expect(diagram.getByText("开始", { exact: true })).toHaveCount(1);
+  await expect(diagram.getByText("结束", { exact: true })).toHaveCount(1);
   expect(
     (await diagram.locator(".flow-edge-label").allTextContents()).sort(),
   ).toEqual(["售后", "产品咨询", "都不是", "驳回重写", "确认回复"].sort());
