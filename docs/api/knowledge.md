@@ -117,7 +117,7 @@
 ```
 
 产出：
-- `hits`：`Hit[]`，每项多一个 `index`（从 1 开始的编号）。
+- `hits`：`Hit[]`，每项多一个 `index`（引用编号）。编号在**一次运行里统一分配**：从 1 开始，同一个片段在这次运行里不管被哪个知识检索节点、第几次命中，都用同一个编号；新片段接着已用过的最大编号往下编。所以一个提示词里放了几个检索节点的 `context`，`[n]` 也不会撞号。编号记在运行状态里（变量池之外，比如 `citations: {chunk_id: index}`）。单节点试跑从 1 开始。
 - `context`：可以直接放进提示词的文字，每段形如 `[1]《退换货政策.pdf》第三章 退货 > 3.2 期限（第 5 页）\n片段内容`，段之间空一行；没有命中时为 `""`。
 
 无分支。可以设 `on_error`，出错类型新增 `knowledge_error`（知识库不存在、向量模型报错）。`GET /node-types` 里 `category` 为 `"tool"`，`error_handling: true`，默认设置 `{"knowledge_bases": [], "query": "", "top_k": 5, "min_score": 0.3}`；流程视图里 `kind` 为 `tool`。
@@ -125,14 +125,14 @@
 - 保存草稿时检查知识库存在；导出文件的 `requires` 新增 `knowledge_bases: [{kb_id, name}]`，导入时缺失的知识库在 `problems` 里报 `{"kind": "knowledge_base", "kb_id", "name", "message": "没有这个知识库，请在节点里重新选择"}`。
 - 单节点试跑（`POST /apps/{app}/nodes/{node}/test`）支持这个节点，`rendered` 里有替换后的 `query`。
 - `AppDetail.options` 新增 `knowledge_bases: [{"kb_id", "name", "document_count"}]`，给节点表单的下拉框用。
-- 模板新增一个 `knowledge-qa`（知识问答）：开始（question）→ 知识检索 → 调用模型（提示词里放 `{{kb.context}}`，要求按 `[n]` 标出处、资料里没有就直说）→ 结束（`answer`）。`needs` 含 `"knowledge_base"`，新建时知识库留空，用户在节点里选（保存时会报“至少选一个知识库”）。
+- 模板新增一个 `knowledge-qa`（知识问答）：开始（question）→ 知识检索 → 调用模型（提示词里放 `{{kb.context}}`，要求按 `[n]` 标出处、资料里没有就直说）→ 结束（`answer`）。`needs` 含 `"knowledge_base"`。模板里的知识库留空，过不了保存检查，所以用 `needs` 含 `knowledge_base` 的模板新建应用时，和带缺失的导入一样：版本 1 是空白应用，模板的配置放进草稿，返回的 `AppDetail` 里有这份草稿；用户在编辑页选好知识库、保存、发布。前端新建后直接进编辑页。
 
 ### 运行记录里的出处
 
-`GET /runs/{id}` 新增 `sources`：这次运行里每个知识检索节点**最近一次**的命中，没有时为 `[]`。
+`GET /runs/{id}` 新增 `sources`：这次运行里分配过编号的全部片段，按 `index` 排序，没有时为 `[]`。每项是 `Hit + index`，另加最后一次命中它的节点 `node` 和节点标题 `node_title`。
 
 ```jsonc
-"sources": [{"node": "kb", "title": "检索售后政策", "hits": [Hit + index]}]
+"sources": [{"index": 1, "node": "kb", "node_title": "检索售后政策", ...Hit}]
 ```
 
 前端在结果下面显示“引用来源”，结果文字里的 `[n]` 显示成可以点的角标，点开看片段原文，并能下载原文件。
