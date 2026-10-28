@@ -21,7 +21,20 @@ async function handle(request: Request, context: Context) {
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],
-    [/^apps$/, ["GET"]],
+    [/^(node-types|app-templates)$/, ["GET"]],
+    [/^apps$/, ["GET", "POST"]],
+    [/^apps\/import$/, ["POST"]],
+    [/^apps\/[a-z][a-z0-9-]{1,63}$/, ["GET", "PATCH", "DELETE"]],
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/draft\/import$/, ["POST"]],
+    [
+      /^apps\/[a-z][a-z0-9-]{1,63}\/nodes\/[a-z][a-z0-9_]{0,31}\/test$/,
+      ["POST"],
+    ],
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/versions\/[1-9][0-9]*\/export$/, ["GET"]],
+    [
+      /^apps\/[a-z][a-z0-9-]{1,63}\/secrets\/[a-z][a-z0-9_]{0,31}$/,
+      ["PUT", "DELETE"],
+    ],
     [/^apps\/[a-zA-Z0-9_-]{1,128}(\/versions)?$/, ["GET"]],
     [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft$/, ["PUT", "DELETE"]],
     [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft\/(eval|publish)$/, ["POST"]],
@@ -51,7 +64,7 @@ async function handle(request: Request, context: Context) {
     return jsonError("请使用 multipart 表单上传文件", 415);
 
   if (endpoint !== "readyz" && isLocalMockEnabled()) {
-    if (path[0] === "apps") {
+    if (["apps", "node-types", "app-templates"].includes(path[0])) {
       const { mockApps } = await import("../../../lib/server/mock-apps");
       return mockApps(request, path);
     }
@@ -83,7 +96,7 @@ async function handle(request: Request, context: Context) {
   }
 
   try {
-    const hasBody = ["POST", "PUT"].includes(request.method);
+    const hasBody = ["POST", "PUT", "PATCH"].includes(request.method);
     const response = await fetch(
       `${base.href.replace(/\/$/, "")}/${endpoint}`,
       {
@@ -102,7 +115,13 @@ async function handle(request: Request, context: Context) {
           : undefined,
         cache: "no-store",
         redirect: "manual",
-        signal: AbortSignal.timeout(isUpload ? 300_000 : 10_000),
+        signal: AbortSignal.timeout(
+          isUpload
+            ? 300_000
+            : /\/nodes\/[^/]+\/test$/.test(endpoint)
+              ? 120_000
+              : 10_000,
+        ),
         ...(isUpload ? { duplex: "half" as const } : {}),
       } as RequestInit & { duplex?: "half" },
     );
@@ -127,3 +146,5 @@ export const GET = handle;
 export const POST = handle;
 export const PUT = handle;
 export const DELETE = handle;
+
+export const PATCH = handle;

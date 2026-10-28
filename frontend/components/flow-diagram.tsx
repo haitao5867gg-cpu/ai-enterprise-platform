@@ -14,9 +14,9 @@ type FlowGraph = Pick<Flow, "nodes" | "edges">;
 const NODE_W = 184;
 const NODE_H = 46;
 const TERMINAL_W = 76;
-const ROW = 68;
+const ROW = 80;
 const TOP = 14;
-const LANE = 14;
+const LANE = 34;
 const GAP = 22;
 const RADIUS = 6;
 
@@ -61,10 +61,29 @@ function layout(flow: FlowGraph) {
     lanes[lane].push([lo, hi]);
     routes.push({ ...item, kind: item.side, lane });
   }
-  const left = GAP + taken.left.length * LANE;
-  const width = left + NODE_W + GAP + Math.max(taken.right.length, 1) * LANE;
+  const hasLabels = flow.edges.some((edge) => edge.label);
+  const left = GAP + taken.left.length * LANE + (hasLabels ? 36 : 0);
+  const width =
+    left +
+    NODE_W +
+    GAP +
+    Math.max(taken.right.length, 1) * LANE +
+    (hasLabels ? 52 : 0);
   const height = TOP * 2 + (flow.nodes.length - 1) * ROW + NODE_H;
   return { routes, left, width, height };
+}
+
+// A flow app has its own start and end nodes, so the graph's __start__ and __end__
+// would only draw a second "开始" and "结束".
+export function withoutGraphEnds(flow: FlowGraph): FlowGraph {
+  if (!flow.nodes.some((node) => node.type === "start")) return flow;
+  const ends = new Set(["__start__", "__end__"]);
+  return {
+    nodes: flow.nodes.filter((node) => !ends.has(node.id)),
+    edges: flow.edges.filter(
+      (edge) => !ends.has(edge.source) && !ends.has(edge.target),
+    ),
+  };
 }
 
 function nodeBox(node: FlowNode, index: number, left: number) {
@@ -124,7 +143,8 @@ export function FlowDiagram({
   started?: boolean;
   designMode?: boolean;
 }) {
-  const shape = useMemo(() => layout(flow), [flow]);
+  const graph = useMemo(() => withoutGraphEnds(flow), [flow]);
+  const shape = useMemo(() => layout(graph), [graph]);
   const arrowId = useId();
   return (
     <div className="flow-canvas">
@@ -159,20 +179,47 @@ export function FlowDiagram({
             <path d="M 0 0 L 10 5 L 0 10 z" className="flow-arrow on" />
           </marker>
         </defs>
-        {shape.routes.map((route) => {
+        {shape.routes.map((route, index) => {
           const on = walked.has(`${route.edge.source}>${route.edge.target}`);
+          const a = nodeBox(graph.nodes[route.from], route.from, shape.left);
+          const b = nodeBox(graph.nodes[route.to], route.to, shape.left);
+          const labelX =
+            route.kind === "down"
+              ? shape.left + NODE_W / 2 + 7
+              : route.kind === "left"
+                ? shape.left - 18 - route.lane * LANE
+                : route.kind === "right"
+                  ? shape.left + NODE_W + 18 + route.lane * LANE
+                  : a.x + a.w + 20;
+          const labelY =
+            route.kind === "down"
+              ? (a.y + NODE_H + b.y) / 2 + 3
+              : route.kind === "self"
+                ? a.y + 10
+                : a.y + NODE_H / 2 + 2;
           return (
-            <path
-              key={`${route.edge.source}>${route.edge.target}`}
-              d={routePath(route, flow, shape.left)}
-              className={`flow-edge ${on ? "on" : ""} ${
-                route.edge.conditional ? "conditional" : ""
-              }`}
-              markerEnd={`url(#${on ? `${arrowId}-on` : arrowId})`}
-            />
+            <g key={`${route.edge.source}>${route.edge.target}:${index}`}>
+              <path
+                d={routePath(route, graph, shape.left)}
+                className={`flow-edge ${on ? "on" : ""} ${
+                  route.edge.conditional ? "conditional" : ""
+                }`}
+                markerEnd={`url(#${on ? `${arrowId}-on` : arrowId})`}
+              />
+              {route.edge.label && (
+                <text
+                  className="flow-edge-label"
+                  x={labelX}
+                  y={labelY}
+                  textAnchor={route.kind === "left" ? "end" : "start"}
+                >
+                  {route.edge.label}
+                </text>
+              )}
+            </g>
           );
         })}
-        {flow.nodes.map((node, i) => {
+        {graph.nodes.map((node, i) => {
           const box = nodeBox(node, i, shape.left);
           const count = visits.get(node.id) ?? 0;
           const visited =

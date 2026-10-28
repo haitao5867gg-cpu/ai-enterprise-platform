@@ -1,15 +1,24 @@
+import type { FormField } from "./apps";
+
 export const runStatuses = ["running", "waiting", "done", "error"] as const;
 export type RunStatus = (typeof runStatuses)[number];
-export type Decision = "approve" | "reject";
+export type Decision = string;
+export type ValidationIssue = { loc: (string | number)[]; msg: string };
 export type Message = { role: string; content: string };
-export type Approval = {
-  kind: "approval";
+export type Pending = {
+  kind: "approval" | "form";
   prompt: string;
   options: Decision[];
+  comment_required?: string[];
+  option_labels?: Record<string, string>;
+  fields?: FormField[];
   // Apps may add new detail types; the generic approval remains usable.
   details?: unknown;
 };
+export type Approval = Pending;
 export type RunSummary = {
+  app_version?: number | null;
+  draft?: boolean;
   run_id: string;
   app: string;
   status: RunStatus;
@@ -67,6 +76,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status = 0,
+    public readonly issues: ValidationIssue[] = [],
   ) {
     super(message);
     this.name = "ApiError";
@@ -79,7 +89,9 @@ export async function requestJson(
 ): Promise<unknown> {
   let response: Response;
   try {
-    const timeout = AbortSignal.timeout(15_000);
+    const timeout = AbortSignal.timeout(
+      path.endsWith("/test") ? 120_000 : 15_000,
+    );
     response = await fetch(`/api${path}`, {
       ...init,
       cache: "no-store",
@@ -103,12 +115,19 @@ export async function requestJson(
       504: "服务响应超时，请稍后重试。",
     };
     let detail = "";
+    let issues: ValidationIssue[] = [];
     if (response.status === 409 || response.status === 422) {
       try {
         const value: unknown = await response.json();
         if (isRecord(value)) {
           if (typeof value.detail === "string") detail = value.detail;
           else if (Array.isArray(value.detail)) {
+            issues = value.detail.filter(
+              (item): item is ValidationIssue =>
+                isRecord(item) &&
+                Array.isArray(item.loc) &&
+                typeof item.msg === "string",
+            );
             detail = value.detail
               .filter(isRecord)
               .map(
@@ -123,9 +142,17 @@ export async function requestJson(
       }
     }
     const message = messages[response.status] ?? "请求未成功，请稍后重试。";
+    // Creating or importing an app under a taken name: the detail says it all.
+    const creating =
+      init.method === "POST" && (path === "/apps" || path === "/apps/import");
     throw new ApiError(
-      detail ? `${message} ${detail}` : message,
+      detail && creating && response.status === 409
+        ? detail
+        : detail
+          ? `${message} ${detail}`
+          : message,
       response.status,
+      issues,
     );
   }
   if (response.status === 204) return undefined;
@@ -159,11 +186,11 @@ export function readRun(value: unknown): Run {
     !(
       value.pending === null ||
       (isRecord(value.pending) &&
-        value.pending.kind === "approval" &&
+        ["approval", "form"].includes(value.pending.kind as string) &&
         typeof value.pending.prompt === "string" &&
         Array.isArray(value.pending.options) &&
         value.pending.options.every(
-          (option: unknown) => option === "approve" || option === "reject",
+          (option: unknown) => typeof option === "string",
         ))
     )
   ) {
@@ -189,4 +216,54 @@ export function readReceipt(value: unknown): {
 
 export function errorMessage(error: unknown): string {
   return error instanceof ApiError ? error.message : "发生了意外错误，请重试。";
+}
+
+export type CreateRunInput = {
+  app: string;
+  input: Record<string, unknown>;
+  app_version?: number;
+  draft?: boolean;
+};
+export type ResumeInput = {
+  decision: string;
+  comment?: string;
+  values?: Record<string, unknown>;
+  actor?: string;
+};
+export const createRun = async (input: CreateRunInput, signal?: AbortSignal) =>
+  readReceipt(
+    await requestJson("/runs", {
+      method: "POST",
+      body: JSON.stringify(input),
+      signal,
+    }),
+  );
+export const resumeRun = async (
+  id: string,
+  input: ResumeInput,
+  signal?: AbortSignal,
+) =>
+  readReceipt(
+    await requestJson(`/runs/${encodeURIComponent(id)}/resume`, {
+      method: "POST",
+      body: JSON.stringify(input),
+      signal,
+    }),
+  );
+export function fieldErrors(
+  error: unknown,
+  section: "input" | "values",
+): Record<string, string> {
+  if (!(error instanceof ApiError)) return {};
+  return Object.fromEntries(
+    error.issues
+      .filter(
+        ({ loc }) =>
+          loc.length === 3 &&
+          loc[0] === "body" &&
+          loc[1] === section &&
+          typeof loc[2] === "string",
+      )
+      .map(({ loc, msg }) => [loc[2], msg]),
+  );
 }

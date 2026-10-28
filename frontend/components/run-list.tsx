@@ -167,6 +167,9 @@ export function RunList() {
                         <Icon name="spark" size={14} />
                         {run.app}
                       </span>
+                      {run.draft && (
+                        <span className="draft-tag">草稿试运行</span>
+                      )}
                     </td>
                     <td>
                       <StatusBadge status={run.status} />

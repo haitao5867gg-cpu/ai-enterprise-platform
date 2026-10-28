@@ -24,6 +24,7 @@ export default defineConfig({
         "langfuse.spec.ts",
         "uploads.spec.ts",
         "apps-skills.spec.ts",
+        "flow-apps.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {
