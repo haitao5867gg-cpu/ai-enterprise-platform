@@ -235,6 +235,8 @@ test("import YAML with missing Skill/datasource/secret lists problems and keeps 
     tool: "run_query",
     args: {},
   });
+  // Put the tool between the hand-off and the end so the graph stays valid.
+  config.graph.edges.find((edge) => edge.from === "handoff")!.to = "lookup";
   config.graph.edges.push({ from: "lookup", to: "end" });
   await page.goto("/apps");
   await page.getByRole("button", { name: "导入", exact: true }).click();

@@ -101,7 +101,7 @@ function SkillVersionSelect({
   );
 }
 
-function SkillPicker({
+export function SkillPicker({
   options,
   value,
   onChange,

@@ -132,6 +132,7 @@ export function FlowDiagram({
   currentStatus = null,
   started = false,
   designMode = false,
+  invalid = new Set(),
 }: {
   flow: FlowGraph;
   selectedId?: string;
@@ -142,6 +143,7 @@ export function FlowDiagram({
   currentStatus?: StepStatus | null;
   started?: boolean;
   designMode?: boolean;
+  invalid?: Set<string>;
 }) {
   const graph = useMemo(() => withoutGraphEnds(flow), [flow]);
   const shape = useMemo(() => layout(graph), [graph]);
@@ -234,13 +236,13 @@ export function FlowDiagram({
               key={node.id}
               className={`flow-node ${node.kind} ${visited ? "visited" : ""} ${state} ${
                 node.id === selectedId ? "selected" : ""
-              }`}
+              } ${invalid.has(node.id) ? "invalid" : ""}`}
               transform={`translate(${box.x} ${box.y})`}
               role="button"
               tabIndex={0}
               aria-label={`${node.title}${node.kind !== "terminal" ? `，${kindLabels[node.kind]}` : ""}${
                 count > 0 ? `，执行 ${count} 次` : ""
-              }`}
+              }${invalid.has(node.id) ? "，有问题" : ""}`}
               aria-pressed={node.id === selectedId}
               onClick={() => select(node.id)}
               onKeyDown={(e) => {
