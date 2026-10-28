@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     llm_gateway_key: str = "sk-local-dev"
     default_model: str = "mock"
     llm_timeout_seconds: float = 120.0
+    embedding_models: list[str] = ["mock-embed", "company-embed"]
+    default_embedding_model: str = "mock-embed"
+    knowledge_dir: Path = Path("/data/knowledge")
     # Each call to a connector (MCP server) tool.
     tool_timeout_seconds: float = 30.0
     # Data sources registered at startup when no source of that name exists yet,
