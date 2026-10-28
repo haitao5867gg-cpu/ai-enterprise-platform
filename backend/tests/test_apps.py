@@ -14,7 +14,7 @@ from aep.runtime.catalog import AppCatalog
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import CommentRequired, RunService
 from aep.runtime.store import MemoryRunStore
-from aep.runtime.versions import MemoryAppVersionStore
+from aep.runtime.versions import DraftChanged, MemoryAppVersionStore
 from aep.skills import MemorySkillStore, SkillContent
 from aep.tools.mcp import McpTools
 from tests import fake_connector
@@ -280,6 +280,17 @@ async def test_a_failing_draft_cannot_be_published(tmp_path):
 
         no_set = await p.api.post("/apps/hello/draft/eval", json={})
         assert no_set.status_code == 409
+
+
+async def test_only_the_evaluated_draft_is_published():
+    store = MemoryAppVersionStore()
+    await store.ensure("etl", {"nodes": {}})
+    checked = await store.save_draft("etl", {"nodes": {}}, None)
+    await store.save_draft("etl", {"nodes": {"plan": {"model": "qwen"}}}, None)
+    with pytest.raises(DraftChanged):
+        await store.publish("etl", "评测过的是旧草稿", None, checked.revision)
+    assert await store.current("etl") == 1
+    assert await store.draft("etl") is not None
 
 
 async def test_an_eval_cut_off_by_a_restart_is_marked(tmp_path):

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import AppCatalog, AppNotFound, EvalUnavailable, NotPublishable
-from aep.runtime.versions import NoDraft, VersionNotFound
+from aep.runtime.versions import DraftChanged, NoDraft, VersionNotFound
 
 router = APIRouter(prefix="/apps", tags=["apps"])
 
@@ -112,6 +112,8 @@ async def publish(app: str, body: Publish, catalog: Catalog) -> dict[str, Any]:
         raise HTTPException(409, str(exc)) from exc
     except NoDraft as exc:
         raise HTTPException(409, "没有草稿") from exc
+    except DraftChanged as exc:
+        raise HTTPException(409, "草稿刚被改过，请刷新后重新评测再发布") from exc
     return await catalog.detail(app)
 
 

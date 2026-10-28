@@ -29,6 +29,10 @@ class NoDraft(Exception):
     pass
 
 
+class DraftChanged(Exception):
+    """The draft was saved again since the caller looked at it."""
+
+
 @dataclass(frozen=True)
 class AppVersion:
     app: str
@@ -60,7 +64,9 @@ class AppVersionStore(Protocol):
     async def save_draft(self, app: str, config: dict[str, Any], actor: str | None) -> Draft: ...
     async def discard_draft(self, app: str) -> None: ...
     async def set_draft_eval(self, app: str, revision: str, eval: dict[str, Any]) -> bool: ...
-    async def publish(self, app: str, note: str, actor: str | None) -> AppVersion: ...
+    async def publish(
+        self, app: str, note: str, actor: str | None, revision: str | None = None
+    ) -> AppVersion: ...
     async def activate(self, app: str, version: int) -> None: ...
 
 
@@ -107,10 +113,15 @@ class MemoryAppVersionStore:
         self._drafts[app] = replace(draft, eval=eval)
         return True
 
-    async def publish(self, app: str, note: str, actor: str | None) -> AppVersion:
-        draft = self._drafts.pop(app, None)
+    async def publish(
+        self, app: str, note: str, actor: str | None, revision: str | None = None
+    ) -> AppVersion:
+        draft = self._drafts.get(app)
         if draft is None:
             raise NoDraft(app)
+        if revision is not None and draft.revision != revision:
+            raise DraftChanged(app)
+        del self._drafts[app]
         versions = self._versions[app]
         number = versions[0].version + 1
         published = AppVersion(app, number, draft.config, note, actor, eval=draft.eval)
@@ -260,15 +271,21 @@ class PostgresAppVersionStore:
             )
             return cur.rowcount > 0
 
-    async def publish(self, app: str, note: str, actor: str | None) -> AppVersion:
+    async def publish(
+        self, app: str, note: str, actor: str | None, revision: str | None = None
+    ) -> AppVersion:
+        """Publish the draft; with ``revision``, only if it is still that revision."""
         async with self._pool.connection() as conn, conn.transaction():
             await self._lock(conn, app)
             cur = await conn.execute(
-                "DELETE FROM app_drafts WHERE tenant_id = %s AND app = %s RETURNING config, eval",
-                (DEFAULT_TENANT, app),
+                "DELETE FROM app_drafts WHERE tenant_id = %s AND app = %s"
+                " AND (%s::text IS NULL OR revision = %s) RETURNING config, eval",
+                (DEFAULT_TENANT, app, revision, revision),
             )
             draft = await cur.fetchone()
             if draft is None:
+                if revision is not None and await self.draft(app) is not None:
+                    raise DraftChanged(app)
                 raise NoDraft(app)
             cur = await conn.execute(
                 "INSERT INTO app_versions (tenant_id, app, version, config, note, created_by, eval)"

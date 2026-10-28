@@ -235,7 +235,9 @@ class AppCatalog:
                     "error": "评测出错了，请重新运行",
                 }.get(status, "草稿没有通过评测")
                 raise NotPublishable(f"{reason}，通过后才能发布")
-        await self._runs.versions.publish(app, note, actor)
+        # Only the revision whose eval was checked above: a draft saved since then has not
+        # been evaluated.
+        await self._runs.versions.publish(app, note, actor, draft.revision)
 
     async def activate(self, app: str, version: int) -> None:
         self._check(app)

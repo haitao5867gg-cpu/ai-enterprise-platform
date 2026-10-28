@@ -15,7 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
-from aep.runtime.versions import NoDraft, PostgresAppVersionStore, VersionNotFound
+from aep.runtime.versions import DraftChanged, NoDraft, PostgresAppVersionStore, VersionNotFound
 from aep.skills import NoDraft as NoSkillDraft
 from aep.skills import PostgresSkillStore, SkillContent, SkillExists
 from tests.conftest import SETTINGS, FakeGateway
@@ -79,7 +79,9 @@ async def test_app_versions():
         assert not await store.set_draft_eval(app, draft.revision, {"status": "passed"})
         assert await store.set_draft_eval(app, resaved.revision, {"status": "passed"})
 
-        published = await store.publish(app, "换模型", "张三")
+        with pytest.raises(DraftChanged):
+            await store.publish(app, "评测过的是旧草稿", None, draft.revision)
+        published = await store.publish(app, "换模型", "张三", resaved.revision)
         assert (published.version, published.eval) == (2, {"status": "passed"})
         assert await store.current(app) == 2
         assert await store.draft(app) is None
