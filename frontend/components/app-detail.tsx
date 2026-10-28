@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   activateAppVersion,
+  isFlowConfig,
+  exportAppVersion,
   deleteAppDraft,
   evaluateAppDraft,
   getApp,
@@ -29,6 +31,7 @@ import { AppSettings, settingError } from "./app-settings";
 import { FlowDiagram } from "./flow-diagram";
 import { FlowNodeDesign } from "./flow-node-design";
 import { ErrorNotice } from "./ui";
+import { AppMetadata } from "./app-metadata";
 
 const evalLabels = {
   running: "评测运行中",
@@ -93,6 +96,26 @@ function ConfigDiff({
   right: AppVersion;
   data: AppDetail;
 }) {
+  if (isFlowConfig(left.config) || isFlowConfig(right.config))
+    return (
+      <section className="asset-diff" aria-label="配置差异">
+        <h3>
+          配置差异：v{left.version} → v{right.version}
+        </h3>
+        {JSON.stringify(left.config) === JSON.stringify(right.config) ? (
+          <p className="muted">两个版本配置相同。</p>
+        ) : (
+          <div className="flow-config-comparison">
+            <pre className="flow-json">
+              {JSON.stringify(left.config, null, 2)}
+            </pre>
+            <pre className="flow-json">
+              {JSON.stringify(right.config, null, 2)}
+            </pre>
+          </div>
+        )}
+      </section>
+    );
   const changes: {
     node: string;
     key: string;
@@ -296,11 +319,12 @@ export function AppDetailView({ app }: { app: string }) {
   }
   function save() {
     if (!config || !data) return;
+    const codeNodes = isFlowConfig(config) ? {} : config.nodes;
     const errors = data.nodes
       .flatMap((node) =>
         node.settings.map((setting) =>
-          config.nodes[node.id]
-            ? settingError(setting, config.nodes[node.id])
+          codeNodes[node.id]
+            ? settingError(setting, codeNodes[node.id])
             : `缺少节点 ${node.id} 的配置`,
         ),
       )
@@ -333,6 +357,7 @@ export function AppDetailView({ app }: { app: string }) {
         )}
       </div>
     );
+  const codeNodes = isFlowConfig(config) ? {} : config.nodes;
   const node =
     data.nodes.find((item) => item.id === selected) ??
     data.nodes.find((item) => item.settings.length) ??
@@ -341,7 +366,7 @@ export function AppDetailView({ app }: { app: string }) {
     nodes: data.nodes.map((item) => ({
       ...item,
       model:
-        config.nodes[item.id]?.model ??
+        codeNodes[item.id]?.model ??
         (item.kind === "model" ? data.options.default_model : null),
     })),
     edges: data.edges,
@@ -370,6 +395,23 @@ export function AppDetailView({ app }: { app: string }) {
       <AssetHeading eyebrow={app} title={data.title}>
         {data.summary}
       </AssetHeading>
+      <div className="asset-actions">
+        <span className="app-tag">
+          {data.kind === "flow" ? "编排应用" : "代码应用"}
+        </span>
+        <Link
+          className="button primary"
+          href={`/runs/new?app=${encodeURIComponent(app)}`}
+        >
+          新建运行
+        </Link>
+      </div>
+      {data.kind === "flow" && (
+        <AppMetadata
+          data={data}
+          changed={(value) => accept(value, "应用信息已保存。")}
+        />
+      )}
       {error && <ErrorNotice message={error} />}
       {notice && (
         <p className="asset-notice" role="status">
@@ -391,7 +433,9 @@ export function AppDetailView({ app }: { app: string }) {
               ? "有未保存的修改"
               : view === "draft"
                 ? `草稿已保存 · 当前发布版本 v${data.current_version}`
-                : "编辑节点设置后，可保存为草稿。"}
+                : data.kind === "flow"
+                  ? "新运行使用当前发布版本。"
+                  : "编辑节点设置后，可保存为草稿。"}
           </p>
         </div>
         <div className="asset-actions">
@@ -415,14 +459,16 @@ export function AppDetailView({ app }: { app: string }) {
               </button>
             </>
           )}
-          <button
-            type="button"
-            className="button primary"
-            disabled={busy || running || !dirty}
-            onClick={save}
-          >
-            保存草稿
-          </button>
+          {data.kind === "code" && (
+            <button
+              type="button"
+              className="button primary"
+              disabled={busy || running || !dirty}
+              onClick={save}
+            >
+              保存草稿
+            </button>
+          )}
           <button
             type="button"
             className="button secondary"
@@ -477,15 +523,15 @@ export function AppDetailView({ app }: { app: string }) {
               <FlowNodeDesign
                 node={graph.nodes.find((item) => item.id === node.id)!}
               />
-              {node.settings.length > 0 && config.nodes[node.id] ? (
+              {node.settings.length > 0 && codeNodes[node.id] ? (
                 <AppSettings
                   key={node.id}
                   node={node}
-                  config={config.nodes[node.id]}
+                  config={codeNodes[node.id]}
                   options={data.options}
                   disabled={busy || running}
                   onChange={(value) => {
-                    setConfig({ nodes: { ...config.nodes, [node.id]: value } });
+                    setConfig({ nodes: { ...codeNodes, [node.id]: value } });
                     setNotice("");
                   }}
                 />
@@ -606,6 +652,18 @@ export function AppDetailView({ app }: { app: string }) {
                   {scoreText(version.eval?.score)}
                 </small>
               </div>
+              {data.kind === "flow" && (
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    void action(() => exportAppVersion(app, version.version!))
+                  }
+                >
+                  导出
+                </button>
+              )}
               {version.status !== "current" && (
                 <button
                   type="button"

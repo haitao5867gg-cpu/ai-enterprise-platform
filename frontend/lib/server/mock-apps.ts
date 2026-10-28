@@ -4,11 +4,24 @@ import type {
   AppDetail,
   AppNode,
   AppVersion,
-  NodeConfig,
   Setting,
 } from "../apps";
 import type { SkillUsage } from "../skills";
 import { isRecord } from "../runs";
+import { APP_ID_PATTERN, isFlowConfig, type FlowConfig } from "../apps";
+import {
+  allSources,
+  blankConfig,
+  flowView,
+  formConfig,
+  helloConfig,
+  missingReferences,
+  mockModels,
+  mockNodeTypes,
+  mockTemplates,
+  simulateNode,
+  validateFlow,
+} from "./mock-flow-apps";
 import { mockFlow } from "./mock-flow";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
 import { createMockEvalRun } from "./mock-runs";
@@ -24,18 +37,17 @@ import {
 
 type StoredApp = {
   app: string;
+  kind: "code" | "flow";
+  title: string;
+  summary: string;
+  created_at: string | null;
+  archived?: boolean;
+  secrets: Record<string, { updated_at: string }>;
   current: number;
   versions: AppVersion[];
   draft: AppVersion | null;
 };
-const models = [
-  "mock",
-  "gpt",
-  "azure-gpt",
-  "claude-bedrock",
-  "qwen",
-  "deepseek",
-];
+const models = mockModels;
 const modelSettings: Setting[] = [
   { key: "model", label: "模型", type: "model" },
   { key: "skills", label: "Skill", type: "skills" },
@@ -85,27 +97,46 @@ function nodesFor(app: string): AppNode[] {
   }));
 }
 function initial(app: string): StoredApp {
-  const config: AppConfig = {
-    nodes:
-      app === "etl"
-        ? {
-            profile: { model: null, skills: [], params: { sample_rows: 5 } },
-            plan: {
-              model: null,
-              skills: [{ name: "etl-plan", version: 1 }],
-              params: { max_attempts: 3 },
-            },
-            codegen: {
-              model: null,
-              skills: [{ name: "etl-codegen", version: 1 }],
-              params: { max_attempts: 3 },
-            },
-            verify: { model: null, skills: [], params: { max_dev_runs: 3 } },
-          }
-        : { draft: { model: null, skills: [], params: {} } },
-  };
+  const config: AppConfig =
+    app === "hello"
+      ? helloConfig()
+      : {
+          nodes:
+            app === "etl"
+              ? {
+                  profile: {
+                    model: null,
+                    skills: [],
+                    params: { sample_rows: 5 },
+                  },
+                  plan: {
+                    model: null,
+                    skills: [{ name: "etl-plan", version: 1 }],
+                    params: { max_attempts: 3 },
+                  },
+                  codegen: {
+                    model: null,
+                    skills: [{ name: "etl-codegen", version: 1 }],
+                    params: { max_attempts: 3 },
+                  },
+                  verify: {
+                    model: null,
+                    skills: [],
+                    params: { max_dev_runs: 3 },
+                  },
+                }
+              : { draft: { model: null, skills: [], params: {} } },
+        };
   return {
     app,
+    kind: app === "etl" ? "code" : "flow",
+    title: app === "etl" ? "自然语言 ETL 工作流" : "问答示例",
+    summary:
+      app === "etl"
+        ? "探查数据、给出方案，经人确认后生成 Databricks 管道代码。"
+        : "用模型回答一个问题，请人确认；驳回时按意见重写。",
+    created_at: app === "etl" ? null : "2026-10-28T02:00:00+00:00",
+    secrets: {},
     current: 1,
     draft: null,
     versions: [
@@ -127,16 +158,27 @@ const globalStore = globalThis as typeof globalThis & {
 const store = (globalStore.aepMockApps ??= new Map([
   ["etl", initial("etl")],
   ["hello", initial("hello")],
+  [
+    "order-form",
+    {
+      ...initial("hello"),
+      app: "order-form",
+      title: "订单信息填写",
+      summary: "人工填写订单号后返回结果。",
+      versions: [{ ...initial("hello").versions[0], config: formConfig() }],
+    },
+  ],
 ]));
 function current(entry: StoredApp) {
   return entry.versions.find((version) => version.version === entry.current)!;
 }
 function summary(entry: StoredApp) {
-  const design = mockFlow(entry.app, [], true).design!;
   return {
     app: entry.app,
-    title: design.title,
-    summary: design.summary,
+    title: entry.title,
+    summary: entry.summary,
+    kind: entry.kind,
+    created_at: entry.created_at,
     current_version: entry.current,
     has_draft: entry.draft !== null,
     has_eval_set: entry.app === "etl",
@@ -149,7 +191,11 @@ function refresh(entry: StoredApp) {
     Date.now() - Date.parse(evaluation.started_at) < 6_000
   )
     return;
-  const failed = entry.draft?.config.nodes.plan?.params.max_attempts === 1;
+  const config = entry.draft?.config;
+  const failed =
+    config &&
+    !isFlowConfig(config) &&
+    config.nodes.plan?.params.max_attempts === 1;
   evaluation.status = failed ? "failed" : "passed";
   evaluation.score = failed ? 0.6 : 0.9;
   evaluation.finished_at = new Date().toISOString();
@@ -160,28 +206,103 @@ function refresh(entry: StoredApp) {
 }
 function detail(entry: StoredApp): AppDetail {
   refresh(entry);
-  const flow = mockFlow(entry.app, [], true);
+  const config = current(entry).config;
+  const flow = isFlowConfig(config)
+    ? flowView(config, entry.title, entry.summary)
+    : mockFlow(entry.app, [], true);
   return {
     ...summary(entry),
     pattern: flow.design!.pattern,
     knowledge: flow.design!.knowledge,
     skills_text: flow.design!.skills,
-    nodes: nodesFor(entry.app),
+    nodes: isFlowConfig(config)
+      ? flow.nodes.map((node) => ({
+          ...node,
+          design: node.design ?? null,
+          settings: [],
+        }))
+      : nodesFor(entry.app),
     edges: flow.edges,
     current: current(entry),
     draft: entry.draft,
-    options: { models, default_model: "mock", skills: mockSkillOptions() },
+    inputs: isFlowConfig(config)
+      ? (config.graph.nodes.find((node) => node.type === "start")?.inputs ?? [])
+      : null,
+    secrets: [
+      ...new Set([
+        ...Object.keys(entry.secrets),
+        ...(isFlowConfig(config) ? config.env.secrets : []),
+        ...(entry.draft && isFlowConfig(entry.draft.config)
+          ? entry.draft.config.env.secrets
+          : []),
+      ]),
+    ].map((name) => ({
+      name,
+      set: Boolean(entry.secrets[name]),
+      updated_at: entry.secrets[name]?.updated_at ?? null,
+    })),
+    options: {
+      models,
+      default_model: "mock",
+      skills: mockSkillOptions(),
+      datasources: allSources(),
+    },
   };
 }
 export function mockSkillUsage(name: string): SkillUsage[] {
-  return [...store.values()].flatMap((entry) =>
-    Object.entries(current(entry).config.nodes)
-      .filter(([, node]) => node.skills.some((ref) => ref.name === name))
-      .map(([node]) => ({ app: entry.app, node, version: entry.current })),
-  );
+  return [...store.values()]
+    .filter((entry) => !entry.archived)
+    .flatMap((entry) => {
+      const config = current(entry).config;
+      const nodes = isFlowConfig(config)
+        ? config.graph.nodes
+            .filter((node) => "skills" in node)
+            .map((node) => [node.id, node] as const)
+        : Object.entries(config.nodes);
+      return nodes.flatMap(([node, value]) =>
+        "skills" in value
+          ? value.skills
+              .filter((ref) => ref.name === name)
+              .map((ref) => ({
+                app: entry.app,
+                node,
+                version: entry.current,
+                skill_version: ref.version,
+              }))
+          : [],
+      );
+    });
+}
+export function mockAppSnapshot(app: string, version?: number, draft = false) {
+  const entry = store.get(app);
+  if (!entry || entry.archived) return null;
+  const snapshot = draft
+    ? entry.draft
+    : version === undefined
+      ? current(entry)
+      : entry.versions.find((item) => item.version === version);
+  return snapshot
+    ? {
+        config: structuredClone(snapshot.config),
+        version: snapshot.version,
+        title: entry.title,
+        summary: entry.summary,
+        secrets: Object.keys(entry.secrets),
+      }
+    : null;
 }
 function validateConfig(app: string, config: unknown): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  if (store.get(app)?.kind === "flow") {
+    const errors = validateFlow(config);
+    if (errors.length) return errors;
+    return missingReferences(config as FlowConfig)
+      .filter((problem) => problem.kind !== "secret")
+      .map((problem) => ({
+        loc: ["body", "config", "graph"],
+        msg: problem.message,
+      }));
+  }
   if (!isRecord(config) || !isRecord(config.nodes))
     return [{ loc: ["body", "config", "nodes"], msg: "节点配置必须是对象" }];
   const nodes = nodesFor(app).filter((node) => node.settings.length);
@@ -273,17 +394,308 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
   return issues;
 }
 
+function metadataIssues(
+  body: Record<string, unknown>,
+  creating = false,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  if (
+    creating &&
+    (typeof body.app !== "string" || !APP_ID_PATTERN.test(body.app))
+  )
+    issues.push({
+      loc: ["body", "app"],
+      msg: "标识须以小写字母开头，使用小写字母、数字或连字符，共 2–64 字符",
+    });
+  if (
+    (creating || body.title !== undefined) &&
+    (typeof body.title !== "string" ||
+      !body.title.trim() ||
+      body.title.length > 50)
+  )
+    issues.push({ loc: ["body", "title"], msg: "名称为 1–50 个字符" });
+  if (
+    body.summary !== undefined &&
+    (typeof body.summary !== "string" || body.summary.length > 500)
+  )
+    issues.push({ loc: ["body", "summary"], msg: "简介最多 500 个字符" });
+  return issues;
+}
+function createEntry(
+  body: Record<string, unknown>,
+  config: AppConfig,
+): StoredApp {
+  const now = new Date().toISOString();
+  return {
+    app: body.app as string,
+    kind: "flow",
+    title: (body.title as string).trim(),
+    summary: typeof body.summary === "string" ? body.summary : "",
+    created_at: now,
+    current: 1,
+    draft: null,
+    secrets: {},
+    versions: [
+      {
+        version: 1,
+        status: "current",
+        config: structuredClone(config),
+        note: "初始版本",
+        created_by: typeof body.actor === "string" ? body.actor : null,
+        created_at: now,
+        eval: null,
+      },
+    ],
+  };
+}
+function draftVersion(config: AppConfig, actor: unknown): AppVersion {
+  return {
+    version: null,
+    status: "draft",
+    config: structuredClone(config),
+    note: null,
+    created_by: typeof actor === "string" ? actor : null,
+    created_at: new Date().toISOString(),
+    eval: null,
+  };
+}
+function parseImport(
+  body: Record<string, unknown>,
+): Record<string, unknown> | Response {
+  if (
+    typeof body.yaml !== "string" ||
+    Buffer.byteLength(body.yaml, "utf8") > 1024 * 1024
+  )
+    return invalid([
+      { loc: ["body", "yaml"], msg: "请提供不超过 1 MB 的 YAML 文本" },
+    ]);
+  try {
+    // JSON is a YAML subset; keep the mock dependency-free. Exports use this subset too.
+    const file: unknown = JSON.parse(body.yaml);
+    if (!isRecord(file) || file.format !== "aep-app/1") throw new Error();
+    const issues = validateFlow(file.config);
+    if (issues.length) return invalid(issues);
+    return file;
+  } catch {
+    return invalid([
+      {
+        loc: ["body", "yaml"],
+        msg: "无法读取应用文件，请检查 aep-app/1 格式；本地模拟支持 JSON 格式的 YAML",
+      },
+    ]);
+  }
+}
 export async function mockApps(
   request: Request,
   path: string[],
 ): Promise<Response> {
-  if (path.length === 1) return mockJson([...store.values()].map(summary));
-  const entry = store.get(path[1]);
+  if (path[0] === "node-types") return mockJson(mockNodeTypes);
+  if (path[0] === "app-templates") return mockJson(mockTemplates);
+  if (path.length === 1 && request.method === "GET")
+    return mockJson(
+      [...store.values()].filter((entry) => !entry.archived).map(summary),
+    );
+  if (path.length === 1 && request.method === "POST") {
+    const body = await readBody(request);
+    if (body instanceof Response) return body;
+    const issues = metadataIssues(body, true);
+    if (issues.length) return invalid(issues);
+    if (store.has(body.app as string)) return mockError("应用标识已存在", 409);
+    if (!isRecord(body.from))
+      return invalid([{ loc: ["body", "from"], msg: "请选择应用来源" }]);
+    const from = body.from;
+    let config: AppConfig | undefined;
+    if (from.blank === true) config = blankConfig();
+    else if (typeof from.template === "string")
+      config = mockTemplates.find((item) => item.id === from.template)?.config;
+    else if (typeof from.app === "string") {
+      const source = mockAppSnapshot(
+        from.app,
+        from.version as number | undefined,
+      );
+      if (source && !isFlowConfig(source.config))
+        return mockError("不能复制代码应用", 409);
+      config = source?.config;
+    }
+    if (!config) return mockError("模板、应用或版本不存在", 404);
+    const entry = createEntry(body, config);
+    store.set(entry.app, entry);
+    return mockJson(detail(entry), 201);
+  }
+  const isNewImport = path[1] === "import";
+  const entry = isNewImport ? undefined : store.get(path[1]);
+  if (!isNewImport && (!entry || entry.archived))
+    return mockError("应用不存在", 404);
+  if (isNewImport || (path[2] === "draft" && path[3] === "import")) {
+    if (entry?.kind === "code") return mockError("代码应用不能导入", 409);
+    const body = await readBody(request);
+    if (body instanceof Response) return body;
+    const file = parseImport(body);
+    if (file instanceof Response) return file;
+    const config = file.config as FlowConfig;
+    const problems = missingReferences(
+      config,
+      Object.keys(entry?.secrets ?? {}),
+    );
+    let target = entry;
+    if (isNewImport) {
+      const input = {
+        ...body,
+        title: body.title ?? file.title,
+        summary: body.summary ?? file.summary,
+      };
+      const issues = metadataIssues(input, true);
+      if (issues.length) return invalid(issues);
+      if (store.has(body.app as string))
+        return mockError("应用标识已存在", 409);
+      target = createEntry(
+        input,
+        problems.some((problem) => problem.kind !== "secret")
+          ? blankConfig()
+          : config,
+      );
+      if (problems.some((problem) => problem.kind !== "secret"))
+        target.draft = draftVersion(config, body.actor);
+      store.set(target.app, target);
+    } else target!.draft = draftVersion(config, body.actor);
+    return mockJson(
+      { app: detail(target!), problems },
+      isNewImport ? 201 : 200,
+    );
+  }
   if (!entry) return mockError("应用不存在", 404);
   refresh(entry);
-  if (path.length === 2) return mockJson(detail(entry));
-  if (path[2] === "versions" && request.method === "GET")
-    return mockJson(entry.versions);
+  if (path.length === 2) {
+    if (request.method === "GET") return mockJson(detail(entry));
+    if (entry.kind === "code") return mockError("代码应用不能改名或归档", 409);
+    if (request.method === "DELETE") {
+      entry.archived = true;
+      return noContent();
+    }
+    const body = await readBody(request);
+    if (body instanceof Response) return body;
+    const issues = metadataIssues(body);
+    if (issues.length) return invalid(issues);
+    if (typeof body.title === "string") entry.title = body.title.trim();
+    if (typeof body.summary === "string") entry.summary = body.summary;
+    return mockJson(detail(entry));
+  }
+  if (path[2] === "secrets") {
+    if (request.method === "DELETE") {
+      delete entry.secrets[path[3]];
+      return noContent();
+    }
+    const body = await readBody(request);
+    if (body instanceof Response) return body;
+    if (
+      typeof body.value !== "string" ||
+      !body.value ||
+      body.value.length > 4096
+    )
+      return invalid([
+        { loc: ["body", "value"], msg: "密钥值为 1–4096 个字符" },
+      ]);
+    entry.secrets[path[3]] = { updated_at: new Date().toISOString() };
+    return noContent();
+  }
+  if (path[2] === "nodes") {
+    if (entry.kind === "code") return mockError("代码应用不能试跑单节点", 409);
+    const body = await readBody(request);
+    if (body instanceof Response) return body;
+    const config = (body.config ??
+      entry.draft?.config ??
+      current(entry).config) as FlowConfig;
+    const node = config.graph?.nodes?.find((item) => item.id === path[3]);
+    if (!node) return mockError("节点不存在", 404);
+    if (["start", "human", "end"].includes(node.type))
+      return invalid([
+        {
+          loc: ["body", "config", "graph", "nodes", node.id],
+          msg: "该类型不支持单节点试跑",
+        },
+      ]);
+    if (!isRecord(body.values))
+      return invalid([{ loc: ["body", "values"], msg: "测试值必须是对象" }]);
+    const pool: Record<string, Record<string, unknown>> = {
+      env: Object.fromEntries(
+        config.env.vars.map((item) => [item.key, item.value]),
+      ),
+      secret: Object.fromEntries(
+        Object.keys(entry.secrets).map((name) => [name, "******"]),
+      ),
+    };
+    for (const [key, value] of Object.entries(body.values)) {
+      const [id, field] = key.split(".");
+      if (id !== "env" && id !== "secret" && field)
+        (pool[id] ??= {})[field] = value;
+    }
+    try {
+      return mockJson({
+        status: "done",
+        ...simulateNode(node, pool),
+        error: null,
+        duration_ms: 20,
+      });
+    } catch (error) {
+      return mockJson({
+        status: "error",
+        outputs: null,
+        branch: null,
+        error: {
+          type: "model_error",
+          message: error instanceof Error ? error.message : "节点出错",
+        },
+        rendered: {},
+        duration_ms: 20,
+      });
+    }
+  }
+  if (path[2] === "versions" && request.method === "GET") {
+    if (path.length === 3) return mockJson(entry.versions);
+    if (entry.kind === "code") return mockError("代码应用不能导出", 409);
+    const version = entry.versions.find(
+      (item) => item.version === Number(path[3]),
+    );
+    if (!version) return mockError("应用版本不存在", 404);
+    const config = version.config as FlowConfig;
+    const skills = config.graph.nodes.flatMap((node) =>
+      "skills" in node ? node.skills : [],
+    );
+    const sourceIds = config.graph.nodes.flatMap((node) =>
+      node.type === "tool"
+        ? [node.datasource]
+        : node.type === "agent"
+          ? node.tools.map((item) => item.datasource)
+          : [],
+    );
+    return new Response(
+      JSON.stringify(
+        {
+          format: "aep-app/1",
+          title: entry.title,
+          summary: entry.summary,
+          exported_from: { app: entry.app, version: version.version },
+          config,
+          requires: {
+            skills,
+            datasources: allSources().filter((source) =>
+              sourceIds.includes(source.datasource_id),
+            ),
+            secrets: config.env.secrets,
+          },
+        },
+        null,
+        2,
+      ),
+      {
+        headers: {
+          "Content-Type": "text/yaml; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${entry.app}-v${version.version}.yaml"`,
+          "Cache-Control": "no-store",
+        },
+      },
+    );
+  }
   if (path[2] === "draft" && request.method === "DELETE") {
     entry.draft = null;
     return noContent();
@@ -293,17 +705,7 @@ export async function mockApps(
   if (request.method === "PUT") {
     const issues = validateConfig(entry.app, body.config);
     if (issues.length) return invalid(issues);
-    entry.draft = {
-      version: null,
-      status: "draft",
-      config: structuredClone(body.config) as {
-        nodes: Record<string, NodeConfig>;
-      },
-      note: null,
-      created_by: null,
-      created_at: new Date().toISOString(),
-      eval: null,
-    };
+    entry.draft = draftVersion(body.config as AppConfig, body.actor);
     return mockJson(detail(entry));
   }
   if (path[2] === "versions") {
@@ -313,7 +715,6 @@ export async function mockApps(
       (item) => item.version === Number(path[3]),
     );
     if (!version) return mockError("应用版本不存在", 404);
-    // Published snapshots (including their original author) stay immutable on activation.
     current(entry).status = "previous";
     version.status = "current";
     entry.current = version.version!;
@@ -324,8 +725,11 @@ export async function mockApps(
     if (entry.app !== "etl") return mockError("此应用没有评测集", 409);
     if (entry.draft.eval?.status === "running")
       return mockError("草稿已有评测在运行", 409);
+    const config = entry.draft.config;
     const score =
-      entry.draft.config.nodes.plan.params.max_attempts === 1 ? 0.6 : 0.9;
+      !isFlowConfig(config) && config.nodes.plan.params.max_attempts === 1
+        ? 0.6
+        : 0.9;
     entry.draft.eval = {
       status: "running",
       score: null,
@@ -347,6 +751,11 @@ export async function mockApps(
   if (issues.length) return invalid(issues);
   if (entry.app === "etl" && entry.draft.eval?.status !== "passed")
     return mockError("草稿须先通过评测才能发布（阈值 0.8）", 409);
+  if (
+    isFlowConfig(entry.draft.config) &&
+    missingReferences(entry.draft.config).some((item) => item.kind !== "secret")
+  )
+    return mockError("请先修复草稿缺失的引用", 409);
   const version: AppVersion = {
     ...entry.draft,
     version: Math.max(...entry.versions.map((item) => item.version!)) + 1,

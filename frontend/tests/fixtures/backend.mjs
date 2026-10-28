@@ -57,13 +57,71 @@ createServer(async (request, response) => {
   if (path === "/runs/fixture") return json({ source: "contract-fixture" });
   if (path === "/runs/fixture/flow")
     return json({ source: "contract-fixture-flow" });
-  if (/^\/(apps|skills)(\/|$)/.test(path)) {
+  const appSummary = {
+    app: "hello",
+    title: "契约问答示例",
+    summary: "契约测试应用",
+    kind: "flow",
+    created_at: "2026-10-28T02:00:00Z",
+    current_version: 1,
+    has_draft: false,
+    has_eval_set: false,
+  };
+  if (path === "/apps" && request.method === "GET") return json([appSummary]);
+  if (path === "/apps/hello" && request.method === "GET")
+    return json({
+      ...appSummary,
+      pattern: "问答和人工确认",
+      knowledge: "",
+      skills_text: "",
+      nodes: [],
+      edges: [],
+      inputs: [
+        {
+          key: "text",
+          label: "你想完成什么？",
+          type: "textarea",
+          required: true,
+          max_length: 2000,
+        },
+      ],
+      secrets: [],
+      options: {
+        models: ["mock"],
+        default_model: "mock",
+        skills: [],
+        datasources: [],
+      },
+      draft: null,
+      current: {
+        version: 1,
+        status: "current",
+        config: {
+          schema_version: 1,
+          env: { vars: [], secrets: [] },
+          graph: { nodes: [], edges: [] },
+        },
+        note: "契约测试",
+        created_by: null,
+        created_at: "2026-10-28T02:00:00Z",
+        eval: null,
+      },
+    });
+  if (path === "/apps/hello/versions/1/export") {
+    response.writeHead(200, {
+      "Content-Type": "text/yaml; charset=utf-8",
+      "Content-Disposition":
+        "attachment; filename=\"hello-v1.yaml\"; filename*=UTF-8''%E9%97%AE%E7%AD%94.yaml",
+    });
+    return response.end("format: aep-app/1\ntitle: 问答\n");
+  }
+  if (/^\/(apps|skills|node-types|app-templates)(\/|$)/.test(path)) {
     if (request.method === "DELETE") {
       response.writeHead(204);
       return response.end();
     }
     let payload = null;
-    if (["POST", "PUT"].includes(request.method)) {
+    if (["POST", "PUT", "PATCH"].includes(request.method)) {
       let raw = "";
       for await (const chunk of request) raw += chunk;
       payload = JSON.parse(raw);
