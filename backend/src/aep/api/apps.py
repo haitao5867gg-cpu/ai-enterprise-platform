@@ -84,8 +84,8 @@ async def discard_draft(app: str, catalog: Catalog) -> Response:
         await catalog.discard_draft(app)
     except AppNotFound as exc:
         raise _not_found(app) from exc
-    except NoDraft as exc:
-        raise HTTPException(404, "没有草稿") from exc
+    except NoDraft:
+        pass  # Nothing to discard is the state the caller asked for.
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
