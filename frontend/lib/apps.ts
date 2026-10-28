@@ -1,3 +1,4 @@
+import type { KnowledgeOption } from "./knowledge";
 import type { FlowEdge, NodeDesign, NodeKind } from "./flow";
 import { ApiError, isRecord, requestJson } from "./runs";
 
@@ -6,11 +7,16 @@ export type SkillRef = { name: string; version: number };
 export type NodeConfig = {
   model: string | null;
   skills: SkillRef[];
-  params: Record<string, string | number | boolean>;
+  params: Record<string, string | number | boolean | string[]>;
 };
 export type CodeConfig = { nodes: Record<string, NodeConfig> };
 export type InputType =
-  "text" | "textarea" | "number" | "boolean" | "select" | "datasource";
+  | "text"
+  | "textarea"
+  | "number"
+  | "boolean"
+  | "select"
+  | "datasource";
 export type Input<T extends InputType = InputType> = {
   key: string;
   label: string;
@@ -93,6 +99,14 @@ export type ToolNode = NodeBase &
     tool: string;
     args: Record<string, unknown>;
   };
+export type KnowledgeNode = NodeBase &
+  Fallible & {
+    type: "knowledge";
+    knowledge_bases: string[];
+    query: string;
+    top_k: number;
+    min_score: number;
+  };
 export type AgentNode = NodeBase &
   ModelSettings &
   Fallible & {
@@ -132,6 +146,7 @@ export type FlowNode =
   | ClassifierNode
   | ConditionNode
   | ToolNode
+  | KnowledgeNode
   | AgentNode
   | HumanNode
   | TemplateNode
@@ -179,7 +194,9 @@ export type AppTemplate = {
   config: FlowConfig;
 };
 export type AppSource =
-  { blank: true } | { template: string } | { app: string; version?: number };
+  | { blank: true }
+  | { template: string }
+  | { app: string; version?: number };
 export type CreateAppInput = {
   app: string;
   title: string;
@@ -202,6 +219,7 @@ export type ImportProblem =
       name?: string;
       message: string;
     }
+  | { kind: "knowledge_base"; kb_id: string; name?: string; message: string }
   | { kind: "model" | "secret"; name: string; message: string };
 export type ImportResult = { app: AppDetail; problems: ImportProblem[] };
 export type NodeTest = {
@@ -217,7 +235,7 @@ export const NODE_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
 type SettingBase = { key: string; label: string; help?: string };
 export type Setting = SettingBase &
   (
-    | { type: "model" | "skills" | "boolean" }
+    | { type: "model" | "skills" | "boolean" | "knowledge_bases" }
     | { type: "integer"; min?: number; max?: number }
     | { type: "enum"; choices: { value: string; label: string }[] }
     | { type: "string"; max_length?: number }
@@ -274,6 +292,7 @@ export type AppDetail = AppSummary & {
   inputs: Input[] | null;
   secrets: { name: string; set: boolean; updated_at: string | null }[];
   options: {
+    knowledge_bases: KnowledgeOption[];
     datasources: { datasource_id: string; name: string; kind: string }[];
     models: string[];
     default_model: string;

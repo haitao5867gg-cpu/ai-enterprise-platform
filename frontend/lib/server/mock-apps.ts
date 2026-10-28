@@ -1,4 +1,5 @@
 import "server-only";
+import { knowledgeOptions } from "./mock-knowledge";
 import type {
   AppConfig,
   AppDetail,
@@ -67,7 +68,26 @@ function nodesFor(app: string): AppNode[] {
     settings:
       app === "etl"
         ? node.id === "plan" || node.id === "codegen"
-          ? modelSettings
+          ? [
+              ...modelSettings,
+              ...(node.id === "plan"
+                ? [
+                    {
+                      key: "knowledge_bases",
+                      label: "参考知识库",
+                      type: "knowledge_bases" as const,
+                      help: "出方案前按需求检索这些知识库，方案里标出依据",
+                    },
+                    {
+                      key: "knowledge_top_k",
+                      label: "检索片段数",
+                      type: "integer" as const,
+                      min: 1,
+                      max: 20,
+                    },
+                  ]
+                : []),
+            ]
           : node.id === "profile"
             ? [
                 {
@@ -112,7 +132,11 @@ function initial(app: string): StoredApp {
                   plan: {
                     model: null,
                     skills: [{ name: "etl-plan", version: 1 }],
-                    params: { max_attempts: 3 },
+                    params: {
+                      max_attempts: 3,
+                      knowledge_bases: [],
+                      knowledge_top_k: 5,
+                    },
                   },
                   codegen: {
                     model: null,
@@ -246,6 +270,7 @@ function detail(entry: StoredApp): AppDetail {
       default_model: "mock",
       skills: mockSkillOptions(),
       datasources: allSources(),
+      knowledge_bases: knowledgeOptions(),
     },
   };
 }
@@ -363,7 +388,13 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
       )
         issues.push({ loc: [...loc, "params", key], msg: "不支持的设置项" });
     for (const setting of node.settings) {
-      const param = value.params[setting.key];
+      const param =
+        value.params[setting.key] ??
+        (setting.type === "knowledge_bases"
+          ? []
+          : setting.key === "knowledge_top_k"
+            ? 5
+            : undefined);
       let message = "";
       if (
         setting.type === "integer" &&
@@ -373,6 +404,14 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
           (setting.max !== undefined && param > setting.max))
       )
         message = `${setting.label}须为 ${setting.min ?? "不限"}~${setting.max ?? "不限"} 的整数`;
+      if (
+        setting.type === "knowledge_bases" &&
+        (!Array.isArray(param) ||
+          !param.every((id) =>
+            knowledgeOptions().some((kb) => kb.kb_id === id),
+          ))
+      )
+        message = "请选择存在的知识库";
       if (setting.type === "boolean" && typeof param !== "boolean")
         message = `${setting.label}须为开关值`;
       if (
@@ -518,7 +557,13 @@ export async function mockApps(
       config = source?.config;
     }
     if (!config) return mockError("模板、应用或版本不存在", 404);
-    const entry = createEntry(body, config);
+    const needsKnowledge =
+      typeof from.template === "string" &&
+      mockTemplates
+        .find((item) => item.id === from.template)
+        ?.needs.includes("knowledge_base");
+    const entry = createEntry(body, needsKnowledge ? blankConfig() : config);
+    if (needsKnowledge) entry.draft = draftVersion(config, body.actor);
     store.set(entry.app, entry);
     return mockJson(detail(entry), 201);
   }
@@ -642,7 +687,7 @@ export async function mockApps(
         outputs: null,
         branch: null,
         error: {
-          type: "model_error",
+          type: node.type === "knowledge" ? "knowledge_error" : "model_error",
           message: error instanceof Error ? error.message : "节点出错",
         },
         rendered: {},
@@ -678,6 +723,15 @@ export async function mockApps(
           config,
           requires: {
             skills,
+            knowledge_bases: knowledgeOptions()
+              .filter((kb) =>
+                config.graph.nodes.some(
+                  (node) =>
+                    node.type === "knowledge" &&
+                    node.knowledge_bases.includes(kb.kb_id),
+                ),
+              )
+              .map(({ kb_id, name }) => ({ kb_id, name })),
             datasources: allSources().filter((source) =>
               sourceIds.includes(source.datasource_id),
             ),
@@ -770,4 +824,23 @@ export async function mockApps(
   entry.current = version.version!;
   entry.draft = null;
   return mockJson(detail(entry));
+}
+
+export function appsReferencingKnowledge(kb: string): string[] {
+  return [...store.values()]
+    .filter((entry) => {
+      if (entry.archived) return false;
+      const config = current(entry).config;
+      return isFlowConfig(config)
+        ? config.graph.nodes.some(
+            (node) =>
+              node.type === "knowledge" && node.knowledge_bases.includes(kb),
+          )
+        : Object.values(config.nodes).some(
+            (node) =>
+              Array.isArray(node.params.knowledge_bases) &&
+              node.params.knowledge_bases.includes(kb),
+          );
+    })
+    .map((entry) => `${entry.title}（${entry.app}）`);
 }

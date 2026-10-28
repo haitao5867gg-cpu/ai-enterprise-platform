@@ -156,11 +156,13 @@ export function AppCreate({
                 <strong>
                   {problem.kind === "skill"
                     ? `Skill：${problem.name} v${problem.version}`
-                    : problem.kind === "datasource"
-                      ? `数据源：${problem.name ?? problem.datasource_id}`
-                      : problem.kind === "model"
-                        ? `模型：${problem.name}`
-                        : `密钥：${problem.name}`}
+                    : problem.kind === "knowledge_base"
+                      ? `知识库：${problem.name ?? problem.kb_id}`
+                      : problem.kind === "datasource"
+                        ? `数据源：${problem.name ?? problem.datasource_id}`
+                        : problem.kind === "model"
+                          ? `模型：${problem.name}`
+                          : `密钥：${problem.name}`}
                 </strong>
                 ：{problem.message}
               </li>
@@ -210,6 +212,9 @@ export function AppCreate({
                 />
                 <strong>{item.title}</strong>
                 <span>{item.summary}</span>
+                {"needs" in item && item.needs.includes("knowledge_base") && (
+                  <small>创建后需选择知识库</small>
+                )}
                 {"needs" in item && item.needs.includes("datasource") && (
                   <small>创建后需选择数据源</small>
                 )}

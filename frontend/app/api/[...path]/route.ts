@@ -22,6 +22,23 @@ async function handle(request: Request, context: Context) {
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],
+    [/^knowledge-bases$/, ["GET", "POST"]],
+    [/^knowledge-bases\/options$/, ["GET"]],
+    [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],
+    [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents$/, ["GET", "POST"]],
+    [
+      /^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents\/[a-zA-Z0-9_-]{1,128}$/,
+      ["GET", "DELETE"],
+    ],
+    [
+      /^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents\/[a-zA-Z0-9_-]{1,128}\/(file|chunks)$/,
+      ["GET"],
+    ],
+    [
+      /^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents\/[a-zA-Z0-9_-]{1,128}\/reindex$/,
+      ["POST"],
+    ],
+    [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/(reindex|search)$/, ["POST"]],
     [/^(node-types|app-templates)$/, ["GET"]],
     [/^apps$/, ["GET", "POST"]],
     [/^apps\/import$/, ["POST"]],
@@ -45,7 +62,10 @@ async function handle(request: Request, context: Context) {
     [/^skills\/[a-z][a-z0-9-]{1,63}\/draft$/, ["PUT", "DELETE"]],
     [/^skills\/[a-z][a-z0-9-]{1,63}\/publish$/, ["POST"]],
   ];
-  const isUpload = endpoint === "datasources/files";
+  const isUpload =
+    request.method === "POST" &&
+    (endpoint === "datasources/files" ||
+      /^knowledge-bases\/[^/]+\/documents$/.test(endpoint));
   const methods = routes.find(([pattern]) => pattern.test(endpoint))?.[1];
   if (!methods) return jsonError("Not found", 404);
   if (!methods.includes(request.method)) {
@@ -68,6 +88,12 @@ async function handle(request: Request, context: Context) {
     if (["apps", "node-types", "app-templates"].includes(path[0])) {
       const { mockApps } = await import("../../../lib/server/mock-apps");
       return mockApps(request, path);
+    }
+    if (path[0] === "knowledge-bases") {
+      const { mockKnowledge } = await import(
+        "../../../lib/server/mock-knowledge"
+      );
+      return mockKnowledge(request, path);
     }
     if (path[0] === "skills") {
       const { mockSkills } = await import("../../../lib/server/mock-skills");
@@ -99,7 +125,7 @@ async function handle(request: Request, context: Context) {
   try {
     const hasBody = ["POST", "PUT", "PATCH"].includes(request.method);
     const response = await fetch(
-      `${base.href.replace(/\/$/, "")}/${endpoint}`,
+      `${base.href.replace(/\/$/, "")}/${endpoint}${new URL(request.url).search}`,
       {
         method: request.method,
         headers: hasBody

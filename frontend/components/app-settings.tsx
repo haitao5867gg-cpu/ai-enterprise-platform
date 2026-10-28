@@ -10,6 +10,7 @@ import type {
   SkillRef,
 } from "../lib/apps";
 import { getSkill, type SkillVersion } from "../lib/skills";
+import { KnowledgePicker } from "./knowledge-form";
 import { errorMessage } from "../lib/runs";
 
 export function settingError(setting: Setting, config: NodeConfig): string {
@@ -33,6 +34,11 @@ export function settingError(setting: Setting, config: NodeConfig): string {
     !setting.choices.some((choice) => choice.value === value)
   )
     return `${setting.label}请选择可用选项`;
+  if (
+    setting.type === "knowledge_bases" &&
+    (!Array.isArray(value) || !value.every((id) => typeof id === "string"))
+  )
+    return "请选择知识库";
   return "";
 }
 
@@ -204,7 +210,7 @@ export function AppSettings({
         const id = `${prefix}-${setting.key}`;
         const value = config.params[setting.key];
         const error = settingError(setting, config);
-        const param = (value: string | number | boolean) =>
+        const param = (value: string | number | boolean | string[]) =>
           onChange({
             ...config,
             params: { ...config.params, [setting.key]: value },
@@ -212,7 +218,7 @@ export function AppSettings({
         const description = `${id}-help`;
         return (
           <div className="asset-field" key={setting.key}>
-            {setting.type === "skills" ? (
+            {setting.type === "skills" || setting.type === "knowledge_bases" ? (
               <span>{setting.label}</span>
             ) : (
               <label htmlFor={id}>{setting.label}</label>
@@ -242,6 +248,12 @@ export function AppSettings({
                 options={options.skills}
                 value={config.skills}
                 onChange={(skills) => onChange({ ...config, skills })}
+              />
+            ) : setting.type === "knowledge_bases" ? (
+              <KnowledgePicker
+                options={options.knowledge_bases ?? []}
+                value={Array.isArray(value) ? value : []}
+                onChange={param}
               />
             ) : setting.type === "enum" ? (
               <select

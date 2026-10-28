@@ -1,3 +1,4 @@
+import type { RunSource } from "./knowledge";
 import type { FormField } from "./apps";
 
 export const runStatuses = ["running", "waiting", "done", "error"] as const;
@@ -30,6 +31,7 @@ export type Run = RunSummary & {
   result: unknown;
   error: string | null;
   trace_id?: string | null;
+  sources?: RunSource[];
 };
 
 export const statusLabels: Record<RunStatus, string> = {
@@ -90,13 +92,22 @@ export async function requestJson(
   let response: Response;
   try {
     const timeout = AbortSignal.timeout(
-      path.endsWith("/test") ? 120_000 : 15_000,
+      init.body instanceof FormData
+        ? 300_000
+        : path.endsWith("/test")
+          ? 120_000
+          : 15_000,
     );
     response = await fetch(`/api${path}`, {
       ...init,
       cache: "no-store",
       signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
-      headers: { "Content-Type": "application/json", ...init.headers },
+      headers: {
+        ...(init.body instanceof FormData
+          ? {}
+          : { "Content-Type": "application/json" }),
+        ...init.headers,
+      },
     });
   } catch (error) {
     if (init.signal?.aborted) throw error;
@@ -146,7 +157,9 @@ export async function requestJson(
     const creating =
       init.method === "POST" && (path === "/apps" || path === "/apps/import");
     throw new ApiError(
-      detail && creating && response.status === 409
+      detail &&
+      ((creating && response.status === 409) ||
+        path.startsWith("/knowledge-bases"))
         ? detail
         : detail
           ? `${message} ${detail}`

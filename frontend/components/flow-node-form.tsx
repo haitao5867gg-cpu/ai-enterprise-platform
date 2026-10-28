@@ -1,5 +1,7 @@
 "use client";
 
+import { KnowledgePicker } from "./knowledge-form";
+
 import { useEffect, useState } from "react";
 import type {
   AgentNode,
@@ -970,6 +972,62 @@ export function NodeSettings({
           allowDatasource
           onChange={(inputs) => change({ ...node, inputs })}
         />
+      );
+    case "knowledge":
+      return (
+        <>
+          <fieldset className="list-editor">
+            <legend>知识库（1–5 个）</legend>
+            <KnowledgePicker
+              options={options.knowledge_bases ?? []}
+              value={node.knowledge_bases}
+              max={5}
+              onChange={(knowledge_bases) =>
+                change({ ...node, knowledge_bases })
+              }
+            />
+            {at("knowledge_bases").map((message) => (
+              <p key={message} className="field-error">
+                {message}
+              </p>
+            ))}
+          </fieldset>
+          <RefField
+            label="检索问题"
+            value={node.query}
+            multiline
+            variables={variables}
+            issues={at("query")}
+            help="最多 2000 字符，可引用前面节点的变量。"
+            onChange={(query) => change({ ...node, query })}
+          />
+          <NumberField
+            label="top_k"
+            value={node.top_k}
+            min={1}
+            max={20}
+            issues={at("top_k")}
+            onChange={(top_k) => change({ ...node, top_k })}
+          />
+          <label className="asset-field">
+            min_score
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step="any"
+              value={Number.isNaN(node.min_score) ? "" : node.min_score}
+              onChange={(event) =>
+                change({ ...node, min_score: event.target.valueAsNumber })
+              }
+            />
+            {at("min_score").map((message) => (
+              <span key={message} className="field-error">
+                {message}
+              </span>
+            ))}
+          </label>
+        </>
       );
     case "llm":
       return (
