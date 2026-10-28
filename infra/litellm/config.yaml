@@ -50,6 +50,12 @@ model_list:
         thinking:
           type: disabled
 
+  - model_name: company-embed
+    litellm_params:
+      model: os.environ/COMPANY_EMBED_MODEL
+      api_base: os.environ/COMPANY_API_BASE
+      api_key: os.environ/COMPANY_API_KEY
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 

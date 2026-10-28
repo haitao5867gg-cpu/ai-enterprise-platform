@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Annotated
 
 import openai
@@ -14,12 +14,14 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import apps, assets, datasources, flows, runs, skills
+from aep.api import apps, assets, datasources, flows, knowledge, runs, skills
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
+from aep.knowledge.store import PostgresKnowledgeStore
+from aep.knowledge.worker import KnowledgeWorker
 from aep.runtime.catalog import AppCatalog, GatewayModels
 from aep.runtime.flow.store import PostgresFlowAppStore, PostgresSecretStore
 from aep.runtime.registry import AppContext, default_apps
@@ -77,6 +79,8 @@ def create_app() -> FastAPI:
         sources = PostgresDataSourceStore(pool)
         await sources.setup()
         await register_defaults(sources, settings.default_datasources)
+        knowledge_store = PostgresKnowledgeStore(pool)
+        await knowledge_store.setup()
         asset_store = PostgresAssetStore(pool)
         await asset_store.setup()
         skill_store = PostgresSkillStore(pool)
@@ -130,7 +134,16 @@ def create_app() -> FastAPI:
         app.state.datasources = sources
         app.state.asset_store = asset_store
         app.state.mcp_tools = tools
-        yield
+        app.state.knowledge = knowledge_store
+        knowledge_worker = KnowledgeWorker(knowledge_store, llm_client)
+        app.state.knowledge_worker = knowledge_worker
+        knowledge_task = asyncio.create_task(knowledge_worker.run())
+        try:
+            yield
+        finally:
+            knowledge_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await knowledge_task
         try:
             await asyncio.wait_for(service.wait_idle(), timeout=10)
         except TimeoutError:
@@ -150,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(apps.router)
     app.include_router(flows.router)
     app.include_router(skills.router)
+    app.include_router(knowledge.router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
