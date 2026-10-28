@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { CitationScope, CitedMarkdown, SourceList } from "./citations";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
@@ -31,8 +32,7 @@ import { InputFields } from "./input-fields";
 
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;
-  if (typeof result === "string")
-    return <p className="message-content">{result}</p>;
+  if (typeof result === "string") return <CitedMarkdown text={result} />;
   const text = isRecord(result)
     ? typeof result.answer === "string"
       ? result.answer
@@ -45,7 +45,7 @@ function ResultView({ result }: { result: unknown }) {
   );
   return text ? (
     <>
-      <p className="message-content">{text}</p>
+      <CitedMarkdown text={text} />
       <details>
         <summary>查看完整结果</summary>
         {content}
@@ -208,7 +208,7 @@ export function RunDetail({
       ? run.pending.details
       : null;
   return (
-    <>
+    <CitationScope sources={run?.sources ?? []}>
       <Link className="back-link" href="/">
         <Icon name="back" size={16} />
         返回运行记录
@@ -532,6 +532,7 @@ export function RunDetail({
                   ) : (
                     <ResultView result={run.result} />
                   )}
+                  <SourceList />
                 </section>
               )}
               {run.status === "error" && (
@@ -554,6 +555,6 @@ export function RunDetail({
           </div>
         )
       )}
-    </>
+    </CitationScope>
   );
 }

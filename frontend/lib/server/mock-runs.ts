@@ -1,4 +1,6 @@
 import "server-only";
+import type { Reference, RunSource } from "../knowledge";
+import { searchMockKnowledge } from "./mock-knowledge";
 import { randomUUID } from "node:crypto";
 import { isRecord, type Decision, type Run } from "../runs";
 import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
@@ -34,6 +36,8 @@ type StoredRun = {
   evaluation?: { score: number };
   etl?: {
     language: EtlLanguage;
+    knowledgeBases?: string[];
+    knowledgeTopK?: number;
     plan?: EtlPlan;
     // Which approval the run is at: the plan, then the release to prod.
     stage: "plan" | "release";
@@ -113,6 +117,34 @@ function advanceFlow(entry: StoredRun): Run {
         node.type === "start"
           ? { outputs: flow.input, branch: null }
           : simulateNode(node, flow.pool);
+      if (node.type === "knowledge") {
+        const sources = (run.sources ??= []);
+        const hits = (result.outputs.hits as Reference[]).map((hit) => {
+          const existing = sources.find(
+            (source) => source.chunk_id === hit.chunk_id,
+          );
+          const source: RunSource = {
+            ...hit,
+            index:
+              existing?.index ??
+              Math.max(0, ...sources.map((item) => item.index)) + 1,
+            node: node.id,
+            node_title: node.title,
+          };
+          if (existing) Object.assign(existing, source);
+          else sources.push(source);
+          return source;
+        });
+        result.outputs = {
+          hits,
+          context: hits
+            .map(
+              (hit) =>
+                `[${hit.index}]《${hit.document_name}》${hit.heading}${hit.page === null ? "" : `（第 ${hit.page} 页）`}\n${hit.text}`,
+            )
+            .join("\n\n"),
+        };
+      }
       flow.pool[node.id] = result.outputs;
       addStep(entry.steps, node.id, structuredClone(flow.pool), result.outputs);
       if (
@@ -161,6 +193,24 @@ function refresh(entry: StoredRun): Run {
       const plan = etl.upload
         ? mockUploadedPlan(etl.upload, etl.language, entry.comment)
         : mockEtlPlan(etl.language, entry.comment);
+      const references = searchMockKnowledge(
+        etl.knowledgeBases ?? [],
+        run.messages[0].content,
+        etl.knowledgeTopK ?? 5,
+      ).map((hit, index) => ({ ...hit, index: index + 1 }));
+      // This mock plan cites [1]; the run still records every retrieved source.
+      plan.references = references.slice(0, 1);
+      if (references.length) {
+        plan.summary += " 业务口径按资料执行 [1]。";
+        plan.assumptions[0] += " [1]";
+        plan.targets[0].description += " [1]";
+        plan.targets[0].columns[0].description += " [1]";
+        run.sources = references.map((hit) => ({
+          ...hit,
+          node: "plan",
+          node_title: "出方案",
+        }));
+      }
       const input = { input: { request: run.messages[0].content } };
       if (!entry.decision)
         addStep(entry.steps, "profile", input, {
@@ -425,6 +475,17 @@ export async function mockRuns(request: Request, path: string[]) {
       etl: isEtl
         ? {
             language: input.language === "sql" ? "sql" : "pyspark",
+            knowledgeBases:
+              !isFlowConfig(snapshot.config) &&
+              Array.isArray(snapshot.config.nodes.plan?.params.knowledge_bases)
+                ? snapshot.config.nodes.plan.params.knowledge_bases
+                : [],
+            knowledgeTopK:
+              !isFlowConfig(snapshot.config) &&
+              typeof snapshot.config.nodes.plan?.params.knowledge_top_k ===
+                "number"
+                ? snapshot.config.nodes.plan.params.knowledge_top_k
+                : 5,
             stage: "plan",
             version: 1,
             approvals: [],

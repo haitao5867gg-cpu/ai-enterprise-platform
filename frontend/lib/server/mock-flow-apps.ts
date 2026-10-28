@@ -1,4 +1,5 @@
 import "server-only";
+import { knowledgeExists, searchMockKnowledge } from "./mock-knowledge";
 import type {
   AppTemplate,
   FlowConfig,
@@ -255,7 +256,54 @@ export function formConfig(): FlowConfig {
     },
   };
 }
+export function knowledgeConfig(): FlowConfig {
+  return {
+    ...blankConfig(),
+    graph: {
+      nodes: [
+        { id: "start", type: "start", title: "开始", inputs: [questionInput] },
+        {
+          id: "kb",
+          type: "knowledge",
+          title: "知识检索",
+          knowledge_bases: [],
+          query: "{{start.question}}",
+          top_k: 5,
+          min_score: 0.3,
+        },
+        {
+          id: "answer",
+          type: "llm",
+          title: "回答",
+          model: null,
+          skills: [],
+          prompt:
+            "根据以下资料回答问题，并按 [n] 标注出处。资料里没有答案就直说。\n{{kb.context}}\n问题：{{start.question}}",
+          output: { kind: "text" },
+        },
+        {
+          id: "end",
+          type: "end",
+          title: "结束",
+          outputs: [{ key: "answer", from: ["{{answer.text}}"] }],
+        },
+      ],
+      edges: [
+        { from: "start", to: "kb" },
+        { from: "kb", to: "answer" },
+        { from: "answer", to: "end" },
+      ],
+    },
+  };
+}
 export const mockTemplates: AppTemplate[] = [
+  {
+    id: "knowledge-qa",
+    title: "知识问答",
+    summary: "检索企业资料，按引用来源回答问题。",
+    needs: ["knowledge_base"],
+    config: knowledgeConfig(),
+  },
   {
     id: "qa-approval",
     title: "问答加确认",
@@ -311,6 +359,15 @@ export const mockTemplates: AppTemplate[] = [
   },
 ];
 const defaults: FlowNode[] = [
+  {
+    id: "kb",
+    type: "knowledge",
+    title: "知识检索",
+    knowledge_bases: [],
+    query: "",
+    top_k: 5,
+    min_score: 0.3,
+  },
   blankConfig().graph.nodes[0],
   blankConfig().graph.nodes[1],
   intentConfig().graph.nodes[1],
@@ -387,20 +444,27 @@ export const mockNodeTypes: NodeType[] = defaults.map((node) => {
     label: typeLabels[node.type],
     description: `添加${typeLabels[node.type]}节点。`,
     category: kind === "code" ? "logic" : kind,
-    error_handling: ["llm", "classifier", "tool", "agent", "code"].includes(
-      node.type,
-    ),
-    outputs: (node.type === "classifier"
-      ? ["class", "label"]
-      : node.type === "condition"
-        ? ["rule"]
-        : node.type === "tool"
-          ? ["result"]
-          : node.type === "human"
-            ? ["decision", "comment", "actor"]
-            : ["llm", "agent", "template"].includes(node.type)
-              ? ["text", ...(node.type === "agent" ? ["steps"] : [])]
-              : []
+    error_handling: [
+      "llm",
+      "classifier",
+      "tool",
+      "agent",
+      "code",
+      "knowledge",
+    ].includes(node.type),
+    outputs: (node.type === "knowledge"
+      ? ["hits", "context"]
+      : node.type === "classifier"
+        ? ["class", "label"]
+        : node.type === "condition"
+          ? ["rule"]
+          : node.type === "tool"
+            ? ["result"]
+            : node.type === "human"
+              ? ["decision", "comment", "actor"]
+              : ["llm", "agent", "template"].includes(node.type)
+                ? ["text", ...(node.type === "agent" ? ["steps"] : [])]
+                : []
     ).map((key) => ({ key, description: key })),
     defaults: settings,
     presets:
@@ -428,7 +492,7 @@ export const mockNodeTypes: NodeType[] = defaults.map((node) => {
 export function nodeKind(node: FlowNode): NodeKind {
   return ["llm", "classifier", "agent"].includes(node.type)
     ? "model"
-    : node.type === "tool"
+    : node.type === "tool" || node.type === "knowledge"
       ? "tool"
       : node.type === "human"
         ? "human"
@@ -592,6 +656,35 @@ export function validateFlow(config: unknown): ValidationIssue[] {
     if (ids.has(node.id))
       issues.push({ loc: [...loc, "id"], msg: "节点 id 重复" });
     ids.add(node.id);
+    if (node.type === "knowledge") {
+      if (
+        !Array.isArray(node.knowledge_bases) ||
+        node.knowledge_bases.length < 1 ||
+        node.knowledge_bases.length > 5 ||
+        !node.knowledge_bases.every((id) => typeof id === "string")
+      )
+        issues.push({
+          loc: [...loc, "knowledge_bases"],
+          msg: "请选择 1–5 个存在的知识库",
+        });
+      if (
+        typeof node.query !== "string" ||
+        !node.query.trim() ||
+        node.query.length > 2000
+      )
+        issues.push({
+          loc: [...loc, "query"],
+          msg: "检索问题须为 1–2000 字符",
+        });
+      if (!Number.isInteger(node.top_k) || node.top_k < 1 || node.top_k > 20)
+        issues.push({ loc: [...loc, "top_k"], msg: "top_k 须为 1–20 的整数" });
+      if (
+        !Number.isFinite(node.min_score) ||
+        node.min_score < 0 ||
+        node.min_score > 1
+      )
+        issues.push({ loc: [...loc, "min_score"], msg: "min_score 须为 0–1" });
+    }
     try {
       for (const branch of branches(node))
         if (
@@ -666,6 +759,14 @@ export function missingReferences(
             kind: "skill",
             ...ref,
             message: "没有这个 Skill 版本",
+          });
+    if (node.type === "knowledge")
+      for (const kb_id of node.knowledge_bases)
+        if (!knowledgeExists(kb_id))
+          problems.push({
+            kind: "knowledge_base",
+            kb_id,
+            message: "没有这个知识库，请在节点里重新选择",
           });
     const sources =
       node.type === "tool"
@@ -796,6 +897,25 @@ export function simulateNode(
           : type === "object"
             ? {}
             : "（模拟抽取）";
+  if (node.type === "knowledge") {
+    for (const id of node.knowledge_bases)
+      if (!knowledgeExists(id)) throw new Error("知识库不存在");
+    const hits = searchMockKnowledge(
+      node.knowledge_bases,
+      String(rendered.query),
+      node.top_k,
+      node.min_score,
+    ).map((hit, index) => ({ ...hit, index: index + 1 }));
+    outputs = {
+      hits,
+      context: hits
+        .map(
+          (hit) =>
+            `[${hit.index}]《${hit.document_name}》${hit.heading}${hit.page === null ? "" : `（第 ${hit.page} 页）`}\n${hit.text}`,
+        )
+        .join("\n\n"),
+    };
+  }
   if (node.type === "llm")
     outputs =
       node.output.kind === "text"

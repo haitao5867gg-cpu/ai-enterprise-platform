@@ -1,5 +1,30 @@
 import { expect, test } from "@playwright/test";
 
+test("knowledge proxy preserves multipart bytes, chunk pagination and original download", async ({
+  request,
+}) => {
+  const path = "/api/knowledge-bases/policies/documents";
+  const bytes = [0x25, 0x50, 0x44, 0x46, 0xff, 0, 0xfe];
+  const upload = await request.post(path, {
+    multipart: {
+      files: {
+        name: "policy.pdf",
+        mimeType: "application/pdf",
+        buffer: Buffer.from(bytes),
+      },
+    },
+  });
+  expect(upload.status()).toBe(202);
+  expect(await upload.json()).toEqual([{ name: "policy.pdf", bytes }]);
+  const chunks = await request.get(`${path}/policy/chunks?offset=50&limit=50`);
+  expect(await chunks.json()).toEqual({ offset: "50", limit: "50" });
+  const file = await request.get(`${path}/policy/file`);
+  expect(file.headers()["content-disposition"]).toBe(
+    "attachment; filename=policy.pdf",
+  );
+  expect([...(await file.body())]).toEqual(bytes);
+});
+
 test("production ignores mock flag and forwards health and configured API base path", async ({
   request,
   page,

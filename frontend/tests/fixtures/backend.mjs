@@ -15,6 +15,39 @@ createServer(async (request, response) => {
     return json({ detail: "Wrong API base path" }, 404);
   if (path === "/readyz")
     return json({ status: "ok", source: "contract-fixture" });
+  if (path?.startsWith("/knowledge-bases/")) {
+    if (path.endsWith("/documents") && request.method === "POST") {
+      const form = await new Request("http://fixture/knowledge-upload", {
+        method: "POST",
+        headers: request.headers,
+        body: Readable.toWeb(request),
+        duplex: "half",
+      }).formData();
+      return json(
+        await Promise.all(
+          form.getAll("files").map(async (file) => ({
+            name: file.name,
+            bytes: [...new Uint8Array(await file.arrayBuffer())],
+          })),
+        ),
+        202,
+      );
+    }
+    if (path.includes("/chunks?")) {
+      const url = new URL(path, "http://fixture");
+      return json({
+        offset: url.searchParams.get("offset"),
+        limit: url.searchParams.get("limit"),
+      });
+    }
+    if (path.endsWith("/file")) {
+      response.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": "attachment; filename=policy.pdf",
+      });
+      return response.end(Buffer.from([0x25, 0x50, 0x44, 0x46, 0xff, 0, 0xfe]));
+    }
+  }
   if (path === "/datasources/files" && request.method === "POST") {
     const form = await new Request("http://fixture/upload", {
       method: "POST",

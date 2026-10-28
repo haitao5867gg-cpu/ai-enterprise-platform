@@ -1,3 +1,4 @@
+import type { Reference } from "./knowledge";
 import { ApiError, isRecord } from "./runs";
 
 export type EtlLanguage = "pyspark" | "sql";
@@ -26,6 +27,7 @@ export type EtlTarget = {
   }[];
 };
 export type EtlPlan = {
+  references?: Reference[];
   summary: string;
   language: EtlLanguage;
   targets: EtlTarget[];
@@ -171,6 +173,9 @@ export function getEtlPlan(details: unknown): EtlPlan | null {
         ...(plan as Omit<EtlPlan, "assumptions">),
         // Runs from before assumptions existed have none.
         assumptions: isStrings(plan.assumptions) ? plan.assumptions : [],
+        references: Array.isArray(plan.references)
+          ? (plan.references as Reference[])
+          : [],
       }
     : null;
 }

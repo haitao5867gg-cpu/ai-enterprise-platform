@@ -12,6 +12,7 @@ export const BRANCHED_ERROR_TYPES = [
   "tool",
   "agent",
   "code",
+  "knowledge",
 ];
 export const UNTESTABLE_TYPES = ["start", "human", "end"];
 
@@ -21,6 +22,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   classifier: "意图分类",
   condition: "条件判断",
   tool: "调用工具",
+  knowledge: "知识检索",
   agent: "智能体",
   human: "人工",
   template: "文本拼接",
@@ -30,7 +32,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
 
 export function nodeKind(type: FlowNode["type"]): NodeKind {
   if (["llm", "classifier", "agent"].includes(type)) return "model";
-  if (type === "tool") return "tool";
+  if (type === "tool" || type === "knowledge") return "tool";
   if (type === "human") return "human";
   if (type === "start" || type === "end") return "terminal";
   return "code";
@@ -61,6 +63,8 @@ export function ownOutputs(node: FlowNode): string[] {
       return ["rule"];
     case "tool":
       return ["result"];
+    case "knowledge":
+      return ["hits", "context"];
     case "agent":
       return ["text", "steps"];
     case "human":
