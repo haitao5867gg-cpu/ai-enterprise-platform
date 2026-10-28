@@ -21,32 +21,82 @@ limit profiling), ``language`` ("pyspark" by default, or "sql"), ``name`` (the
 bundle name), ``models`` (a model alias per step: ``plan``, ``codegen``) and
 ``schedule`` (Quartz cron for prod; AEP_DATABRICKS_PROD_SCHEDULE by default) and
 ``release`` (false: stop after the dev run, as the eval runner does).
+
+What people may change per app version is ``CONFIG`` (see aep.runtime.appconfig):
+the models and skills of plan and codegen, how many sample rows profiling reads,
+and how many times the model and the dev run are tried.
 """
 
 import hashlib
 import json
 import operator
-from datetime import UTC, datetime
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
 
 from aep import llm, tracing
 from aep.assets import AssetRepoError, AssetStatus
 from aep.databricks import DevRun, Release
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
-from aep.etl.plan import SYSTEM_PROMPT as PLAN_PROMPT
+from aep.etl.plan import OUTPUT_FORMAT as PLAN_FORMAT
 from aep.etl.profile import MAX_TABLES, describe_for_model, known_values, profile_tables
+from aep.runtime import human
+from aep.runtime.appconfig import NodeConfig, NodeOptions, Param, builtin, node_config
 from aep.runtime.design import AppDesign, NodeDesign
 from aep.runtime.registry import AppContext
 
-CODEGEN_ATTEMPTS = 3
-PLAN_ATTEMPTS = 3
-DEV_RUN_ATTEMPTS = 3
 ERROR_CHARS = 1500
+# Where the ETL eval set is, under AEP_EVALS_DIR: a draft of this app must pass it
+# before it is published (see aep.runtime.catalog).
+EVAL_SET = "etl/cases.yaml"
+
+
+def _attempts(help: str) -> Param:
+    return Param("max_attempts", "最多生成次数", "integer", 3, help, min=1, max=5)
+
+
+CONFIG = {
+    "profile": NodeOptions(
+        params=(
+            Param(
+                "sample_rows",
+                "样本行数",
+                "integer",
+                5,
+                "每张表读取几行样本交给模型",
+                min=1,
+                max=20,
+            ),
+        ),
+    ),
+    "plan": NodeOptions(
+        model=True,
+        skills=("etl-plan",),
+        contract=PLAN_FORMAT,
+        params=(_attempts("方案没通过平台校验时，带着问题让模型重写，总共最多几次"),),
+    ),
+    "codegen": NodeOptions(
+        model=True,
+        skills=("etl-codegen",),
+        contract=codegen.OUTPUT_FORMAT,
+        params=(_attempts("代码没通过静态检查时，带着问题让模型重写，总共最多几次"),),
+    ),
+    "verify": NodeOptions(
+        params=(
+            Param(
+                "max_dev_runs",
+                "最多试跑次数",
+                "integer",
+                3,
+                "dev 试跑失败且报错可修时，带着报错重写代码再试，总共最多跑几次",
+                min=1,
+                max=3,
+            ),
+        ),
+    ),
+}
 
 DESIGN = AppDesign(
     title="自然语言 ETL 工作流",
@@ -60,8 +110,9 @@ DESIGN = AppDesign(
     knowledge="没有接知识库。模型用到的知识是“探查数据”节点现场读到的源表结构、空值率、取值"
     "分布和样本行，每次运行都重新读取，作为上下文交给模型；再加上写在提示词里的 Databricks "
     "编码规范。",
-    skills="没有使用 Skill。两个模型节点的提示词写在代码里（可在节点详情里查看全文），还不是"
-    "可单独复用、可版本管理的资产。",
+    skills="“出方案”和“写代码”两个模型节点各用一个 Skill（etl-plan、etl-codegen），写的是"
+    "怎么做；平台再在后面接上固定的输出格式要求。Skill 在 Skill 页面编辑和发布，应用版本锁定"
+    "用哪个版本，改 Skill 不会影响已发布的应用版本。",
 )
 
 NODES = {
@@ -86,11 +137,11 @@ NODES = {
         inputs="需求、期望的代码语言、探查结果；驳回时还有上一版方案和修改意见",
         outputs="ETL 方案（JSON）",
         model_step="plan",
-        prompt=PLAN_PROMPT,
+        prompt=builtin(CONFIG["plan"]).prompt(),
         knowledge="探查结果（源表结构、统计、取值分布、样本行），没有知识库",
         checks="平台校验方案：只能用探查到的表和列，目标表名合法，比较用到的取值必须在数据里"
         "出现过（否则要写进假设让人确认）",
-        retry=f"校验不通过时把问题告诉模型重写，最多 {PLAN_ATTEMPTS} 次",
+        retry="校验不通过时把问题告诉模型重写，次数在应用配置里设定（默认最多 3 次）",
     ),
     "review": NodeDesign(
         title="确认方案",
@@ -107,11 +158,11 @@ NODES = {
         inputs="确认的方案、源表的列；重写时还有上一版代码和问题",
         outputs="每张目标表的代码",
         model_step="codegen",
-        prompt=codegen.SYSTEM_PROMPT,
+        prompt=builtin(CONFIG["codegen"]).prompt(),
         knowledge="确认的方案和源表的列，没有知识库",
         checks="静态检查：每张目标表都有代码且语法正确；只读方案里列出的源表；不许写数据、"
         "执行任意 SQL、import 或碰系统（如 .write、spark.sql、dbutils）；SQL 只能是一条 SELECT",
-        retry=f"检查不通过时把问题告诉模型重写，最多 {CODEGEN_ATTEMPTS} 次",
+        retry="检查不通过时把问题告诉模型重写，次数在应用配置里设定（默认最多 3 次）",
     ),
     "package": NodeDesign(
         title="打包",
@@ -133,7 +184,7 @@ NODES = {
             "Databricks REST API（按配置的方式：集群上的 notebook Job、Lakeflow 管道，"
             "或只在集群上跑转换）"
         ],
-        retry=f"可修的报错带回“写代码”重写，最多试跑 {DEV_RUN_ATTEMPTS} 次",
+        retry="可修的报错带回“写代码”重写，试跑次数在应用配置里设定（默认最多 3 次）",
     ),
     "publish": NodeDesign(
         title="提交资产",
@@ -216,16 +267,6 @@ def _dev_message(name: str, dev: DevRun, retry: bool) -> str:
             lines.append("带着报错重新生成代码。")
     lines += [f"注意：{w}" for w in dev.warnings]
     return "\n".join(lines)
-
-
-def _approval(step: str, answer: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "step": step,
-        "decision": answer.get("decision"),
-        "comment": answer.get("comment"),
-        "actor": answer.get("actor"),
-        "at": datetime.now(UTC).isoformat(),
-    }
 
 
 def _release_message(name: str, release: Release) -> str:
@@ -313,17 +354,23 @@ def build(ctx: AppContext) -> StateGraph:
             ctx.settings.databricks_pipeline_policy_id,
         )
 
-    def model_for(state: EtlState, step: str) -> str:
-        return (state["input"].get("models") or {}).get(step) or ctx.settings.default_model
+    def model_for(state: EtlState, step: str, node: NodeConfig) -> str:
+        """The run's choice for the step, else the app version's, else the default."""
+        chosen = (state["input"].get("models") or {}).get(step)
+        return chosen or node.model or ctx.settings.default_model
 
-    async def profile(state: EtlState) -> dict[str, Any]:
+    def configured(config: RunnableConfig, node: str) -> NodeConfig:
+        return node_config(config, node, CONFIG)
+
+    async def profile(state: EtlState, config: RunnableConfig) -> dict[str, Any]:
         inp = state["input"]
         source = await ctx.datasources.get(str(inp.get("datasource_id", "")))
         if source is None:
             raise ValueError("请选择一个已登记的数据源（input.datasource_id）")
         if not str(inp.get("request", "")).strip():
             raise ValueError("请用自然语言描述需求（input.request）")
-        tables = await profile_tables(ctx.tools, source, inp.get("tables"))
+        rows = configured(config, "profile").params["sample_rows"]
+        tables = await profile_tables(ctx.tools, source, inp.get("tables"), rows)
         names = "、".join(t["name"] for t in tables)
         return {
             "source_name": source.name,
@@ -337,14 +384,16 @@ def build(ctx: AppContext) -> StateGraph:
             ],
         }
 
-    async def plan(state: EtlState) -> dict[str, Any]:
+    async def plan(state: EtlState, config: RunnableConfig) -> dict[str, Any]:
+        node = configured(config, "plan")
+        attempts = node.params["max_attempts"]
         inp = state["input"]
         language = inp.get("language") or "pyspark"
         ask = (
             f"需求：{inp['request']}\n期望的代码语言：{language}\n\n"
             f"源表（只能使用这些）：\n{describe_for_model(state['profile'])}"
         )
-        prompt = [{"role": "system", "content": PLAN_PROMPT}, {"role": "user", "content": ask}]
+        prompt = [{"role": "system", "content": node.prompt()}, {"role": "user", "content": ask}]
         if state.get("feedback"):
             prompt.append(
                 {"role": "assistant", "content": json.dumps(state["plan"], ensure_ascii=False)}
@@ -352,13 +401,13 @@ def build(ctx: AppContext) -> StateGraph:
             prompt.append({"role": "user", "content": f"用户的修改意见：{state['feedback']}"})
         sources = [t["name"] for t in state["profile"]]
         known = known_values(state["profile"])
-        for attempt in range(PLAN_ATTEMPTS):
-            reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "plan"))
+        for attempt in range(attempts):
+            reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "plan", node))
             try:
                 result = validate_plan(llm.parse_json(reply.text), sources, known, attempt > 0)
                 break
             except (ValueError, PlanError) as exc:
-                if attempt == PLAN_ATTEMPTS - 1:
+                if attempt == attempts - 1:
                     raise PlanError(f"模型给出的方案不可用：{exc}") from exc
                 prompt.append({"role": "assistant", "content": reply.text})
                 prompt.append(
@@ -373,15 +422,11 @@ def build(ctx: AppContext) -> StateGraph:
         }
 
     def review(state: EtlState) -> dict[str, Any]:
-        answer = interrupt(
-            {
-                "kind": "approval",
-                "prompt": "确认这个 ETL 方案吗？确认后开始生成代码；驳回时写下修改意见。",
-                "options": ["approve", "reject"],
-                "details": {"type": "etl_plan", "plan": state["plan"]},
-            }
+        answer = human.ask(
+            "确认这个 ETL 方案吗？确认后开始生成代码；驳回时写下修改意见。",
+            {"type": "etl_plan", "plan": state["plan"]},
         )
-        approvals = [_approval("plan", answer)]
+        approvals = [human.record("plan", answer)]
         if answer.get("decision") == "approve":
             return {
                 "messages": [{"role": "user", "content": "确认方案"}],
@@ -395,7 +440,8 @@ def build(ctx: AppContext) -> StateGraph:
             "approvals": approvals,
         }
 
-    async def write_code(state: EtlState) -> dict[str, Any]:
+    async def write_code(state: EtlState, config: RunnableConfig) -> dict[str, Any]:
+        node = configured(config, "codegen")
         confirmed = EtlPlan.model_validate(state["plan"])
         columns = {
             t["name"]: [f"{c['name']} {c['data_type']}" for c in t["columns"]]
@@ -406,7 +452,7 @@ def build(ctx: AppContext) -> StateGraph:
             f"源表的列：\n{json.dumps(columns, ensure_ascii=False)}"
         )
         prompt = [
-            {"role": "system", "content": codegen.SYSTEM_PROMPT},
+            {"role": "system", "content": node.prompt()},
             {"role": "user", "content": ask},
         ]
         if state.get("problems"):
@@ -423,7 +469,7 @@ def build(ctx: AppContext) -> StateGraph:
                     + "\n".join(state["problems"]),
                 }
             )
-        reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "codegen"))
+        reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "codegen", node))
         try:
             code = llm.parse_json(reply.text).get("targets") or {}
             problems = codegen.check_code(confirmed, code)
@@ -431,8 +477,11 @@ def build(ctx: AppContext) -> StateGraph:
             code, problems = state.get("code", {}), [f"回复不是要求的 JSON：{exc}"]
         return {"code": code, "problems": problems, "attempts": state.get("attempts", 0) + 1}
 
-    def after_code(state: EtlState) -> str:
-        if state["problems"] and state["attempts"] < CODEGEN_ATTEMPTS:
+    def after_code(state: EtlState, config: RunnableConfig) -> str:
+        if (
+            state["problems"]
+            and state["attempts"] < configured(config, "codegen").params["max_attempts"]
+        ):
             return "codegen"
         return "package"
 
@@ -483,12 +532,13 @@ def build(ctx: AppContext) -> StateGraph:
         result = state["result"] or {}
         return "verify" if result.get("verification") is None else END
 
-    async def verify(state: EtlState) -> dict[str, Any]:
+    async def verify(state: EtlState, config: RunnableConfig) -> dict[str, Any]:
         assert ctx.databricks is not None
+        most = configured(config, "verify").params["max_dev_runs"]
         result = dict(state["result"] or {})
         dev = await ctx.databricks.run(codegen.Bundle(result["bundle"], result["files"]))
         runs = state.get("dev_runs", 0) + 1
-        retry = dev.status == "failed" and dev.fixable and runs < DEV_RUN_ATTEMPTS
+        retry = dev.status == "failed" and dev.fixable and runs < most
         result["verification"] = dev.as_dict() | {"attempt": runs}
         update: dict[str, Any] = {
             "result": result,
@@ -605,22 +655,19 @@ def build(ctx: AppContext) -> StateGraph:
     async def release(state: EtlState) -> dict[str, Any]:
         result = dict(state["result"] or {})
         target = release_target(state)
-        answer = interrupt(
+        answer = human.ask(
+            f"dev 试跑已通过。确认把 {result['bundle']} 上线到 prod"
+            f"（{target['catalog']}.{target['schema']}，按计划 {target['schedule']} 运行）吗？"
+            "驳回时写下修改意见，代码会按意见重写。",
             {
-                "kind": "approval",
-                "prompt": f"dev 试跑已通过。确认把 {result['bundle']} 上线到 prod"
-                f"（{target['catalog']}.{target['schema']}，按计划 {target['schedule']} 运行）吗？"
-                "驳回时写下修改意见，代码会按意见重写。",
-                "options": ["approve", "reject"],
-                "details": {
-                    "type": "etl_release",
-                    "bundle": result["bundle"],
-                    "verification": result.get("verification"),
-                    "target": target,
-                },
-            }
+                "type": "etl_release",
+                "bundle": result["bundle"],
+                "verification": result.get("verification"),
+                "target": target,
+            },
+            comment_required=("reject",),
         )
-        approval = _approval("release", answer)
+        approval = human.record("release", answer)
         result["approvals"] = [*state.get("approvals", []), approval]
         if answer.get("decision") == "approve":
             return {

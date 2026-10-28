@@ -5,6 +5,10 @@ A run executes in a background task until it finishes or reaches an
 checkpointer, so a run waiting for a decision survives a restart, and runs that
 were mid-step when the process stopped are picked up again by ``recover``.
 Each of those executions is one segment of the run's trace (see aep.tracing).
+
+A run uses the app version current when it started (or the one it asked for),
+for its whole life: the version's configuration is kept with the run and handed
+to every execution of its graph (see aep.runtime.appconfig).
 """
 
 import asyncio
@@ -17,9 +21,11 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from aep import tracing
-from aep.runtime import design
+from aep.runtime import appconfig, design
 from aep.runtime.registry import AppBuilder, AppContext
 from aep.runtime.store import RunRecord, RunStore
+from aep.runtime.versions import AppVersionStore, MemoryAppVersionStore
+from aep.skills import MemorySkillStore, SkillStore
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +43,14 @@ class NotWaiting(Exception):
 
 
 class InvalidDecision(Exception):
+    pass
+
+
+class CommentRequired(Exception):
+    pass
+
+
+class UnknownVersion(Exception):
     pass
 
 
@@ -61,26 +75,69 @@ class RunService:
         apps: dict[str, AppBuilder],
         ctx: AppContext,
         tracer: tracing.Tracer | None = None,
+        versions: AppVersionStore | None = None,
+        skills: SkillStore | None = None,
     ) -> None:
         self._store = store
         self._tracer = tracer or tracing.Tracer()
+        self.versions = versions or MemoryAppVersionStore()
+        self.skills = skills or MemorySkillStore()
         self._graphs: dict[str, CompiledStateGraph] = {
             name: build(ctx).compile(checkpointer=checkpointer) for name, build in apps.items()
         }
+        self._builders = dict(apps)
         self._designs = {name: design.app_design(build) for name, build in apps.items()}
-        self._default_model = ctx.settings.default_model
+        self.options = {name: appconfig.app_options(build) for name, build in apps.items()}
+        self.default_model = ctx.settings.default_model
+        self._ensured: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
 
     @property
     def apps(self) -> list[str]:
         return sorted(self._graphs)
 
-    async def create(self, app: str, input: dict[str, Any]) -> RunRecord:
+    def builder(self, app: str) -> AppBuilder:
+        return self._builders[app]
+
+    def graph(self, app: str) -> CompiledStateGraph:
+        return self._graphs[app]
+
+    def app_design(self, app: str) -> design.AppDesign | None:
+        return self._designs[app]
+
+    async def ensure_versions(self, app: str) -> None:
+        """Give the app its version 1 (its defaults) if it has no versions yet."""
+        if app not in self._ensured:
+            await self.versions.ensure(app, appconfig.default_config(self.options[app]))
+            self._ensured.add(app)
+
+    async def create(
+        self,
+        app: str,
+        input: dict[str, Any],
+        app_version: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> RunRecord:
+        """Start a run of the app's current version, or of ``app_version``; with ``config``
+        (a draft's configuration, for its eval) the run belongs to no version."""
         if app not in self._graphs:
             raise UnknownApp(app)
-        record = await self._store.create(app, input)
+        if config is None:
+            await self.ensure_versions(app)
+            app_version = app_version or await self.versions.current(app)
+            found = await self.versions.version(app, app_version)
+            if found is None:
+                raise UnknownVersion(f"{app} v{app_version}")
+            config = found.config
+        record = await self._store.create(app, input, app_version, config)
         self._spawn(record, {"input": input}, "start", input)
         return record
+
+    async def node_configs(self, record: RunRecord) -> dict[str, appconfig.NodeConfig]:
+        """The configuration the run uses, skills loaded."""
+        options = self.options[record.app]
+        stored = record.config or appconfig.default_config(options)
+        return await appconfig.load(stored, options, self.skills)
 
     async def get(self, run_id: str) -> RunView:
         record = await self._store.get(run_id)
@@ -109,7 +166,8 @@ class RunService:
             _config(run_id),
             {"status": record.status, "input": record.input},
             self._designs[record.app],
-            self._default_model,
+            self.default_model,
+            await self.node_configs(record),
         )
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
@@ -123,6 +181,8 @@ class RunService:
             raise NotWaiting(run_id)
         if decision not in view.pending.get("options", []):
             raise InvalidDecision(decision)
+        if decision in view.pending.get("comment_required", []) and not (comment or "").strip():
+            raise CommentRequired(decision)
         await self._store.set_status(run_id, "running")
         answer = {"decision": decision, "comment": comment, "actor": actor}
         self._spawn(view.record, Command(resume=answer), "resume", answer)
@@ -153,7 +213,12 @@ class RunService:
         config = _config(record.run_id)
         with self._tracer.segment(record.run_id, record.app, step, step_input) as segment:
             try:
-                await graph.ainvoke(payload, {**config, "callbacks": segment.callbacks})
+                nodes = await self.node_configs(record)
+                run_config = {
+                    "configurable": {**config["configurable"], appconfig.CONFIG_KEY: nodes},
+                    "callbacks": segment.callbacks,
+                }
+                await graph.ainvoke(payload, run_config)
                 state = await graph.aget_state(config)
                 status = "waiting" if state.interrupts else "done"
                 segment.finish(

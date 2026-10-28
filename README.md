@@ -120,6 +120,12 @@ make eval MODEL=company ONLY="two-layer"      # 只跑某几个
 
 每个用例起一次 etl run，自动确认方案，只在 Databricks dev 上试跑、不上线（`input.release = false`），然后按方案、代码、结果三层打分，打印表格，JSON 报告写到 `evals/reports/`。没配 Databricks 时结果层跳过。换模型或改提示词之前先跑一遍对比分数。
 
+### 应用配置和 Skill
+
+不改代码也能调整应用：每个应用在代码里声明哪些节点可以换模型、用哪些 Skill、有哪些参数（ETL 是方案和代码两个模型节点，以及样本行数、重写次数、试跑次数）。改动先存成草稿，发布后成为新版本；新的 run 用当前版本，跑到一半的 run 一直用它开始时的版本，可以随时把旧版本设回当前版本（回滚）。有评测集的应用（etl）发布前必须先跑一遍评测集，平均分达到 `AEP_EVAL_PUBLISH_THRESHOLD`（默认 0.8）才能发布；评测用例在 `AEP_EVAL_DATASOURCE`（默认示例库）上起真实的 run，只到 dev，不上线。
+
+Skill 是可复用的做法说明（SKILL.md 正文加可选的参考资料），有版本，发布后不可修改。模型节点的提示词是它用的 Skill 正文加上平台固定的输出格式要求，所以改 Skill 不会破坏平台解析输出。平台内置的 `etl-plan`、`etl-codegen` 在 `backend/src/aep/skills/builtin/`，第一次启动时登记为版本 1。接口见 [docs/api/apps-and-skills.md](docs/api/apps-and-skills.md)。
+
 ### 追踪（Langfuse）
 
 ```bash

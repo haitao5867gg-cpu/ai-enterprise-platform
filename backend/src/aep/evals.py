@@ -13,6 +13,9 @@ ask for ``release: false``) and scores every expectation:
 A case's score is the share of its checks that passed; checks that could not run
 (no Databricks, or the run failed before that layer) are skipped, not failed.
 The report is printed as a table and written as JSON.
+
+The platform runs the same cases, with the same scoring, on an app's draft before
+it can be published (see aep.runtime.catalog).
 """
 
 import argparse
@@ -193,6 +196,38 @@ def score_result(expect: dict[str, Any], run: dict[str, Any] | None) -> list[Che
     return checks
 
 
+def case_input(
+    case: dict[str, Any], datasource_id: str, model: str | None = None
+) -> dict[str, Any]:
+    """The ``etl`` run input for a case: dev only, never prod."""
+    inp: dict[str, Any] = {
+        "datasource_id": datasource_id,
+        "request": case["request"],
+        "name": "eval_" + case["id"].replace("-", "_"),
+        "release": False,
+        "eval": case["id"],
+    }
+    if model:
+        inp["models"] = {"plan": model, "codegen": model}
+    return inp
+
+
+def waiting_plan(run: dict[str, Any]) -> dict[str, Any] | None:
+    """The proposed plan, when the run waits for it to be confirmed."""
+    pending = run.get("pending") or {}
+    details = pending.get("details") or {}
+    if run.get("status") == "waiting" and details.get("type") == "etl_plan":
+        return details["plan"]
+    return None
+
+
+def score_case(
+    case: dict[str, Any], plan: dict[str, Any] | None, run: dict[str, Any]
+) -> list[Check]:
+    expect = case.get("expect") or {}
+    return score_plan(expect, plan) + score_result(expect, run)
+
+
 class Runner:
     def __init__(
         self,
@@ -230,28 +265,15 @@ class Runner:
         out = CaseResult(case["id"])
         started = time.monotonic()
         deadline = started + self._timeout
-        expect = case.get("expect") or {}
         plan: dict[str, Any] | None = None
         run: dict[str, Any] | None = None
-        inp: dict[str, Any] = {
-            "datasource_id": datasource_id,
-            "request": case["request"],
-            "name": "eval_" + case["id"].replace("-", "_"),
-            "release": False,
-            "eval": case["id"],
-        }
-        if self._model:
-            inp["models"] = {"plan": self._model, "codegen": self._model}
+        inp = case_input(case, datasource_id, self._model)
         try:
             created = await self._api.post("/runs", json={"app": "etl", "input": inp})
             out.run_id = created.raise_for_status().json()["run_id"]
             run = await self._wait(out.run_id, deadline)
-            pending = run.get("pending") or {}
-            if (
-                run["status"] == "waiting"
-                and (pending.get("details") or {}).get("type") == "etl_plan"
-            ):
-                plan = pending["details"]["plan"]
+            plan = waiting_plan(run)
+            if plan is not None:
                 body = {"decision": "approve", "actor": ACTOR}
                 resp = await self._api.post(f"/runs/{out.run_id}/resume", json=body)
                 resp.raise_for_status()
@@ -264,7 +286,7 @@ class Runner:
         out.status = run.get("status", "error")
         out.error = out.error or run.get("error")
         out.trace_id = run.get("trace_id")
-        out.checks = score_plan(expect, plan) + score_result(expect, run)
+        out.checks = score_case(case, plan, run)
         out.seconds = round(time.monotonic() - started, 1)
         return out
 
