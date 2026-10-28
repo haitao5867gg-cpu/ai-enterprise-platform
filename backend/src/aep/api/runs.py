@@ -2,12 +2,18 @@
 
 ``POST /runs`` takes the ``app``, its ``input`` and optionally ``app_version``
 (an app version number, see ``GET /apps/{app}/versions``; the current one when
-left out). Every run record has ``app_version``: the version it uses for its whole
-life (null for the runs of a draft's eval, and for runs from before versions).
+left out) or ``draft`` (run the app's draft). A flow app's input must fit its
+start node's inputs (422 with ``loc`` ``["body", "input", key]``); see
+docs/api/flow-apps.md for flow apps. Every run record has ``app_version``: the
+version it uses for its whole life (null for the runs of a draft, and for runs
+from before versions), and ``draft``: whether it runs a draft (its eval, or
+someone trying it).
 
-A waiting run's ``pending`` is always an approval: show ``prompt`` and offer
-``options``; any option may carry a comment, and those in ``comment_required``
-must (the resume is refused with 422 without one). Apps can attach ``details``
+A waiting run's ``pending`` is an approval: show ``prompt`` and offer
+``options`` (shown as ``option_labels`` when given); any option may carry a
+comment, and those in ``comment_required`` must (the resume is refused with 422
+without one). A flow app's human node may ask for a ``form`` instead: fill in
+``fields`` and resume with ``decision`` ``submit`` and ``values``. Apps can attach ``details``
 for a richer view, tagged by ``details.type``:
 
 - ``etl_plan`` (app ``etl``): ``details.plan`` is the proposed ETL plan, as
@@ -77,11 +83,14 @@ import zipfile
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
 from aep.runtime.service import (
     CommentRequired,
     InvalidDecision,
+    InvalidValues,
+    NoDraftToRun,
     NotWaiting,
     RunNotFound,
     RunService,
@@ -105,6 +114,8 @@ class CreateRun(BaseModel):
     app: str
     input: dict[str, Any] = {}
     app_version: int | None = None
+    # Run the app's draft as it is now (trying it before publishing).
+    draft: bool = False
 
 
 class Resume(BaseModel):
@@ -113,6 +124,8 @@ class Resume(BaseModel):
     # Who decided. Until sign-in exists (M4) the client says so; it goes into the
     # run's approval record.
     actor: str | None = None
+    # A form's answers (``pending.kind`` is ``form``), by field key.
+    values: dict[str, Any] | None = None
 
 
 class RunRef(BaseModel):
@@ -124,6 +137,7 @@ class RunSummary(BaseModel):
     run_id: str
     app: str
     app_version: int | None
+    draft: bool
     status: RunStatus
     created_at: str
     updated_at: str
@@ -139,6 +153,8 @@ class Pending(BaseModel):
     prompt: str
     options: list[str]
     comment_required: list[str] = []
+    option_labels: dict[str, str] | None = None
+    fields: list[dict[str, Any]] | None = None
     details: dict[str, Any] | None = None
 
 
@@ -146,6 +162,7 @@ class RunDetail(BaseModel):
     run_id: str
     app: str
     app_version: int | None
+    draft: bool
     status: RunStatus
     messages: list[Message]
     pending: Pending | None
@@ -159,6 +176,7 @@ class FlowNode(BaseModel):
     id: str
     title: str
     kind: str
+    type: str | None = None
     model: str | None = None
     skills: list[dict[str, Any]] | None = None
     design: dict[str, Any] | None = None
@@ -168,6 +186,7 @@ class FlowEdge(BaseModel):
     source: str
     target: str
     conditional: bool
+    label: str | None = None
 
 
 class FlowStep(BaseModel):
@@ -189,11 +208,18 @@ class Flow(BaseModel):
     current: str | None
 
 
+def _is_draft(r: RunRecord) -> bool:
+    # A draft's runs keep its configuration but belong to no version; runs from before
+    # versions have neither.
+    return r.app_version is None and r.config is not None
+
+
 def _summary(r: RunRecord) -> RunSummary:
     return RunSummary(
         run_id=r.run_id,
         app=r.app,
         app_version=r.app_version,
+        draft=_is_draft(r),
         status=r.status,
         created_at=r.created_at.isoformat(),
         updated_at=r.updated_at.isoformat(),
@@ -205,6 +231,7 @@ def _detail(v: RunView) -> RunDetail:
         run_id=v.record.run_id,
         app=v.record.app,
         app_version=v.record.app_version,
+        draft=_is_draft(v.record),
         status=v.record.status,
         messages=[Message(**m) for m in v.messages],
         pending=Pending(**v.pending) if v.pending else None,
@@ -216,13 +243,28 @@ def _detail(v: RunView) -> RunDetail:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_run(body: CreateRun, service: Service) -> RunRef:
+    if body.draft and body.app_version is not None:
+        raise HTTPException(422, "draft 和 app_version 不能同时给")
     try:
-        record = await service.create(body.app, body.input, body.app_version)
+        record = await service.create(body.app, body.input, body.app_version, draft=body.draft)
     except UnknownApp as exc:
-        raise HTTPException(404, f"unknown app: {body.app}; available: {service.apps}") from exc
+        raise HTTPException(404, f"没有应用 {body.app}") from exc
     except UnknownVersion as exc:
         raise HTTPException(404, f"应用 {body.app} 没有版本 {body.app_version}") from exc
+    except NoDraftToRun as exc:
+        raise HTTPException(409, f"应用 {body.app} 没有草稿") from exc
+    except InvalidValues as exc:
+        raise _invalid_values("input", exc) from exc
     return RunRef(run_id=record.run_id, status=record.status)
+
+
+def _invalid_values(where: str, exc: InvalidValues) -> RequestValidationError:
+    return RequestValidationError(
+        [
+            {"loc": ["body", where, key], "msg": message, "type": "value_error"}
+            for key, message in exc.problems.items()
+        ]
+    )
 
 
 @router.get("")
@@ -249,7 +291,7 @@ async def get_flow(run_id: str, service: Service) -> Flow:
 @router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
 async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
     try:
-        record = await service.resume(run_id, body.decision, body.comment, body.actor)
+        record = await service.resume(run_id, body.decision, body.comment, body.actor, body.values)
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
     except NotWaiting as exc:
@@ -258,6 +300,8 @@ async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
         raise HTTPException(422, f"invalid decision: {body.decision}") from exc
     except CommentRequired as exc:
         raise HTTPException(422, "这个决定需要写明意见") from exc
+    except InvalidValues as exc:
+        raise _invalid_values("values", exc) from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 
