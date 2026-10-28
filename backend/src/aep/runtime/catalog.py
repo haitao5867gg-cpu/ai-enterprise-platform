@@ -524,7 +524,9 @@ class AppCatalog:
         def shown(target: str, name: str) -> Any:
             return MASK if target == refs.SECRET else get(target, name)
 
-        settings = {k: v for k, v in node.items() if k not in ("id", "type", "title", "ui")}
+        settings = {
+            k: v for k, v in node.items() if k not in {"id", "type", "title", "ui"} | spec.verbatim
+        }
         rendered = {
             ".".join(str(part) for part in loc): refs.render(text, shown)
             for loc, text in refs.strings(settings)

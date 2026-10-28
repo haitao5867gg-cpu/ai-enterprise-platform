@@ -1,0 +1,43 @@
+[project]
+name = "aep-sandbox"
+version = "0.1.0"
+description = "Runs code-node Python in an isolated child process, over MCP Streamable HTTP"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=2,<3",
+    "numpy>=2.3,<3",
+    "pandas>=2.3,<4",
+    "pydantic>=2.14.1,<3",
+    "pydantic-settings>=2.16.1,<3",
+    "starlette>=1.10,<2",
+    "uvicorn>=0.54,<1",
+]
+
+[project.scripts]
+aep-sandbox = "aep_sandbox.server:main"
+aep-sandbox-relay = "aep_sandbox.relay:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "aep_sandbox"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.1",
+    "ruff>=0.17.2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

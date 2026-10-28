@@ -6,6 +6,7 @@ Every type is a ``NodeType`` in ``TYPES``: the text ``GET /node-types`` shows, a
 does the work in a run. Settings are documented in docs/api/flow-apps.md.
 """
 
+import ast
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -81,7 +82,8 @@ class CheckEnv:
 class Runtime:
     """What running a node needs. ``skills`` holds the text of every skill version the
     app uses, loaded before the run; ``env`` the app's constants; ``secret`` reads
-    one of the app's secrets when a tool needs it."""
+    one of the app's secrets when a tool needs it; ``sandbox_url`` is where code
+    nodes run."""
 
     llm_client: AsyncOpenAI
     default_model: str
@@ -90,6 +92,7 @@ class Runtime:
     datasources: DataSourceStore | None = None
     tools: McpTools | None = None
     secret: Callable[[str], Awaitable[str | None]] | None = None
+    sandbox_url: str | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -139,6 +142,28 @@ class Runtime:
         except ToolError as exc:
             raise NodeFailure("tool_error", f"工具报错：{exc}") from exc
 
+    async def run_code(self, code: str, inputs: dict[str, Any], timeout: int) -> Any:
+        """What ``main(inputs)`` returns, run in the sandbox (see connectors/sandbox)."""
+        if self.tools is None or not self.sandbox_url:
+            raise NodeFailure("sandbox_unavailable", "平台没有配置代码沙箱")
+        args = {"code": code, "inputs": inputs, "timeout_seconds": timeout}
+        try:
+            reply = await self.tools.call(
+                self.sandbox_url, "run_python", args, timeout + SANDBOX_GRACE_SECONDS
+            )
+        except ConnectorUnavailable as exc:
+            raise NodeFailure("sandbox_unavailable", f"连不上代码沙箱：{exc}") from exc
+        except ToolError as exc:
+            raise NodeFailure("code_error", f"代码沙箱拒绝运行：{exc}") from exc
+        status = reply.get("status") if isinstance(reply, dict) else None
+        if status == "ok":
+            return reply.get("result")
+        message = str(reply.get("error") or "代码运行失败") if isinstance(reply, dict) else ""
+        logs = (reply.get("logs") or "").strip() if isinstance(reply, dict) else ""
+        if logs:
+            message += "\n输出的最后几行：\n" + "\n".join(logs.splitlines()[-5:])
+        raise NodeFailure("timeout" if status == "timeout" else "code_error", message)
+
     async def list_tools(self, source: DataSource) -> list[ToolInfo]:
         if self.tools is None:
             raise NodeFailure("tool_error", "平台没有配置工具调用")
@@ -180,6 +205,8 @@ class NodeType:
     max_count: int | None = None
     # Branch display names, for diagrams.
     branch_labels: Callable[[dict[str, Any]], dict[str, str]] = lambda node: {}
+    # Settings taken as they are: no references in them (code may contain "{{").
+    verbatim: frozenset[str] = frozenset()
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -668,6 +695,60 @@ async def run_template(node: dict[str, Any], state: dict[str, Any], rt: Runtime)
     return Outcome({"text": refs.render(node["template"], rt.lookup(state))})
 
 
+# code
+
+# Sandbox start-up and the round trip, on top of the node's own time limit.
+SANDBOX_GRACE_SECONDS = 15
+MAX_CODE_TIMEOUT = 30
+
+
+async def check_code(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+    _text(node, "code", p, "代码", required=True)
+    code = node.get("code")
+    if isinstance(code, str) and code.strip() and len(code) <= MAX_TEXT:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            p.add(("code",), f"第 {exc.lineno} 行语法错误：{exc.msg}")
+        else:
+            if not any(
+                isinstance(s, ast.FunctionDef | ast.AsyncFunctionDef) and s.name == "main"
+                for s in tree.body
+            ):
+                p.add(("code",), "代码里要定义 main(inputs) 函数")
+    inputs = node.get("inputs", {})
+    if not isinstance(inputs, dict):
+        p.add(("inputs",), "输入必须是对象")
+    else:
+        for key in inputs:
+            if not ID.match(key):
+                p.add(("inputs", key), "输入名只能用小写字母、数字和下划线，以字母开头")
+    fields = _list(node, "outputs", p, "输出字段", 1, 20)
+    for f in _keyed(fields, "outputs", p, "输出字段"):
+        if f.get("type") not in JSON_TYPES:
+            p.add(("outputs", fields.index(f), "type"), "类型只能是 " + "、".join(JSON_TYPES))
+    timeout = node.get("timeout_seconds", 10)
+    if not isinstance(timeout, int) or isinstance(timeout, bool):
+        p.add(("timeout_seconds",), "超时必须是整数秒")
+    elif not 1 <= timeout <= MAX_CODE_TIMEOUT:
+        p.add(("timeout_seconds",), f"超时在 1–{MAX_CODE_TIMEOUT} 秒之间")
+
+
+async def run_code(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
+    inputs = refs.resolve(node.get("inputs") or {}, rt.lookup(state))
+    result = await rt.run_code(node["code"], inputs, node.get("timeout_seconds", 10))
+    fields = node["outputs"]
+    if not isinstance(result, dict):
+        raise NodeFailure("code_error", "main 要返回一个 dict")
+    for f in fields:
+        if f["key"] not in result:
+            raise NodeFailure("code_error", f"main 返回的 dict 里没有 {f['key']}")
+        value = result[f["key"]]
+        if value is not None and not JSON_CHECK[f["type"]](value):
+            raise NodeFailure("code_error", f"main 返回的 {f['key']} 应该是 {f['type']}")
+    return Outcome({f["key"]: result[f["key"]] for f in fields})
+
+
 # end
 
 
@@ -1098,6 +1179,25 @@ TYPES: dict[str, NodeType] = {
             _fixed("text"),
             outputs=(("text", "拼好的文字"),),
             defaults={"template": ""},
+        ),
+        NodeType(
+            "code",
+            "代码",
+            "在沙箱里运行一段 Python（标准库、pandas、numpy），做计算、格式转换、数据整理",
+            "logic",
+            "code",
+            check_code,
+            run_code,
+            _none,
+            lambda node: _keys(node.get("outputs")),
+            defaults={
+                "code": 'def main(inputs):\n    return {"result": inputs["text"]}\n',
+                "inputs": {"text": ""},
+                "outputs": [{"key": "result", "type": "string"}],
+                "timeout_seconds": 10,
+            },
+            error_handling=True,
+            verbatim=frozenset({"code"}),
         ),
         NodeType(
             "end",
