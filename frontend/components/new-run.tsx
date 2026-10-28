@@ -3,16 +3,30 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { errorMessage, readReceipt, requestJson } from "../lib/runs";
+import { createRun, errorMessage, fieldErrors, requestJson } from "../lib/runs";
 import { readDataSources, type DataSource, type EtlLanguage } from "../lib/etl";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 import { FileUpload } from "./file-upload";
+import { getApp, listApps, type AppDetail, type AppSummary } from "../lib/apps";
+import {
+  initialValues,
+  inputPayload,
+  validateFields,
+  type FieldValues,
+} from "../lib/input-fields";
+import { InputFields } from "./input-fields";
 
 export function NewRun() {
   const router = useRouter();
   const [text, setText] = useState("");
-  const [app, setApp] = useState<"hello" | "etl">("hello");
+  const [app, setApp] = useState("");
+  const [apps, setApps] = useState<AppSummary[]>([]);
+  const [detail, setDetail] = useState<AppDetail | null>(null);
+  const [values, setValues] = useState<FieldValues>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [appsRevision, setAppsRevision] = useState(0);
+  const [appsError, setAppsError] = useState("");
   const [sources, setSources] = useState<DataSource[]>([]);
   const [datasourceId, setDatasourceId] = useState("");
   const [language, setLanguage] = useState<EtlLanguage>("pyspark");
@@ -25,7 +39,6 @@ export function NewRun() {
   const [uploading, setUploading] = useState(false);
   const busy = useRef(false);
   useEffect(() => {
-    if (app !== "etl") return;
     const controller = new AbortController();
     async function loadSources() {
       setSourcesLoading(true);
@@ -51,6 +64,45 @@ export function NewRun() {
     void loadSources();
     return () => controller.abort();
   }, [app, sourcesRevision]);
+  useEffect(() => {
+    const controller = new AbortController();
+    listApps(controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        setApps(items);
+        setAppsError("");
+        const requested =
+          new URLSearchParams(window.location.search).get("app") ?? "hello";
+        setApp((previous) =>
+          items.some((item) => item.app === previous)
+            ? previous
+            : (items.find((item) => item.app === requested)?.app ??
+              items[0]?.app ??
+              ""),
+        );
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setAppsError(errorMessage(err));
+      });
+    return () => controller.abort();
+  }, [appsRevision]);
+  useEffect(() => {
+    if (!app) return;
+    const controller = new AbortController();
+    getApp(app, controller.signal)
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        setDetail(value);
+        setValues(initialValues(value.inputs ?? []));
+        setErrors({});
+        setAppsError("");
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setAppsError(errorMessage(err));
+      });
+    return () => controller.abort();
+  }, [app, appsRevision]);
+  const fields = detail?.app === app ? (detail.inputs ?? []) : [];
   const needsSource =
     app === "etl" &&
     (sourcesLoading ||
@@ -61,30 +113,36 @@ export function NewRun() {
   );
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy.current || uploading || !text.trim() || needsSource) return;
+    if (
+      busy.current ||
+      uploading ||
+      needsSource ||
+      !detail ||
+      detail.app !== app ||
+      (app === "etl" && !text.trim())
+    )
+      return;
+    const issues = app === "etl" ? [] : validateFields(fields, values, "input");
+    const nextErrors = Object.fromEntries(
+      issues.map((issue) => [issue.loc[2], issue.msg]),
+    );
+    setErrors(nextErrors);
+    if (issues.length) return;
     busy.current = true;
     setSubmitting(true);
     setError("");
     try {
-      const receipt = readReceipt(
-        await requestJson("/runs", {
-          method: "POST",
-          body: JSON.stringify({
-            app,
-            input:
-              app === "etl"
-                ? {
-                    datasource_id: datasourceId,
-                    request: text.trim(),
-                    language,
-                  }
-                : { text: text.trim() },
-          }),
-        }),
-      );
+      const receipt = await createRun({
+        app,
+        input:
+          app === "etl"
+            ? { datasource_id: datasourceId, request: text.trim(), language }
+            : inputPayload(fields, values),
+      });
       router.push(`/runs/${encodeURIComponent(receipt.run_id)}`);
     } catch (err) {
       setError(errorMessage(err));
+      setErrors(fieldErrors(err, "input"));
       busy.current = false;
       setSubmitting(false);
     }
@@ -106,6 +164,7 @@ export function NewRun() {
         <form
           className="panel new-run-form"
           onSubmit={submit}
+          noValidate
           aria-label="新建运行"
         >
           <div className="form-section">
@@ -117,13 +176,24 @@ export function NewRun() {
               id="app"
               name="app"
               value={app}
-              onChange={(event) =>
-                setApp(event.target.value as "hello" | "etl")
-              }
+              onChange={(event) => {
+                setApp(event.target.value);
+                setDetail(null);
+                setErrors({});
+                setError("");
+              }}
               disabled={submitting || uploading}
             >
-              <option value="hello">hello · 示例应用</option>
-              <option value="etl">etl · 数据 ETL 工作流</option>
+              {!apps.length && (
+                <option value="">
+                  {appsError ? "应用加载失败" : "正在加载应用…"}
+                </option>
+              )}
+              {apps.map((item) => (
+                <option key={item.app} value={item.app}>
+                  {item.app} · {item.title}
+                </option>
+              ))}
             </select>
             <p className="field-hint">
               {app === "etl"
@@ -131,6 +201,12 @@ export function NewRun() {
                 : "接收需求、请求人工确认，并返回运行结果。"}
             </p>
           </div>
+          {appsError && (
+            <ErrorNotice
+              message={appsError}
+              onRetry={() => setAppsRevision((value) => value + 1)}
+            />
+          )}
           {app === "etl" && (
             <div className="form-section">
               <span className="step-label">
@@ -222,27 +298,51 @@ export function NewRun() {
               )}
             </div>
           )}
-          <div className="form-section">
-            <span className="step-label">
-              {app === "etl" ? "03" : "02"}
-              <span>描述需求</span>
-            </span>
-            <label htmlFor="request">你想完成什么？</label>
-            <textarea
-              id="request"
-              name="text"
-              required
-              rows={7}
-              placeholder="例如：请整理一份客户数据清洗方案，并在执行前让我确认。"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              disabled={submitting || needsSource}
-              aria-describedby="request-hint"
-            />
-            <p className="field-hint" id="request-hint">
-              尽量说明目标与约束，帮助应用理解你的需求。
-            </p>
-          </div>
+          {app !== "etl" && (
+            <div className="form-section">
+              <InputFields
+                fields={fields}
+                values={values}
+                onChange={(next) => {
+                  setValues(next);
+                  setErrors({});
+                }}
+                errors={errors}
+                disabled={submitting || uploading}
+                datasources={sources}
+              />
+              {fields.some((field) => field.type === "datasource") &&
+                sourcesError && (
+                  <ErrorNotice
+                    message={sourcesError}
+                    onRetry={() => setSourcesRevision((value) => value + 1)}
+                  />
+                )}
+            </div>
+          )}
+          {app === "etl" && (
+            <div className="form-section">
+              <span className="step-label">
+                03
+                <span>描述需求</span>
+              </span>
+              <label htmlFor="request">你想完成什么？</label>
+              <textarea
+                id="request"
+                name="text"
+                required
+                rows={7}
+                placeholder="例如：请整理一份客户数据清洗方案，并在执行前让我确认。"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                disabled={submitting || needsSource}
+                aria-describedby="request-hint"
+              />
+              <p className="field-hint" id="request-hint">
+                尽量说明目标与约束，帮助应用理解你的需求。
+              </p>
+            </div>
+          )}
           {app === "etl" && (
             <div className="form-section">
               <label htmlFor="language">
@@ -267,7 +367,16 @@ export function NewRun() {
             <button
               className="button primary"
               type="submit"
-              disabled={submitting || uploading || !text.trim() || needsSource}
+              disabled={
+                submitting ||
+                uploading ||
+                !detail ||
+                detail.app !== app ||
+                Boolean(appsError) ||
+                (app === "etl" && !text.trim()) ||
+                (app === "hello" && !String(values.text ?? "").trim()) ||
+                needsSource
+              }
             >
               {submitting ? (
                 <>

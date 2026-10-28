@@ -14,6 +14,17 @@ import { mockZip } from "./mock-zip";
 import { addStep, decideStep, mockFlow, type MockSteps } from "./mock-flow";
 import { mockUpload, mockUploads, mockUploadedPlan } from "./mock-uploads";
 import type { UploadedDataset } from "../uploads";
+import { isFlowConfig, type FlowConfig } from "../apps";
+import { defaultValues, inputPayload, validateFields } from "../input-fields";
+import { mockAppSnapshot } from "./mock-apps";
+import {
+  allSources,
+  flowView,
+  humanPending,
+  simulateNode,
+  type VariablePool,
+} from "./mock-flow-apps";
+import { invalid } from "./mock-assets";
 
 type StoredRun = {
   run: Run;
@@ -30,6 +41,16 @@ type StoredRun = {
     approvals: MockApproval[];
     upload?: UploadedDataset;
   };
+  flow?: {
+    config: FlowConfig;
+    pool: VariablePool;
+    next: string;
+    visits: Record<string, number>;
+    count: number;
+    input: Record<string, unknown>;
+    title: string;
+    summary: string;
+  };
   steps: MockSteps;
 };
 // Next dev may reload this module. One process-wide store keeps route requests consistent.
@@ -44,6 +65,8 @@ export function createMockEvalRun(caseId: string, score: number): string {
     run: {
       run_id,
       app: "etl",
+      app_version: null,
+      draft: true,
       status: "running",
       pending: null,
       error: null,
@@ -57,9 +80,71 @@ export function createMockEvalRun(caseId: string, score: number): string {
   return run_id;
 }
 
+function advanceFlow(entry: StoredRun): Run {
+  const { run, flow } = entry;
+  if (!flow) return run;
+  while (flow.next) {
+    const node = flow.config.graph.nodes.find((item) => item.id === flow.next);
+    if (!node) {
+      run.status = "error";
+      run.error = `节点 ${flow.next} 不存在`;
+      break;
+    }
+    flow.visits[node.id] = (flow.visits[node.id] ?? 0) + 1;
+    if (++flow.count > 200 || flow.visits[node.id] > (node.max_visits ?? 3)) {
+      run.status = "error";
+      run.error = `节点「${node.title}」(${node.id})：超过执行次数上限`;
+      break;
+    }
+    if (node.type === "human") {
+      run.status = "waiting";
+      run.pending = humanPending(node, flow.pool);
+      addStep(
+        entry.steps,
+        node.id,
+        structuredClone(flow.pool),
+        null,
+        run.pending,
+      );
+      return run;
+    }
+    try {
+      const result =
+        node.type === "start"
+          ? { outputs: flow.input, branch: null }
+          : simulateNode(node, flow.pool);
+      flow.pool[node.id] = result.outputs;
+      addStep(entry.steps, node.id, structuredClone(flow.pool), result.outputs);
+      if (
+        (node.type === "llm" || node.type === "agent") &&
+        typeof result.outputs.text === "string"
+      )
+        run.messages.push({ role: "assistant", content: result.outputs.text });
+      if (node.type === "end") {
+        run.status = "done";
+        run.result = result.outputs;
+        flow.next = "";
+        return run;
+      }
+      flow.next =
+        flow.config.graph.edges.find(
+          (edge) =>
+            edge.from === node.id && (edge.branch ?? null) === result.branch,
+        )?.to ?? "";
+      if (!flow.next) throw new Error("分支没有连接");
+    } catch (error) {
+      run.status = "error";
+      run.error = `节点「${node.title}」(${node.id})：${error instanceof Error ? error.message : "模拟执行失败"}`;
+      break;
+    }
+  }
+  return run;
+}
+
 function refresh(entry: StoredRun): Run {
   const { run } = entry;
   if (run.status !== "running" || Date.now() < entry.readyAt) return run;
+  if (entry.flow) return advanceFlow(entry);
   if (entry.evaluation) {
     run.status = "done";
     run.result = { score: entry.evaluation.score, threshold: 0.8 };
@@ -128,6 +213,7 @@ function refresh(entry: StoredRun): Run {
           "dev 试跑已通过。确认把 etl_demo 上线到 prod（prod_catalog.etl，按计划 0 0 2 * * ? 运行）吗？" +
           "驳回时写下修改意见，代码会按意见重写。",
         options: ["approve", "reject"],
+        comment_required: ["reject"],
         details: {
           type: "etl_release",
           bundle: "etl_demo",
@@ -157,33 +243,7 @@ function refresh(entry: StoredRun): Run {
     }
     return run;
   }
-  if (entry.decision !== "approve") {
-    run.status = "waiting";
-    run.messages.push({
-      role: "assistant",
-      content:
-        entry.decision === "reject"
-          ? `已根据你的意见重新整理：\n\n${entry.comment || "请换一种说法"}\n\n请再次确认本次回答。`
-          : `已收到你的需求：\n\n${run.messages[0].content}\n\nhello 示例已准备就绪，请确认本次回答。`,
-    });
-    run.pending = {
-      kind: "approval",
-      prompt: "确认这个回答吗？驳回时可以写下修改意见。",
-      options: ["approve", "reject"],
-    };
-    const input = { input: { text: run.messages[0].content } };
-    addStep(entry.steps, "draft", input, {
-      draft: run.messages.at(-1)?.content,
-    });
-    addStep(entry.steps, "review", input, null, run.pending);
-  } else {
-    run.status = "done";
-    run.result = {
-      answer:
-        run.messages.findLast((message) => message.role === "assistant")
-          ?.content ?? "hello",
-    };
-  }
+
   return run;
 }
 
@@ -217,28 +277,74 @@ export async function mockRuns(request: Request, path: string[]) {
     if (!isRecord(body) || !isRecord(body.input)) {
       return json({ detail: "Provide app and input" }, 422);
     }
-    const input = body.input;
+    if (typeof body.app !== "string")
+      return json({ detail: "应用不存在" }, 404);
+    if (body.draft !== undefined && typeof body.draft !== "boolean")
+      return invalid([{ loc: ["body", "draft"], msg: "draft 必须为布尔值" }]);
+    if (body.draft === true && body.app_version !== undefined)
+      return json({ detail: "草稿运行不能同时指定 app_version" }, 422);
+    const available = mockAppSnapshot(body.app);
+    if (!available) return json({ detail: "应用不存在" }, 404);
+    const snapshot = mockAppSnapshot(
+      body.app,
+      body.app_version as number | undefined,
+      body.draft === true,
+    );
+    if (!snapshot)
+      return json(
+        { detail: body.draft ? "请先保存应用草稿" : "应用版本不存在" },
+        body.draft ? 409 : 404,
+      );
+    const flow = isFlowConfig(snapshot.config) ? snapshot.config : null;
+    const fields =
+      flow?.graph.nodes.find((node) => node.type === "start")?.inputs ?? [];
+    const input = flow
+      ? inputPayload(fields, { ...defaultValues(fields), ...body.input })
+      : body.input;
+    if (flow) {
+      const issues = validateFields(fields, input, "input");
+      for (const field of fields.filter((item) => item.type === "datasource"))
+        if (
+          input[field.key] &&
+          !allSources().some(
+            (source) => source.datasource_id === input[field.key],
+          )
+        )
+          issues.push({
+            loc: ["body", "input", field.key],
+            msg: "请选择已登记的数据源",
+          });
+      if (issues.length) return invalid(issues);
+    }
     const isEtl = body.app === "etl";
-    const text = isEtl ? input.request : input.text;
+    const text = isEtl
+      ? input.request
+      : fields
+          .filter((field) => ["text", "textarea"].includes(field.type))
+          .map((field) => input[field.key])
+          .filter((value) => typeof value === "string")
+          .join("\n");
     if (
-      (body.app !== "hello" && !isEtl) ||
-      typeof text !== "string" ||
-      !text.trim() ||
-      (isEtl &&
-        (![
-          ...mockDataSources,
-          ...[...mockUploads.values()].map((item) => item.datasource),
-        ].some((source) => source.datasource_id === input.datasource_id) ||
-          (input.language !== undefined &&
-            input.language !== "pyspark" &&
-            input.language !== "sql")))
+      isEtl &&
+      (typeof text !== "string" ||
+        !text.trim() ||
+        !allSources().some(
+          (source) => source.datasource_id === input.datasource_id,
+        ) ||
+        (input.language !== undefined &&
+          !["pyspark", "sql"].includes(input.language as string)))
     )
       return json({ detail: "Invalid app or input" }, 422);
     const run: Run = {
       run_id: randomUUID(),
-      app: isEtl ? "etl" : "hello",
+      app: body.app,
+      app_version: snapshot.version,
+      draft: body.draft === true,
       status: "running",
-      messages: [{ role: "user", content: text.trim() }],
+      messages:
+        typeof text === "string" && text.trim()
+          ? [{ role: "user", content: text.trim() }]
+          : [],
       pending: null,
       result: null,
       error: null,
@@ -248,6 +354,25 @@ export async function mockRuns(request: Request, path: string[]) {
       run,
       readyAt: Date.now() + 600,
       steps: [],
+      flow: flow
+        ? {
+            config: flow,
+            pool: {
+              env: Object.fromEntries(
+                flow.env.vars.map((item) => [item.key, item.value]),
+              ),
+              secret: Object.fromEntries(
+                snapshot.secrets.map((name) => [name, "******"]),
+              ),
+            },
+            next: flow.graph.nodes.find((node) => node.type === "start")!.id,
+            visits: {},
+            count: 0,
+            input,
+            title: snapshot.title,
+            summary: snapshot.summary,
+          }
+        : undefined,
       etl: isEtl
         ? {
             language: input.language === "sql" ? "sql" : "pyspark",
@@ -279,11 +404,23 @@ export async function mockRuns(request: Request, path: string[]) {
     });
   }
   if (request.method === "GET" && path[2] === "flow")
-    return json(mockFlow(run.app, entry.steps, run.status === "done"));
+    return json(
+      entry.flow
+        ? {
+            ...flowView(
+              entry.flow.config,
+              entry.flow.title,
+              entry.flow.summary,
+            ),
+            steps: entry.steps,
+            current: run.status === "waiting" ? entry.flow.next : null,
+          }
+        : mockFlow(run.app, entry.steps, run.status === "done"),
+    );
   if (request.method === "GET") return json(run);
   if (
     !isRecord(body) ||
-    (body.decision !== "approve" && body.decision !== "reject") ||
+    typeof body.decision !== "string" ||
     (body.comment !== undefined && typeof body.comment !== "string") ||
     (body.actor !== undefined && typeof body.actor !== "string")
   ) {
@@ -291,12 +428,63 @@ export async function mockRuns(request: Request, path: string[]) {
   }
   if (run.status !== "waiting")
     return json({ detail: "Run is not waiting for approval" }, 409);
+  if (!run.pending?.options.includes(body.decision))
+    return invalid([{ loc: ["body", "decision"], msg: "请选择有效操作" }]);
+  if (
+    run.pending.comment_required?.includes(body.decision) &&
+    (typeof body.comment !== "string" || !body.comment.trim())
+  )
+    return invalid([{ loc: ["body", "comment"], msg: "请填写处理意见" }]);
+  if (entry.flow) {
+    const pending = run.pending;
+    const values = isRecord(body.values)
+      ? { ...defaultValues(pending.fields ?? []), ...body.values }
+      : defaultValues(pending.fields ?? []);
+    if (pending.kind === "form") {
+      const issues = validateFields(pending.fields ?? [], values, "values");
+      if (issues.length) return invalid(issues);
+    }
+    const node = entry.flow.next;
+    const output =
+      pending.kind === "form"
+        ? {
+            ...inputPayload(pending.fields ?? [], values),
+            actor: typeof body.actor === "string" ? body.actor : "",
+          }
+        : {
+            decision: body.decision,
+            comment: body.comment ?? "",
+            actor: typeof body.actor === "string" ? body.actor : "",
+          };
+    entry.flow.pool[node] = output;
+    decideStep(entry.steps, output);
+    const step = entry.steps.at(-1);
+    if (step) step.output = output;
+    entry.flow.next =
+      entry.flow.config.graph.edges.find(
+        (edge) =>
+          edge.from === node &&
+          (edge.branch ?? null) ===
+            (pending.kind === "form" ? null : body.decision),
+      )?.to ?? "";
+    run.messages.push({
+      role: "user",
+      content:
+        pending.kind === "form"
+          ? JSON.stringify(values)
+          : `${pending.option_labels?.[body.decision] ?? body.decision}${body.comment ? `：${body.comment}` : ""}`,
+    });
+    run.pending = null;
+    run.status = "running";
+    entry.readyAt = Date.now() + 100;
+    return json({ run_id: run.run_id, status: run.status }, 202);
+  }
   entry.decision = body.decision as Decision;
   entry.comment =
     typeof body.comment === "string" ? body.comment.trim() : undefined;
   const approval: MockApproval = {
     step: entry.etl?.stage ?? "plan",
-    decision: entry.decision,
+    decision: entry.decision as "approve" | "reject",
     comment: entry.comment ?? "",
     actor: typeof body.actor === "string" ? body.actor.trim() : "",
     at: new Date().toISOString(),

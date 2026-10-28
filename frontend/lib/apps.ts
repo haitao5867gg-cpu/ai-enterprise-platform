@@ -8,7 +8,212 @@ export type NodeConfig = {
   skills: SkillRef[];
   params: Record<string, string | number | boolean>;
 };
-export type AppConfig = { nodes: Record<string, NodeConfig> };
+export type CodeConfig = { nodes: Record<string, NodeConfig> };
+export type InputType =
+  "text" | "textarea" | "number" | "boolean" | "select" | "datasource";
+export type Input<T extends InputType = InputType> = {
+  key: string;
+  label: string;
+  type: T;
+  required?: boolean;
+  default?: string | number | boolean | null;
+  choices?: { value: string; label: string }[];
+  max_length?: number;
+};
+export type FormField = Input<Exclude<InputType, "datasource">>;
+export type ValueType = "string" | "number" | "boolean" | "array" | "object";
+export type OutputField = {
+  key: string;
+  type: ValueType;
+  description?: string;
+};
+export type EnvVar = {
+  key: string;
+  type: "string" | "number" | "boolean";
+  value: string | number | boolean;
+  description?: string;
+};
+export type OnError = { retry?: { max: number; interval_seconds: number } } & (
+  | { then: "stop" | "branch" }
+  | { then: "default"; default: Record<string, unknown> }
+);
+export type NodeBase = {
+  id: string;
+  title: string;
+  max_visits?: number;
+  ui?: { x: number; y: number };
+};
+type ModelSettings = { model: string | null; skills: SkillRef[] };
+type Fallible = { on_error?: OnError };
+export type StartNode = NodeBase & { type: "start"; inputs: Input[] };
+export type LlmNode = NodeBase &
+  ModelSettings &
+  Fallible & {
+    type: "llm";
+    system?: string;
+    prompt: string;
+    output: { kind: "text" } | { kind: "json"; fields: OutputField[] };
+  };
+export type ClassifierNode = NodeBase &
+  ModelSettings &
+  Fallible & {
+    type: "classifier";
+    text: string;
+    instruction?: string;
+    classes: { key: string; label: string; description?: string }[];
+  };
+export type Condition = {
+  left: unknown;
+  op:
+    | "eq"
+    | "ne"
+    | "contains"
+    | "not_contains"
+    | "gt"
+    | "gte"
+    | "lt"
+    | "lte"
+    | "empty"
+    | "not_empty";
+  right?: unknown;
+};
+export type ConditionNode = NodeBase & {
+  type: "condition";
+  rules: {
+    key: string;
+    label: string;
+    match: "all" | "any";
+    conditions: Condition[];
+  }[];
+};
+export type ToolNode = NodeBase &
+  Fallible & {
+    type: "tool";
+    datasource: string;
+    tool: string;
+    args: Record<string, unknown>;
+  };
+export type AgentNode = NodeBase &
+  ModelSettings &
+  Fallible & {
+    type: "agent";
+    task: string;
+    tools: { datasource: string; tools: string[] | null }[];
+    max_steps: number;
+  };
+export type HumanNode = NodeBase & {
+  type: "human";
+  prompt: string;
+  show?: string;
+} & (
+    | {
+        mode: "approval";
+        options: { key: string; label: string }[];
+        comment_required?: string[];
+      }
+    | { mode: "form"; fields: FormField[] }
+  );
+export type TemplateNode = NodeBase & { type: "template"; template: string };
+export type CodeNode = NodeBase &
+  Fallible & {
+    type: "code";
+    code: string;
+    inputs: Record<string, unknown>;
+    outputs: OutputField[];
+    timeout_seconds: number;
+  };
+export type EndNode = NodeBase & {
+  type: "end";
+  outputs: { key: string; from: string[] }[];
+};
+export type FlowNode =
+  | StartNode
+  | LlmNode
+  | ClassifierNode
+  | ConditionNode
+  | ToolNode
+  | AgentNode
+  | HumanNode
+  | TemplateNode
+  | CodeNode
+  | EndNode;
+export type Edge = { from: string; to: string; branch?: string | null };
+export type FlowConfig = {
+  schema_version: 1;
+  env: { vars: EnvVar[]; secrets: string[] };
+  graph: { nodes: FlowNode[]; edges: Edge[] };
+};
+export type AppConfig = CodeConfig | FlowConfig;
+export function isFlowConfig(config: AppConfig): config is FlowConfig {
+  return "graph" in config;
+}
+type WithoutBase<T> = T extends unknown
+  ? Omit<T, keyof NodeBase | "type" | "on_error">
+  : never;
+type SettingsFor<K extends FlowNode["type"]> = WithoutBase<
+  Extract<FlowNode, { type: K }>
+>;
+export type NodeType = {
+  [K in FlowNode["type"]]: {
+    type: K;
+    label: string;
+    description: string;
+    category: "model" | "logic" | "tool" | "human" | "terminal";
+    error_handling: boolean;
+    outputs: { key: string; description: string }[];
+    defaults: SettingsFor<K>;
+    presets: {
+      key: string;
+      label: string;
+      description: string;
+      settings: Partial<SettingsFor<K>>;
+    }[];
+    max_count: number | null;
+  };
+}[FlowNode["type"]];
+export type AppTemplate = {
+  id: string;
+  title: string;
+  summary: string;
+  needs: string[];
+  config: FlowConfig;
+};
+export type AppSource =
+  { blank: true } | { template: string } | { app: string; version?: number };
+export type CreateAppInput = {
+  app: string;
+  title: string;
+  summary?: string;
+  from: AppSource;
+  actor?: string;
+};
+export type ImportAppInput = {
+  app: string;
+  title?: string;
+  summary?: string;
+  yaml: string;
+  actor?: string;
+};
+export type ImportProblem =
+  | { kind: "skill"; name: string; version: number; message: string }
+  | {
+      kind: "datasource";
+      datasource_id: string;
+      name?: string;
+      message: string;
+    }
+  | { kind: "model" | "secret"; name: string; message: string };
+export type ImportResult = { app: AppDetail; problems: ImportProblem[] };
+export type NodeTest = {
+  status: "done" | "error";
+  outputs: Record<string, unknown> | null;
+  branch: string | null;
+  error: { type: string; message: string } | null;
+  duration_ms: number;
+  rendered: Record<string, unknown>;
+};
+export const APP_ID_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
+export const NODE_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
 type SettingBase = { key: string; label: string; help?: string };
 export type Setting = SettingBase &
   (
@@ -55,6 +260,8 @@ export type AppSummary = {
   current_version: number;
   has_draft: boolean;
   has_eval_set: boolean;
+  kind: "code" | "flow";
+  created_at: string | null;
 };
 export type AppDetail = AppSummary & {
   pattern: string;
@@ -64,7 +271,10 @@ export type AppDetail = AppSummary & {
   edges: FlowEdge[];
   current: AppVersion;
   draft: AppVersion | null;
+  inputs: Input[] | null;
+  secrets: { name: string; set: boolean; updated_at: string | null }[];
   options: {
+    datasources: { datasource_id: string; name: string; kind: string }[];
     models: string[];
     default_model: string;
     skills: {
@@ -85,7 +295,9 @@ function isSummary(
     typeof value.summary === "string" &&
     Number.isInteger(value.current_version) &&
     typeof value.has_draft === "boolean" &&
-    typeof value.has_eval_set === "boolean"
+    typeof value.has_eval_set === "boolean" &&
+    (value.kind === "code" || value.kind === "flow") &&
+    (value.created_at === null || typeof value.created_at === "string")
   );
 }
 
@@ -95,14 +307,19 @@ function isVersion(value: unknown): value is AppVersion {
     (value.version === null || Number.isInteger(value.version)) &&
     ["current", "draft", "previous"].includes(value.status as string) &&
     isRecord(value.config) &&
-    isRecord(value.config.nodes) &&
-    Object.values(value.config.nodes).every(
-      (node) =>
-        isRecord(node) &&
-        (node.model === null || typeof node.model === "string") &&
-        Array.isArray(node.skills) &&
-        isRecord(node.params),
-    ) &&
+    ((value.config.schema_version === 1 &&
+      isRecord(value.config.graph) &&
+      Array.isArray(value.config.graph.nodes) &&
+      Array.isArray(value.config.graph.edges) &&
+      isRecord(value.config.env)) ||
+      (isRecord(value.config.nodes) &&
+        Object.values(value.config.nodes).every(
+          (node) =>
+            isRecord(node) &&
+            (node.model === null || typeof node.model === "string") &&
+            Array.isArray(node.skills) &&
+            isRecord(node.params),
+        ))) &&
     (value.eval === null ||
       (isRecord(value.eval) && Array.isArray(value.eval.cases)))
   );
@@ -188,3 +405,107 @@ export const activateAppVersion = (
     "POST",
     actor ? { actor } : {},
   );
+
+export async function getNodeTypes(signal?: AbortSignal): Promise<NodeType[]> {
+  const value = await requestJson("/node-types", { signal });
+  if (!Array.isArray(value)) throw new ApiError("节点类型格式不正确。");
+  return value as NodeType[];
+}
+export async function getAppTemplates(
+  signal?: AbortSignal,
+): Promise<AppTemplate[]> {
+  const value = await requestJson("/app-templates", { signal });
+  if (!Array.isArray(value)) throw new ApiError("应用模板格式不正确。");
+  return value as AppTemplate[];
+}
+export const createApp = async (input: CreateAppInput): Promise<AppDetail> =>
+  readAppDetail(
+    await requestJson("/apps", { method: "POST", body: JSON.stringify(input) }),
+  );
+export const updateApp = (
+  app: string,
+  input: { title?: string; summary?: string },
+) => changeApp(app, "", "PATCH", input);
+export const archiveApp = (app: string) =>
+  requestJson(pathFor(app), { method: "DELETE" });
+export async function importApp(input: ImportAppInput): Promise<ImportResult> {
+  const value = await requestJson("/apps/import", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!isRecord(value) || !Array.isArray(value.problems))
+    throw new ApiError("导入结果格式不正确。");
+  return {
+    app: readAppDetail(value.app),
+    problems: value.problems as ImportProblem[],
+  };
+}
+export async function importAppDraft(
+  app: string,
+  yaml: string,
+  actor?: string,
+): Promise<ImportResult> {
+  const value = await requestJson(`${pathFor(app)}/draft/import`, {
+    method: "POST",
+    body: JSON.stringify({ yaml, actor }),
+  });
+  if (!isRecord(value) || !Array.isArray(value.problems))
+    throw new ApiError("导入结果格式不正确。");
+  return {
+    app: readAppDetail(value.app),
+    problems: value.problems as ImportProblem[],
+  };
+}
+export const testAppNode = (
+  app: string,
+  node: string,
+  values: Record<string, unknown>,
+  config?: FlowConfig,
+) =>
+  requestJson(`${pathFor(app)}/nodes/${encodeURIComponent(node)}/test`, {
+    method: "POST",
+    body: JSON.stringify({ values, config }),
+    signal: AbortSignal.timeout(120_000),
+  }) as Promise<NodeTest>;
+export const setAppSecret = (
+  app: string,
+  name: string,
+  value: string,
+  actor?: string,
+) =>
+  requestJson(`${pathFor(app)}/secrets/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ value, actor }),
+  });
+export const deleteAppSecret = (app: string, name: string) =>
+  requestJson(`${pathFor(app)}/secrets/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+export async function exportAppVersion(
+  app: string,
+  version: number,
+): Promise<void> {
+  const response = await fetch(
+    `/api${pathFor(app)}/versions/${version}/export`,
+    { cache: "no-store" },
+  );
+  if (!response.ok)
+    throw new ApiError("导出应用失败，请重试。", response.status);
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const plain = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+  link.download = `${app}-v${version}.yaml`;
+  try {
+    link.download =
+      (encoded ? decodeURIComponent(encoded) : plain) ?? link.download;
+  } catch {
+    /* Use the application filename for malformed headers. */
+  }
+  link.href = url;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

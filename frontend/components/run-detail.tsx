@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
   errorMessage,
+  fieldErrors,
   isRecord,
   readReceipt,
   readRun,
@@ -20,6 +21,13 @@ import { EtlReleaseView, EtlTrail } from "./etl-release";
 import { GeneratedFiles } from "./generated-files";
 import { RunFlow } from "./run-flow";
 import { savedActor, saveActor } from "../lib/actor";
+import {
+  initialValues,
+  inputPayload,
+  validateFields,
+  type FieldValues,
+} from "../lib/input-fields";
+import { InputFields } from "./input-fields";
 
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;
@@ -59,6 +67,8 @@ export function RunDetail({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [mutationError, setMutationError] = useState("");
+  const [values, setValues] = useState<FieldValues>({});
+  const [valueErrors, setValueErrors] = useState<Record<string, string>>({});
   const [comment, setComment] = useState("");
   // On the server there is no storage and "" comes back; the field only renders after loading.
   const [actor, setActor] = useState(savedActor);
@@ -119,6 +129,15 @@ export function RunDetail({
       !run.pending?.options.includes(decision)
     )
       return;
+    const fields = run.pending.fields ?? [];
+    const submittedValues = { ...initialValues(fields), ...values };
+    if (run.pending.kind === "form") {
+      const issues = validateFields(fields, submittedValues, "values");
+      setValueErrors(
+        Object.fromEntries(issues.map((issue) => [issue.loc[2], issue.msg])),
+      );
+      if (issues.length) return;
+    }
     busy.current = true;
     setSubmitting(decision);
     setMutationError("");
@@ -133,7 +152,9 @@ export function RunDetail({
           signal: controller.signal,
           body: JSON.stringify({
             decision,
-            comment: decision === "reject" ? comment.trim() : "",
+            ...(run.pending.kind === "form"
+              ? { values: inputPayload(fields, submittedValues) }
+              : { comment: comment.trim() }),
             ...(actor.trim() ? { actor: actor.trim() } : {}),
           }),
         }),
@@ -142,6 +163,8 @@ export function RunDetail({
       if (receipt.run_id !== id)
         throw new ApiError("服务返回的运行编号不匹配，请刷新核对。");
       setComment("");
+      setValues({});
+      setValueErrors({});
       setRun((previous) =>
         previous
           ? {
@@ -152,7 +175,10 @@ export function RunDetail({
           : null,
       );
     } catch (err) {
-      if (!controller.signal.aborted) setMutationError(errorMessage(err));
+      if (!controller.signal.aborted) {
+        setMutationError(errorMessage(err));
+        setValueErrors(fieldErrors(err, "values"));
+      }
     } finally {
       if (!controller.signal.aborted) {
         setRechecking(true);
@@ -174,7 +200,13 @@ export function RunDetail({
       ? getEtlResult(run.result)
       : null;
   // A rejected release sends the code back to be rewritten, so the reason must be given.
-  const commentRequired = release !== null;
+  const requiredOptions =
+    run?.pending?.comment_required ?? (release ? ["reject"] : []);
+  const commentRequired = requiredOptions.includes("reject");
+  const humanDetails =
+    isRecord(run?.pending?.details) && run.pending.details.type === "flow_human"
+      ? run.pending.details
+      : null;
   return (
     <>
       <Link className="back-link" href="/">
@@ -304,6 +336,16 @@ export function RunDetail({
                     </dd>
                   </div>
                   <div>
+                    <dt>应用版本</dt>
+                    <dd>
+                      {run.draft
+                        ? "草稿试运行"
+                        : run.app_version
+                          ? `v${run.app_version}`
+                          : "—"}
+                    </dd>
+                  </div>
+                  <div>
                     <dt>当前状态</dt>
                     <dd>
                       <StatusBadge status={run.status} />
@@ -334,10 +376,36 @@ export function RunDetail({
                   <span className="approval-icon">
                     <Icon name="alert" size={20} />
                   </span>
-                  <h2 id="approval-title">需要你的确认</h2>
+                  <h2 id="approval-title">
+                    {run.pending?.kind === "form"
+                      ? "需要你填写"
+                      : "需要你的确认"}
+                  </h2>
                   {run.pending ? (
                     <>
                       <p className="message-content">{run.pending.prompt}</p>
+                      {humanDetails &&
+                        typeof humanDetails.show === "string" &&
+                        humanDetails.show && (
+                          <pre className="human-show">{humanDetails.show}</pre>
+                        )}
+                      {run.pending.kind === "form" && (
+                        <InputFields
+                          key={String(humanDetails?.node ?? "form")}
+                          fields={run.pending.fields ?? []}
+                          values={{
+                            ...initialValues(run.pending.fields ?? []),
+                            ...values,
+                          }}
+                          onChange={(next) => {
+                            setValues(next);
+                            setValueErrors({});
+                          }}
+                          errors={valueErrors}
+                          disabled={controlsDisabled}
+                          prefix="human"
+                        />
+                      )}
                       <label htmlFor="approval-actor">
                         审批人<span className="muted">（浏览器会记住）</span>
                       </label>
@@ -352,62 +420,72 @@ export function RunDetail({
                         }}
                         disabled={controlsDisabled}
                       />
-                      <label htmlFor="rejection-comment">
-                        驳回意见
-                        <span className="muted">
-                          {commentRequired ? "（驳回时必填）" : "（选填）"}
-                        </span>
-                      </label>
-                      <textarea
-                        id="rejection-comment"
-                        rows={3}
-                        placeholder="说明需要调整的地方…"
-                        value={comment}
-                        onChange={(e) => setComment(e.target.value)}
-                        disabled={controlsDisabled}
-                      />
+                      {run.pending.kind !== "form" && (
+                        <>
+                          <label htmlFor="rejection-comment">
+                            驳回意见
+                            <span className="muted">
+                              {commentRequired
+                                ? "（驳回时必填）"
+                                : requiredOptions.length
+                                  ? "（部分操作必填）"
+                                  : "（选填）"}
+                            </span>
+                          </label>
+                          <textarea
+                            id="rejection-comment"
+                            rows={3}
+                            placeholder="说明需要调整的地方…"
+                            value={comment}
+                            onChange={(e) => setComment(e.target.value)}
+                            disabled={controlsDisabled}
+                          />
+                        </>
+                      )}
                       <div className="approval-actions">
-                        <button
-                          className="button primary"
-                          disabled={
-                            controlsDisabled ||
-                            !run.pending.options.includes("approve")
-                          }
-                          onClick={() => void resume("approve")}
-                        >
-                          {submitting === "approve" ? (
-                            <>
-                              <span className="spinner" />
-                              提交中…
-                            </>
-                          ) : (
-                            <>
-                              <Icon name="check" size={16} />
-                              {release ? "确认上线" : "确认"}
-                            </>
-                          )}
-                        </button>
-                        <button
-                          className="button reject"
-                          disabled={
-                            controlsDisabled ||
-                            !run.pending.options.includes("reject") ||
-                            (commentRequired && !comment.trim())
-                          }
-                          onClick={() => void resume("reject")}
-                        >
-                          {submitting === "reject" ? (
-                            <>
-                              <span className="spinner" />
-                              提交中…
-                            </>
-                          ) : (
-                            <>
-                              <Icon name="close" size={16} />
-                              驳回
-                            </>
-                          )}
-                        </button>
+                        {(run.pending.option_labels ||
+                        run.pending.kind === "form"
+                          ? run.pending.options
+                          : ["approve", "reject"]
+                        ).map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            className={`button ${option === "reject" ? "reject" : "primary"}`}
+                            disabled={
+                              controlsDisabled ||
+                              !run.pending!.options.includes(option) ||
+                              (requiredOptions.includes(option) &&
+                                !comment.trim())
+                            }
+                            onClick={() => void resume(option)}
+                          >
+                            {submitting === option ? (
+                              <>
+                                <span className="spinner" />
+                                提交中…
+                              </>
+                            ) : (
+                              <>
+                                {option === "reject" ? (
+                                  <Icon name="close" size={16} />
+                                ) : (
+                                  <Icon name="check" size={16} />
+                                )}
+                                {run.pending!.option_labels?.[option] ??
+                                  (option === "approve"
+                                    ? release
+                                      ? "确认上线"
+                                      : "确认"
+                                    : option === "reject"
+                                      ? "驳回"
+                                      : option === "submit"
+                                        ? "提交"
+                                        : option)}
+                              </>
+                            )}
+                          </button>
+                        ))}
                       </div>
                       {rechecking && (
                         <p className="field-hint" role="status">

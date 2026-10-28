@@ -4,7 +4,7 @@ import {
   type APIRequestContext,
   type Page,
 } from "@playwright/test";
-import type { AppDetail } from "../lib/apps";
+import { isFlowConfig, type AppDetail } from "../lib/apps";
 
 async function appDetail(
   request: APIRequestContext,
@@ -201,12 +201,18 @@ test("hello publishes without evaluation and tolerates unavailable browser stora
       throw new Error("Storage unavailable");
     };
   });
+  const config = (await appDetail(request, "hello")).current.config;
+  if (!isFlowConfig(config)) throw new Error("Expected flow config");
+  const draft = config.graph.nodes.find((node) => node.type === "llm")!;
+  draft.model = "qwen";
+  expect(
+    (await request.put("/api/apps/hello/draft", { data: { config } })).status(),
+  ).toBe(200);
   await page.goto("/apps/hello");
   await expect(
     page.getByRole("button", { name: "运行评测", exact: true }),
   ).toHaveCount(0);
-  await page.getByLabel("模型", { exact: true }).selectOption("qwen");
-  await saveDraft(page);
+  await expect(page.getByLabel("模型", { exact: true })).toHaveCount(0);
   const noEval = await request.post("/api/apps/hello/draft/eval", { data: {} });
   expect(noEval.status()).toBe(409);
   await expect(
@@ -235,6 +241,7 @@ test("invalid integer values and backend 422 / 409 details are visible", async (
   );
   expect((await appDetail(request)).draft).toBeNull();
   const config = (await appDetail(request)).current.config;
+  if (isFlowConfig(config)) throw new Error("Expected code config");
   config.nodes.plan.params.max_attempts = 9;
   const invalid = await request.put("/api/apps/etl/draft", {
     data: { config },
@@ -265,9 +272,15 @@ test("invalid integer values and backend 422 / 409 details are visible", async (
   );
   await page.unroute("**/api/apps/etl/draft");
   page.once("dialog", (dialog) => dialog.accept());
+  const flow = (await appDetail(request, "hello")).current.config;
+  if (!isFlowConfig(flow)) throw new Error("Expected flow config");
+  flow.graph.nodes.find((node) => node.type === "llm")!.model = "deepseek";
+  expect(
+    (
+      await request.put("/api/apps/hello/draft", { data: { config: flow } })
+    ).status(),
+  ).toBe(200);
   await page.goto("/apps/hello");
-  await page.getByLabel("模型", { exact: true }).selectOption("deepseek");
-  await saveDraft(page);
   await page.route("**/api/apps/hello/draft/publish", (route) =>
     route.fulfill({
       status: 409,
@@ -316,6 +329,8 @@ test("settings are generated from the contract, including published Skill versio
         help: "目标表的命名前缀",
       },
     );
+  if (isFlowConfig(data.current.config))
+    throw new Error("Expected code config");
   Object.assign(data.current.config.nodes.plan.params, {
     language: "pyspark",
     strict: false,
@@ -610,6 +625,7 @@ test("mock contract validates Skill limits, missing drafts, names and published 
     expect(Array.isArray((await result.json()).detail)).toBe(true);
   }
   const config = (await appDetail(request)).current.config;
+  if (isFlowConfig(config)) throw new Error("Expected code config");
   config.nodes.plan.skills = [{ name: "etl-plan", version: 99 }];
   expect(
     (await request.put("/api/apps/etl/draft", { data: { config } })).status(),

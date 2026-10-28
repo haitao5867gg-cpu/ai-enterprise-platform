@@ -160,7 +160,6 @@ test("forwards application and Skill methods, JSON bodies, 204 and contract erro
   request,
 }) => {
   for (const path of [
-    "/apps",
     "/apps/etl",
     "/apps/etl/versions",
     "/skills",
@@ -263,4 +262,73 @@ test("multipart proxy preserves names, boundaries, binary bytes and validation e
   expect(
     (await request.post("/api/datasources/files", { data: {} })).status(),
   ).toBe(415);
+});
+
+test("forwards only the new flow contract endpoints and preserves YAML download bytes", async ({
+  request,
+}) => {
+  expect(await (await request.get("/api/apps")).json()).toEqual([
+    expect.objectContaining({ app: "hello", kind: "flow" }),
+  ]);
+  for (const path of ["/node-types", "/app-templates"]) {
+    expect(await (await request.get(`/api${path}`)).json()).toMatchObject({
+      method: "GET",
+      path,
+    });
+    expect((await request.post(`/api${path}`, { data: {} })).status()).toBe(
+      405,
+    );
+  }
+  const payload = {
+    title: "中文名称",
+    yaml: "format: aep-app/1\n",
+    values: { "start.question": "订单" },
+  };
+  for (const [method, path] of [
+    ["POST", "/apps"],
+    ["PATCH", "/apps/hello"],
+    ["POST", "/apps/import"],
+    ["POST", "/apps/hello/draft/import"],
+    ["POST", "/apps/hello/nodes/ask_order/test"],
+    ["PUT", "/apps/hello/secrets/crm_token"],
+  ]) {
+    const response = await request.fetch(`/api${path}`, {
+      method,
+      data: payload,
+    });
+    expect(response.ok()).toBe(true);
+    expect(await response.json()).toMatchObject({ method, path, payload });
+  }
+  for (const path of ["/apps/hello", "/apps/hello/secrets/crm_token"])
+    expect((await request.delete(`/api${path}`)).status()).toBe(204);
+  const exported = await request.get("/api/apps/hello/versions/1/export");
+  expect(exported.headers()["content-type"]).toBe("text/yaml; charset=utf-8");
+  expect(exported.headers()["content-disposition"]).toContain(
+    "filename*=UTF-8''%E9%97%AE%E7%AD%94.yaml",
+  );
+  expect(await exported.body()).toEqual(
+    Buffer.from("format: aep-app/1\ntitle: 问答\n"),
+  );
+  for (const path of [
+    "/apps/hello/nodes/Invalid/test",
+    "/apps/hello/nodes/a-b/test",
+    "/apps/hello/nodes/" + "a".repeat(33) + "/test",
+    "/apps/hello/secrets/Invalid",
+    "/apps/hello/secrets/a-b",
+    "/apps/hello/secrets/" + "s".repeat(33),
+    "/apps/hello/nodes/ask_order/delete",
+    "/apps/hello/versions/0/export",
+    "/apps/hello/versions/1/export/extra",
+  ])
+    expect((await request.post(`/api${path}`, { data: {} })).status()).toBe(
+      404,
+    );
+  expect(
+    (
+      await request.put("/api/apps/hello/nodes/ask_order/test", { data: {} })
+    ).status(),
+  ).toBe(405);
+  expect(
+    (await request.get("/api/apps/hello/secrets/crm_token")).status(),
+  ).toBe(405);
 });

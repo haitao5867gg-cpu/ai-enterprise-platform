@@ -31,11 +31,18 @@ export type FlowNode = {
   id: string;
   title: string;
   kind: NodeKind;
+  type?: import("./apps").FlowNode["type"] | null;
+  skills?: import("./apps").SkillRef[];
   model?: string | null;
   design?: NodeDesign | null;
 };
 
-export type FlowEdge = { source: string; target: string; conditional: boolean };
+export type FlowEdge = {
+  source: string;
+  target: string;
+  conditional: boolean;
+  label?: string | null;
+};
 
 export type FlowStep = {
   id: string;
