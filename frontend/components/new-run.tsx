@@ -7,6 +7,7 @@ import { errorMessage, readReceipt, requestJson } from "../lib/runs";
 import { readDataSources, type DataSource, type EtlLanguage } from "../lib/etl";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
+import { FileUpload } from "./file-upload";
 
 export function NewRun() {
   const router = useRouter();
@@ -20,6 +21,8 @@ export function NewRun() {
   const [sourcesRevision, setSourcesRevision] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const busy = useRef(false);
   useEffect(() => {
     if (app !== "etl") return;
@@ -58,7 +61,7 @@ export function NewRun() {
   );
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy.current || !text.trim() || needsSource) return;
+    if (busy.current || uploading || !text.trim() || needsSource) return;
     busy.current = true;
     setSubmitting(true);
     setError("");
@@ -117,7 +120,7 @@ export function NewRun() {
               onChange={(event) =>
                 setApp(event.target.value as "hello" | "etl")
               }
-              disabled={submitting}
+              disabled={submitting || uploading}
             >
               <option value="hello">hello · 示例应用</option>
               <option value="etl">etl · 数据 ETL 工作流</option>
@@ -133,13 +136,30 @@ export function NewRun() {
               <span className="step-label">
                 02<span>选择数据源</span>
               </span>
-              <label htmlFor="datasource">数据源</label>
+              <div className="source-heading">
+                <label htmlFor="datasource">数据源</label>
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={submitting || uploading}
+                  aria-expanded={uploadOpen}
+                  aria-controls="file-upload-panel"
+                  onClick={() => setUploadOpen((value) => !value)}
+                >
+                  {uploadOpen ? "收起上传" : "上传文件"}
+                </button>
+              </div>
               <select
                 id="datasource"
                 required
                 value={datasourceId}
                 onChange={(event) => setDatasourceId(event.target.value)}
-                disabled={submitting || sourcesLoading || Boolean(sourcesError)}
+                disabled={
+                  submitting ||
+                  uploading ||
+                  sourcesLoading ||
+                  Boolean(sourcesError)
+                }
                 aria-describedby="datasource-hint"
               >
                 <option value="">
@@ -154,6 +174,26 @@ export function NewRun() {
                   </option>
                 ))}
               </select>
+              {uploadOpen && (
+                <div id="file-upload-panel">
+                  <FileUpload
+                    disabled={submitting}
+                    onBusy={setUploading}
+                    onUploaded={({ datasource }) => {
+                      setSources((value) => [
+                        ...value.filter(
+                          (source) =>
+                            source.datasource_id !== datasource.datasource_id,
+                        ),
+                        datasource,
+                      ]);
+                      setDatasourceId(datasource.datasource_id);
+                      setSourcesError("");
+                      setSourcesRevision((value) => value + 1);
+                    }}
+                  />
+                </div>
+              )}
               <p className="field-hint" id="datasource-hint">
                 {selectedSource?.description ||
                   "从已登记的数据源中选择，连接器只读探查源数据。"}
@@ -173,7 +213,7 @@ export function NewRun() {
                 <button
                   type="button"
                   className="text-button source-refresh"
-                  disabled={submitting}
+                  disabled={submitting || uploading}
                   onClick={() => setSourcesRevision((value) => value + 1)}
                 >
                   <Icon name="refresh" size={14} />
@@ -227,7 +267,7 @@ export function NewRun() {
             <button
               className="button primary"
               type="submit"
-              disabled={submitting || !text.trim() || needsSource}
+              disabled={submitting || uploading || !text.trim() || needsSource}
             >
               {submitting ? (
                 <>

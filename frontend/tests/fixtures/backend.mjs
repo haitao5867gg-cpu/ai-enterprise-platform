@@ -1,6 +1,7 @@
 // Local contract fixture for proxy tests. No database, network dependency or model.
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 
 const runs = new Map();
 
@@ -14,6 +15,23 @@ createServer(async (request, response) => {
     return json({ detail: "Wrong API base path" }, 404);
   if (path === "/readyz")
     return json({ status: "ok", source: "contract-fixture" });
+  if (path === "/datasources/files" && request.method === "POST") {
+    const form = await new Request("http://fixture/upload", {
+      method: "POST",
+      headers: request.headers,
+      body: Readable.toWeb(request),
+      duplex: "half",
+    }).formData();
+    if (form.get("name") === "invalid")
+      return json({ detail: "文件「bad.csv」：表头重复" }, 422);
+    const files = await Promise.all(
+      form.getAll("files").map(async (file) => ({
+        name: file.name,
+        bytes: [...new Uint8Array(await file.arrayBuffer())],
+      })),
+    );
+    return json({ name: form.get("name"), files }, 201);
+  }
   if (path === "/datasources")
     return json([
       {

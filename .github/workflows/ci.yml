@@ -125,10 +125,23 @@ jobs:
       - if: failure()
         run: docker logs ${{ job.services.mysql.id }}
 
+  connector-files:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: connectors/files
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
   stack:
     # Boots the whole local stack the same way a developer does, then checks readiness.
     runs-on: ubuntu-latest
-    needs: [backend, frontend, connectors, connector-mysql]
+    needs: [backend, frontend, connectors, connector-mysql, connector-files]
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up --build -d --wait
@@ -156,6 +169,9 @@ jobs:
             python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["kind"] == "mysql" and d["name"] == "MySQL 示例库"))')
           curl -sf "http://localhost:8000/datasources/$id/tools" |
             python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert names == {"list_schemas", "list_tables", "describe_table", "sample_rows", "table_stats"}'
+
+      - name: Upload a CSV, verify registration and call all five files connector tools
+        run: scripts/smoke-files.sh
       - if: failure()
         run: docker compose logs
       - if: always()

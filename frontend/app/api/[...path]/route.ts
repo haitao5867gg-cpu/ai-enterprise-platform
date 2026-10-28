@@ -15,15 +15,17 @@ function jsonError(detail: string, status: number) {
 async function handle(request: Request, context: Context) {
   const { path } = await context.params;
   const endpoint = path.join("/");
+  const isUpload = endpoint === "datasources/files";
   const allowed =
     endpoint === "readyz" ||
     endpoint === "datasources" ||
+    isUpload ||
     endpoint === "runs" ||
     /^runs\/[a-zA-Z0-9_-]{1,128}(\/(resume|files\.zip|flow))?$/.test(endpoint);
   if (!allowed) return jsonError("Not found", 404);
   const isResume = path.length === 3 && path[2] === "resume";
-  const canGet = !isResume;
-  const canPost = endpoint === "runs" || isResume;
+  const canGet = !isResume && !isUpload;
+  const canPost = endpoint === "runs" || isResume || isUpload;
   if (
     (request.method === "GET" && !canGet) ||
     (request.method === "POST" && !canPost)
@@ -33,6 +35,15 @@ async function handle(request: Request, context: Context) {
       headers: { Allow: canGet ? "GET" : "POST" },
     });
   }
+
+  if (
+    isUpload &&
+    !request.headers
+      .get("content-type")
+      ?.toLowerCase()
+      .startsWith("multipart/form-data;")
+  )
+    return jsonError("请使用 multipart 表单上传文件", 415);
 
   if (endpoint !== "readyz" && isLocalMockEnabled()) {
     const { mockRuns } = await import("../../../lib/server/mock-runs");
@@ -59,19 +70,30 @@ async function handle(request: Request, context: Context) {
   }
 
   try {
+    const options: RequestInit & { duplex?: "half" } = {
+      method: request.method,
+      headers:
+        request.method === "POST"
+          ? {
+              "Content-Type": isUpload
+                ? request.headers.get("content-type")!
+                : "application/json",
+            }
+          : undefined,
+      body:
+        request.method === "POST"
+          ? isUpload
+            ? request.body
+            : await request.text()
+          : undefined,
+      cache: "no-store",
+      redirect: "manual",
+      signal: AbortSignal.timeout(isUpload ? 300_000 : 10_000),
+      ...(isUpload ? { duplex: "half" as const } : {}),
+    };
     const response = await fetch(
       `${base.href.replace(/\/$/, "")}/${endpoint}`,
-      {
-        method: request.method,
-        headers:
-          request.method === "POST"
-            ? { "Content-Type": "application/json" }
-            : undefined,
-        body: request.method === "POST" ? await request.text() : undefined,
-        cache: "no-store",
-        redirect: "manual",
-        signal: AbortSignal.timeout(10_000),
-      },
+      options,
     );
     const headers = new Headers({
       "Content-Type":

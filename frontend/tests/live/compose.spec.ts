@@ -93,3 +93,50 @@ test("Compose: reject with feedback → revised answer → approve → done", as
   ).toBeVisible();
   await capture(page, "run-list");
 });
+
+test("Compose: upload CSV selects a persistent file source and validation names the failing file", async ({
+  page,
+}) => {
+  await page.goto("/runs/new");
+  await page.getByLabel("应用", { exact: true }).selectOption("etl");
+  await page.getByRole("button", { name: "上传文件", exact: true }).click();
+  const panel = page.getByRole("region", { name: "上传文件面板" });
+  const name = `真实上传验收-${Date.now()}`;
+  await panel.getByLabel("数据集名称").fill(name);
+  await panel.getByLabel("选择多个文件，或拖拽到这里").setInputFiles({
+    name: "orders.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("id,status,amount\n1,paid,12.5\n2,open,20\n"),
+  });
+  const uploaded = page.waitForResponse((r) =>
+    r.url().endsWith("/api/datasources/files"),
+  );
+  await panel.getByRole("button", { name: "上传并创建数据源" }).click();
+  const response = await uploaded;
+  expect(response.status()).toBe(201);
+  const body = await response.json();
+  await expect(panel).toContainText("orders · 3 列 · 2 行");
+  await expect(page.getByLabel("数据源", { exact: true })).toHaveValue(
+    body.datasource.datasource_id,
+  );
+  await panel.getByLabel("数据集名称").fill(`${name}-bad`);
+  await panel.getByLabel("选择多个文件，或拖拽到这里").setInputFiles({
+    name: "bad.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("id,id\n1,2\n"),
+  });
+  await panel.getByRole("button", { name: "上传并创建数据源" }).click();
+  await expect(panel.getByRole("alert")).toContainText(
+    "文件「bad.csv」：表头重复",
+  );
+  await expect(page.getByLabel("数据源", { exact: true })).toHaveValue(
+    body.datasource.datasource_id,
+  );
+  await page.reload();
+  await page.getByLabel("应用", { exact: true }).selectOption("etl");
+  await expect(
+    page
+      .getByLabel("数据源", { exact: true })
+      .getByRole("option", { name: `${name} · file` }),
+  ).toBeAttached();
+});
