@@ -14,6 +14,7 @@ configuration is their whole structure, checked by ``aep.runtime.flow.check``.
 """
 
 import asyncio
+import copy
 import logging
 import sys
 import time
@@ -265,6 +266,10 @@ class AppCatalog:
                         {"datasource_id": d.datasource_id, "name": d.name, "kind": d.kind}
                         for d in await self._datasources.all()
                     ],
+                    "knowledge_bases": [
+                        {"kb_id": kb.kb_id, "name": kb.name, "document_count": kb.document_count}
+                        for kb in await self._runs.knowledge.all()
+                    ],
                 },
             }
         )
@@ -288,6 +293,31 @@ class AppCatalog:
                     found.setdefault(ref["name"], []).append(use)
         return found
 
+    async def knowledge_users(self, kb_id: str) -> list[str]:
+        """Apps whose current version uses this base; drafts and older versions do not count."""
+        await self._runs.ensure_flows()
+        apps = sorted(
+            {*self._runs.code_apps, *(a.app for a in await self._runs.flows.all(archived=True))}
+        )
+        found = []
+        for app in apps:
+            await self._runs.ensure_versions(app)
+            number = await self._runs.versions.current(app)
+            current = await self._runs.versions.version(app, number)
+            if current is None:
+                continue
+            config = self._config(app, current.config)
+            if app == "etl":
+                plan = (config.get("nodes") or {}).get("plan") or {}
+                bases = (plan.get("params") or {}).get("knowledge_bases", [])
+            elif app in self._runs.code_apps:
+                continue
+            else:
+                bases = flowfiles.knowledge_ids(config)
+            if kb_id in bases:
+                found.append(app)
+        return found
+
     # Changing
 
     async def save_draft(self, app: str, raw: Any, actor: str | None) -> None:
@@ -297,12 +327,23 @@ class AppCatalog:
             config = await self.check_flow(raw)
         else:
             config = await appconfig.validate_config(
-                raw, self._runs.options[app], self._runs.skills, await self.models()
+                raw,
+                self._runs.options[app],
+                self._runs.skills,
+                await self.models(),
+                self._runs.knowledge,
             )
         await self._runs.versions.save_draft(app, config, actor)
 
     def _env(self, models: list[str] | None, strict: bool = True) -> CheckEnv:
-        return CheckEnv(models, self._runs.skills, self._datasources, self._runs.tools, strict)
+        return CheckEnv(
+            models,
+            self._runs.skills,
+            self._datasources,
+            self._runs.tools,
+            strict,
+            self._runs.knowledge,
+        )
 
     async def check_flow(self, raw: Any, strict: bool = True) -> dict[str, Any]:
         return await check_config(raw, self._env(await self.models(), strict))
@@ -325,11 +366,13 @@ class AppCatalog:
         app's version."""
         if app in self._runs.code_apps or await self._runs.flows.get(app) is not None:
             raise AppExists(app)
+        needs_setup = False
         if source.get("template"):
             template = flowbuiltin.TEMPLATES.get(source["template"])
             if template is None:
                 raise BadSource(f"没有模板 {source['template']}")
             raw, note = template.config, f"从模板「{template.title}」新建"
+            needs_setup = "knowledge_base" in template.needs
         elif source.get("app"):
             original = source["app"]
             if await self._runs.kind(original) != "flow":
@@ -343,9 +386,28 @@ class AppCatalog:
             note = f"复制自 {original} 版本 {number}"
         else:
             raw, note = flowbuiltin.blank(), "新建空白应用"
-        config = await self.check_flow(raw)
+        # Built-in templates that need a base intentionally have an empty selection.
+        config = copy.deepcopy(raw) if needs_setup else await self.check_flow(raw)
+        await self._create_flow(app, title, summary, config, note, actor, needs_setup)
+
+    async def _create_flow(
+        self,
+        app: str,
+        title: str,
+        summary: str,
+        config: dict[str, Any],
+        note: str,
+        actor: str | None,
+        needs_setup: bool,
+    ) -> None:
+        """Create version 1 and, when resources need choosing, keep the config as a draft."""
+        initial = await self.check_flow(flowbuiltin.blank()) if needs_setup else config
         await self._runs.flows.create(app, title, summary, actor)
-        await self._runs.versions.ensure(app, config, note, actor)
+        await self._runs.versions.ensure(
+            app, initial, f"新建空白应用（{note}的配置在草稿里）" if needs_setup else note, actor
+        )
+        if needs_setup:
+            await self._runs.versions.save_draft(app, config, actor)
 
     async def _flow(self, app: str) -> None:
         if await self._check(app) != "flow":
@@ -404,7 +466,11 @@ class AppCatalog:
             for d in await self._datasources.all()
         }
         config = self._runs.flow_config(app, found.config)
-        text = flowfiles.dump(flow.title, flow.summary, app, version, config, sources)
+        bases = {
+            kb.kb_id: {"kb_id": kb.kb_id, "name": kb.name}
+            for kb in await self._runs.knowledge.all()
+        }
+        text = flowfiles.dump(flow.title, flow.summary, app, version, config, sources, bases)
         return f"{app}-v{version}.yaml", text
 
     async def _missing(
@@ -437,6 +503,21 @@ class AppCatalog:
                         "message": "没有这个数据源，请在节点里重新选择",
                     }
                 )
+        named_bases = {
+            kb.get("kb_id"): kb.get("name")
+            for kb in requires.get("knowledge_bases") or []
+            if isinstance(kb, dict)
+        }
+        for kb_id in flowfiles.knowledge_ids(config):
+            if await self._runs.knowledge.get(kb_id) is None:
+                out.append(
+                    {
+                        "kind": "knowledge_base",
+                        "kb_id": kb_id,
+                        "name": named_bases.get(kb_id),
+                        "message": "没有这个知识库，请在节点里重新选择",
+                    }
+                )
         models = await self.models()
         if models is not None:
             for model in dict.fromkeys(
@@ -465,15 +546,16 @@ class AppCatalog:
         config = await self.check_flow(data["config"], strict=False)
         problems = await self._missing(app, config, data["requires"])
         name = (title or data["title"] or app)[:50]
-        await self._runs.flows.create(app, name, (summary or data["summary"])[:500], actor)
-        if any(p["kind"] != "secret" for p in problems):
-            blank = await self.check_flow(flowbuiltin.blank())
-            await self._runs.versions.ensure(
-                app, blank, "新建空白应用（导入的配置在草稿里）", actor
-            )
-            await self._runs.versions.save_draft(app, config, actor)
-        else:
-            await self._runs.versions.ensure(app, config, "从文件导入", actor)
+        needs_setup = any(p["kind"] != "secret" for p in problems)
+        await self._create_flow(
+            app,
+            name,
+            (summary or data["summary"])[:500],
+            config,
+            "导入" if needs_setup else "从文件导入",
+            actor,
+            needs_setup,
+        )
         return problems
 
     async def import_draft(self, app: str, text: str, actor: str | None) -> list[dict[str, Any]]:
@@ -532,6 +614,8 @@ class AppCatalog:
             for loc, text in refs.strings(settings)
             if refs.find(text)
         }
+        if node["type"] == "knowledge":
+            rendered["query"] = refs.render(node["query"], shown)
         out: dict[str, Any] = {"outputs": None, "branch": None, "error": None, "rendered": rendered}
         started = time.monotonic()
         try:

@@ -252,6 +252,32 @@ def blank() -> dict[str, Any]:
     }
 
 
+def _knowledge_qa() -> dict[str, Any]:
+    config = blank()
+    config["graph"]["nodes"].insert(
+        1,
+        {
+            "id": "kb",
+            "type": "knowledge",
+            "title": "检索资料",
+            "knowledge_bases": [],
+            "query": "{{start.question}}",
+            "top_k": 5,
+            "min_score": 0.3,
+        },
+    )
+    config["graph"]["nodes"][2]["prompt"] = (
+        "根据下面的资料回答问题，用 [n] 标注出处。资料里没有答案就直说，不要编造。\n\n"
+        "资料：\n{{kb.context}}\n\n问题：{{start.question}}"
+    )
+    config["graph"]["edges"] = [
+        {"from": "start", "to": "kb"},
+        {"from": "kb", "to": "answer"},
+        {"from": "answer", "to": "end"},
+    ]
+    return config
+
+
 @dataclass(frozen=True)
 class Template:
     id: str
@@ -291,6 +317,13 @@ TEMPLATES = {
             "智能体调用所选数据源的只读工具查数据，再回答问题。",
             _datasource_qa(),
             needs=("datasource",),
+        ),
+        Template(
+            "knowledge-qa",
+            "知识问答",
+            "检索知识库里的资料，由模型回答问题并标注出处。",
+            _knowledge_qa(),
+            needs=("knowledge_base",),
         ),
     )
 }

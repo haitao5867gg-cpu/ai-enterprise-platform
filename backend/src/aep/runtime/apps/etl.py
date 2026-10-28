@@ -30,6 +30,7 @@ and how many times the model and the dev run are tried.
 import hashlib
 import json
 import operator
+from dataclasses import asdict
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -42,6 +43,8 @@ from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.plan import OUTPUT_FORMAT as PLAN_FORMAT
 from aep.etl.profile import MAX_TABLES, describe_for_model, known_values, profile_tables
+from aep.knowledge.citations import IndexedHit, context
+from aep.knowledge.search import search
 from aep.runtime import human
 from aep.runtime.appconfig import NodeConfig, NodeOptions, Param, builtin, node_config
 from aep.runtime.design import AppDesign, NodeDesign
@@ -75,7 +78,17 @@ CONFIG = {
         model=True,
         skills=("etl-plan",),
         contract=PLAN_FORMAT,
-        params=(_attempts("方案没通过平台校验时，带着问题让模型重写，总共最多几次"),),
+        params=(
+            _attempts("方案没通过平台校验时，带着问题让模型重写，总共最多几次"),
+            Param(
+                "knowledge_bases",
+                "参考知识库",
+                "knowledge_bases",
+                [],
+                "出方案前按需求检索这些知识库，方案里标出依据",
+            ),
+            Param("knowledge_top_k", "检索片段数", "integer", 5, min=1, max=20),
+        ),
     ),
     "codegen": NodeOptions(
         model=True,
@@ -107,9 +120,9 @@ DESIGN = AppDesign(
     "定好，模型只在“出方案”和“写代码”两个节点里生成内容，每次输出都要经过平台校验，不合格就"
     "带着问题让模型重做；方案和上线各有一个人工确认点。这样做是为了让企业 ETL 可控、可审批、"
     "可复现：同样的需求走同样的步骤，每一步做了什么都有记录。",
-    knowledge="没有接知识库。模型用到的知识是“探查数据”节点现场读到的源表结构、空值率、取值"
+    knowledge="模型用到的知识是“探查数据”节点现场读到的源表结构、空值率、取值"
     "分布和样本行，每次运行都重新读取，作为上下文交给模型；再加上写在提示词里的 Databricks "
-    "编码规范。",
+    "编码规范。出方案时也可以检索配置的参考知识库，并在方案中标注依据。",
     skills="“出方案”和“写代码”两个模型节点各用一个 Skill（etl-plan、etl-codegen），写的是"
     "怎么做；平台再在后面接上固定的输出格式要求。Skill 在 Skill 页面编辑和发布，应用版本锁定"
     "用哪个版本，改 Skill 不会影响已发布的应用版本。",
@@ -138,7 +151,7 @@ NODES = {
         outputs="ETL 方案（JSON）",
         model_step="plan",
         prompt=builtin(CONFIG["plan"]).prompt(),
-        knowledge="探查结果（源表结构、统计、取值分布、样本行），没有知识库",
+        knowledge="探查结果（源表结构、统计、取值分布、样本行），以及所选参考知识库的检索片段",
         checks="平台校验方案：只能用探查到的表和列，目标表名合法，比较用到的取值必须在数据里"
         "出现过（否则要写进假设让人确认）",
         retry="校验不通过时把问题告诉模型重写，次数在应用配置里设定（默认最多 3 次）",
@@ -228,6 +241,7 @@ class EtlState(TypedDict, total=False):
     dev_runs: int
     approvals: Annotated[list[dict[str, Any]], operator.add]
     result: dict[str, Any] | None
+    warnings: list[str]
 
 
 def _plan_message(plan: EtlPlan) -> str:
@@ -393,10 +407,37 @@ def build(ctx: AppContext) -> StateGraph:
             f"需求：{inp['request']}\n期望的代码语言：{language}\n\n"
             f"源表（只能使用这些）：\n{describe_for_model(state['profile'])}"
         )
+        references: list[IndexedHit] = []
+        warnings = []
+        if node.params["knowledge_bases"]:
+            try:
+                hits = await search(
+                    ctx.knowledge,
+                    ctx.llm_client,
+                    node.params["knowledge_bases"],
+                    inp["request"],
+                    node.params["knowledge_top_k"],
+                )
+                references = [IndexedHit(**asdict(hit), index=i) for i, hit in enumerate(hits, 1)]
+            except Exception as exc:  # noqa: BLE001 - reference material is optional
+                warnings.append(f"知识库检索失败，继续生成方案：{exc}")
+            if references:
+                ask += (
+                    "\n\n参考资料：\n"
+                    + context(references)
+                    + "\n\n可以在 summary、assumptions、目标表和字段说明里用 [n] 标注依据；"
+                    "没有资料依据的内容不要编号。"
+                )
         prompt = [{"role": "system", "content": node.prompt()}, {"role": "user", "content": ask}]
         if state.get("feedback"):
             prompt.append(
-                {"role": "assistant", "content": json.dumps(state["plan"], ensure_ascii=False)}
+                {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {k: v for k, v in state["plan"].items() if k != "references"},
+                        ensure_ascii=False,
+                    ),
+                }
             )
             prompt.append({"role": "user", "content": f"用户的修改意见：{state['feedback']}"})
         sources = [t["name"] for t in state["profile"]]
@@ -404,7 +445,9 @@ def build(ctx: AppContext) -> StateGraph:
         for attempt in range(attempts):
             reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "plan", node))
             try:
-                result = validate_plan(llm.parse_json(reply.text), sources, known, attempt > 0)
+                result = validate_plan(
+                    llm.parse_json(reply.text), sources, known, attempt > 0, references
+                )
                 break
             except (ValueError, PlanError) as exc:
                 if attempt == attempts - 1:
@@ -418,6 +461,7 @@ def build(ctx: AppContext) -> StateGraph:
         return {
             "plan": result.model_dump(),
             "feedback": None,
+            "warnings": warnings,
             "messages": [{"role": "assistant", "content": _plan_message(result)}],
         }
 

@@ -7,12 +7,18 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 from aep.config import Settings, get_settings
+from aep.datasources import MemoryDataSourceStore
 from aep.knowledge.search import search
 from aep.knowledge.store import Document, MemoryKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
 from aep.main import create_app
+from aep.runtime.catalog import AppCatalog
+from aep.runtime.registry import AppContext, default_apps
+from aep.runtime.service import RunService
+from aep.runtime.store import MemoryRunStore
 from tests.conftest import FakeGateway
 from tests.test_knowledge_extract import write_pdf
 
@@ -51,6 +57,14 @@ async def api(tmp_path, gateway):
     app.state.knowledge = store
     app.state.knowledge_worker = worker
     app.state.llm_client = gateway.client
+    sources = MemoryDataSourceStore()
+    service = RunService(
+        MemoryRunStore(),
+        InMemorySaver(),
+        default_apps(),
+        AppContext(gateway.client, settings, knowledge=store, datasources=sources),
+    )
+    app.state.catalog = AppCatalog(service, sources, settings)
     app.dependency_overrides[get_settings] = lambda: settings
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

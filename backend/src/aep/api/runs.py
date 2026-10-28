@@ -86,6 +86,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
+from aep.knowledge.citations import Source
 from aep.runtime.service import (
     CommentRequired,
     InvalidDecision,
@@ -170,6 +171,7 @@ class RunDetail(BaseModel):
     error: str | None
     # Langfuse trace of this run; null when tracing is off.
     trace_id: str | None = None
+    sources: list[Source] = []
 
 
 class FlowNode(BaseModel):
@@ -238,6 +240,7 @@ def _detail(v: RunView) -> RunDetail:
         result=v.result,
         error=v.record.error,
         trace_id=v.trace_id,
+        sources=v.sources,
     )
 
 

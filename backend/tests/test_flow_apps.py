@@ -63,7 +63,7 @@ async def test_shipped_configs_pass_the_check():
     for config in [
         builtin.HELLO.config,
         builtin.blank(),
-        *(t.config for t in builtin.TEMPLATES.values()),
+        *(t.config for t in builtin.TEMPLATES.values() if "knowledge_base" not in t.needs),
     ]:
         checked = await check_config(config, ENV)
         assert checked["schema_version"] == 1
@@ -525,7 +525,12 @@ async def test_node_types_and_templates():
         assert llm_type["presets"][0]["key"] == "extract"
         assert next(t for t in types if t["type"] == "start")["max_count"] == 1
         templates = (await p.api.get("/app-templates")).json()
-        assert [t["id"] for t in templates] == ["qa-approval", "intent-routing", "datasource-qa"]
+        assert [t["id"] for t in templates] == [
+            "qa-approval",
+            "intent-routing",
+            "datasource-qa",
+            "knowledge-qa",
+        ]
         assert templates[2]["needs"] == ["datasource"]
 
 

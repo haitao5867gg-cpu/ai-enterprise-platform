@@ -12,6 +12,7 @@ from aep.assets import AssetRepo, AssetStore, MemoryAssetStore
 from aep.config import Settings
 from aep.databricks import DevTarget
 from aep.datasources import DataSourceStore, MemoryDataSourceStore
+from aep.knowledge.store import KnowledgeStore, MemoryKnowledgeStore
 from aep.tools.mcp import McpTools
 
 
@@ -33,6 +34,7 @@ class AppContext:
     databricks: DevTarget | None = None
     assets: AssetRepo | None = None
     asset_store: AssetStore = field(default_factory=MemoryAssetStore)
+    knowledge: KnowledgeStore = field(default_factory=MemoryKnowledgeStore)
 
 
 AppBuilder = Callable[[AppContext], StateGraph]

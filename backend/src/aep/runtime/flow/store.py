@@ -35,7 +35,7 @@ class FlowAppStore(Protocol):
     async def ensure(self, app: str, title: str, summary: str) -> None: ...
     async def create(self, app: str, title: str, summary: str, actor: str | None) -> FlowApp: ...
     async def get(self, app: str) -> FlowApp | None: ...
-    async def all(self) -> list[FlowApp]: ...
+    async def all(self, archived: bool = False) -> list[FlowApp]: ...
     async def update(self, app: str, title: str | None, summary: str | None) -> None: ...
     async def archive(self, app: str) -> None: ...
 
@@ -62,9 +62,9 @@ class MemoryFlowAppStore:
         """The app, archived or not."""
         return self._apps.get(app)
 
-    async def all(self) -> list[FlowApp]:
-        """The apps that are not archived."""
-        return [a for a in self._apps.values() if a.archived_at is None]
+    async def all(self, archived: bool = False) -> list[FlowApp]:
+        """Active apps, optionally including archived apps for reference checks."""
+        return [a for a in self._apps.values() if archived or a.archived_at is None]
 
     async def update(self, app: str, title: str | None, summary: str | None) -> None:
         old = self._apps[app]
@@ -135,12 +135,13 @@ class PostgresFlowAppStore:
             row = await cur.fetchone()
             return FlowApp(**row) if row else None
 
-    async def all(self) -> list[FlowApp]:
+    async def all(self, archived: bool = False) -> list[FlowApp]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
-                f"SELECT {COLUMNS} FROM apps WHERE tenant_id = %s AND archived_at IS NULL"
+                f"SELECT {COLUMNS} FROM apps WHERE tenant_id = %s"
+                " AND (%s OR archived_at IS NULL)"
                 " ORDER BY app",
-                (DEFAULT_TENANT,),
+                (DEFAULT_TENANT, archived),
             )
             return [FlowApp(**row) for row in await cur.fetchall()]
 
