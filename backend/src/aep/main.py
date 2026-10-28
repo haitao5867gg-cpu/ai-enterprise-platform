@@ -21,7 +21,7 @@ from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
 from aep.runtime.catalog import AppCatalog, GatewayModels
-from aep.runtime.flow.store import PostgresFlowAppStore
+from aep.runtime.flow.store import PostgresFlowAppStore, PostgresSecretStore
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
@@ -86,6 +86,8 @@ def create_app() -> FastAPI:
         await version_store.setup()
         flow_store = PostgresFlowAppStore(pool)
         await flow_store.setup()
+        secret_store = PostgresSecretStore(pool)
+        await secret_store.setup()
         asset_repo = AssetRepo.from_settings(settings)
         tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
@@ -107,6 +109,7 @@ def create_app() -> FastAPI:
             versions=version_store,
             skills=skill_store,
             flows=flow_store,
+            secrets=secret_store,
         )
         catalog = AppCatalog(service, sources, settings, GatewayModels(llm_client))
         if tracer.enabled:

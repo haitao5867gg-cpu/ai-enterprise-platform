@@ -95,7 +95,7 @@ def _check_env(raw: Any, add: Any) -> dict[str, Any]:
     return {"vars": variables, "secrets": secrets}
 
 
-def _check_common(node: dict[str, Any], p: Problems) -> None:
+def check_common(node: dict[str, Any], p: Problems) -> None:
     title = node.get("title")
     if not isinstance(title, str) or not title.strip():
         p.add(("title",), "标题不能为空")
@@ -251,7 +251,7 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
             p.add(("type",), "不认识的节点类型")
             problems.extend(p.found)
             continue
-        _check_common(node, p)
+        check_common(node, p)
         await spec.check(node, p, env)
         problems.extend(p.found)
         by_id[node_id] = node
@@ -364,7 +364,10 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
                     if name not in env_keys:
                         add(where, f"没有常量 {name}")
                 elif target == refs.SECRET:
-                    add(where, "密钥只能写在工具节点的参数里")
+                    if node["type"] != "tool" or loc[:1] != ("args",):
+                        add(where, "密钥只能写在工具节点的参数里")
+                    elif name not in environment["secrets"]:
+                        add(where, f"没有声明密钥 {name}，请先在应用的密钥里添加")
                 elif target not in by_id:
                     add(where, f"没有节点 {target}")
                 else:

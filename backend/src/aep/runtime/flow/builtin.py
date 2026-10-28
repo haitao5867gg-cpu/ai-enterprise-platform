@@ -170,6 +170,52 @@ def _intent_routing() -> dict[str, Any]:
     }
 
 
+def _datasource_qa() -> dict[str, Any]:
+    """An agent answers a question from a data source picked when the run starts."""
+    return {
+        "schema_version": 1,
+        "env": {"vars": [], "secrets": []},
+        "graph": {
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "start",
+                    "title": "开始",
+                    "inputs": [
+                        {"key": "question", "label": "问题", "type": "textarea", "required": True},
+                        {
+                            "key": "datasource",
+                            "label": "数据源",
+                            "type": "datasource",
+                            "required": True,
+                        },
+                    ],
+                },
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "title": "查数据并回答",
+                    "model": None,
+                    "skills": [],
+                    "task": (
+                        "根据数据源里的数据回答问题：{{start.question}}\n"
+                        "先看有哪些表和字段，再查需要的数据；回答时说明用到了哪些表和数据。"
+                    ),
+                    "tools": [{"datasource": "{{start.datasource}}", "tools": None}],
+                    "max_steps": 8,
+                },
+                {
+                    "id": "end",
+                    "type": "end",
+                    "title": "结束",
+                    "outputs": [{"key": "answer", "from": ["{{agent.text}}"]}],
+                },
+            ],
+            "edges": [{"from": "start", "to": "agent"}, {"from": "agent", "to": "end"}],
+        },
+    }
+
+
 def blank() -> dict[str, Any]:
     """A new app: start → model → end, runnable as it is."""
     return {
@@ -238,6 +284,13 @@ TEMPLATES = {
             "意图分类路由",
             "按问题类型分流：售后问题起草回复并请客服确认，产品咨询直接回答，其他问题转人工。",
             _intent_routing(),
+        ),
+        Template(
+            "datasource-qa",
+            "数据源问答",
+            "智能体调用所选数据源的只读工具查数据，再回答问题。",
+            _datasource_qa(),
+            needs=("datasource",),
         ),
     )
 }

@@ -27,13 +27,16 @@ from aep import evals
 from aep.config import Settings
 from aep.datasources import DataSourceStore
 from aep.runtime import appconfig, design
+from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import builtin as flowbuiltin
+from aep.runtime.flow import files as flowfiles
 from aep.runtime.flow import graph as flowgraph
-from aep.runtime.flow.check import check_config
-from aep.runtime.flow.nodes import CheckEnv
+from aep.runtime.flow import refs
+from aep.runtime.flow.check import check_common, check_config
+from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems
 from aep.runtime.flow.store import AppExists
 from aep.runtime.service import RunService, RunView
-from aep.runtime.versions import AppVersion, Draft
+from aep.runtime.versions import AppVersion, Draft, VersionNotFound
 from aep.skills import Skill
 
 log = logging.getLogger(__name__)
@@ -60,6 +63,19 @@ class NotAFlowApp(Exception):
 
 class BadSource(Exception):
     """A new app's source (template, app or version) does not exist."""
+
+
+class NodeNotFound(LookupError):
+    pass
+
+
+class NotTestable(Exception):
+    """This node cannot be run on its own; the message says why."""
+
+
+# How long a node tried on its own may take.
+NODE_TEST_SECONDS = 120
+MASK = "******"
 
 
 def _now() -> str:
@@ -230,7 +246,7 @@ class AppCatalog:
                     for n in nodes
                 ],
                 "edges": edges,
-                "secrets": [],
+                "secrets": await self._secrets(app, current, draft),
                 "current": self._version_out(current, current.version),
                 "draft": self._draft_out(draft) if draft else None,
                 "options": {
@@ -285,8 +301,11 @@ class AppCatalog:
             )
         await self._runs.versions.save_draft(app, config, actor)
 
-    async def check_flow(self, raw: Any) -> dict[str, Any]:
-        return await check_config(raw, CheckEnv(await self.models(), self._runs.skills))
+    def _env(self, models: list[str] | None, strict: bool = True) -> CheckEnv:
+        return CheckEnv(models, self._runs.skills, self._datasources, self._runs.tools, strict)
+
+    async def check_flow(self, raw: Any, strict: bool = True) -> dict[str, Any]:
+        return await check_config(raw, self._env(await self.models(), strict))
 
     async def discard_draft(self, app: str) -> None:
         await self._check(app)
@@ -339,6 +358,194 @@ class AppCatalog:
     async def archive(self, app: str) -> None:
         await self._flow(app)
         await self._runs.flows.archive(app)
+
+    # Secrets
+
+    async def _secrets(
+        self, app: str, current: AppVersion, draft: Draft | None
+    ) -> list[dict[str, Any]]:
+        """The secrets the current version or the draft declares, and those that are set."""
+        stored = {s.name: s for s in await self._runs.secrets.names(app)}
+        declared: list[str] = []
+        for config in [current.config, draft.config if draft else {}]:
+            for name in (config.get("env") or {}).get("secrets") or []:
+                if name not in declared:
+                    declared.append(name)
+        names = declared + sorted(set(stored) - set(declared))
+        return [
+            {
+                "name": name,
+                "set": name in stored,
+                "updated_at": stored[name].updated_at.isoformat() if name in stored else None,
+            }
+            for name in names
+        ]
+
+    async def set_secret(self, app: str, name: str, value: str) -> None:
+        await self._flow(app)
+        await self._runs.secrets.set(app, name, value)
+
+    async def delete_secret(self, app: str, name: str) -> None:
+        await self._flow(app)
+        await self._runs.secrets.delete(app, name)
+
+    # Files
+
+    async def export(self, app: str, version: int) -> tuple[str, str]:
+        """The version as a YAML file: its name and its text."""
+        await self._flow(app)
+        found = await self._runs.versions.version(app, version)
+        if found is None:
+            raise VersionNotFound(f"{app} v{version}")
+        flow = await self._runs.flows.get(app)
+        assert flow is not None
+        sources = {
+            d.datasource_id: {"datasource_id": d.datasource_id, "name": d.name, "kind": d.kind}
+            for d in await self._datasources.all()
+        }
+        config = self._runs.flow_config(app, found.config)
+        text = flowfiles.dump(flow.title, flow.summary, app, version, config, sources)
+        return f"{app}-v{version}.yaml", text
+
+    async def _missing(
+        self, app: str, config: dict[str, Any], requires: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """What a configuration names that this platform does not have."""
+        out: list[dict[str, Any]] = []
+        for name, version in flowgraph.skill_refs(config):
+            if await self._runs.skills.version(name, version) is None:
+                out.append(
+                    {
+                        "kind": "skill",
+                        "name": name,
+                        "version": version,
+                        "message": "没有这个 Skill 版本",
+                    }
+                )
+        named = {
+            d.get("datasource_id"): d.get("name")
+            for d in requires.get("datasources") or []
+            if isinstance(d, dict)
+        }
+        for source in flowfiles.datasource_ids(config):
+            if await self._datasources.get(source) is None:
+                out.append(
+                    {
+                        "kind": "datasource",
+                        "datasource_id": source,
+                        "name": named.get(source),
+                        "message": "没有这个数据源，请在节点里重新选择",
+                    }
+                )
+        models = await self.models()
+        if models is not None:
+            for model in dict.fromkeys(
+                n["model"] for n in flowgraph.nodes(config) if n.get("model")
+            ):
+                if model not in models:
+                    out.append(
+                        {"kind": "model", "name": model, "message": "模型网关上没有这个别名"}
+                    )
+        for name in (config.get("env") or {}).get("secrets") or []:
+            if await self._runs.secrets.get(app, name) is None:
+                out.append(
+                    {"kind": "secret", "name": name, "message": "密钥没有值，请在应用设置里填写"}
+                )
+        return out
+
+    async def import_app(
+        self, app: str, title: str | None, summary: str | None, text: str, actor: str | None
+    ) -> list[dict[str, Any]]:
+        """A new flow app from a file. When the file names things this platform lacks
+        (secrets aside), version 1 is a blank app and the file's configuration waits in
+        the draft until it is fixed."""
+        data = flowfiles.load(text)
+        if app in self._runs.code_apps or await self._runs.flows.get(app) is not None:
+            raise AppExists(app)
+        config = await self.check_flow(data["config"], strict=False)
+        problems = await self._missing(app, config, data["requires"])
+        name = (title or data["title"] or app)[:50]
+        await self._runs.flows.create(app, name, (summary or data["summary"])[:500], actor)
+        if any(p["kind"] != "secret" for p in problems):
+            blank = await self.check_flow(flowbuiltin.blank())
+            await self._runs.versions.ensure(
+                app, blank, "新建空白应用（导入的配置在草稿里）", actor
+            )
+            await self._runs.versions.save_draft(app, config, actor)
+        else:
+            await self._runs.versions.ensure(app, config, "从文件导入", actor)
+        return problems
+
+    async def import_draft(self, app: str, text: str, actor: str | None) -> list[dict[str, Any]]:
+        """A file imported as the draft of an existing flow app."""
+        await self._flow(app)
+        data = flowfiles.load(text)
+        config = await self.check_flow(data["config"], strict=False)
+        problems = await self._missing(app, config, data["requires"])
+        await self._runs.versions.save_draft(app, config, actor)
+        return problems
+
+    # Trying one node
+
+    async def test_node(
+        self, app: str, node_id: str, raw: dict[str, Any] | None, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Run one node of ``raw`` (else the draft, else the current version) with the
+        variables it reads set to ``values`` (keyed ``node.field``). Nothing is kept."""
+        await self._flow(app)
+        if raw is None:
+            draft = await self._runs.versions.draft(app)
+            if draft is not None:
+                raw = draft.config
+            else:
+                number = await self._runs.versions.current(app)
+                found = await self._runs.versions.version(app, number)
+                raw = found.config if found else {}
+        config = self._runs.flow_config(app, raw)
+        nodes = (config.get("graph") or {}).get("nodes") or []
+        node = next((n for n in nodes if isinstance(n, dict) and n.get("id") == node_id), None)
+        if node is None:
+            raise NodeNotFound(node_id)
+        spec = TYPES.get(node.get("type"))  # type: ignore[arg-type]
+        if spec is None or node["type"] in ("start", "human", "end"):
+            raise NotTestable("开始、人工和结束节点不能单独试跑")
+        p = Problems(("config", "graph", "nodes", node_id))
+        check_common(node, p)
+        await spec.check(node, p, self._env(await self.models()))
+        if p.found:
+            raise ConfigError(p.found)
+        rt = await self._runs.runtime({**config, "graph": {"nodes": [node], "edges": []}}, app)
+        state: dict[str, Any] = {"input": {}, "vars": {}}
+        for key, value in values.items():
+            source, _, field = key.partition(".")
+            state["vars"].setdefault(source, {})[field] = value
+        get = rt.lookup(state)
+
+        def shown(target: str, name: str) -> Any:
+            return MASK if target == refs.SECRET else get(target, name)
+
+        settings = {k: v for k, v in node.items() if k not in ("id", "type", "title", "ui")}
+        rendered = {
+            ".".join(str(part) for part in loc): refs.render(text, shown)
+            for loc, text in refs.strings(settings)
+            if refs.find(text)
+        }
+        out: dict[str, Any] = {"outputs": None, "branch": None, "error": None, "rendered": rendered}
+        started = time.monotonic()
+        try:
+            outcome = await asyncio.wait_for(spec.run(node, state, rt), NODE_TEST_SECONDS)
+            out |= {"status": "done", "outputs": outcome.outputs, "branch": outcome.branch}
+        except NodeFailure as exc:
+            out |= {"status": "error", "error": {"type": exc.type, "message": exc.message}}
+        except TimeoutError:
+            message = f"超过 {NODE_TEST_SECONDS} 秒没有结束"
+            out |= {"status": "error", "error": {"type": "timeout", "message": message}}
+        except Exception as exc:  # noqa: BLE001 - the person sees what went wrong
+            kind = "tool_error" if spec.kind == "tool" else "model_error"
+            message = str(exc) or type(exc).__name__
+            out |= {"status": "error", "error": {"type": kind, "message": message}}
+        out["duration_ms"] = round((time.monotonic() - started) * 1000)
+        return out
 
     async def publish(self, app: str, note: str, actor: str | None) -> None:
         await self._check(app)

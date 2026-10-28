@@ -12,12 +12,15 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import openai
 from openai import AsyncOpenAI
 
 from aep import llm
+from aep.datasources import DataSource, DataSourceStore
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.skills import SkillContent, SkillStore
+from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo
 
 ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 MAX_TEXT = 20000
@@ -63,21 +66,30 @@ class Problems:
 @dataclass(frozen=True)
 class CheckEnv:
     """What checking a node needs: the gateway's model aliases (None: unknown, any
-    alias is taken) and the skills."""
+    alias is taken), the skills and the data sources (with their connectors' tools).
+    Not ``strict``: only the shape is checked, not whether what it names exists (an
+    imported app may name skills or data sources this platform does not have)."""
 
     models: list[str] | None
     skills: SkillStore
+    datasources: DataSourceStore | None = None
+    tools: McpTools | None = None
+    strict: bool = True
 
 
 @dataclass
 class Runtime:
     """What running a node needs. ``skills`` holds the text of every skill version the
-    app uses, loaded before the run; ``env`` the app's constants."""
+    app uses, loaded before the run; ``env`` the app's constants; ``secret`` reads
+    one of the app's secrets when a tool needs it."""
 
     llm_client: AsyncOpenAI
     default_model: str
     skills: dict[tuple[str, int], SkillContent]
     env: dict[str, Any]
+    datasources: DataSourceStore | None = None
+    tools: McpTools | None = None
+    secret: Callable[[str], Awaitable[str | None]] | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -100,11 +112,40 @@ class Runtime:
         model = node.get("model") or self.default_model
         try:
             reply = await llm.chat(self.llm_client, messages, model=model)
-        except TimeoutError as exc:
+        except (TimeoutError, openai.APITimeoutError) as exc:
             raise NodeFailure("timeout", "模型没有在规定时间内回答") from exc
         except Exception as exc:  # noqa: BLE001 - any gateway failure is the model's
             raise NodeFailure("model_error", f"调用模型失败：{exc}") from exc
         return reply.text
+
+    async def source(self, value: Any) -> DataSource:
+        found = (
+            await self.datasources.get(value)
+            if self.datasources and isinstance(value, str) and value
+            else None
+        )
+        if found is None:
+            raise NodeFailure("tool_error", f"没有数据源 {refs.as_text(value) or '（未选择）'}")
+        return found
+
+    async def call(self, source: DataSource, tool: str, args: dict[str, Any]) -> Any:
+        if self.tools is None:
+            raise NodeFailure("tool_error", "平台没有配置工具调用")
+        try:
+            return await self.tools.call(source.connector_url, tool, args)
+        except ConnectorUnavailable as exc:
+            kind = "timeout" if isinstance(exc.__cause__, TimeoutError) else "tool_error"
+            raise NodeFailure(kind, f"连不上数据源「{source.name}」：{exc}") from exc
+        except ToolError as exc:
+            raise NodeFailure("tool_error", f"工具报错：{exc}") from exc
+
+    async def list_tools(self, source: DataSource) -> list[ToolInfo]:
+        if self.tools is None:
+            raise NodeFailure("tool_error", "平台没有配置工具调用")
+        try:
+            return await self.tools.list_tools(source.connector_url)
+        except ToolError as exc:
+            raise NodeFailure("tool_error", f"读不到数据源「{source.name}」的工具：{exc}") from exc
 
 
 @dataclass
@@ -224,7 +265,7 @@ async def _model_and_skills(node: dict[str, Any], p: Problems, env: CheckEnv) ->
     if model is not None:
         if not isinstance(model, str) or not model.strip():
             p.add(("model",), "模型别名不能为空")
-        elif env.models is not None and model not in env.models:
+        elif env.strict and env.models is not None and model not in env.models:
             p.add(("model",), f"模型网关上没有 {model}")
     chosen = node.get("skills", [])
     if not isinstance(chosen, list):
@@ -238,7 +279,7 @@ async def _model_and_skills(node: dict[str, Any], p: Problems, env: CheckEnv) ->
             p.add(("skills", i), "每项要有 name 和整数 version")
         elif name in seen:
             p.add(("skills", i), f"Skill {name} 重复")
-        elif await env.skills.version(name, version) is None:
+        elif env.strict and await env.skills.version(name, version) is None:
             p.add(("skills", i), f"Skill {name} 没有已发布的版本 {version}")
         else:
             seen.add(name)
@@ -656,6 +697,198 @@ async def run_end(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
     return Outcome({}, result=result)
 
 
+# tool and agent: data source tools
+
+# How much of a tool's result goes back to the agent's model.
+MAX_TOOL_RESULT = 8000
+
+
+async def _check_source(
+    value: Any,
+    loc: Loc,
+    p: Problems,
+    env: CheckEnv,
+    tools: list[str] | None = None,
+    tools_loc: Loc = (),
+) -> None:
+    """A data source setting: its id, or one reference (``{{start.datasource}}``); with a
+    literal id, the tools named must be on its connector (when it answers)."""
+    if not isinstance(value, str) or not value.strip():
+        p.add(loc, "要选择数据源")
+        return
+    if refs.whole(value) is not None or not env.strict or env.datasources is None:
+        return
+    source = await env.datasources.get(value)
+    if source is None:
+        p.add(loc, f"没有数据源 {value}")
+        return
+    if not tools or env.tools is None:
+        return
+    try:
+        offered = {t.name for t in await env.tools.list_tools(source.connector_url)}
+    except ToolError:
+        return  # The connector is down now; the run reports it if it still is.
+    for name in tools:
+        if name not in offered:
+            p.add(tools_loc, f"数据源「{source.name}」没有工具 {name}")
+
+
+async def check_tool(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+    tool = node.get("tool")
+    if not isinstance(tool, str) or not tool.strip():
+        p.add(("tool",), "要选择工具")
+        tool = None
+    await _check_source(
+        node.get("datasource"), ("datasource",), p, env, [tool] if tool else None, ("tool",)
+    )
+    if not isinstance(node.get("args", {}), dict):
+        p.add(("args",), "参数必须是对象")
+
+
+async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
+    get = rt.lookup(state)
+    args = node.get("args") or {}
+    secrets: dict[str, str] = {}
+    for _, text in refs.strings(args):
+        for target, name in refs.find(text):
+            if target != refs.SECRET or name in secrets:
+                continue
+            value = await rt.secret(name) if rt.secret else None
+            if value is None:
+                raise NodeFailure("tool_error", f"密钥 {name} 没有值，请在应用设置里填写")
+            secrets[name] = value
+
+    def lookup(target: str, name: str) -> Any:
+        return secrets[name] if target == refs.SECRET else get(target, name)
+
+    source = await rt.source(refs.resolve(node["datasource"], get))
+    result = await rt.call(source, node["tool"], refs.resolve(args, lookup))
+    return Outcome({"result": result})
+
+
+async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+    await _model_and_skills(node, p, env)
+    _text(node, "task", p, "任务说明", required=True)
+    entries = _list(node, "tools", p, "允许的工具", 1, 10)
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            p.add(("tools", i), "每项要有 datasource 和 tools")
+            continue
+        names = entry.get("tools")
+        if names is not None and (
+            not isinstance(names, list) or not all(isinstance(n, str) for n in names) or not names
+        ):
+            p.add(("tools", i, "tools"), "tools 是工具名列表，或 null 表示全部工具")
+            names = None
+        await _check_source(
+            entry.get("datasource"),
+            ("tools", i, "datasource"),
+            p,
+            env,
+            names,
+            ("tools", i, "tools"),
+        )
+    steps = node.get("max_steps", 8)
+    if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 20:
+        p.add(("max_steps",), "最多步数要在 1–20 之间")
+
+
+AGENT_PROTOCOL = """每次只输出一个 JSON 对象，三选一：
+- 调用工具：{"action": "call", "tool": "工具代号", "args": {参数}}
+- 读取一个 Skill 的全文：{"action": "read_skill", "name": "Skill 名称"}
+- 给出最终回答：{"action": "answer", "text": "回答"}
+工具返回的结果会发给你。数据不够时继续调用工具，够了就回答，不要编造数据。"""
+
+
+async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
+    get = rt.lookup(state)
+    offered: dict[str, tuple[DataSource, ToolInfo]] = {}
+    for entry in node["tools"]:
+        source = await rt.source(refs.resolve(entry["datasource"], get))
+        wanted = entry.get("tools")
+        for tool in await rt.list_tools(source):
+            if wanted is None or tool.name in wanted:
+                offered[f"t{len(offered) + 1}"] = (source, tool)
+    if not offered:
+        raise NodeFailure("tool_error", "选的数据源上没有可用的工具")
+    lines = [
+        f"- {key}：数据源「{source.name}」的 {tool.name}。{tool.description}"
+        f" 参数：{json.dumps(tool.input_schema, ensure_ascii=False)}"
+        for key, (source, tool) in offered.items()
+    ]
+    skills = {s["name"]: rt.skills[(s["name"], s["version"])] for s in node.get("skills") or []}
+    parts = [AGENT_PROTOCOL, "可以用的工具：\n" + "\n".join(lines)]
+    if skills:
+        listed = "\n".join(f"- {name}：{c.description}" for name, c in skills.items())
+        parts.append("可以读取的 Skill（需要时用 read_skill 读全文）：\n" + listed)
+    messages = [
+        {"role": "system", "content": "\n\n".join(parts)},
+        {"role": "user", "content": refs.render(node["task"], get)},
+    ]
+
+    def valid(data: Any) -> str | None:
+        action = data.get("action") if isinstance(data, dict) else None
+        if action == "answer":
+            return None if isinstance(data.get("text"), str) else "answer 要有文字 text"
+        if action == "call":
+            if data.get("tool") not in offered:
+                return f"没有工具 {data.get('tool')}，只能用 " + "、".join(offered)
+            return None if isinstance(data.get("args", {}), dict) else "args 必须是对象"
+        if action == "read_skill":
+            return None if data.get("name") in skills else f"没有 Skill {data.get('name')}"
+        return "action 只能是 call、read_skill 或 answer"
+
+    limit = node.get("max_steps", 8)
+    steps: list[dict[str, Any]] = []
+    forced = False
+    while True:
+        data = await _ask_json(rt, node, messages, valid)
+        said = {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)}
+        if data["action"] == "answer":
+            text = data["text"]
+            return Outcome(
+                {"text": text, "steps": steps}, messages=[{"role": "assistant", "content": text}]
+            )
+        if len(steps) >= limit:
+            if forced:
+                raise NodeFailure("step_limit", f"调用了 {limit} 次工具仍没有给出回答")
+            forced = True
+            messages += [
+                said,
+                {
+                    "role": "user",
+                    "content": "已经达到步数上限，请根据已有信息直接回答（action 为 answer）。",
+                },
+            ]
+            continue
+        if data["action"] == "read_skill":
+            content = skills[data["name"]]
+            messages += [
+                said,
+                {"role": "user", "content": f"Skill {data['name']}：\n{content.text()}"},
+            ]
+            steps.append(
+                {
+                    "tool": "read_skill",
+                    "datasource": None,
+                    "args": {"name": data["name"]},
+                    "error": None,
+                }
+            )
+            continue
+        source, tool = offered[data["tool"]]
+        args = data.get("args") or {}
+        step = {"tool": tool.name, "datasource": source.datasource_id, "args": args, "error": None}
+        try:
+            result = await rt.call(source, tool.name, args)
+            reply = json.dumps(result, ensure_ascii=False, default=str)[:MAX_TOOL_RESULT]
+        except NodeFailure as exc:
+            step["error"] = exc.message
+            reply = f"出错了：{exc.message}"
+        steps.append(step)
+        messages += [said, {"role": "user", "content": f"工具 {data['tool']} 返回：\n{reply}"}]
+
+
 def _none(node: dict[str, Any]) -> list[str] | None:
     return None
 
@@ -818,6 +1051,40 @@ TYPES: dict[str, NodeType] = {
                 for o in node.get("options") or []
                 if isinstance(o, dict) and "key" in o
             },
+        ),
+        NodeType(
+            "tool",
+            "调用工具",
+            "调用数据源的一个只读工具",
+            "tool",
+            "tool",
+            check_tool,
+            run_tool,
+            _none,
+            _fixed("result"),
+            outputs=(("result", "工具返回的内容"),),
+            defaults={"datasource": "", "tool": "", "args": {}},
+            error_handling=True,
+        ),
+        NodeType(
+            "agent",
+            "智能体",
+            "模型自己决定调用哪些工具、调用几次，直到给出回答",
+            "model",
+            "model",
+            check_agent,
+            run_agent,
+            _none,
+            _fixed("text", "steps"),
+            outputs=(("text", "最终回答"), ("steps", "调用过的工具")),
+            defaults={
+                "model": None,
+                "skills": [],
+                "task": "",
+                "tools": [{"datasource": "", "tools": None}],
+                "max_steps": 8,
+            },
+            error_handling=True,
         ),
         NodeType(
             "template",
