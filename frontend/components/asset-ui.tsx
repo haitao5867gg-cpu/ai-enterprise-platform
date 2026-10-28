@@ -61,14 +61,37 @@ export function ActorField({
   );
 }
 
+export const UNSAVED_MESSAGE = "有未保存的修改，确定离开这个页面吗？";
+
 export function useUnsavedWarning(dirty: boolean) {
   useEffect(() => {
     if (!dirty) return;
     function warn(event: BeforeUnloadEvent) {
       event.preventDefault();
     }
+    // In-app links navigate on the client and never fire beforeunload: ask first, and
+    // stop the click before Next.js sees it (capture phase, on the document).
+    function guard(event: MouseEvent) {
+      if (event.defaultPrevented || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const link = (event.target as Element | null)?.closest?.("a[href]");
+      if (!(link instanceof HTMLAnchorElement) || link.target === "_blank") return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname === window.location.pathname && url.search === window.location.search) {
+        return;
+      }
+      if (!window.confirm(UNSAVED_MESSAGE)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }
     window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
+    document.addEventListener("click", guard, true);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      document.removeEventListener("click", guard, true);
+    };
   }, [dirty]);
 }
 

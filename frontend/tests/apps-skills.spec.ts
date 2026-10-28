@@ -532,6 +532,29 @@ test("draft discard, version switch protection and mobile pages do not overflow"
   expect(skill.published_version).toBe(1);
 });
 
+test("in-app links ask before leaving unsaved edits", async ({ page }) => {
+  await page.goto("/apps/etl");
+  const plan = await planSettings(page);
+  await plan.getByLabel("最多重写次数", { exact: true }).fill("2");
+  const nav = page.getByRole("navigation", { name: "主导航" });
+
+  let asked = "";
+  page.once("dialog", (dialog) => {
+    asked = dialog.message();
+    void dialog.dismiss();
+  });
+  await nav.getByRole("link", { name: "Skill", exact: true }).click();
+  expect(asked).toContain("未保存");
+  await expect(page).toHaveURL(/\/apps\/etl$/);
+  await expect(plan.getByLabel("最多重写次数", { exact: true })).toHaveValue(
+    "2",
+  );
+
+  page.once("dialog", (dialog) => void dialog.accept());
+  await nav.getByRole("link", { name: "Skill", exact: true }).click();
+  await expect(page).toHaveURL(/\/skills$/);
+});
+
 test("mock contract validates Skill limits, missing drafts, names and published references", async ({
   request,
 }) => {
