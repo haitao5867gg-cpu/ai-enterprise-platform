@@ -172,6 +172,8 @@ async def test_draft_is_checked_against_the_app_options(tmp_path):
 
         assert (await p.api.delete("/apps/etl/draft")).status_code == 204
         assert (await p.api.get("/apps/etl")).json()["draft"] is None
+        # Discarding again is fine: there is still no draft.
+        assert (await p.api.delete("/apps/etl/draft")).status_code == 204
 
 
 async def test_publish_and_roll_back_without_an_eval_set(tmp_path):

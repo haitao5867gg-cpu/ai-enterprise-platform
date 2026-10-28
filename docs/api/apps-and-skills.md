@@ -142,7 +142,7 @@
 | GET | `/apps/{app}` | | `AppDetail`；不存在 404 |
 | GET | `/apps/{app}/versions` | | `AppVersion[]`，新的在前（不含草稿） |
 | PUT | `/apps/{app}/draft` | `{"config": AppConfig, "actor"?}` | `AppDetail`；校验不过 422。保存草稿会清空草稿上次的评测结果 |
-| DELETE | `/apps/{app}/draft` | | 204 |
+| DELETE | `/apps/{app}/draft` | | 204；没有草稿也是 204 |
 | POST | `/apps/{app}/draft/eval` | `{}` | 202 `AppDetail`（`draft.eval.status` 为 running）；没有草稿 409；没有评测集 409；已有评测在跑 409 |
 | POST | `/apps/{app}/draft/publish` | `{"note", "actor"?}` | `AppDetail`（草稿成为当前版本）；有评测集但草稿评测未通过 409 |
 | POST | `/apps/{app}/versions/{version}/activate` | `{"actor"?}` | `AppDetail`（该版本成为当前版本，即回滚） |
