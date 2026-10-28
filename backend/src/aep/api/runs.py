@@ -1,8 +1,14 @@
 """Runs API. The frontend (issue #4) is built against this contract.
 
+``POST /runs`` takes the ``app``, its ``input`` and optionally ``app_version``
+(an app version number, see ``GET /apps/{app}/versions``; the current one when
+left out). Every run record has ``app_version``: the version it uses for its whole
+life (null for the runs of a draft's eval, and for runs from before versions).
+
 A waiting run's ``pending`` is always an approval: show ``prompt`` and offer
-``options``; ``reject`` may carry a comment. Apps can attach ``details`` for a
-richer view, tagged by ``details.type``:
+``options``; any option may carry a comment, and those in ``comment_required``
+must (the resume is refused with 422 without one). Apps can attach ``details``
+for a richer view, tagged by ``details.type``:
 
 - ``etl_plan`` (app ``etl``): ``details.plan`` is the proposed ETL plan, as
   ``aep.etl.plan.EtlPlan``: ``summary``, ``language``, and ``targets`` with
@@ -52,9 +58,11 @@ for explaining it (see ``aep.runtime.design``). ``design`` is the app as a whole
 ``skills``), or null. ``nodes`` are the graph's nodes in order, ``__start__`` and
 ``__end__`` included: ``id``, ``title``, ``kind`` (``tool``, ``model``, ``human``,
 ``code``, or ``terminal`` for start and end), ``model`` (the alias this run uses,
-for model nodes) and ``design`` (``summary``, ``inputs``, ``outputs``, ``tools``,
-``model_step``, ``prompt``, ``knowledge``, ``checks``, ``retry``; null if the node
-has none). ``edges`` have ``source``, ``target`` and ``conditional`` (taken only
+for model nodes), ``skills`` (``name`` and ``version`` of each skill the node
+uses, for nodes with a configuration) and ``design`` (``summary``, ``inputs``,
+``outputs``, ``tools``, ``model_step``, ``prompt``: the system prompt this run
+used, ``knowledge``, ``checks``, ``retry``; null if the node has none). ``edges``
+have ``source``, ``target`` and ``conditional`` (taken only
 when its condition holds). ``steps`` is every node this run executed, oldest first:
 ``id``, ``node``, ``status`` (``done``, ``running``, ``waiting`` for a person,
 ``error``, or ``stopped``), ``started_at``, ``input`` (the state the node saw,
@@ -72,12 +80,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from aep.runtime.service import (
+    CommentRequired,
     InvalidDecision,
     NotWaiting,
     RunNotFound,
     RunService,
     RunView,
     UnknownApp,
+    UnknownVersion,
 )
 from aep.runtime.store import RunRecord, RunStatus
 
@@ -94,6 +104,7 @@ Service = Annotated[RunService, Depends(get_run_service)]
 class CreateRun(BaseModel):
     app: str
     input: dict[str, Any] = {}
+    app_version: int | None = None
 
 
 class Resume(BaseModel):
@@ -112,6 +123,7 @@ class RunRef(BaseModel):
 class RunSummary(BaseModel):
     run_id: str
     app: str
+    app_version: int | None
     status: RunStatus
     created_at: str
     updated_at: str
@@ -126,12 +138,14 @@ class Pending(BaseModel):
     kind: str
     prompt: str
     options: list[str]
+    comment_required: list[str] = []
     details: dict[str, Any] | None = None
 
 
 class RunDetail(BaseModel):
     run_id: str
     app: str
+    app_version: int | None
     status: RunStatus
     messages: list[Message]
     pending: Pending | None
@@ -146,6 +160,7 @@ class FlowNode(BaseModel):
     title: str
     kind: str
     model: str | None = None
+    skills: list[dict[str, Any]] | None = None
     design: dict[str, Any] | None = None
 
 
@@ -178,6 +193,7 @@ def _summary(r: RunRecord) -> RunSummary:
     return RunSummary(
         run_id=r.run_id,
         app=r.app,
+        app_version=r.app_version,
         status=r.status,
         created_at=r.created_at.isoformat(),
         updated_at=r.updated_at.isoformat(),
@@ -188,6 +204,7 @@ def _detail(v: RunView) -> RunDetail:
     return RunDetail(
         run_id=v.record.run_id,
         app=v.record.app,
+        app_version=v.record.app_version,
         status=v.record.status,
         messages=[Message(**m) for m in v.messages],
         pending=Pending(**v.pending) if v.pending else None,
@@ -200,9 +217,11 @@ def _detail(v: RunView) -> RunDetail:
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_run(body: CreateRun, service: Service) -> RunRef:
     try:
-        record = await service.create(body.app, body.input)
+        record = await service.create(body.app, body.input, body.app_version)
     except UnknownApp as exc:
         raise HTTPException(404, f"unknown app: {body.app}; available: {service.apps}") from exc
+    except UnknownVersion as exc:
+        raise HTTPException(404, f"应用 {body.app} 没有版本 {body.app_version}") from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 
@@ -237,6 +256,8 @@ async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
         raise HTTPException(409, "run is not waiting for a decision") from exc
     except InvalidDecision as exc:
         raise HTTPException(422, f"invalid decision: {body.decision}") from exc
+    except CommentRequired as exc:
+        raise HTTPException(422, "这个决定需要写明意见") from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 

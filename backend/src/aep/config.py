@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     # Where people open the workbench, for links back to a run (in PRs, for example).
     web_url: str = "http://localhost:3000"
 
+    # Eval sets (app modules name theirs, e.g. etl/cases.yaml) and the publish gate: a
+    # draft of an app with an eval set needs at least this average score. Its cases run
+    # on eval_datasource (a name or id; empty: the first registered source).
+    evals_dir: str = "../evals"
+    eval_publish_threshold: float = 0.8
+    eval_datasource: str = ""
+    eval_parallel: int = 3
+    eval_timeout_seconds: float = 1800.0
+
     # Langfuse tracing. Off unless both keys are set; the names are shared with
     # the gateway, which reports model calls to the same project.
     langfuse_public_key: str = Field("", validation_alias="LANGFUSE_PUBLIC_KEY")

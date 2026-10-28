@@ -8,28 +8,27 @@ when the user rejects.
 import operator
 from typing import Annotated, Any, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
 
 from aep import llm
+from aep.runtime import human
+from aep.runtime.appconfig import NodeOptions, builtin, node_config
 from aep.runtime.design import AppDesign, NodeDesign
 from aep.runtime.registry import AppContext
 
 SYSTEM_PROMPT = "你是一个乐于助人的助手，用中文简洁地回答。"
+
+# People may pick the model and add skills; the prompt ends with SYSTEM_PROMPT.
+CONFIG = {"draft": NodeOptions(model=True, skills=(), contract=SYSTEM_PROMPT)}
 
 DESIGN = AppDesign(
     title="问答示例",
     summary="用模型回答一个问题，请人确认；驳回时按意见重写。",
     pattern="固定流程的工作流：回答、确认，驳回就回到回答。",
     knowledge="没有接知识库，只用模型自身的知识。",
-    skills="没有使用 Skill。",
+    skills="默认不用 Skill，可以在应用配置里给“回答”节点加上。",
 )
-
-APPROVAL = {
-    "kind": "approval",
-    "prompt": "确认这个回答吗？驳回时可以写下修改意见。",
-    "options": ["approve", "reject"],
-}
 
 
 class HelloState(TypedDict, total=False):
@@ -41,20 +40,22 @@ class HelloState(TypedDict, total=False):
 
 
 def build(ctx: AppContext) -> StateGraph:
-    async def draft(state: HelloState) -> dict[str, Any]:
-        prompt = [{"role": "system", "content": SYSTEM_PROMPT}]
+    async def draft(state: HelloState, config: RunnableConfig) -> dict[str, Any]:
+        node = node_config(config, "draft", CONFIG)
+        prompt = [{"role": "system", "content": node.prompt()}]
         prompt.append({"role": "user", "content": state["input"].get("text", "")})
         if state.get("feedback"):
             prompt.append({"role": "assistant", "content": state.get("draft", "")})
             prompt.append({"role": "user", "content": f"请根据意见修改：{state['feedback']}"})
-        reply = await llm.chat(ctx.llm_client, prompt, model=ctx.settings.default_model)
+        model = node.model or ctx.settings.default_model
+        reply = await llm.chat(ctx.llm_client, prompt, model=model)
         new = [{"role": "assistant", "content": reply.text}]
         if not state.get("messages"):
             new.insert(0, {"role": "user", "content": state["input"].get("text", "")})
         return {"draft": reply.text, "messages": new}
 
     def review(state: HelloState) -> dict[str, Any]:
-        answer = interrupt(APPROVAL)
+        answer = human.ask("确认这个回答吗？驳回时可以写下修改意见。")
         if answer.get("decision") == "approve":
             return {
                 "messages": [{"role": "user", "content": "确认"}],
@@ -76,7 +77,7 @@ def build(ctx: AppContext) -> StateGraph:
             summary="模型回答用户的问题；被驳回时带着意见重写。",
             inputs="问题；驳回时还有上一版回答和意见",
             outputs="回答",
-            prompt=SYSTEM_PROMPT,
+            prompt=builtin(CONFIG["draft"]).prompt(),
         ).metadata(),
     )
     graph.add_node(

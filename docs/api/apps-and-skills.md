@@ -21,7 +21,7 @@
   "published_version": 2,            // 还没发布过时为 null
   "has_draft": false,
   "updated_at": "2026-10-28T02:00:00+00:00",
-  "used_by": [{"app": "etl", "node": "plan", "version": 3}]  // 当前版本里引用它的应用节点；version 是应用版本号
+  "used_by": [{"app": "etl", "node": "plan", "version": 3, "skill_version": 2}]  // 当前版本里引用它的应用节点；version 是应用版本号，skill_version 是引用的 Skill 版本
 }
 
 // SkillContent：某个版本，或草稿
@@ -53,8 +53,8 @@
 | GET | `/skills` | | `SkillSummary[]`，按名称排序 |
 | GET | `/skills/{name}` | | `SkillDetail`；不存在 404 |
 | GET | `/skills/{name}/versions/{version}` | | `SkillContent`；不存在 404 |
-| POST | `/skills` | `{"name", "description", "body", "references"?}` | 201 `SkillDetail`（只建草稿）；重名 409 |
-| PUT | `/skills/{name}/draft` | `{"description", "body", "references"?}` | `SkillDetail`；没有草稿时以此新建草稿 |
+| POST | `/skills` | `{"name", "description", "body", "references"?, "actor"?}` | 201 `SkillDetail`（只建草稿）；重名 409 |
+| PUT | `/skills/{name}/draft` | `{"description", "body", "references"?, "actor"?}` | `SkillDetail`；没有草稿时以此新建草稿 |
 | DELETE | `/skills/{name}/draft` | | 204；没有草稿 404 |
 | POST | `/skills/{name}/publish` | `{"note", "actor"?}` | `SkillDetail`；没有草稿 409；`note` 不能为空 |
 
@@ -141,7 +141,7 @@
 | GET | `/apps` | | `AppSummary[]` |
 | GET | `/apps/{app}` | | `AppDetail`；不存在 404 |
 | GET | `/apps/{app}/versions` | | `AppVersion[]`，新的在前（不含草稿） |
-| PUT | `/apps/{app}/draft` | `{"config": AppConfig}` | `AppDetail`；校验不过 422。保存草稿会清空草稿上次的评测结果 |
+| PUT | `/apps/{app}/draft` | `{"config": AppConfig, "actor"?}` | `AppDetail`；校验不过 422。保存草稿会清空草稿上次的评测结果 |
 | DELETE | `/apps/{app}/draft` | | 204 |
 | POST | `/apps/{app}/draft/eval` | `{}` | 202 `AppDetail`（`draft.eval.status` 为 running）；没有草稿 409；没有评测集 409；已有评测在跑 409 |
 | POST | `/apps/{app}/draft/publish` | `{"note", "actor"?}` | `AppDetail`（草稿成为当前版本）；有评测集但草稿评测未通过 409 |
@@ -154,3 +154,5 @@
 - `POST /runs` 新增可选字段 `app_version`（整数），不传则用当前版本。
 - `GET /runs/{id}` 和 `GET /runs` 的每条记录新增 `app_version`。
 - `GET /runs/{id}/flow` 的模型节点新增 `skills: [{"name", "version"}]`，`design` 的 `prompt` 字段改为"这次实际用的提示词"。
+- 等待确认的 `pending` 新增 `comment_required`：需要写意见的选项（如 ETL 上线审批的 `reject`）；不带意见 resume 会返回 422。
+- 草稿评测起的运行 `app_version` 为 null。

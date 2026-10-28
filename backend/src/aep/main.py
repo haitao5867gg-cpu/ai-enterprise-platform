@@ -14,15 +14,18 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import assets, datasources, runs
+from aep.api import apps, assets, datasources, runs, skills
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
+from aep.runtime.catalog import AppCatalog, GatewayModels
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
+from aep.runtime.versions import PostgresAppVersionStore
+from aep.skills import PostgresSkillStore
 from aep.tools.mcp import McpTools
 
 log = logging.getLogger(__name__)
@@ -75,6 +78,11 @@ def create_app() -> FastAPI:
         await register_defaults(sources, settings.default_datasources)
         asset_store = PostgresAssetStore(pool)
         await asset_store.setup()
+        skill_store = PostgresSkillStore(pool)
+        await skill_store.setup()
+        await skill_store.register_builtins()
+        version_store = PostgresAppVersionStore(pool)
+        await version_store.setup()
         asset_repo = AssetRepo.from_settings(settings)
         tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
@@ -93,7 +101,10 @@ def create_app() -> FastAPI:
                 asset_store=asset_store,
             ),
             tracer,
+            versions=version_store,
+            skills=skill_store,
         )
+        catalog = AppCatalog(service, sources, settings, GatewayModels(llm_client))
         if tracer.enabled:
             log.info("tracing runs to Langfuse at %s", settings.langfuse_host)
         if databricks is not None:
@@ -103,8 +114,12 @@ def create_app() -> FastAPI:
         recovered = await service.recover()
         if recovered:
             log.info("resumed %d runs left running by the previous process", recovered)
+        if await catalog.recover():
+            log.info("marked draft evals cut off by the previous process as interrupted")
         app.state.llm_client = llm_client
         app.state.run_service = service
+        app.state.catalog = catalog
+        app.state.skills = skill_store
         app.state.datasources = sources
         app.state.asset_store = asset_store
         app.state.mcp_tools = tools
@@ -125,6 +140,8 @@ def create_app() -> FastAPI:
     app.include_router(runs.router)
     app.include_router(datasources.router)
     app.include_router(assets.router)
+    app.include_router(apps.router)
+    app.include_router(skills.router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

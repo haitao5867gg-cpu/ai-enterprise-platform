@@ -15,6 +15,8 @@ from typing import Any, Literal
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StateSnapshot
 
+from aep.runtime.appconfig import NodeConfig
+
 # tool: calls a system outside the platform (a connector, Databricks, GitHub);
 # model: a model writes something; human: the run waits for a person;
 # code: the platform's own code, no model.
@@ -43,8 +45,10 @@ class NodeDesign:
     outputs: str = ""
     tools: list[str] = field(default_factory=list)
     # The step's key in ``input.models`` (model nodes whose model the run can choose);
-    # the model is that alias, or the default one.
+    # the model is that alias, or the one the app version sets, or the default one.
     model_step: str | None = None
+    # The system prompt. A node with a configuration (aep.runtime.appconfig) builds it
+    # from its skills and contract; the flow shows the one the run used.
     prompt: str | None = None
     knowledge: str | None = None
     checks: str | None = None
@@ -74,6 +78,28 @@ def _node(node_id: str, metadata: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def shape(
+    graph: CompiledStateGraph, configs: dict[str, NodeConfig]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The graph's nodes and edges. A node with a configuration shows its ``skills`` and
+    the prompt they make, and its configured model as ``configured_model``."""
+    drawn = graph.get_graph()
+    nodes = []
+    for node_id, node in drawn.nodes.items():
+        item = _node(node_id, node.metadata)
+        config = configs.get(node_id)
+        if config is not None:
+            item["skills"] = config.refs()
+            item["configured_model"] = config.model
+            if item["design"] is not None and item["kind"] == "model":
+                item["design"] = {**item["design"], "prompt": config.prompt()}
+        nodes.append(item)
+    edges = [
+        {"source": e.source, "target": e.target, "conditional": e.conditional} for e in drawn.edges
+    ]
+    return nodes, edges
+
+
 def _status(task: Any) -> str:
     if task.error:
         return "error"
@@ -88,25 +114,23 @@ async def flow(
     run: dict[str, Any],
     design: AppDesign | None,
     default_model: str,
+    configs: dict[str, NodeConfig] | None = None,
 ) -> dict[str, Any]:
     """The graph's nodes and edges, and every step this run took, oldest first.
 
-    ``run`` has the run's ``status`` and ``input``. A step's ``input`` is the state
+    ``run`` has the run's ``status`` and ``input``; ``configs`` its node configurations.
+    A step's ``input`` is the state
     the node saw (without the conversation) and ``output`` what it wrote; a step
     still running, or waiting for a person, has no output yet.
     """
-    shape = graph.get_graph()
     models = run["input"].get("models") or {}
-    nodes = []
-    for node_id, node in shape.nodes.items():
-        item = _node(node_id, node.metadata)
+    nodes, edges = shape(graph, configs or {})
+    for item in nodes:
         if item["kind"] == "model":
             step = item["design"]["model_step"]
-            item["model"] = (models.get(step) if step else None) or default_model
-        nodes.append(item)
-    edges = [
-        {"source": e.source, "target": e.target, "conditional": e.conditional} for e in shape.edges
-    ]
+            chosen = models.get(step) if step else None
+            item["model"] = chosen or item.pop("configured_model", None) or default_model
+        item.pop("configured_model", None)
 
     snapshots: list[StateSnapshot] = [s async for s in graph.aget_state_history(config)]
     steps = []

@@ -26,13 +26,24 @@ class RunRecord:
     input: dict[str, Any]
     tenant_id: str = DEFAULT_TENANT
     error: str | None = None
+    # The app version the run uses (None: a draft, being evaluated) and that
+    # version's configuration, kept with the run so a restart picks up the same one.
+    # Runs from before app versions have neither and use the app's defaults.
+    app_version: int | None = None
+    config: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class RunStore(Protocol):
     async def setup(self) -> None: ...
-    async def create(self, app: str, input: dict[str, Any]) -> RunRecord: ...
+    async def create(
+        self,
+        app: str,
+        input: dict[str, Any],
+        app_version: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> RunRecord: ...
     async def get(self, run_id: str) -> RunRecord | None: ...
     async def recent(self, limit: int = 50) -> list[RunRecord]: ...
     async def list_by_status(self, status: RunStatus) -> list[RunRecord]: ...
@@ -50,8 +61,21 @@ class MemoryRunStore:
     async def setup(self) -> None:
         return None
 
-    async def create(self, app: str, input: dict[str, Any]) -> RunRecord:
-        record = RunRecord(run_id=str(uuid.uuid4()), app=app, status="running", input=input)
+    async def create(
+        self,
+        app: str,
+        input: dict[str, Any],
+        app_version: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> RunRecord:
+        record = RunRecord(
+            run_id=str(uuid.uuid4()),
+            app=app,
+            status="running",
+            input=input,
+            app_version=app_version,
+            config=config,
+        )
         self._runs[record.run_id] = record
         return record
 
@@ -85,9 +109,14 @@ CREATE TABLE IF NOT EXISTS runs (
 )""",
     "CREATE INDEX IF NOT EXISTS runs_tenant_created_idx ON runs (tenant_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS runs_status_idx ON runs (status)",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS app_version integer",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS config jsonb",
 ]
 
-COLUMNS = "run_id::text, app, status, input, tenant_id, error, created_at, updated_at"
+COLUMNS = (
+    "run_id::text, app, status, input, tenant_id, error, app_version, config, created_at,"
+    " updated_at"
+)
 
 
 def _record(row: dict[str, Any]) -> RunRecord:
@@ -105,12 +134,24 @@ class PostgresRunStore:
             for statement in SCHEMA:
                 await conn.execute(statement)
 
-    async def create(self, app: str, input: dict[str, Any]) -> RunRecord:
+    async def create(
+        self,
+        app: str,
+        input: dict[str, Any],
+        app_version: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> RunRecord:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
-                f"INSERT INTO runs (run_id, app, status, input) VALUES (%s, %s, 'running', %s)"
-                f" RETURNING {COLUMNS}",
-                (uuid.uuid4(), app, Jsonb(input)),
+                "INSERT INTO runs (run_id, app, status, input, app_version, config)"
+                f" VALUES (%s, %s, 'running', %s, %s, %s) RETURNING {COLUMNS}",
+                (
+                    uuid.uuid4(),
+                    app,
+                    Jsonb(input),
+                    app_version,
+                    Jsonb(config) if config is not None else None,
+                ),
             )
             return _record(await cur.fetchone())
 
