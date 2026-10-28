@@ -18,6 +18,7 @@ from fastapi import UploadFile
 from openpyxl import load_workbook
 
 from aep.config import Settings
+from aep.etl.profile import MAX_TABLES
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_FILES = 20
@@ -134,6 +135,12 @@ def stage_dataset(files: list[UploadFile], settings: Settings) -> StagedDataset:
                 def add(
                     original: str, rows: Iterable[Iterable[Any]], original_filename: str = filename
                 ) -> None:
+                    # The ETL app explores every table of a source, at most MAX_TABLES.
+                    if len(tables) >= MAX_TABLES:
+                        raise UploadError(
+                            f"一个数据集最多 {MAX_TABLES} 张表（每个 CSV 一张，"
+                            "Excel 每个工作表一张），请拆成多个数据集上传"
+                        )
                     name = table_name(original, taken)
                     columns, count = _convert_table(rows, staging, name, conn)
                     tables.append(

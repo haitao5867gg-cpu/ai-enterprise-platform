@@ -157,7 +157,7 @@ export function FileUpload({
           aria-describedby="upload-limits"
         />
         <p className="field-hint" id="upload-limits">
-          CSV / XLSX · 单文件最多 50 MB · 每次最多 20 个文件
+          CSV / XLSX · 单文件最多 50 MB · 每次最多 20 个文件、合计 20 张表
         </p>
       </div>
       {files.length > 0 && (

@@ -164,6 +164,19 @@ async def test_twenty_files_and_large_csv_cells_are_supported(api):
     assert response.json()["tables"][0]["row_count"] == 1
 
 
+async def test_more_tables_than_a_run_can_explore_are_rejected(api, tmp_path):
+    sheets = xlsx([(f"S{i}", [["id"], [i]]) for i in range(21)])
+    response = await upload(api, [("files", ("wide.xlsx", sheets))])
+    assert response.status_code == 422
+    assert "wide.xlsx" in response.json()["detail"] and "20 张表" in response.json()["detail"]
+    files = [("files", (f"data-{i}.csv", b"id\n1\n")) for i in range(19)]
+    files.append(("files", ("two.xlsx", xlsx([("A", [["id"], [1]]), ("B", [["id"], [2]])]))))
+    response = await upload(api, files, "合计超过")
+    assert response.status_code == 422 and "20 张表" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+    assert (await api.get("/datasources")).json() == []
+
+
 async def test_duplicate_registration_and_store_failure_clean_published_directory(
     api, tmp_path, monkeypatch
 ):
