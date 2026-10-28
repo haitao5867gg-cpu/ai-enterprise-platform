@@ -91,7 +91,7 @@
 ## 文档怎么处理
 
 1. 上传：原文件存到 `AEP_KNOWLEDGE_DIR`（默认 `/data/knowledge`）下 `<kb_id>/<document_id>/原文件名`，记一条 `queued` 的文档，立即返回 202。
-2. 后台处理：API 进程里有一个处理任务，从数据库领 `queued` 的文档（`FOR UPDATE SKIP LOCKED`，多副本也不会重复处理），改成 `processing`。进程重启时，`processing` 超过 10 分钟没更新的文档重新排队。
+2. 后台处理：API 进程里有一个处理任务，从数据库领 `queued` 的文档（`FOR UPDATE SKIP LOCKED`，多副本也不会重复处理），改成 `processing`，处理中每算完一批向量就刷新 `updated_at`。处理任务每分钟（以及启动时）把 `updated_at` 超过 10 分钟没变的 `processing` 文档改回 `queued`，所以进程崩溃后不管多久重启，卡住的文档都会被重新处理。
 3. 抽文字：txt、md 按 UTF-8（失败再试 GB18030）；pdf 用 pypdf 按页抽，记页码；docx 用 python-docx 读段落和表格（表格每行用 ` | ` 连接），Word 的标题样式进标题路径。抽不出文字时 `error`，原因“没有可提取的文字（可能是扫描件）”。
 4. 切分：先按标题和空行分段，段太长再按句号、问号、感叹号、分号（中英文）和换行切，最后硬切；相邻片段重叠 `overlap` 个字符；片段不跨 PDF 页、不跨标题。少于 20 个非空白字符的片段丢掉。
 5. 算向量：每批 10 段，失败的批次重试 2 次（间隔 2 秒、4 秒），还是失败就整篇 `error`，原因写网关的报错；已写入的片段删掉。
