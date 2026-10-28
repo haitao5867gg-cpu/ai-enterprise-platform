@@ -430,7 +430,8 @@ export function AppDetailView({ app }: { app: string }) {
             onClick={() => {
               if (!window.confirm("确定放弃草稿和未保存的修改吗？")) return;
               void action(async () => {
-                await deleteAppDraft(app);
+                // With only unsaved edits there is no draft on the server to delete.
+                if (data.draft) await deleteAppDraft(app);
                 accept(await getApp(app), "已放弃草稿。");
               });
             }}
