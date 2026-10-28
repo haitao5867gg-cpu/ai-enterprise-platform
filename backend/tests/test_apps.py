@@ -186,7 +186,9 @@ async def test_publish_and_roll_back_without_an_eval_set(tmp_path):
         assert published.json()["current_version"] == 2
         assert published.json()["draft"] is None
 
+        # One run at a time, so the gateway sees the calls in order.
         before = await p.service.create("hello", {"text": "你好"}, app_version=1)
+        await p.settle()
         on_v2 = await p.service.create("hello", {"text": "你好"})
         await p.settle()
         assert (before.app_version, on_v2.app_version) == (1, 2)
