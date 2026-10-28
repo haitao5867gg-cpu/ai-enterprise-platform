@@ -20,6 +20,7 @@ type StoredRun = {
   readyAt: number;
   decision?: Decision;
   comment?: string;
+  evaluation?: { score: number };
   etl?: {
     language: EtlLanguage;
     plan?: EtlPlan;
@@ -37,9 +38,38 @@ const globalStore = globalThis as typeof globalThis & {
 };
 const store = (globalStore.aepMockRuns ??= new Map<string, StoredRun>());
 
+export function createMockEvalRun(caseId: string, score: number): string {
+  const run_id = randomUUID();
+  store.set(run_id, {
+    run: {
+      run_id,
+      app: "etl",
+      status: "running",
+      pending: null,
+      error: null,
+      result: null,
+      messages: [{ role: "user", content: `草稿评测：${caseId}` }],
+    },
+    readyAt: Date.now() + 6_000,
+    steps: [],
+    evaluation: { score },
+  });
+  return run_id;
+}
+
 function refresh(entry: StoredRun): Run {
   const { run } = entry;
   if (run.status !== "running" || Date.now() < entry.readyAt) return run;
+  if (entry.evaluation) {
+    run.status = "done";
+    run.result = { score: entry.evaluation.score, threshold: 0.8 };
+    run.messages.push({
+      role: "assistant",
+      content: `评测完成，得分 ${entry.evaluation.score}`,
+    });
+    addStep(entry.steps, "plan", { case: run.messages[0].content }, run.result);
+    return run;
+  }
   if (entry.etl) {
     const etl = entry.etl;
     if (etl.stage === "plan" && entry.decision !== "approve") {

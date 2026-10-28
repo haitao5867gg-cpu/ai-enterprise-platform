@@ -72,10 +72,24 @@ export function AppShell({
         <nav aria-label="主导航">
           <Link
             href="/"
-            className={`nav-link ${pathname !== "/runs/new" ? "active" : ""}`}
+            className={`nav-link ${pathname === "/" || (pathname.startsWith("/runs/") && pathname !== "/runs/new") ? "active" : ""}`}
           >
             <Icon name="runs" />
             运行记录
+          </Link>
+          <Link
+            href="/apps"
+            className={`nav-link ${pathname.startsWith("/apps") ? "active" : ""}`}
+          >
+            <Icon name="grid" />
+            应用
+          </Link>
+          <Link
+            href="/skills"
+            className={`nav-link ${pathname.startsWith("/skills") ? "active" : ""}`}
+          >
+            <Icon name="spark" />
+            Skill
           </Link>
           <Link
             href="/runs/new"
@@ -105,7 +119,11 @@ export function AppShell({
               ? "运行记录"
               : pathname === "/runs/new"
                 ? "新建运行"
-                : "运行详情"}
+                : pathname.startsWith("/apps")
+                  ? "应用"
+                  : pathname.startsWith("/skills")
+                    ? "Skill"
+                    : "运行详情"}
           </span>
           <BackendHealth />
         </header>

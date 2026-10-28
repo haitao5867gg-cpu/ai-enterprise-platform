@@ -156,6 +156,77 @@ test("network and timeout errors are bounded and hide internal connection detail
   expect(timeout.status()).toBe(504);
 });
 
+test("forwards application and Skill methods, JSON bodies, 204 and contract errors in production", async ({
+  request,
+}) => {
+  for (const path of [
+    "/apps",
+    "/apps/etl",
+    "/apps/etl/versions",
+    "/skills",
+    "/skills/etl-plan",
+    "/skills/etl-plan/versions/1",
+  ]) {
+    const response = await request.get(`/api${path}`);
+    expect(await response.json()).toMatchObject({
+      source: "assets-contract-fixture",
+      method: "GET",
+      path,
+    });
+  }
+  const mutations = [
+    { method: "POST", path: "/skills" },
+    { method: "PUT", path: "/skills/etl-plan/draft" },
+    { method: "POST", path: "/skills/etl-plan/publish" },
+    { method: "PUT", path: "/apps/etl/draft" },
+    { method: "POST", path: "/apps/etl/draft/eval" },
+    { method: "POST", path: "/apps/etl/draft/publish" },
+    { method: "POST", path: "/apps/etl/versions/1/activate" },
+  ];
+  for (const { method, path } of mutations) {
+    const payload = {
+      note: "保留中文和换行\n发布",
+      actor: "张三",
+      config: { nodes: {} },
+    };
+    const response = await request.fetch(`/api${path}`, {
+      method,
+      data: payload,
+    });
+    expect(response.ok()).toBe(true);
+    expect(await response.json()).toMatchObject({
+      source: "assets-contract-fixture",
+      method,
+      path,
+      payload,
+    });
+    expect(response.headers()["cache-control"]).toBe("no-store");
+  }
+  for (const path of ["/apps/etl/draft", "/skills/etl-plan/draft"]) {
+    const response = await request.delete(`/api${path}`);
+    expect(response.status()).toBe(204);
+    expect(await response.text()).toBe("");
+  }
+  const conflict = await request.post("/api/apps/conflict/draft/publish", {
+    data: {},
+  });
+  expect(conflict.status()).toBe(409);
+  expect(await conflict.json()).toEqual({ detail: "请先通过评测" });
+  const invalid = await request.put("/api/skills/invalid/draft", { data: {} });
+  expect(invalid.status()).toBe(422);
+  expect(await invalid.json()).toEqual({
+    detail: [{ loc: ["body", "description"], msg: "说明不能为空" }],
+  });
+  expect((await request.put("/api/runs/fixture", { data: {} })).status()).toBe(
+    405,
+  );
+  expect((await request.post("/api/apps/etl", { data: {} })).status()).toBe(
+    405,
+  );
+  expect((await request.delete("/api/skills/etl-plan")).status()).toBe(405);
+  expect((await request.get("/api/apps/etl/secrets")).status()).toBe(404);
+});
+
 test("multipart proxy preserves names, boundaries, binary bytes and validation errors", async ({
   request,
 }) => {

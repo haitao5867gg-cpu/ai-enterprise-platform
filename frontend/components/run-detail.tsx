@@ -19,25 +19,7 @@ import { EtlPlanView } from "./etl-plan";
 import { EtlReleaseView, EtlTrail } from "./etl-release";
 import { GeneratedFiles } from "./generated-files";
 import { RunFlow } from "./run-flow";
-
-// Until sign-in exists, approvers type their name once and the browser remembers it.
-const ACTOR_KEY = "aep.actor";
-
-function savedActor(): string {
-  try {
-    return localStorage.getItem(ACTOR_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function saveActor(actor: string) {
-  try {
-    localStorage.setItem(ACTOR_KEY, actor);
-  } catch {
-    // Private windows may refuse storage; the name is then asked for again next time.
-  }
-}
+import { savedActor, saveActor } from "../lib/actor";
 
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;

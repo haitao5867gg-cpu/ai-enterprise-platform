@@ -15,24 +15,29 @@ function jsonError(detail: string, status: number) {
 async function handle(request: Request, context: Context) {
   const { path } = await context.params;
   const endpoint = path.join("/");
+  const routes: [RegExp, string[]][] = [
+    [/^(readyz|datasources)$/, ["GET"]],
+    [/^datasources\/files$/, ["POST"]],
+    [/^runs$/, ["GET", "POST"]],
+    [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow))?$/, ["GET"]],
+    [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],
+    [/^apps$/, ["GET"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}(\/versions)?$/, ["GET"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft$/, ["PUT", "DELETE"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft\/(eval|publish)$/, ["POST"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/versions\/[1-9][0-9]*\/activate$/, ["POST"]],
+    [/^skills$/, ["GET", "POST"]],
+    [/^skills\/[a-z][a-z0-9-]{1,63}(\/versions\/[1-9][0-9]*)?$/, ["GET"]],
+    [/^skills\/[a-z][a-z0-9-]{1,63}\/draft$/, ["PUT", "DELETE"]],
+    [/^skills\/[a-z][a-z0-9-]{1,63}\/publish$/, ["POST"]],
+  ];
   const isUpload = endpoint === "datasources/files";
-  const allowed =
-    endpoint === "readyz" ||
-    endpoint === "datasources" ||
-    isUpload ||
-    endpoint === "runs" ||
-    /^runs\/[a-zA-Z0-9_-]{1,128}(\/(resume|files\.zip|flow))?$/.test(endpoint);
-  if (!allowed) return jsonError("Not found", 404);
-  const isResume = path.length === 3 && path[2] === "resume";
-  const canGet = !isResume && !isUpload;
-  const canPost = endpoint === "runs" || isResume || isUpload;
-  if (
-    (request.method === "GET" && !canGet) ||
-    (request.method === "POST" && !canPost)
-  ) {
+  const methods = routes.find(([pattern]) => pattern.test(endpoint))?.[1];
+  if (!methods) return jsonError("Not found", 404);
+  if (!methods.includes(request.method)) {
     return new Response(null, {
       status: 405,
-      headers: { Allow: canGet ? "GET" : "POST" },
+      headers: { Allow: methods.join(", ") },
     });
   }
 
@@ -46,6 +51,14 @@ async function handle(request: Request, context: Context) {
     return jsonError("请使用 multipart 表单上传文件", 415);
 
   if (endpoint !== "readyz" && isLocalMockEnabled()) {
+    if (path[0] === "apps") {
+      const { mockApps } = await import("../../../lib/server/mock-apps");
+      return mockApps(request, path);
+    }
+    if (path[0] === "skills") {
+      const { mockSkills } = await import("../../../lib/server/mock-skills");
+      return mockSkills(request, path);
+    }
     const { mockRuns } = await import("../../../lib/server/mock-runs");
     return mockRuns(request, path);
   }
@@ -70,30 +83,28 @@ async function handle(request: Request, context: Context) {
   }
 
   try {
-    const options: RequestInit & { duplex?: "half" } = {
-      method: request.method,
-      headers:
-        request.method === "POST"
+    const hasBody = ["POST", "PUT"].includes(request.method);
+    const response = await fetch(
+      `${base.href.replace(/\/$/, "")}/${endpoint}`,
+      {
+        method: request.method,
+        headers: hasBody
           ? {
               "Content-Type": isUpload
                 ? request.headers.get("content-type")!
                 : "application/json",
             }
           : undefined,
-      body:
-        request.method === "POST"
+        body: hasBody
           ? isUpload
             ? request.body
             : await request.text()
           : undefined,
-      cache: "no-store",
-      redirect: "manual",
-      signal: AbortSignal.timeout(isUpload ? 300_000 : 10_000),
-      ...(isUpload ? { duplex: "half" as const } : {}),
-    };
-    const response = await fetch(
-      `${base.href.replace(/\/$/, "")}/${endpoint}`,
-      options,
+        cache: "no-store",
+        redirect: "manual",
+        signal: AbortSignal.timeout(isUpload ? 300_000 : 10_000),
+        ...(isUpload ? { duplex: "half" as const } : {}),
+      } as RequestInit & { duplex?: "half" },
     );
     const headers = new Headers({
       "Content-Type":
@@ -114,3 +125,5 @@ async function handle(request: Request, context: Context) {
 
 export const GET = handle;
 export const POST = handle;
+export const PUT = handle;
+export const DELETE = handle;

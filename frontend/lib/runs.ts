@@ -92,17 +92,43 @@ export async function requestJson(
   }
   if (!response.ok) {
     const messages: Record<number, string> = {
-      404: "没有找到这条运行记录，它可能已被移除。",
-      409: "运行状态已发生变化，请刷新后查看。",
+      404: path.startsWith("/runs")
+        ? "没有找到这条运行记录，它可能已被移除。"
+        : "没有找到请求的内容，它可能已被移除。",
+      409: path.startsWith("/runs")
+        ? "运行状态已发生变化，请刷新后查看。"
+        : "内容状态已发生变化，请刷新后查看。",
       422: "提交内容未通过校验，请检查后重试。",
       503: "后端服务暂不可用，请稍后重试。",
       504: "服务响应超时，请稍后重试。",
     };
+    let detail = "";
+    if (response.status === 409 || response.status === 422) {
+      try {
+        const value: unknown = await response.json();
+        if (isRecord(value)) {
+          if (typeof value.detail === "string") detail = value.detail;
+          else if (Array.isArray(value.detail)) {
+            detail = value.detail
+              .filter(isRecord)
+              .map(
+                (item) =>
+                  `${Array.isArray(item.loc) ? `${item.loc.join(".")}: ` : ""}${typeof item.msg === "string" ? item.msg : "校验失败"}`,
+              )
+              .join("；");
+          }
+        }
+      } catch {
+        // Keep the status-specific fallback for non-JSON upstream errors.
+      }
+    }
+    const message = messages[response.status] ?? "请求未成功，请稍后重试。";
     throw new ApiError(
-      messages[response.status] ?? "请求未成功，请稍后重试。",
+      detail ? `${message} ${detail}` : message,
       response.status,
     );
   }
+  if (response.status === 204) return undefined;
   try {
     return await response.json();
   } catch {
