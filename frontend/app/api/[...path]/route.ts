@@ -18,6 +18,7 @@ async function handle(request: Request, context: Context) {
   const routes: [RegExp, string[]][] = [
     [/^(readyz|datasources)$/, ["GET"]],
     [/^datasources\/files$/, ["POST"]],
+    [/^datasources\/[a-zA-Z0-9_-]{1,128}\/tools$/, ["GET"]],
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],

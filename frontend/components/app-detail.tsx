@@ -29,6 +29,9 @@ import {
 } from "./asset-ui";
 import { AppSettings, settingError } from "./app-settings";
 import { FlowDiagram } from "./flow-diagram";
+import { FlowEditor } from "./flow-editor";
+import { FlowEnv } from "./flow-env";
+import { noIssues, sortIssues, type FlowIssues } from "../lib/flow-edit";
 import { FlowNodeDesign } from "./flow-node-design";
 import { ErrorNotice } from "./ui";
 import { AppMetadata } from "./app-metadata";
@@ -207,6 +210,7 @@ export function AppDetailView({ app }: { app: string }) {
   const [note, setNote] = useState("");
   const [actor, setActor] = useState(savedActor);
   const [retry, setRetry] = useState(0);
+  const [issues, setIssues] = useState<FlowIssues>(noIssues);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -276,6 +280,7 @@ export function AppDetailView({ app }: { app: string }) {
   useUnsavedWarning(dirty);
 
   function accept(value: AppDetail, message: string) {
+    setIssues(noIssues);
     setData(value);
     setConfig(structuredClone((value.draft ?? value.current).config));
     setView(value.draft ? "draft" : "current");
@@ -319,6 +324,40 @@ export function AppDetailView({ app }: { app: string }) {
   }
   function save() {
     if (!config || !data) return;
+    if (isFlowConfig(config)) {
+      void action(async () => {
+        try {
+          accept(
+            await saveAppDraft(app, config),
+            "草稿已保存，上次评测结果已清空。",
+          );
+        } catch (err) {
+          if (
+            !(err instanceof ApiError) ||
+            err.status !== 422 ||
+            !err.issues.length
+          )
+            throw err;
+          const sorted = sortIssues(err.issues, config);
+          setIssues(sorted);
+          const count = Object.values(sorted.nodes).reduce(
+            (sum, bucket) => sum + Object.keys(bucket).length,
+            Object.keys(sorted.env).length,
+          );
+          throw new ApiError(
+            [
+              "草稿没有保存。",
+              count ? `有 ${count} 处问题，已标在对应的节点和设置下。` : "",
+              ...sorted.graph,
+            ]
+              .filter(Boolean)
+              .join(""),
+            422,
+          );
+        }
+      });
+      return;
+    }
     const codeNodes = isFlowConfig(config) ? {} : config.nodes;
     const errors = data.nodes
       .flatMap((node) =>
@@ -459,16 +498,14 @@ export function AppDetailView({ app }: { app: string }) {
               </button>
             </>
           )}
-          {data.kind === "code" && (
-            <button
-              type="button"
-              className="button primary"
-              disabled={busy || running || !dirty}
-              onClick={save}
-            >
-              保存草稿
-            </button>
-          )}
+          <button
+            type="button"
+            className="button primary"
+            disabled={busy || running || !dirty}
+            onClick={save}
+          >
+            保存草稿
+          </button>
           <button
             type="button"
             className="button secondary"
@@ -486,62 +523,91 @@ export function AppDetailView({ app }: { app: string }) {
           </button>
         </div>
       </section>
-      <section className="panel run-flow app-design" aria-label="应用设计">
-        <div className="section-heading">
-          <h2>应用设计与节点配置</h2>
-          <span className="muted">点选节点查看设计与设置</span>
-        </div>
-        <div className="flow-about">
-          <dl>
-            <div>
-              <dt>运行方式</dt>
-              <dd>{data.pattern}</dd>
-            </div>
-            <div>
-              <dt>知识库</dt>
-              <dd>{data.knowledge}</dd>
-            </div>
-            <div>
-              <dt>Skill</dt>
-              <dd>{data.skills_text}</dd>
-            </div>
-          </dl>
-        </div>
-        <div className="flow-body">
-          <FlowDiagram
-            flow={graph}
-            selectedId={node?.id}
-            select={setSelected}
-            designMode
+      {isFlowConfig(config) ? (
+        <>
+          <FlowEditor
+            app={app}
+            data={data}
+            config={config}
+            setConfig={(value) => {
+              setConfig(value);
+              setNotice("");
+            }}
+            issues={issues}
+            dirty={dirty}
+            disabled={busy || running}
           />
-          {node && (
-            <div
-              className="flow-detail"
-              role="region"
-              aria-label={`节点 ${node.title}`}
-            >
-              <FlowNodeDesign
-                node={graph.nodes.find((item) => item.id === node.id)!}
-              />
-              {node.settings.length > 0 && codeNodes[node.id] ? (
-                <AppSettings
-                  key={node.id}
-                  node={node}
-                  config={codeNodes[node.id]}
-                  options={data.options}
-                  disabled={busy || running}
-                  onChange={(value) => {
-                    setConfig({ nodes: { ...codeNodes, [node.id]: value } });
-                    setNotice("");
-                  }}
+          <FlowEnv
+            app={app}
+            config={config}
+            setConfig={(value) => {
+              setConfig(value);
+              setNotice("");
+            }}
+            secrets={data.secrets}
+            setSecrets={(secrets) => setData({ ...data, secrets })}
+            issues={issues.env}
+            disabled={busy || running}
+          />
+        </>
+      ) : (
+        <section className="panel run-flow app-design" aria-label="应用设计">
+          <div className="section-heading">
+            <h2>应用设计与节点配置</h2>
+            <span className="muted">点选节点查看设计与设置</span>
+          </div>
+          <div className="flow-about">
+            <dl>
+              <div>
+                <dt>运行方式</dt>
+                <dd>{data.pattern}</dd>
+              </div>
+              <div>
+                <dt>知识库</dt>
+                <dd>{data.knowledge}</dd>
+              </div>
+              <div>
+                <dt>Skill</dt>
+                <dd>{data.skills_text}</dd>
+              </div>
+            </dl>
+          </div>
+          <div className="flow-body">
+            <FlowDiagram
+              flow={graph}
+              selectedId={node?.id}
+              select={setSelected}
+              designMode
+            />
+            {node && (
+              <div
+                className="flow-detail"
+                role="region"
+                aria-label={`节点 ${node.title}`}
+              >
+                <FlowNodeDesign
+                  node={graph.nodes.find((item) => item.id === node.id)!}
                 />
-              ) : (
-                <p className="muted">此节点没有可调设置。</p>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
+                {node.settings.length > 0 && codeNodes[node.id] ? (
+                  <AppSettings
+                    key={node.id}
+                    node={node}
+                    config={codeNodes[node.id]}
+                    options={data.options}
+                    disabled={busy || running}
+                    onChange={(value) => {
+                      setConfig({ nodes: { ...codeNodes, [node.id]: value } });
+                      setNotice("");
+                    }}
+                  />
+                ) : (
+                  <p className="muted">此节点没有可调设置。</p>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
       <div className="asset-two-columns">
         <section className="panel asset-section" aria-label="发布前评测">
           <div className="asset-section-heading">

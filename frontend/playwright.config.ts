@@ -25,6 +25,7 @@ export default defineConfig({
         "uploads.spec.ts",
         "apps-skills.spec.ts",
         "flow-apps.spec.ts",
+        "flow-editor.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

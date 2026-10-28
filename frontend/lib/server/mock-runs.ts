@@ -254,9 +254,58 @@ function json(value: unknown, status = 200) {
   });
 }
 
+const table = {
+  schema: { type: "string", description: "模式名，例如 public" },
+  table: { type: "string", description: "表名" },
+};
+const mockTools = [
+  {
+    name: "list_schemas",
+    description: "列出模式",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_tables",
+    description: "列出某个模式下的表",
+    input_schema: {
+      type: "object",
+      properties: { schema: table.schema },
+      required: ["schema"],
+    },
+  },
+  {
+    name: "describe_table",
+    description: "查看表结构",
+    input_schema: {
+      type: "object",
+      properties: table,
+      required: ["schema", "table"],
+    },
+  },
+  {
+    name: "sample_rows",
+    description: "读取几行样本",
+    input_schema: {
+      type: "object",
+      properties: {
+        ...table,
+        limit: { type: "integer", description: "最多几行" },
+      },
+      required: ["schema", "table"],
+    },
+  },
+];
+
 export async function mockRuns(request: Request, path: string[]) {
   if (path[0] === "datasources") {
     if (path[1] === "files") return mockUpload(request);
+    if (path[2] === "tools") {
+      const known = [
+        ...mockDataSources,
+        ...[...mockUploads.values()].map((item) => item.datasource),
+      ].some((item) => item.datasource_id === path[1]);
+      return known ? json(mockTools) : json({ detail: "数据源不存在" }, 404);
+    }
     return json([
       ...mockDataSources,
       ...[...mockUploads.values()].map((item) => item.datasource),

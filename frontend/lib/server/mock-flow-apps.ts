@@ -10,6 +10,14 @@ import type {
   ImportProblem,
 } from "../apps";
 import { NODE_ID_PATTERN } from "../apps";
+import {
+  outputsOf,
+  REF_PATTERN,
+  stringsOf,
+  typeLabels,
+  upstreamOf,
+  walk,
+} from "../flow-edit";
 import type { Flow, NodeKind } from "../flow";
 import { isRecord } from "../runs";
 import { mockSkillVersionExists } from "./mock-skills";
@@ -337,7 +345,19 @@ const defaults: FlowNode[] = [
     tools: [],
     max_steps: 8,
   },
-  helloConfig().graph.nodes[2],
+  {
+    id: "human",
+    type: "human",
+    title: "人工",
+    mode: "approval",
+    prompt: "请确认",
+    show: "",
+    options: [
+      { key: "approve", label: "确认" },
+      { key: "reject", label: "驳回" },
+    ],
+    comment_required: [],
+  },
   {
     id: "template",
     type: "template",
@@ -364,8 +384,8 @@ export const mockNodeTypes: NodeType[] = defaults.map((node) => {
   const kind = nodeKind(node);
   return {
     type: node.type,
-    label: node.title,
-    description: `添加${node.title}节点。`,
+    label: typeLabels[node.type],
+    description: `添加${typeLabels[node.type]}节点。`,
     category: kind === "code" ? "logic" : kind,
     error_handling: ["llm", "classifier", "tool", "agent", "code"].includes(
       node.type,
@@ -591,6 +611,42 @@ export function validateFlow(config: unknown): ValidationIssue[] {
     if (!ids.has(edge.to))
       issues.push({ loc: [...root, "edges", i, "to"], msg: "目标节点不存在" });
   });
+  if (issues.length) return issues;
+  const flow = config as FlowConfig;
+  const start = nodes.find((node) => node.type === "start")!;
+  const reached = walk(flow, [start.id]);
+  const exits = walk(
+    flow,
+    nodes.filter((node) => node.type === "end").map((node) => node.id),
+    true,
+  );
+  for (const node of nodes) {
+    const loc = [...root, "nodes", node.id];
+    if (node.type !== "start" && !reached.has(node.id))
+      issues.push({ loc, msg: "从开始节点到不了这个节点" });
+    else if (node.type !== "end" && !exits.has(node.id))
+      issues.push({ loc, msg: "这个节点到不了结束节点，循环需要一个出口" });
+    for (const { path, value } of stringsOf(node))
+      for (const [, id, field] of value.matchAll(REF_PATTERN)) {
+        const at = { loc: [...loc, ...path] };
+        const target = nodes.find((item) => item.id === id);
+        if (id === "env") {
+          if (!flow.env.vars.some((item) => item.key === field))
+            issues.push({ ...at, msg: `没有常量 ${field}` });
+        } else if (id === "secret") {
+          if (node.type !== "tool" || path[0] !== "args")
+            issues.push({ ...at, msg: "密钥只能用在工具参数里" });
+          else if (!flow.env.secrets.includes(field))
+            issues.push({ ...at, msg: `密钥 ${field} 没有在配置中声明` });
+        } else if (!target || !outputsOf(target).includes(field))
+          issues.push({ ...at, msg: `引用了不存在的变量 {{${id}.${field}}}` });
+        else if (!upstreamOf(flow, node.id).some((item) => item.id === id))
+          issues.push({
+            ...at,
+            msg: `{{${id}.${field}}} 所在的节点在这里可能还没运行`,
+          });
+      }
+  }
   return issues;
 }
 export const allSources = () => [
