@@ -84,6 +84,7 @@ class AppCatalog:
         self._settings = settings
         self._models = models
         self._evals: dict[str, asyncio.Task] = {}
+        self._starting: dict[str, asyncio.Lock] = {}
 
     # Reading
 
@@ -248,6 +249,11 @@ class AppCatalog:
 
     async def start_eval(self, app: str) -> None:
         self._check(app)
+        # One start at a time per app, so two requests cannot both pass the check below.
+        async with self._starting.setdefault(app, asyncio.Lock()):
+            await self._start_eval(app)
+
+    async def _start_eval(self, app: str) -> None:
         draft = await self._runs.versions.draft(app)
         if draft is None:
             raise EvalUnavailable("没有草稿")

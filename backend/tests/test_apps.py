@@ -1,5 +1,7 @@
 """App versions: drafts, the eval gate, publishing, rollback, and runs keeping their version."""
 
+import asyncio
+
 import httpx
 import pytest
 import yaml
@@ -261,9 +263,11 @@ async def test_a_failing_draft_cannot_be_published(tmp_path):
     async with Platform([reply({"summary": "缺字段"})], tmp_path) as p:
         one_try = {"nodes": {"plan": {"params": {"max_attempts": 1}}}}
         await p.api.put("/apps/etl/draft", json={"config": one_try})
-        await p.api.post("/apps/etl/draft/eval", json={})
-        again = await p.api.post("/apps/etl/draft/eval", json={})
-        assert again.status_code == 409
+        first, again = await asyncio.gather(
+            p.api.post("/apps/etl/draft/eval", json={}),
+            p.api.post("/apps/etl/draft/eval", json={}),
+        )
+        assert sorted([first.status_code, again.status_code]) == [202, 409]
         await p.settle()
 
         result = (await p.api.get("/apps/etl")).json()["draft"]["eval"]
