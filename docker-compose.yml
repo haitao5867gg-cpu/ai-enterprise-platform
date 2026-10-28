@@ -116,6 +116,51 @@ services:
       timeout: 3s
       retries: 20
 
+  # Runs code-node Python. Alone on the internal "sandbox" network: no internet, no
+  # database, no API. The API reaches it through sandbox-relay, the only container on
+  # both networks. See connectors/sandbox/README.md.
+  connector-sandbox:
+    build: ./connectors/sandbox
+    environment:
+      AEP_SANDBOX_MCP_HOST: 0.0.0.0
+      AEP_SANDBOX_MCP_PORT: 8004
+    networks:
+      - sandbox
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  sandbox-relay:
+    build: ./connectors/sandbox
+    command: ["aep-sandbox-relay"]
+    networks:
+      - default
+      - sandbox
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      connector-sandbox:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   postgres:
     image: pgvector/pgvector:pg17
     environment:
@@ -179,6 +224,7 @@ services:
       AEP_LLM_GATEWAY_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
       AEP_UPLOADS_DIR: ${AEP_UPLOADS_DIR:-/data/uploads}
       AEP_FILES_CONNECTOR_URL: ${AEP_FILES_CONNECTOR_URL:-http://connector-files:8003}
+      AEP_SANDBOX_URL: ${AEP_SANDBOX_URL:-http://sandbox-relay:8004/mcp}
       # Sample sources, registered through the existing startup mechanism.
       AEP_DEFAULT_DATASOURCES: >-
         [{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"},
@@ -200,6 +246,8 @@ services:
         condition: service_healthy
       connector-files:
         condition: service_healthy
+      sandbox-relay:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 5s
@@ -218,6 +266,10 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+networks:
+  sandbox:
+    internal: true
 
 volumes:
   postgres-data:

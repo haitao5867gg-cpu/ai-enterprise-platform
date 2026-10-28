@@ -41,11 +41,10 @@ def crm() -> MCPServer:
 
 
 class Platform:
-    def __init__(self, replies: list[str]) -> None:
+    def __init__(self, replies: list[str], servers: dict[str, MCPServer] | None = None) -> None:
         self.gateway = FakeGateway(replies)
         self.sources = MemoryDataSourceStore()
-        shop, orders = fake_connector.build(), crm()
-        servers = {fake_connector.URL: shop, CRM_URL: orders}
+        servers = {fake_connector.URL: fake_connector.build(), CRM_URL: crm(), **(servers or {})}
         self.skills = MemorySkillStore()
         self.service = RunService(
             MemoryRunStore(),

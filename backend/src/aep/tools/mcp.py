@@ -69,22 +69,31 @@ class McpTools:
 
         return await self._with_client(url, run)
 
-    async def call(self, url: str, name: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def call(
+        self,
+        url: str,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> Any:
         async def run(client: Client) -> Any:
             result = await client.call_tool(name, arguments or {})
             if result.is_error:
                 raise ToolError(f"{name}: {_decode(result)}")
             return _decode(result)
 
-        return await self._with_client(url, run)
+        return await self._with_client(url, run, timeout_seconds)
 
-    async def _with_client(self, url: str, run: Callable[[Client], Any]) -> Any:
+    async def _with_client(
+        self, url: str, run: Callable[[Client], Any], timeout_seconds: float | None = None
+    ) -> Any:
+        timeout = timeout_seconds or self._timeout
         try:
-            with anyio.fail_after(self._timeout):
+            with anyio.fail_after(timeout):
                 async with Client(self._resolve(url)) as client:
                     return await run(client)
         except TimeoutError as exc:
-            raise ConnectorUnavailable(f"{url}: no answer within {self._timeout:g}s") from exc
+            raise ConnectorUnavailable(f"{url}: no answer within {timeout:g}s") from exc
         except ToolError:
             raise
         except Exception as exc:

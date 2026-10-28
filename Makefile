@@ -32,12 +32,14 @@ lint:
 	cd connectors/postgres && uv run ruff check . && uv run ruff format --check .
 	cd connectors/mysql && uv run ruff check . && uv run ruff format --check .
 	cd connectors/files && uv run ruff check . && uv run ruff format --check .
+	cd connectors/sandbox && uv run ruff check . && uv run ruff format --check .
 
 fmt:
 	cd backend && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/postgres && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/mysql && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/files && uv run ruff check --fix . && uv run ruff format .
+	cd connectors/sandbox && uv run ruff check --fix . && uv run ruff format .
 
 .PHONY: test-connectors smoke-connectors
 
@@ -46,6 +48,7 @@ test-connectors:  ## Integration tests against the synthetic source database
 	uv run --frozen --project connectors/postgres pytest connectors/postgres/tests -q
 	uv run --frozen --project connectors/mysql pytest connectors/mysql/tests -q
 	uv run --frozen --project connectors/files pytest connectors/files/tests -q
+	uv run --frozen --project connectors/sandbox pytest connectors/sandbox/tests -q
 
 smoke-connectors: ## Call all five tools on the running Streamable HTTP server
 	uv run --frozen --project connectors/postgres aep-postgres-smoke

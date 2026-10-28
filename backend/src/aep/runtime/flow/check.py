@@ -356,7 +356,8 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
     dom = _dominators(start, reached, pred)
     env_keys = {v["key"] for v in environment["vars"]}
     for node_id, node in by_id.items():
-        settings = {k: v for k, v in node.items() if k not in NOT_SETTINGS}
+        verbatim = TYPES[node["type"]].verbatim
+        settings = {k: v for k, v in node.items() if k not in NOT_SETTINGS | verbatim}
         for loc, text in refs.strings(settings):
             for target, name in refs.find(text):
                 where = ["graph", "nodes", node_id, *loc]

@@ -176,6 +176,12 @@
 
 产出：`outputs` 里的每个字段。代码最多 20000 字符；可用 Python 标准库和 pandas、numpy；没有网络、没有凭据。
 
+- 代码在沙箱连接器（`connectors/sandbox`，工具 `run_python`）里运行，平台经 `AEP_SANDBOX_URL` 调用它。
+- `code` 原样交给沙箱，里面的 `{{...}}` 不当作变量引用；变量只能经 `inputs` 传入，`inputs` 的键只能用小写字母、数字和下划线。
+- 保存时检查语法和顶层的 `def main`。
+- 返回值里的 numpy、pandas 值会转成 JSON（DataFrame 按行转成列表），NaN 和无穷大变成 null。
+- 出错时的 `error_type`：超时为 `timeout`；代码报错、返回值不是 dict、缺字段或类型不对为 `code_error`（报错信息附代码输出的最后几行）；连不上沙箱为 `sandbox_unavailable`。
+
 **end 结束**：至少一个，没有出边。
 
 ```jsonc

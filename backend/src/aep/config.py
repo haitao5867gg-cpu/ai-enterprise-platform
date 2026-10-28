@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     # Shared with the read-only files connector; each upload gets a UUID directory.
     uploads_dir: Path = Path("/data/uploads")
     files_connector_url: str = "http://connector-files:8003"
+    # The code sandbox (connectors/sandbox), where code nodes of flow apps run.
+    sandbox_url: str = "http://sandbox-relay:8004/mcp"
 
     # Databricks dev validation of generated bundles (aep.databricks). Off unless
     # host and token are set. Empty catalog / schema / source_catalog keep the

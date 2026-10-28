@@ -197,6 +197,7 @@ class RunService:
             datasources=self._ctx.datasources,
             tools=self._ctx.tools,
             secret=secret,
+            sandbox_url=self._ctx.settings.sandbox_url,
         )
 
     async def _graph(self, record: RunRecord) -> CompiledStateGraph:
