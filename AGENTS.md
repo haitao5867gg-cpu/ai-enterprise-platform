@@ -17,7 +17,11 @@
 - 编排内核：LangGraph（只用核心库，不依赖 LangSmith）。状态用 Postgres checkpointer，人工确认用 `interrupt`。
 - 工具接入：一律做成 MCP Server。数据源连接器只读。数据源在平台里登记（`/datasources`，只存名称、类型和连接器地址，凭据留在连接器那边），节点通过 `AppContext.tools`（`aep.tools.mcp`）调用连接器的工具。
 - 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
-- 平台应用：每个应用是 `backend/src/aep/runtime/apps/` 下的一张 LangGraph 图，在 `aep.runtime.registry.default_apps` 里注册（现有 `hello`、`etl`）。节点里调模型只能用 `AppContext.llm_client`。运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`。
+- 平台应用分两种，都在 `aep.runtime.registry.default_apps` 或 `apps` 表里登记，运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`：
+  - 编排应用（flow）：节点和连线写在带版本的应用配置里，由 `aep.runtime.flow` 编译成 LangGraph 图；页面上可以新建、增删节点、导入导出。内置的 `hello` 和用户新建的应用都是这种。配置格式和接口见 `docs/api/flow-apps.md`，改格式先改这份契约。
+  - 代码应用（code）：`backend/src/aep/runtime/apps/` 下手写的一张 LangGraph 图，页面上只能调节点设置。现有 `etl`。
+  - 节点里调模型只能用 `AppContext.llm_client`（编排应用的节点经 `aep.runtime.flow.nodes.Runtime`）。
+- 代码节点：用户写的 Python 只在沙箱连接器 `connectors/sandbox`（MCP，工具 `run_python`）里运行，绝不在 API 进程里执行。沙箱独自在内部网络上，API 经 `sandbox-relay` 访问它。
 - 观测：Langfuse 自托管（`make up-full` 启动）。一次 run 对应一条 trace（id 由 run_id 推出），每次执行（开始、确认后恢复、重启后恢复）是其中一段，节点由 LangGraph 回调上报，模型调用由网关上报，见 `aep.tracing`。新应用不用写追踪代码。没配 Langfuse Key 时追踪关闭，什么都不发出。
 - Databricks：查询走托管 MCP（dbsql），部署走 Declarative Automation Bundles（原 Asset Bundles），分 dev / prod 目标。
 - 部署：本地 `docker compose`，生产 Azure（AKS + Helm，Terraform 建环境，Entra ID 登录）。本地和 Azure 用同一套镜像，差异只在配置。
@@ -29,6 +33,8 @@
 ```
 backend/    Python 3.12 + FastAPI，包名 aep（src 布局），uv 管理依赖
 frontend/   Next.js（App Router）+ TypeScript
+connectors/ MCP 连接器（postgres、mysql、files 只读数据源；sandbox 代码沙箱）
+docs/       接口契约（docs/api/）
 infra/      基础设施配置（litellm/ 模型网关，langfuse/ 追踪）
 .github/    CI
 ```
@@ -52,7 +58,7 @@ make lint
 
 - Python：ruff 检查和格式化（行宽 100），类型标注齐全。配置只从 `aep.config.Settings` 读，环境变量统一 `AEP_` 前缀（例外：`LANGFUSE_*`，与网关共用同一组变量）。
 - TypeScript：`strict` 模式，`npm run typecheck` 必须通过。
-- 新功能必须带测试；后端测试放 `backend/tests/`，不得依赖外部网络或真实模型（模型用 `tests/conftest.py` 里的 `FakeGateway`，数据源用 `tests/fake_connector.py` 里的进程内 MCP Server）。运行时测试用 `MemoryRunStore` + `InMemorySaver`；需要真实 Postgres 的测试读取 `AEP_TEST_DATABASE_URL`，没设置时自动跳过（CI 会设置）。
+- 新功能必须带测试；后端测试放 `backend/tests/`，不得依赖外部网络或真实模型（模型用 `tests/conftest.py` 里的 `FakeGateway`，数据源用 `tests/fake_connector.py` 里的进程内 MCP Server，代码沙箱用 `tests/test_flow_code.py` 里的假沙箱）。运行时测试用 `MemoryRunStore` + `InMemorySaver`；需要真实 Postgres 的测试读取 `AEP_TEST_DATABASE_URL`，没设置时自动跳过（CI 会设置）。
 - 不提交密钥、`.env`、客户数据。凭据在本地放 `.env`，在 Azure 放 Key Vault。
 - 新依赖要在 PR 描述里写明用途。
 
