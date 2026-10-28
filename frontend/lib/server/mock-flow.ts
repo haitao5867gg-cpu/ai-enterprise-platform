@@ -46,7 +46,7 @@ const etl: Pick<Flow, "design" | "nodes" | "edges"> = {
     summary: "探查数据、给出方案，经人确认后生成 Databricks 管道代码。",
     pattern: "固定流程的工作流（LangGraph 图），不是自主决定下一步的 agent。",
     knowledge: "没有接知识库。模型用到的知识是现场探查到的源表结构和样本。",
-    skills: "没有使用 Skill。提示词写在代码里。",
+    skills: "方案和代码节点引用已发布的 etl-plan、etl-codegen Skill。",
   } satisfies AppDesign,
   nodes: [
     START,

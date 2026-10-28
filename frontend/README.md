@@ -24,7 +24,7 @@ AEP_MOCK_RUNS=false AEP_API_INTERNAL_URL=http://localhost:8000 npm run dev
 
 ## 请求与状态处理
 
-- 浏览器只访问同源 `/api/runs`、`/api/runs/{id}`、`/api/runs/{id}/resume`、`/api/runs/{id}/files.zip`、`/api/datasources`、`/api/readyz`。Next.js route handler 在服务端读取 `AEP_API_INTERNAL_URL` 并转发；地址不会进入浏览器包。转发仅允许这些路径及相应 HTTP 方法，不提供任意后端代理。数据源列表和 ZIP 下载只接受 GET；ZIP 直接转发二进制流，保留 `Content-Type` 与 `Content-Disposition`。
+- 浏览器只访问同源 `/api/runs`、`/api/runs/{id}`、`/api/runs/{id}/resume`、`/api/runs/{id}/files.zip`、`/api/runs/{id}/flow`、`/api/datasources`、`/api/readyz`，以及契约定义的 `/api/apps`、`/api/skills` 路径。Next.js route handler 在服务端读取 `AEP_API_INTERNAL_URL` 并转发；地址不会进入浏览器包。转发仅允许这些路径及相应 HTTP 方法，不提供任意后端代理。数据源列表和 ZIP 下载只接受 GET；ZIP 直接转发二进制流，保留 `Content-Type` 与 `Content-Disposition`。
 - 详情轮询间隔为上次请求完成后的 2 秒，避免慢请求重叠。`running`、`waiting` 持续轮询，`done`、`error` 和 `404` 停止；离开页面取消请求。临时读取失败保留上次消息并显示错误，继续自动重试，也可手动重试。
 - 确认按钮遵守 `pending.options`，只有 `waiting` 且存在审批内容时显示操作。提交中锁定两个按钮并取消旧轮询，提交后立即重新读取状态。提交失败或冲突后也重新核对，避免在过期状态下重复提交。
 - 消息以 API 原始顺序、安全的纯文本呈现。错误、空列表、创建失败、详情不存在、运行失败和未知格式均有明确反馈；创建失败保留输入，不自动重复发送写请求。
@@ -41,6 +41,14 @@ AEP_MOCK_RUNS=false AEP_API_INTERNAL_URL=http://localhost:8000 npm run dev
 
 `trace_id` 非空且未禁用链接时显示“在 Langfuse 中查看”。详情页服务端按请求读取 `AEP_LANGFUSE_UI_URL`（默认 `http://localhost:3100`）和 `AEP_LANGFUSE_PROJECT_ID`（默认 `aep-local`），链接为 `<地址>/project/<项目 id>/traces/<trace_id>`。地址末尾的斜杠会去除，项目 id 和 trace id 按路径段编码。`AEP_LANGFUSE_UI_URL=` 隐藏链接。它们是服务端运行时配置，同一个生产镜像可以在本地和 Azure 使用不同值，修改后重启服务即可。
 
+## 应用配置与 Skill
+
+`/apps` 列出应用及当前版本、草稿和评测集状态。`/apps/{app}` 与运行详情共用流程图和节点设计组件，设置表单由接口的 `settings[]` 生成，支持平台默认模型、已发布 Skill 的版本选择和参数校验。草稿与当前版本可切换；保存草稿会清空旧评测，评测运行时每 5 秒轮询。有评测集的应用须通过评测才能发布，旧版本可经确认设为当前版本，并可对比两个版本的节点配置。
+
+`/skills` 支持创建 Skill，详情页提供正文与参考资料的草稿编辑、发布、历史查看和逐行对比。Markdown 用原文 `pre` 预览，不增加依赖。发布、回滚和运行审批共用浏览器内的审批人姓名（`aep.actor`）；浏览器禁用存储时仍可操作。409 与 422 的 `detail` 会显示在错误提示中。
+
+接口类型与请求函数按 [应用与 Skill 接口契约](../docs/api/apps-and-skills.md) 实现。开发 mock 共用 `AEP_MOCK_RUNS=true` 开关，内置 `etl`、`hello`、`etl-plan` 和 `etl-codegen`，状态保存于服务端内存。ETL 草稿评测约 6 秒完成：`plan.max_attempts=1` 得分 0.6，其他合法配置得分 0.9，阈值 0.8；用例链接到对应的 mock 运行详情。`hello` 无评测集，可直接发布。重启开发服务会清空这些变更。
+
 ## 验证
 
 ```bash
@@ -56,6 +64,8 @@ npm test
 `tests/langfuse.spec.ts` 验证默认链接、生产运行时自定义地址和项目 id（含地址尾斜杠与路径段编码）、空地址隐藏链接，以及没有 trace id 时隐藏链接。
 
 `tests/etl.spec.ts` 额外覆盖 ETL 完整流程、默认 PySpark / 可选 SQL、数据源故障与空状态、未知 details、检查失败、纯文本安全呈现、手机布局及 ZIP 下载后的全部文件内容。生产转发测试核对 ZIP 原始字节（含非 UTF-8 字节）和下载响应头。
+
+`tests/apps-skills.spec.ts` 覆盖保存应用草稿、评测通过与失败、发布和版本递增、回滚确认、配置对比、无评测集发布、全部设置类型和 Skill 版本选择、Skill 创建与参考资料编辑、发布与正文对比、草稿放弃、存储不可用、非法值与 409/422 提示，以及手机布局。生产转发测试额外验证应用与 Skill 的 GET/POST/PUT/DELETE、JSON 请求体、204 和错误响应。
 
 CI 的 frontend job 执行类型检查、ESLint、构建和以上测试，再启动真实 Compose 后端执行下文的两条浏览器联调路径，上传截图并清理测试容器。可用以下命令生成开发 mock 的页面截图（使用合成需求）：
 

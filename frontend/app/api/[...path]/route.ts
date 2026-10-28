@@ -15,26 +15,39 @@ function jsonError(detail: string, status: number) {
 async function handle(request: Request, context: Context) {
   const { path } = await context.params;
   const endpoint = path.join("/");
-  const allowed =
-    endpoint === "readyz" ||
-    endpoint === "datasources" ||
-    endpoint === "runs" ||
-    /^runs\/[a-zA-Z0-9_-]{1,128}(\/(resume|files\.zip|flow))?$/.test(endpoint);
-  if (!allowed) return jsonError("Not found", 404);
-  const isResume = path.length === 3 && path[2] === "resume";
-  const canGet = !isResume;
-  const canPost = endpoint === "runs" || isResume;
-  if (
-    (request.method === "GET" && !canGet) ||
-    (request.method === "POST" && !canPost)
-  ) {
+  const routes: [RegExp, string[]][] = [
+    [/^(readyz|datasources)$/, ["GET"]],
+    [/^runs$/, ["GET", "POST"]],
+    [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow))?$/, ["GET"]],
+    [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],
+    [/^apps$/, ["GET"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}(\/versions)?$/, ["GET"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft$/, ["PUT", "DELETE"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft\/(eval|publish)$/, ["POST"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/versions\/[1-9][0-9]*\/activate$/, ["POST"]],
+    [/^skills$/, ["GET", "POST"]],
+    [/^skills\/[a-z][a-z0-9-]{1,63}(\/versions\/[1-9][0-9]*)?$/, ["GET"]],
+    [/^skills\/[a-z][a-z0-9-]{1,63}\/draft$/, ["PUT", "DELETE"]],
+    [/^skills\/[a-z][a-z0-9-]{1,63}\/publish$/, ["POST"]],
+  ];
+  const methods = routes.find(([pattern]) => pattern.test(endpoint))?.[1];
+  if (!methods) return jsonError("Not found", 404);
+  if (!methods.includes(request.method)) {
     return new Response(null, {
       status: 405,
-      headers: { Allow: canGet ? "GET" : "POST" },
+      headers: { Allow: methods.join(", ") },
     });
   }
 
   if (endpoint !== "readyz" && isLocalMockEnabled()) {
+    if (path[0] === "apps") {
+      const { mockApps } = await import("../../../lib/server/mock-apps");
+      return mockApps(request, path);
+    }
+    if (path[0] === "skills") {
+      const { mockSkills } = await import("../../../lib/server/mock-skills");
+      return mockSkills(request, path);
+    }
     const { mockRuns } = await import("../../../lib/server/mock-runs");
     return mockRuns(request, path);
   }
@@ -63,11 +76,12 @@ async function handle(request: Request, context: Context) {
       `${base.href.replace(/\/$/, "")}/${endpoint}`,
       {
         method: request.method,
-        headers:
-          request.method === "POST"
-            ? { "Content-Type": "application/json" }
-            : undefined,
-        body: request.method === "POST" ? await request.text() : undefined,
+        headers: ["POST", "PUT"].includes(request.method)
+          ? { "Content-Type": "application/json" }
+          : undefined,
+        body: ["POST", "PUT"].includes(request.method)
+          ? await request.text()
+          : undefined,
         cache: "no-store",
         redirect: "manual",
         signal: AbortSignal.timeout(10_000),
@@ -92,3 +106,5 @@ async function handle(request: Request, context: Context) {
 
 export const GET = handle;
 export const POST = handle;
+export const PUT = handle;
+export const DELETE = handle;

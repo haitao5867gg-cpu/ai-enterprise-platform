@@ -39,6 +39,34 @@ createServer(async (request, response) => {
   if (path === "/runs/fixture") return json({ source: "contract-fixture" });
   if (path === "/runs/fixture/flow")
     return json({ source: "contract-fixture-flow" });
+  if (/^\/(apps|skills)(\/|$)/.test(path)) {
+    if (request.method === "DELETE") {
+      response.writeHead(204);
+      return response.end();
+    }
+    let payload = null;
+    if (["POST", "PUT"].includes(request.method)) {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      payload = JSON.parse(raw);
+    }
+    if (path === "/apps/conflict/draft/publish")
+      return json({ detail: "请先通过评测" }, 409);
+    if (path === "/skills/invalid/draft")
+      return json(
+        { detail: [{ loc: ["body", "description"], msg: "说明不能为空" }] },
+        422,
+      );
+    return json(
+      {
+        source: "assets-contract-fixture",
+        method: request.method,
+        path,
+        payload,
+      },
+      path === "/skills" && request.method === "POST" ? 201 : 200,
+    );
+  }
   // Other runs have no flow here: the run page leaves the panel out.
   if (path?.endsWith("/flow")) return json({ detail: "Not found" }, 404);
   let body;
