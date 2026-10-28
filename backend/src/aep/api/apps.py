@@ -6,7 +6,7 @@ Contracts: docs/api/apps-and-skills.md and docs/api/flow-apps.md.
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
@@ -16,9 +16,12 @@ from aep.runtime.catalog import (
     AppNotFound,
     BadSource,
     EvalUnavailable,
+    NodeNotFound,
     NotAFlowApp,
     NotPublishable,
+    NotTestable,
 )
+from aep.runtime.flow.files import BadFile
 from aep.runtime.flow.store import AppExists
 from aep.runtime.versions import DraftChanged, NoDraft, VersionNotFound
 
@@ -66,6 +69,32 @@ class UpdateApp(BaseModel):
     summary: str | None = Field(default=None, max_length=500)
 
 
+class ImportApp(BaseModel):
+    app: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    title: str | None = Field(default=None, max_length=50)
+    summary: str | None = Field(default=None, max_length=500)
+    yaml: str
+    actor: str | None = None
+
+
+class ImportDraft(BaseModel):
+    yaml: str
+    actor: str | None = None
+
+
+class TestNode(BaseModel):
+    config: dict[str, Any] | None = None
+    values: dict[str, Any] = {}
+
+
+class SetSecret(BaseModel):
+    value: str = Field(min_length=1, max_length=4096)
+    actor: str | None = None
+
+
+SECRET_NAME = r"^[a-z][a-z0-9_]{0,31}$"
+
+
 def _not_found(app: str) -> HTTPException:
     return HTTPException(404, f"没有应用 {app}")
 
@@ -103,6 +132,21 @@ async def create_app(body: CreateApp, catalog: Catalog) -> dict[str, Any]:
     except ConfigError as exc:
         raise _invalid(exc) from exc
     return await catalog.detail(body.app)
+
+
+@router.post("/import", status_code=status.HTTP_201_CREATED)
+async def import_app(body: ImportApp, catalog: Catalog) -> dict[str, Any]:
+    try:
+        problems = await catalog.import_app(
+            body.app, body.title, body.summary, body.yaml, body.actor
+        )
+    except AppExists as exc:
+        raise HTTPException(409, f"已经有应用 {body.app}") from exc
+    except BadFile as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ConfigError as exc:
+        raise _invalid(exc) from exc
+    return {"app": await catalog.detail(body.app), "problems": problems}
 
 
 @router.patch("/{app}")
@@ -156,6 +200,83 @@ async def save_draft(app: str, body: SaveDraft, catalog: Catalog) -> dict[str, A
     except ConfigError as exc:
         raise _invalid(exc) from exc
     return await catalog.detail(app)
+
+
+@router.post("/{app}/draft/import")
+async def import_draft(app: str, body: ImportDraft, catalog: Catalog) -> dict[str, Any]:
+    try:
+        problems = await catalog.import_draft(app, body.yaml, body.actor)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except BadFile as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ConfigError as exc:
+        raise _invalid(exc) from exc
+    return {"app": await catalog.detail(app), "problems": problems}
+
+
+@router.post("/{app}/nodes/{node}/test")
+async def test_node(app: str, node: str, body: TestNode, catalog: Catalog) -> dict[str, Any]:
+    try:
+        return await catalog.test_node(app, node, body.config, body.values)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NodeNotFound as exc:
+        raise HTTPException(404, f"没有节点 {node}") from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except NotTestable as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ConfigError as exc:
+        raise _invalid(exc) from exc
+
+
+@router.get("/{app}/versions/{version}/export")
+async def export_version(app: str, version: int, catalog: Catalog) -> Response:
+    try:
+        name, text = await catalog.export(app, version)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except VersionNotFound as exc:
+        raise HTTPException(404, f"应用 {app} 没有版本 {version}") from exc
+    return Response(
+        text,
+        media_type="text/yaml; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@router.put("/{app}/secrets/{name}", status_code=status.HTTP_204_NO_CONTENT)
+async def set_secret(
+    app: str,
+    body: SetSecret,
+    catalog: Catalog,
+    name: Annotated[str, Path(pattern=SECRET_NAME)],
+) -> Response:
+    try:
+        await catalog.set_secret(app, name, body.value)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/{app}/secrets/{name}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_secret(
+    app: str, catalog: Catalog, name: Annotated[str, Path(pattern=SECRET_NAME)]
+) -> Response:
+    try:
+        await catalog.delete_secret(app, name)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete("/{app}/draft", status_code=status.HTTP_204_NO_CONTENT)

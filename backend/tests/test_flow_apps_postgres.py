@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from aep.datasources import MemoryDataSourceStore
 from aep.runtime.catalog import AppCatalog
-from aep.runtime.flow.store import AppExists, PostgresFlowAppStore
+from aep.runtime.flow.store import AppExists, PostgresFlowAppStore, PostgresSecretStore
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
@@ -122,3 +122,21 @@ async def test_a_form_waits_across_a_restart():
         await restarted.wait_idle()
         view = await restarted.get(record.run_id)
         assert (view.record.status, view.result) == ("done", {"order": "A1"})
+
+
+async def test_secret_store():
+    app = f"app-{uuid.uuid4().hex[:8]}"
+    async with platform(FakeGateway(["x"])) as (service, _):
+        store = PostgresSecretStore(service.flows._pool)
+        await store.setup()
+        await store.setup()
+        assert await store.get(app, "token") is None
+        await store.set(app, "token", "one")
+        await store.set(app, "token", "two")
+        await store.set(app, "other", "x")
+        assert await store.get(app, "token") == "two"
+        assert [s.name for s in await store.names(app)] == ["other", "token"]
+        await store.delete(app, "token")
+        await store.delete(app, "token")
+        assert [s.name for s in await store.names(app)] == ["other"]
+        assert await store.names(f"{app}-none") == []

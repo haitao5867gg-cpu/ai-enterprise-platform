@@ -35,7 +35,12 @@ from aep.runtime import appconfig, design
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import nodes as flownodes
 from aep.runtime.flow.builtin import BuiltinFlow
-from aep.runtime.flow.store import FlowAppStore, MemoryFlowAppStore
+from aep.runtime.flow.store import (
+    FlowAppStore,
+    MemoryFlowAppStore,
+    MemorySecretStore,
+    SecretStore,
+)
 from aep.runtime.registry import AppBuilder, AppContext
 from aep.runtime.store import RunRecord, RunStore
 from aep.runtime.versions import AppVersionStore, MemoryAppVersionStore
@@ -104,6 +109,7 @@ class RunService:
         versions: AppVersionStore | None = None,
         skills: SkillStore | None = None,
         flows: FlowAppStore | None = None,
+        secrets: SecretStore | None = None,
     ) -> None:
         self._store = store
         self._checkpointer = checkpointer
@@ -112,6 +118,7 @@ class RunService:
         self.versions = versions or MemoryAppVersionStore()
         self.skills = skills or MemorySkillStore()
         self.flows = flows or MemoryFlowAppStore()
+        self.secrets = secrets or MemorySecretStore()
         code = {name: b for name, b in apps.items() if not isinstance(b, BuiltinFlow)}
         self.builtin_flows = {name: b for name, b in apps.items() if isinstance(b, BuiltinFlow)}
         self._graphs: dict[str, CompiledStateGraph] = {
@@ -125,6 +132,11 @@ class RunService:
         self._ensured: set[str] = set()
         self._flows_ready = False
         self._tasks: set[asyncio.Task] = set()
+
+    @property
+    def tools(self) -> Any:
+        """The MCP client nodes call tools with (``aep.tools.mcp.McpTools``)."""
+        return self._ctx.tools
 
     @property
     def code_apps(self) -> list[str]:
@@ -161,8 +173,9 @@ class RunService:
             return shipped.config
         return shipped.upgrade(config) if shipped else config
 
-    async def runtime(self, config: dict[str, Any]) -> flownodes.Runtime:
-        """What a flow app's nodes need to run: skill text loaded, constants set."""
+    async def runtime(self, config: dict[str, Any], app: str | None = None) -> flownodes.Runtime:
+        """What a flow app's nodes need to run: skill text loaded, constants set, and
+        (given the app) its secrets within reach of its tools."""
         skills = {}
         for name, version in flowgraph.skill_refs(config):
             content = await self.skills.version(name, version)
@@ -170,15 +183,31 @@ class RunService:
                 raise LookupError(f"Skill {name} 没有版本 {version}")
             skills[(name, version)] = content
         env = {v["key"]: v.get("value") for v in (config.get("env") or {}).get("vars") or []}
-        return flownodes.Runtime(self._ctx.llm_client, self.default_model, skills, env)
+        secret = None
+        if app is not None:
+
+            async def secret(name: str) -> str | None:
+                return await self.secrets.get(app, name)
+
+        return flownodes.Runtime(
+            self._ctx.llm_client,
+            self.default_model,
+            skills,
+            env,
+            datasources=self._ctx.datasources,
+            tools=self._ctx.tools,
+            secret=secret,
+        )
 
     async def _graph(self, record: RunRecord) -> CompiledStateGraph:
         if record.app in self._graphs:
             return self._graphs[record.app]
         config = self.flow_config(record.app, record.config)
-        key = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+        # The app is part of the key: its secrets are its own.
+        text = json.dumps([record.app, config], sort_keys=True)
+        key = hashlib.sha256(text.encode()).hexdigest()
         if key not in self._flow_graphs:
-            built = flowgraph.build(config, await self.runtime(config))
+            built = flowgraph.build(config, await self.runtime(config, record.app))
             self._flow_graphs[key] = built.compile(checkpointer=self._checkpointer)
         return self._flow_graphs[key]
 

@@ -525,7 +525,8 @@ async def test_node_types_and_templates():
         assert llm_type["presets"][0]["key"] == "extract"
         assert next(t for t in types if t["type"] == "start")["max_count"] == 1
         templates = (await p.api.get("/app-templates")).json()
-        assert [t["id"] for t in templates] == ["qa-approval", "intent-routing"]
+        assert [t["id"] for t in templates] == ["qa-approval", "intent-routing", "datasource-qa"]
+        assert templates[2]["needs"] == ["datasource"]
 
 
 async def test_create_rename_copy_and_archive_flow_apps():

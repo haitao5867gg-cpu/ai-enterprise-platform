@@ -117,12 +117,14 @@
 **tool 调用工具**
 
 ```jsonc
-{"datasource": "ds_1a2b",               // 已登记数据源的 datasource_id
+{"datasource": "ds_1a2b",               // 已登记数据源的 datasource_id，也可以是整段引用，如 "{{start.datasource}}"
  "tool": "run_query",                   // 该数据源 GET /datasources/{id}/tools 里的工具名
  "args": {"sql": "select count(*) from orders where id = '{{ask_order.order_id}}'"}}
 ```
 
 产出：`result`（工具返回的内容；是 JSON 就解析成对象）。这一期只能调已登记数据源的工具，数据源连接器都是只读的。
+
+`datasource` 写成引用时（通常引用开始节点 `datasource` 类型的输入），保存时只检查引用本身，工具名和参数到运行时才对照那个数据源检查；数据源不存在或没有这个工具，节点以 `tool_error` 失败。agent 的 `tools[].datasource` 同理。
 
 **agent 智能体**：有步数上限的“模型 → 工具 → 模型”循环。
 
@@ -259,7 +261,7 @@
 | DELETE | `/apps/{app}/secrets/{name}` | | 204；没有设过也是 204 |
 
 - `app` 符合 `^[a-z][a-z0-9-]{1,63}$`，`title` 1–50 字符，`summary` 最多 500 字符。
-- 模板有 3 个：`qa-approval`（问答加确认，和 hello 一样）、`intent-routing`（意图分类路由）、`datasource-qa`（数据源问答，Agent 调只读数据源工具，`needs` 含 `datasource`，从模板新建后要在节点里选数据源才能运行）。
+- 模板有 3 个：`qa-approval`（问答加确认，和 hello 一样）、`intent-routing`（意图分类路由）、`datasource-qa`（数据源问答，Agent 调只读数据源工具，`needs` 含 `datasource`：开始节点有一个 `datasource` 类型的输入，Agent 的工具引用它，每次运行时由使用者选数据源，所以平台上至少要登记一个数据源）。
 - `From`：`{"blank": true}`（开始 → LLM → 结束，可以直接运行）、`{"template": "intent-routing"}`、`{"app": "hello", "version": 2}`（复制已有编排应用的某个版本，`version` 不写为当前版本；不能复制代码应用）。
 - 归档的应用不再出现在 `GET /apps`，`GET /apps/{app}` 返回 404，`POST /runs` 返回 404；它的运行记录照常可以查看。
 - `PUT /apps/{app}/draft` 对编排应用同样只管配置；改名称、简介用 `PATCH`。
