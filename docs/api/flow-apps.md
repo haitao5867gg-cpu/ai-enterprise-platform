@@ -324,6 +324,7 @@ requires:                 # 方便导入时核对
 ## 运行
 
 - `POST /runs` 用于编排应用时，`input` 按开始节点的 `inputs` 校验，不合格返回 422，`loc` 为 `["body", "input", "question"]`。`hello` 的输入仍是 `{"text": "……"}`。
+- `POST /runs` 新增可选字段 `draft`（布尔）：为 true 时用当前草稿的配置运行（编辑页的“用草稿试运行”），没有草稿 409，不能和 `app_version` 同时给。草稿运行的 `app_version` 为 null，运行记录新增 `draft: true`（其他运行为 false），运行列表可以据此标注“草稿试运行”。代码应用也可以这样试跑草稿。
 - 编排应用的 `result` 就是结束节点的 `outputs`。`hello` 的结果仍是 `{"answer": "……"}`。
 - 编排应用的 `messages`：开头是输入里的文本字段（user），每个 llm、agent 节点的回答记为 assistant，每次人工处理记为 user。
 - 运行失败时 `error` 写明节点：`节点「起草售后回复」(draft)：模型没有按格式回答`。
