@@ -286,6 +286,17 @@ async def test_a_failing_draft_cannot_be_published(tmp_path):
         assert no_set.status_code == 409
 
 
+async def test_a_missing_eval_set_file_keeps_the_gate_closed(tmp_path):
+    async with Platform([reply(plan())], tmp_path, evals_dir=str(tmp_path / "nowhere")) as p:
+        assert (await p.api.get("/apps/etl")).json()["has_eval_set"] is True
+        await p.api.put("/apps/etl/draft", json={"config": {"nodes": {}}})
+        started = await p.api.post("/apps/etl/draft/eval", json={})
+        assert started.status_code == 409
+        assert "AEP_EVALS_DIR" in started.json()["detail"]
+        refused = await p.api.post("/apps/etl/draft/publish", json={"note": "试试"})
+        assert refused.status_code == 409
+
+
 async def test_only_the_evaluated_draft_is_published():
     store = MemoryAppVersionStore()
     await store.ensure("etl", {"nodes": {}})

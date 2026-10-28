@@ -93,13 +93,11 @@ class AppCatalog:
             raise AppNotFound(app)
 
     def eval_set(self, app: str) -> Path | None:
-        """The app's eval set, if it has one and the file is there."""
+        """Where the app's eval set is, if the app has one. The file may be missing (a
+        wrong AEP_EVALS_DIR); the gate still applies, and evals fail until it is there."""
         build = self._runs.builder(app)
         name = getattr(sys.modules.get(build.__module__), "EVAL_SET", None)
-        if not name:
-            return None
-        path = Path(self._settings.evals_dir) / name
-        return path if path.is_file() else None
+        return Path(self._settings.evals_dir) / name if name else None
 
     async def models(self) -> list[str] | None:
         return await self._models() if self._models else None
@@ -260,6 +258,8 @@ class AppCatalog:
         path = self.eval_set(app)
         if path is None:
             raise EvalUnavailable("这个应用没有评测集")
+        if not path.is_file():
+            raise EvalUnavailable(f"找不到评测集文件 {path}，请检查 AEP_EVALS_DIR")
         running = self._evals.get(app)
         if running is not None and not running.done():
             raise EvalUnavailable("已经有评测在进行")
