@@ -725,7 +725,10 @@ class PostgresKnowledgeStore:
         self, kb_id: str, vector: list[float], top_k: int, min_score: float
     ) -> list[Hit]:
         query = _vector(vector)
-        async with self._pool.connection() as conn:
+        async with self._pool.connection() as conn, conn.transaction():
+            # The HNSW index is shared by all bases and filters after the scan; keep
+            # scanning until top_k rows of this base pass the filter (pgvector >= 0.8).
+            await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
             cur = await conn.execute(
                 "SELECT * FROM ("
                 " SELECT b.kb_id::text, b.name AS kb_name, d.document_id::text,"
