@@ -836,14 +836,15 @@ class PostgresKnowledgeStore:
     async def vector_candidates(self, kb_id: str, vector: list[float], n: int) -> list[str]:
         query = _vector(vector)
         async with self._pool.connection() as conn, conn.transaction():
-            # HNSW filters after scanning: continue until this base has n ready rows.
+            # HNSW filters after scanning: continue until this base has n ready rows. Order by
+            # distance alone: a tie-breaker column would stop the planner using the index.
             await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
             cur = await conn.execute(
                 "SELECT c.chunk_id::text FROM knowledge_chunks c"
                 " JOIN knowledge_documents d USING (document_id)"
                 " JOIN knowledge_bases b ON b.kb_id = c.kb_id"
                 " WHERE c.kb_id = %s AND b.tenant_id = %s AND d.status = 'ready'"
-                " ORDER BY c.embedding <=> %s::vector, c.chunk_id LIMIT %s",
+                " ORDER BY c.embedding <=> %s::vector LIMIT %s",
                 (_key(kb_id), DEFAULT_TENANT, query, n),
             )
             return [row["chunk_id"] for row in await cur.fetchall()]

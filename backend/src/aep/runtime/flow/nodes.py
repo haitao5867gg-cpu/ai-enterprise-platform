@@ -816,7 +816,7 @@ async def check_knowledge(node: dict[str, Any], p: Problems, env: CheckEnv) -> N
         p.add(("min_score",), "最低相似度要在 0–1 之间")
     try:
         Retrieval.model_validate(
-            node.get("retrieval", {}),
+            node.get("retrieval") or {},
             context={
                 "top_k": top_k if isinstance(top_k, int) else 5,
                 "rerank_models": env.rerank_models if env.strict else None,
