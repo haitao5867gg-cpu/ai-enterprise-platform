@@ -5,12 +5,18 @@ import { CitationScope, CitedMarkdown, SourceList } from "./citations";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  durationText,
   errorMessage,
   fieldErrors,
+  formatTime,
   isRecord,
   readReceipt,
   readRun,
   requestJson,
+  runTitle,
+  stepText,
+  timeAgo,
+  versionLabel,
   type Decision,
   type Run,
 } from "../lib/runs";
@@ -112,6 +118,7 @@ export function RunDetail({
   langfuseTraceBaseUrl: string | null;
 }) {
   const [run, setRun] = useState<Run | null>(null);
+  const [now, setNow] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [mutationError, setMutationError] = useState("");
@@ -146,6 +153,7 @@ export function RunDetail({
         if (value.run_id !== id)
           throw new ApiError("服务返回的运行编号不匹配，请重试。");
         setRun(value);
+        setNow(Date.now());
         setError("");
         setRechecking(false);
         terminal = value.status === "done" || value.status === "error";
@@ -267,8 +275,26 @@ export function RunDetail({
       </Link>
       <div className="page-heading detail-heading">
         <div>
-          <h1>运行详情{run && <StatusBadge status={run.status} />}</h1>
-          <p className="detail-id">{id}</p>
+          <h1>
+            <span className="detail-title">
+              {run ? runTitle(run) : "运行详情"}
+            </span>
+            {run && <StatusBadge status={run.status} />}
+          </h1>
+          {run && (
+            <p className="detail-meta">
+              {[
+                run.created_by && `${run.created_by} 提出`,
+                run.created_at && timeAgo(run.created_at, now),
+                durationText(run, now),
+                [run.app_title || run.app, versionLabel(run)]
+                  .filter(Boolean)
+                  .join(" "),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
         </div>
         <Link className="button secondary" href="/runs/new">
           <Icon name="plus" size={16} />
@@ -405,7 +431,7 @@ export function RunDetail({
                     <dd>
                       <span className="app-tag">
                         <Icon name="spark" size={14} />
-                        {run.app}
+                        {run.app_title || run.app}
                       </span>
                     </dd>
                   </div>
@@ -423,8 +449,21 @@ export function RunDetail({
                     <dt>当前状态</dt>
                     <dd>
                       <StatusBadge status={run.status} />
+                      {stepText(run) && (
+                        <span className="run-step">{stepText(run)}</span>
+                      )}
                     </dd>
                   </div>
+                  <div>
+                    <dt>提出人</dt>
+                    <dd>{run.created_by || "—"}</dd>
+                  </div>
+                  {run.created_at && (
+                    <div>
+                      <dt>提交时间</dt>
+                      <dd>{formatTime(run.created_at)}</dd>
+                    </div>
+                  )}
                   <div>
                     <dt>运行编号</dt>
                     <dd className="monospace">{run.run_id}</dd>

@@ -3,41 +3,75 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
+  durationText,
   errorMessage,
+  formatTime,
   readRunList,
   requestJson,
+  runTitle,
   statusLabels,
+  stepText,
+  timeAgo,
+  versionLabel,
   type RunStatus,
   type RunSummary,
 } from "../lib/runs";
 import { Icon } from "./icons";
 import { EmptyState, ErrorNotice, StatusBadge } from "./ui";
 
+// While a run is running the list refreshes itself this often.
+const REFRESH_MS = 10_000;
+
 export function RunList() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [now, setNow] = useState(0);
   const [filter, setFilter] = useState<RunStatus | "all">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let first = true;
     async function load() {
-      setLoading(true);
-      setError("");
+      if (first) {
+        setLoading(true);
+        setError("");
+      }
+      let again = false;
       try {
         const data = readRunList(
           await requestJson("/runs", { signal: controller.signal }),
         );
-        if (!controller.signal.aborted) setRuns(data);
+        if (controller.signal.aborted) return;
+        setRuns(data);
+        setNow(Date.now());
+        setError("");
+        again = data.some((run) => run.status === "running");
       } catch (err) {
-        if (!controller.signal.aborted) setError(errorMessage(err));
+        if (controller.signal.aborted) return;
+        // A refresh that fails keeps the list shown and tries again later.
+        if (first) setError(errorMessage(err));
+        else again = true;
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          first = false;
+          if (again) timer = setTimeout(() => void load(), REFRESH_MS);
+        }
       }
     }
     void load();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
   }, [revision]);
+  // Times since and waits keep counting between refreshes.
+  useEffect(() => {
+    const clock = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(clock);
+  }, []);
 
   const visible =
     filter === "all" ? runs : runs.filter((run) => run.status === filter);
@@ -138,52 +172,90 @@ export function RunList() {
             <table className="runs-table">
               <thead>
                 <tr>
-                  <th scope="col">运行</th>
+                  <th scope="col">需求</th>
+                  <th scope="col">提出人</th>
                   <th scope="col">应用</th>
                   <th scope="col">状态</th>
+                  <th scope="col">提交时间</th>
+                  <th scope="col">用时</th>
                   <th scope="col">
                     <span className="sr-only">操作</span>
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {visible.map((run) => (
-                  <tr key={run.run_id}>
-                    <td>
-                      <Link
-                        className="run-title"
-                        href={`/runs/${encodeURIComponent(run.run_id)}`}
-                      >
-                        {run.messages?.find((m) => m.role === "user")
-                          ?.content || `运行 ${run.run_id.slice(0, 8)}`}
-                      </Link>
-                      <span className="run-id" title={run.run_id}>
-                        {run.run_id}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="app-tag">
-                        <Icon name="spark" size={14} />
-                        {run.app}
-                      </span>
-                      {run.draft && (
-                        <span className="draft-tag">草稿试运行</span>
-                      )}
-                    </td>
-                    <td>
-                      <StatusBadge status={run.status} />
-                    </td>
-                    <td>
-                      <Link
-                        href={`/runs/${encodeURIComponent(run.run_id)}`}
-                        className="table-action"
-                        aria-label={`查看运行 ${run.run_id}`}
-                      >
-                        <Icon name="arrow" />
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
+                {visible.map((run) => {
+                  const title = runTitle(run);
+                  const where = stepText(run);
+                  return (
+                    <tr key={run.run_id}>
+                      <td>
+                        <Link
+                          className={`run-title${run.title ? "" : " untitled"}`}
+                          href={`/runs/${encodeURIComponent(run.run_id)}`}
+                          title={title}
+                        >
+                          {title}
+                          {run.created_at && (
+                            // Tells runs with the same title apart for screen readers.
+                            <span className="sr-only">
+                              （{run.created_by ? `${run.created_by}，` : ""}
+                              {formatTime(run.created_at)} 提交）
+                            </span>
+                          )}
+                        </Link>
+                      </td>
+                      <td className="run-cell">{run.created_by || "—"}</td>
+                      <td>
+                        <span className="app-tag">
+                          <Icon name="spark" size={14} />
+                          {run.app_title || run.app}
+                        </span>
+                        {versionLabel(run) && (
+                          <span
+                            className={run.draft ? "draft-tag" : "run-version"}
+                          >
+                            {versionLabel(run)}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <StatusBadge status={run.status} />
+                        {where && <span className="run-step">{where}</span>}
+                      </td>
+                      <td className="run-cell">
+                        {run.created_at ? (
+                          <time
+                            dateTime={run.created_at}
+                            title={formatTime(run.created_at)}
+                          >
+                            {timeAgo(run.created_at, now)}
+                          </time>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="run-cell run-duration">
+                        {(durationText(run, now) || "—")
+                          .split(" · ")
+                          .map((part) => (
+                            <span key={part}>{part}</span>
+                          ))}
+                      </td>
+                      <td>
+                        {/* The title links to the run too; this is for the mouse. */}
+                        <Link
+                          href={`/runs/${encodeURIComponent(run.run_id)}`}
+                          className="table-action"
+                          aria-hidden="true"
+                          tabIndex={-1}
+                        >
+                          <Icon name="arrow" />
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -2,12 +2,29 @@
 
 ``POST /runs`` takes the ``app``, its ``input`` and optionally ``app_version``
 (an app version number, see ``GET /apps/{app}/versions``; the current one when
-left out) or ``draft`` (run the app's draft). A flow app's input must fit its
-start node's inputs (422 with ``loc`` ``["body", "input", key]``); see
-docs/api/flow-apps.md for flow apps. Every run record has ``app_version``: the
-version it uses for its whole life (null for the runs of a draft, and for runs
-from before versions), and ``draft``: whether it runs a draft (its eval, or
-someone trying it).
+left out) or ``draft`` (run the app's draft), and ``requester``: who asks for
+the run (up to 100 characters; until sign-in exists the client says so). A flow
+app's input must fit its start node's inputs (422 with ``loc``
+``["body", "input", key]``); see docs/api/flow-apps.md for flow apps.
+
+``GET /runs`` lists the latest runs (``limit``, at most 200), newest first. Every
+run record (in the list and in ``GET /runs/{id}``) has:
+
+- ``app_title``: the app's title; ``app_version``: the version the run uses for its
+  whole life (null for the runs of a draft, and for runs from before versions);
+  ``draft``: whether it runs a draft (its eval, or someone trying it).
+- ``title``: what the run is about, in one line of at most 80 characters: a flow
+  app's first text input that was filled in, in the order of its start node's
+  inputs; a code app's ``request``. Null when there is none.
+- ``created_by``: the ``requester`` it was started with, or null.
+- ``created_at``, ``updated_at`` (the last status change) and ``finished_at`` (when
+  it ended, ``done`` or ``error``; null before), ISO times.
+- ``step``: the node the run is at (``node`` id and ``title``), the one it waits at,
+  or the last one it reached; null before its first node starts.
+- ``waiting_since``: when the current wait for a person began (null unless
+  waiting), and ``wait_seconds``: the seconds spent in waits already over. The
+  time the machine worked is the run's whole time less both. Null for runs from
+  before waits were counted.
 
 A waiting run's ``pending`` is an approval: show ``prompt`` and offer
 ``options`` (shown as ``option_labels`` when given); any option may carry a
@@ -85,7 +102,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from aep.knowledge.citations import Source
 from aep.runtime.service import (
@@ -118,6 +135,8 @@ class CreateRun(BaseModel):
     app_version: int | None = None
     # Run the app's draft as it is now (trying it before publishing).
     draft: bool = False
+    # Who asks for the run. Until sign-in exists (M4) the client says so.
+    requester: str | None = Field(default=None, max_length=100)
 
 
 class Resume(BaseModel):
@@ -135,14 +154,26 @@ class RunRef(BaseModel):
     status: RunStatus
 
 
+class Step(BaseModel):
+    node: str
+    title: str
+
+
 class RunSummary(BaseModel):
     run_id: str
     app: str
+    app_title: str
     app_version: int | None
     draft: bool
     status: RunStatus
+    title: str | None
+    created_by: str | None
     created_at: str
     updated_at: str
+    finished_at: str | None
+    step: Step | None
+    waiting_since: str | None
+    wait_seconds: float | None
 
 
 class Message(BaseModel):
@@ -160,12 +191,7 @@ class Pending(BaseModel):
     details: dict[str, Any] | None = None
 
 
-class RunDetail(BaseModel):
-    run_id: str
-    app: str
-    app_version: int | None
-    draft: bool
-    status: RunStatus
+class RunDetail(RunSummary):
     messages: list[Message]
     pending: Pending | None
     result: dict[str, Any] | None
@@ -217,25 +243,28 @@ def _is_draft(r: RunRecord) -> bool:
     return r.app_version is None and r.config is not None
 
 
-def _summary(r: RunRecord) -> RunSummary:
-    return RunSummary(
-        run_id=r.run_id,
-        app=r.app,
-        app_version=r.app_version,
-        draft=_is_draft(r),
-        status=r.status,
-        created_at=r.created_at.isoformat(),
-        updated_at=r.updated_at.isoformat(),
-    )
+def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> dict[str, Any]:
+    return {
+        "run_id": r.run_id,
+        "app": r.app,
+        "app_title": app_titles.get(r.app, r.app),
+        "app_version": r.app_version,
+        "draft": _is_draft(r),
+        "status": r.status,
+        "title": service.title(r),
+        "created_by": r.created_by,
+        "created_at": r.created_at.isoformat(),
+        "updated_at": r.updated_at.isoformat(),
+        "finished_at": r.updated_at.isoformat() if r.status in ("done", "error") else None,
+        "step": r.step,
+        "waiting_since": r.waiting_since.isoformat() if r.waiting_since else None,
+        "wait_seconds": r.wait_seconds,
+    }
 
 
-def _detail(v: RunView) -> RunDetail:
+def _detail(v: RunView, service: RunService, app_titles: dict[str, str]) -> RunDetail:
     return RunDetail(
-        run_id=v.record.run_id,
-        app=v.record.app,
-        app_version=v.record.app_version,
-        draft=_is_draft(v.record),
-        status=v.record.status,
+        **_summary(v.record, service, app_titles),
         messages=[Message(**m) for m in v.messages],
         pending=Pending(**v.pending) if v.pending else None,
         result=v.result,
@@ -250,7 +279,13 @@ async def create_run(body: CreateRun, service: Service) -> RunRef:
     if body.draft and body.app_version is not None:
         raise HTTPException(422, "draft 和 app_version 不能同时给")
     try:
-        record = await service.create(body.app, body.input, body.app_version, draft=body.draft)
+        record = await service.create(
+            body.app,
+            body.input,
+            body.app_version,
+            draft=body.draft,
+            requester=(body.requester or "").strip() or None,
+        )
     except UnknownApp as exc:
         raise HTTPException(404, f"没有应用 {body.app}") from exc
     except UnknownVersion as exc:
@@ -273,15 +308,18 @@ def _invalid_values(where: str, exc: InvalidValues) -> RequestValidationError:
 
 @router.get("")
 async def list_runs(service: Service, limit: int = 50) -> list[RunSummary]:
-    return [_summary(r) for r in await service.recent(min(max(limit, 1), 200))]
+    titles = await service.app_titles()
+    runs = await service.recent(min(max(limit, 1), 200))
+    return [RunSummary(**_summary(r, service, titles)) for r in runs]
 
 
 @router.get("/{run_id}")
 async def get_run(run_id: str, service: Service) -> RunDetail:
     try:
-        return _detail(await service.get(run_id))
+        view = await service.get(run_id)
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
+    return _detail(view, service, await service.app_titles())
 
 
 @router.get("/{run_id}/flow")

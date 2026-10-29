@@ -5,6 +5,7 @@ Runs when AEP_TEST_DATABASE_URL points at a disposable database (CI sets it).
 
 import os
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 import pytest
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -43,6 +44,41 @@ async def platform(gateway: FakeGateway):
         )
     finally:
         await pool.close()
+
+
+async def test_run_metadata_is_kept():
+    gateway = FakeGateway(replies=["回答"])
+
+    async with platform(gateway) as service:
+        record = await service.create("hello", {"text": "你好"}, requester="李雷")
+        await service.wait_idle()
+        waiting = (await service.get(record.run_id)).record
+        assert waiting.created_by == "李雷"
+        assert waiting.step == {"node": "review", "title": "确认"}
+        assert waiting.waiting_since is not None
+        assert waiting.wait_seconds == 0
+
+        async with service._store._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE runs SET waiting_since = now() - interval '2 minutes' WHERE run_id = %s",
+                (UUID(record.run_id),),
+            )
+        await service.resume(record.run_id, "approve", None)
+        await service.wait_idle()
+        done = (await service.get(record.run_id)).record
+        assert done.status == "done"
+        assert done.step == {"node": "end", "title": "结束"}
+        assert done.waiting_since is None
+        assert 120 <= done.wait_seconds < 130
+
+        # A run from before waits were counted.
+        async with service._store._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE runs SET wait_seconds = NULL WHERE run_id = %s", (UUID(record.run_id),)
+            )
+        await service._store.set_status(record.run_id, "waiting")
+        await service._store.set_status(record.run_id, "done")
+        assert (await service._store.get(record.run_id)).wait_seconds is None
 
 
 async def test_waiting_run_survives_restart():

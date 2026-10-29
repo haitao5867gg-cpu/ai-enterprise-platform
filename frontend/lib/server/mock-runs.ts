@@ -2,7 +2,13 @@ import "server-only";
 import type { Reference, RunSource } from "../knowledge";
 import { searchMockKnowledge } from "./mock-knowledge";
 import { randomUUID } from "node:crypto";
-import { isRecord, type Decision, type Run } from "../runs";
+import {
+  isRecord,
+  type Decision,
+  type Run,
+  type RunStatus,
+  type RunSummary,
+} from "../runs";
 import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
 import {
   mockDataSources,
@@ -18,7 +24,7 @@ import { mockUpload, mockUploads, mockUploadedPlan } from "./mock-uploads";
 import type { UploadedDataset } from "../uploads";
 import { isFlowConfig, type FlowConfig } from "../apps";
 import { defaultValues, inputPayload, validateFields } from "../input-fields";
-import { mockAppSnapshot } from "./mock-apps";
+import { mockAppSnapshot, mockAppTitle } from "./mock-apps";
 import {
   allSources,
   flowView,
@@ -61,6 +67,62 @@ type StoredRun = {
   };
   steps: MockSteps;
 };
+// Like the backend's run store: a wait for a person is counted while it lasts.
+function setStatus(run: Run, status: RunStatus) {
+  const now = new Date();
+  if (status === "waiting") {
+    if (run.status !== "waiting" || !run.waiting_since)
+      run.waiting_since = now.toISOString();
+  } else {
+    if (
+      run.status === "waiting" &&
+      run.waiting_since &&
+      typeof run.wait_seconds === "number"
+    )
+      run.wait_seconds +=
+        (now.getTime() - Date.parse(run.waiting_since)) / 1000;
+    run.waiting_since = null;
+  }
+  run.status = status;
+  run.updated_at = now.toISOString();
+  run.finished_at =
+    status === "done" || status === "error" ? run.updated_at : null;
+}
+
+function runTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const line = value.replace(/\s+/g, " ").trim();
+  if (!line) return null;
+  return line.length <= 80 ? line : `${line.slice(0, 79)}…`;
+}
+
+// The list carries only what the backend's summaries do.
+const summaryKeys: (keyof RunSummary)[] = [
+  "run_id",
+  "app",
+  "app_title",
+  "app_version",
+  "draft",
+  "status",
+  "title",
+  "created_by",
+  "created_at",
+  "updated_at",
+  "finished_at",
+  "step",
+  "waiting_since",
+  "wait_seconds",
+];
+function summary(run: Run): RunSummary {
+  return Object.fromEntries(
+    summaryKeys.map((key) => [key, withAppTitle(run)[key]]),
+  ) as RunSummary;
+}
+
+function withAppTitle(run: Run): Run {
+  return { ...run, app_title: mockAppTitle(run.app) ?? run.app_title };
+}
+
 // Next dev may reload this module. One process-wide store keeps route requests consistent.
 const globalStore = globalThis as typeof globalThis & {
   aepMockRuns?: Map<string, StoredRun>;
@@ -109,9 +171,18 @@ function seedRetailRun() {
     run: {
       run_id: "retail-etl-demo",
       app: "retail-etl",
+      app_title: title,
       app_version: 1,
       draft: false,
       status: "done",
+      title: input.request,
+      created_by: "演示用户",
+      created_at: "2026-10-29T08:00:00.000Z",
+      updated_at: "2026-10-29T08:12:00.000Z",
+      finished_at: "2026-10-29T08:12:00.000Z",
+      step: { node: "end", title: "结束" },
+      waiting_since: null,
+      wait_seconds: 420,
       pending: null,
       result: pool.end,
       error: null,
@@ -146,9 +217,18 @@ export function createMockEvalRun(caseId: string, score: number): string {
     run: {
       run_id,
       app: "etl",
+      app_title: "自然语言 ETL 工作流",
       app_version: null,
       draft: true,
       status: "running",
+      title: `草稿评测：${caseId}`,
+      created_by: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      finished_at: null,
+      step: { node: "plan", title: "出方案" },
+      waiting_since: null,
+      wait_seconds: 0,
       pending: null,
       error: null,
       result: null,
@@ -167,18 +247,19 @@ function advanceFlow(entry: StoredRun): Run {
   while (flow.next) {
     const node = flow.config.graph.nodes.find((item) => item.id === flow.next);
     if (!node) {
-      run.status = "error";
+      setStatus(run, "error");
       run.error = `节点 ${flow.next} 不存在`;
       break;
     }
     flow.visits[node.id] = (flow.visits[node.id] ?? 0) + 1;
+    run.step = { node: node.id, title: node.title };
     if (++flow.count > 200 || flow.visits[node.id] > (node.max_visits ?? 3)) {
-      run.status = "error";
+      setStatus(run, "error");
       run.error = `节点「${node.title}」(${node.id})：超过执行次数上限`;
       break;
     }
     if (node.type === "human") {
-      run.status = "waiting";
+      setStatus(run, "waiting");
       run.pending = humanPending(node, flow.pool);
       addStep(
         entry.steps,
@@ -236,7 +317,7 @@ function advanceFlow(entry: StoredRun): Run {
       )
         run.messages.push({ role: "assistant", content: result.outputs.text });
       if (node.type === "end") {
-        run.status = "done";
+        setStatus(run, "done");
         run.result = result.outputs;
         flow.next = "";
         return run;
@@ -248,7 +329,7 @@ function advanceFlow(entry: StoredRun): Run {
         )?.to ?? "";
       if (!flow.next) throw new Error("分支没有连接");
     } catch (error) {
-      run.status = "error";
+      setStatus(run, "error");
       run.error = `节点「${node.title}」(${node.id})：${error instanceof Error ? error.message : "模拟执行失败"}`;
       break;
     }
@@ -261,7 +342,7 @@ function refresh(entry: StoredRun): Run {
   if (run.status !== "running" || Date.now() < entry.readyAt) return run;
   if (entry.flow) return advanceFlow(entry);
   if (entry.evaluation) {
-    run.status = "done";
+    setStatus(run, "done");
     run.result = { score: entry.evaluation.score, threshold: 0.8 };
     run.messages.push({
       role: "assistant",
@@ -306,7 +387,8 @@ function refresh(entry: StoredRun): Run {
         });
       addStep(entry.steps, "plan", input, { plan });
       etl.plan = plan;
-      run.status = "waiting";
+      setStatus(run, "waiting");
+      run.step = { node: "review", title: "确认方案" };
       run.messages.push({ role: "assistant", content: plan.summary });
       run.pending = {
         kind: "approval",
@@ -334,7 +416,8 @@ function refresh(entry: StoredRun): Run {
       addStep(entry.steps, "publish", input, {
         result: { asset: result.asset },
       });
-      run.status = "waiting";
+      setStatus(run, "waiting");
+      run.step = { node: "release", title: "上线审批" };
       run.result = result;
       run.messages.push({
         role: "assistant",
@@ -356,7 +439,8 @@ function refresh(entry: StoredRun): Run {
       };
       addStep(entry.steps, "release", input, null, run.pending);
     } else if (etl.plan) {
-      run.status = "done";
+      setStatus(run, "done");
+      run.step = { node: "deploy_prod", title: "上线 prod" };
       run.result = {
         ...mockEtlResult(etl.plan, etl.approvals, etl.version),
         release: mockDeployed,
@@ -446,7 +530,7 @@ export async function mockRuns(request: Request, path: string[]) {
     ]);
   }
   if (request.method === "GET" && path.length === 1) {
-    return json([...store.values()].reverse().map(refresh));
+    return json([...store.values()].reverse().map(refresh).map(summary));
   }
   let body: unknown;
   if (request.method === "POST") {
@@ -466,6 +550,14 @@ export async function mockRuns(request: Request, path: string[]) {
       return invalid([{ loc: ["body", "draft"], msg: "draft 必须为布尔值" }]);
     if (body.draft === true && body.app_version !== undefined)
       return json({ detail: "草稿运行不能同时指定 app_version" }, 422);
+    if (
+      body.requester !== undefined &&
+      body.requester !== null &&
+      (typeof body.requester !== "string" || body.requester.length > 100)
+    )
+      return invalid([
+        { loc: ["body", "requester"], msg: "名字最多 100 个字符" },
+      ]);
     const available = mockAppSnapshot(body.app);
     if (!available) return json({ detail: "应用不存在" }, 404);
     const snapshot = mockAppSnapshot(
@@ -518,12 +610,31 @@ export async function mockRuns(request: Request, path: string[]) {
           !["pyspark", "sql"].includes(input.language as string)))
     )
       return json({ detail: "Invalid app or input" }, 422);
+    const created = new Date().toISOString();
     const run: Run = {
       run_id: randomUUID(),
       app: body.app,
+      app_title: snapshot.title,
       app_version: snapshot.version,
       draft: body.draft === true,
       status: "running",
+      // Like the backend: the first text input that was filled in.
+      title: isEtl
+        ? runTitle(input.request)
+        : (fields
+            .filter((field) => ["text", "textarea"].includes(field.type))
+            .map((field) => runTitle(input[field.key]))
+            .find(Boolean) ?? null),
+      created_by:
+        typeof body.requester === "string" && body.requester.trim()
+          ? body.requester.trim()
+          : null,
+      created_at: created,
+      updated_at: created,
+      finished_at: null,
+      step: null,
+      waiting_since: null,
+      wait_seconds: 0,
       messages:
         typeof text === "string" && text.trim()
           ? [{ role: "user", content: text.trim() }]
@@ -644,7 +755,7 @@ export async function mockRuns(request: Request, path: string[]) {
       current: run.status === "waiting" ? entry.flow.next : null,
     });
   }
-  if (request.method === "GET") return json(run);
+  if (request.method === "GET") return json(withAppTitle(run));
   if (
     !isRecord(body) ||
     typeof body.decision !== "string" ||
@@ -702,7 +813,7 @@ export async function mockRuns(request: Request, path: string[]) {
           : `${pending.option_labels?.[body.decision] ?? body.decision}${body.comment ? `：${body.comment}` : ""}`,
     });
     run.pending = null;
-    run.status = "running";
+    setStatus(run, "running");
     entry.readyAt = Date.now() + 100;
     return json({ run_id: run.run_id, status: run.status }, 202);
   }
@@ -719,7 +830,7 @@ export async function mockRuns(request: Request, path: string[]) {
   entry.etl?.approvals.push(approval);
   decideStep(entry.steps, approval);
   run.pending = null;
-  run.status = "running";
+  setStatus(run, "running");
   run.messages.push({
     role: "user",
     content:

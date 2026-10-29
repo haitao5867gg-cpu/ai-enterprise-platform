@@ -22,9 +22,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
+from langchain_core.callbacks import AsyncCallbackHandler
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.graph.state import CompiledStateGraph
@@ -98,6 +101,47 @@ class RunView:
 
 def _config(run_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": run_id}}
+
+
+TITLE_CHARS = 80
+
+
+def _short(text: str) -> str:
+    line = re.sub(r"\s+", " ", text).strip()
+    return line if len(line) <= TITLE_CHARS else line[: TITLE_CHARS - 1] + "…"
+
+
+class StepTracker(AsyncCallbackHandler):
+    """Notes each node of the graph as it starts, as the run's ``step``."""
+
+    def __init__(self, store: RunStore, run_id: str) -> None:
+        self._store = store
+        self._run_id = run_id
+
+    async def on_chain_start(
+        self,
+        serialized: dict[str, Any] | None,
+        inputs: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        metadata = metadata or {}
+        node = metadata.get("langgraph_node")
+        # Only the graph's own nodes: not what runs inside a node, nor a subgraph's nodes.
+        if (
+            not isinstance(node, str)
+            or node.startswith("__")
+            or kwargs.get("name") != node
+            or "|" in str(metadata.get("langgraph_checkpoint_ns", ""))
+        ):
+            return
+        design = metadata.get("design")
+        title = design.get("title") if isinstance(design, dict) else None
+        await self._store.set_step(self._run_id, node, title if isinstance(title, str) else node)
 
 
 class RunService:
@@ -245,10 +289,12 @@ class RunService:
         app_version: int | None = None,
         config: dict[str, Any] | None = None,
         draft: bool = False,
+        requester: str | None = None,
     ) -> RunRecord:
         """Start a run of the app's current version, or of ``app_version``; with ``config``
         (a draft's configuration, for its eval) or ``draft`` (the draft as it is now) the
-        run belongs to no version. A flow app's input must fit its start node's inputs."""
+        run belongs to no version. A flow app's input must fit its start node's inputs.
+        ``requester`` is who asks for it, as they say."""
         kind = await self.kind(app)
         if kind is None:
             raise UnknownApp(app)
@@ -269,7 +315,7 @@ class RunService:
             _, problems = flownodes.answers(flowgraph.inputs(config), input)
             if problems:
                 raise InvalidValues(problems)
-        record = await self._store.create(app, input, app_version, config)
+        record = await self._store.create(app, input, app_version, config, requester)
         self._spawn(record, {"input": input}, "start", input)
         return record
 
@@ -350,6 +396,29 @@ class RunService:
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         return await self._store.recent(limit)
 
+    async def app_titles(self) -> dict[str, str]:
+        """Every app's title by name, archived flow apps included (their runs remain)."""
+        await self.ensure_flows()
+        titles = {name: d.title if d else name for name, d in self._designs.items()}
+        return titles | {a.app: a.title for a in await self.flows.all(archived=True)}
+
+    def title(self, record: RunRecord) -> str | None:
+        """What the run is about, in one line: a flow app's first text input that was
+        filled in (in the start node's order), a code app's ``request``."""
+        if record.app in self._graphs:
+            keys = ["request"]
+        else:
+            try:
+                fields = flowgraph.inputs(self.flow_config(record.app, record.config))
+            except Exception:  # a configuration the runtime no longer reads
+                fields = []
+            keys = [f["key"] for f in fields if f.get("type") in ("text", "textarea")]
+        for key in keys:
+            value = record.input.get(key)
+            if isinstance(value, str) and value.strip():
+                return _short(value)
+        return None
+
     async def resume(
         self,
         run_id: str,
@@ -403,7 +472,7 @@ class RunService:
                 nodes = await self.node_configs(record)
                 run_config: dict[str, Any] = {
                     "configurable": {**config["configurable"], appconfig.CONFIG_KEY: nodes},
-                    "callbacks": segment.callbacks,
+                    "callbacks": [*segment.callbacks, StepTracker(self._store, record.run_id)],
                 }
                 if record.app not in self._graphs:
                     run_config["recursion_limit"] = flowgraph.MAX_STEPS
