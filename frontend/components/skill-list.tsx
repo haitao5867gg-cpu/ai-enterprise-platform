@@ -75,7 +75,6 @@ export function SkillList() {
   return (
     <div className="asset-page">
       <AssetHeading
-        eyebrow="REUSABLE KNOW-HOW"
         title="Skill"
         action={
           <button

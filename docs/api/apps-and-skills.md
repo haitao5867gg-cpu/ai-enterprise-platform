@@ -117,7 +117,7 @@
 // AppDetail
 {
   ...AppSummary,
-  "pattern": "……", "knowledge": "……", "skills_text": "……",   // 应用设计说明（与 GET /runs/{id}/flow 的 design 相同）
+  "pattern": "……", "knowledge": "……", "skills_text": "……",   // 应用设计说明（代码应用与 GET /runs/{id}/flow 的 design 相同；编排应用在运行页上不显示这三项，flow 接口里为空字符串）
   "nodes": [{
     "id": "plan", "title": "出方案", "kind": "model" | "tool" | "human" | "code" | "terminal",
     "design": {...},                 // 与 flow 接口里节点的 design 相同；起止节点为 null

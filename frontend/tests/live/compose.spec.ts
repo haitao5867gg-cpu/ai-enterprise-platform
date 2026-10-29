@@ -20,7 +20,7 @@ test("Compose: create → waiting → approve → done; reload preserves the res
     if (r.resourceType() === "fetch") origins.add(new URL(r.url()).origin);
   });
   await page.goto("/runs/new");
-  await expect(page.getByText("后端状态：正常")).toBeVisible();
+  await expect(page.getByText("服务状态：正常")).toBeVisible();
   await expect(page.getByText("本地模拟模式")).toHaveCount(0);
   await page
     .getByLabel("问题")

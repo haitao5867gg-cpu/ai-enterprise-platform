@@ -301,7 +301,6 @@ export function KnowledgeDetail({ id }: { id: string }) {
         ← 知识库
       </Link>
       <AssetHeading
-        eyebrow="KNOWLEDGE BASE"
         title={base.name}
         action={<span className="app-tag">{base.embedding_model}</span>}
       >

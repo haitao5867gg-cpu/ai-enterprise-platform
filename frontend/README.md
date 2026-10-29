@@ -12,7 +12,7 @@ AEP_MOCK_RUNS=true npm run dev
 
 打开 <http://localhost:3000>。顶部会显示“本地模拟模式”。mock 接管 Runs API、数据源列表和文件下载，返回 `201` 创建回执、运行列表、详情和 `202` 恢复回执。新建后从 `running` 进入 `waiting`；确认后从 `running` 进入 `done`；驳回后按意见重新生成，再次进入 `waiting`。支持 `hello` 和 `etl`；ETL mock 提供合成数据源、两张目标表的方案、PySpark / SQL 示例文件及有效 ZIP。示例代码仅用于验证界面，不代表真实 ETL 生成质量。消息在详情页每两秒更新。
 
-mock 默认关闭，**仅 `NODE_ENV=development` 且 `AEP_MOCK_RUNS=true` 时启用**。`next build`、`next start` 和 Docker 的生产模式始终忽略此开关。数据只保存在开发服务端进程内，刷新页面仍可读取，重启服务后清空；不同开发进程互不共享。健康检查始终请求真实后端，不伪造就绪状态，因此单独运行 mock 时后端状态可能显示“不可用”。
+mock 默认关闭，**仅 `NODE_ENV=development` 且 `AEP_MOCK_RUNS=true` 时启用**。`next build`、`next start` 和 Docker 的生产模式始终忽略此开关。数据只保存在开发服务端进程内，刷新页面仍可读取，重启服务后清空；不同开发进程互不共享。健康检查始终请求真实后端，不伪造就绪状态，因此单独运行 mock 时服务状态可能显示“不可用”。
 
 切换到真实后端，停止开发服务并重启：
 

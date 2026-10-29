@@ -485,46 +485,11 @@ h2 {
   letter-spacing: 0.2px;
   margin-top: 3px;
 }
-.workspace {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  margin: 34px 0 32px;
-  padding: 11px 9px;
-}
-.workspace-avatar {
-  background: #efedf8;
-  color: var(--purple);
-  display: grid;
-  place-items: center;
-  border-radius: 6px;
-  width: 29px;
-  height: 30px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.workspace strong,
-.sidebar-bottom strong {
-  font-size: 12px;
-  font-weight: 550;
-}
-.workspace small,
-.sidebar-bottom small {
-  display: block;
-  color: var(--muted);
-  font-size: 10px;
-  margin-top: 4px;
-}
-.workspace-chevron {
-  margin-left: auto;
-  color: #a5a2b1;
-}
 .nav-label {
   color: #a09dab;
   font-size: 10px;
   letter-spacing: 1.5px;
+  margin-top: 40px;
   padding: 0 13px 12px;
 }
 nav {
@@ -548,31 +513,6 @@ nav {
 }
 .nav-link:hover {
   background: #f5f3fa;
-}
-.sidebar-bottom {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border-top: 1px solid var(--line);
-  margin-top: auto;
-  padding: 21px 2px 2px;
-}
-.mini-app {
-  width: 32px;
-  height: 32px;
-  background: #f5f3fa;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  color: var(--purple);
-}
-.version {
-  font-size: 9px;
-  color: #a29eaf;
-  margin-left: auto;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 3px 5px;
 }
 .main-shell {
   margin-left: 230px;
@@ -1331,6 +1271,34 @@ textarea::placeholder {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.95;
+}
+.message-markdown {
+  white-space: normal;
+}
+.message-markdown h1,
+.message-markdown h2,
+.message-markdown h3,
+.message-markdown h4 {
+  font-size: 13px;
+  color: var(--ink);
+}
+.message-markdown code {
+  font-size: 11px;
+}
+.message-data summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.message-data pre {
+  white-space: pre-wrap;
+  background: var(--canvas);
+  padding: 12px;
+  border-radius: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  max-height: 360px;
+  overflow: auto;
 }
 .conversation-state {
   display: flex;
@@ -2367,17 +2335,6 @@ textarea::placeholder {
   .brand-subtitle {
     font-size: 8px;
   }
-  .workspace {
-    gap: 6px;
-    padding-left: 6px;
-    padding-right: 6px;
-  }
-  .workspace-chevron {
-    display: none;
-  }
-  .workspace strong {
-    font-size: 11px;
-  }
   .main-content {
     padding: 28px 22px 36px;
   }
@@ -2449,9 +2406,7 @@ textarea::placeholder {
     width: 17px;
   }
   .brand-subtitle,
-  .workspace,
-  .nav-label,
-  .sidebar-bottom {
+  .nav-label {
     display: none;
   }
   .sidebar nav {

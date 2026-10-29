@@ -96,6 +96,10 @@ test("intent template → input → after-sales rejection and approval → resul
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
   await expect(page.locator(".result-json")).toContainText("reply");
   await expect(page.locator(".result-json")).toContainText("请补充退货时间");
+  // The run page shows the app's own summary, not the builder's design notes.
+  const about = page.locator(".flow-about");
+  await expect(about).toContainText("退货问题交给售后处理");
+  await expect(about.locator("dl")).toHaveCount(0);
   await fits(page);
   const runId = new URL(page.url()).pathname.split("/").at(-1);
   const flow = await (await request.get(`/api/runs/${runId}/flow`)).json();

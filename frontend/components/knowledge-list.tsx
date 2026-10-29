@@ -77,7 +77,6 @@ export function KnowledgeList() {
   return (
     <>
       <AssetHeading
-        eyebrow="KNOWLEDGE"
         title="知识库"
         action={
           <button

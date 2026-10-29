@@ -250,3 +250,69 @@ test("mobile layout fits and approval can be reached using the keyboard", async 
   ).toBe(true);
   await capture(page, "mobile-approval");
 });
+
+test("conversation renders replies as Markdown, keeps typed text as is and folds JSON", async ({
+  page,
+}) => {
+  await page.route("**/api/runs/chat-run", (route) =>
+    route.fulfill({
+      json: {
+        run_id: "chat-run",
+        app: "hello",
+        status: "done",
+        messages: [
+          { role: "user", content: "按月统计 **销售额**" },
+          {
+            role: "assistant",
+            content:
+              "## 方案\n\n- 先建明细表\n- 再建汇总表\n注意：集群正在冷启动\n\n![图](https://example.com/p.png)",
+          },
+          {
+            role: "assistant",
+            content: '{"summary": "先建明细表", "targets": []}',
+          },
+          {
+            role: "assistant",
+            content: '```json\n{"targets": {"orders": "df = source()"}}\n```',
+          },
+        ],
+        pending: null,
+        result: null,
+        error: null,
+      },
+    }),
+  );
+  await page.goto("/runs/chat-run");
+  const chat = page.getByRole("list", { name: "消息记录" });
+  await expect(chat.locator(":scope > li")).toHaveCount(4);
+  await expect(chat.getByText("按月统计 **销售额**")).toBeVisible();
+  const reply = chat.locator(".message-markdown");
+  await expect(reply.getByRole("heading", { name: "方案" })).toBeVisible();
+  await expect(reply.getByRole("listitem")).toHaveText([
+    "先建明细表",
+    /^再建汇总表\s*注意：集群正在冷启动$/,
+  ]);
+  await expect(reply.locator("li br")).toHaveCount(1);
+  await expect(chat).not.toContainText("## 方案");
+  // An image in a reply is a link, never loaded with the page.
+  await expect(reply.locator("img")).toHaveCount(0);
+  await expect(reply.getByRole("link", { name: "图片：图" })).toHaveAttribute(
+    "href",
+    "https://example.com/p.png",
+  );
+  const data = chat.locator("details.message-data");
+  await expect(data).toHaveCount(2);
+  await expect(data.locator("summary").first()).toHaveText(
+    "模型返回的结构化数据",
+  );
+  await expect(data.locator("pre").first()).toBeHidden();
+  await data.locator("summary").first().click();
+  await expect(data.locator("pre").first()).toContainText(
+    '"summary": "先建明细表"',
+  );
+  await expect(chat).not.toContainText("```");
+  // Development leftovers and English slogans are gone from the shell.
+  await expect(page.getByText("hello / etl")).toHaveCount(0);
+  await expect(page.getByText("默认工作空间")).toHaveCount(0);
+  await expect(page.getByText("EVERY STEP, CONNECTED")).toHaveCount(0);
+});

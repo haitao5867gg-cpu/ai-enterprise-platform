@@ -278,20 +278,26 @@ export function RunFlow({
             <strong>{flow.design.title}</strong>
             {flow.design.summary}
           </p>
-          <dl>
-            <div>
-              <dt>运行方式</dt>
-              <dd>{flow.design.pattern}</dd>
-            </div>
-            <div>
-              <dt>知识库</dt>
-              <dd>{flow.design.knowledge}</dd>
-            </div>
-            <div>
-              <dt>Skill</dt>
-              <dd>{flow.design.skills}</dd>
-            </div>
-          </dl>
+          {(flow.design.pattern ||
+            flow.design.knowledge ||
+            flow.design.skills) && (
+            <dl>
+              {(
+                [
+                  ["运行方式", flow.design.pattern],
+                  ["知识库", flow.design.knowledge],
+                  ["Skill", flow.design.skills],
+                ] as const
+              )
+                .filter(([, text]) => text)
+                .map(([label, text]) => (
+                  <div key={label}>
+                    <dt>{label}</dt>
+                    <dd>{text}</dd>
+                  </div>
+                ))}
+            </dl>
+          )}
         </div>
       )}
       {steps.length > 0 && (

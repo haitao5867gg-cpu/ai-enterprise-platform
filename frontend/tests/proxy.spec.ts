@@ -41,7 +41,7 @@ test("production ignores mock flag and forwards health and configured API base p
     source: "contract-fixture",
   });
   await page.goto("/");
-  await expect(page.getByText("后端状态：正常")).toBeVisible();
+  await expect(page.getByText("服务状态：正常")).toBeVisible();
   await expect(page.getByText("本地模拟模式")).toHaveCount(0);
 });
 

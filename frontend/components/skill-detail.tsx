@@ -234,7 +234,6 @@ export function SkillDetailView({ name }: { name: string }) {
         ← Skill
       </Link>
       <AssetHeading
-        eyebrow="SKILL LIBRARY"
         title={name}
         action={
           <button
