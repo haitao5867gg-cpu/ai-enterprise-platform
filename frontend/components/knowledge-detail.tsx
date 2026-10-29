@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   deleteDocument,
   deleteKnowledgeBase,
@@ -21,24 +21,34 @@ import {
   type Hit,
   type KnowledgeBase,
   type KnowledgeOptions,
+  type Retrieval,
 } from "../lib/knowledge";
+import { retrievalProblems } from "../lib/retrieval";
 import { errorMessage } from "../lib/runs";
 import { AssetHeading, AssetLoading, AssetTime } from "./asset-ui";
 import { ErrorNotice } from "./ui";
 import { KnowledgeForm } from "./knowledge-form";
 import { KnowledgeChunks } from "./knowledge-chunks";
+import { RetrievalFields } from "./retrieval-fields";
 
 type Selection = { documentId: string; name: string; position?: number };
 function SearchTest({
   kb,
   open,
+  options,
 }: {
   kb: string;
   open: (selection: Selection) => void;
+  options: KnowledgeOptions;
 }) {
+  const queryId = useId();
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(5);
   const [minScore, setMinScore] = useState(0.3);
+  const [retrieval, setRetrieval] = useState<Retrieval>(options.retrieval);
+  const retrievalErrors = Object.values(
+    retrievalProblems(retrieval, topK, options.rerank_models),
+  );
   const [result, setResult] = useState<{
     hits: Hit[];
     duration_ms: number;
@@ -48,19 +58,24 @@ function SearchTest({
   return (
     <section className="panel knowledge-section" aria-label="检索测试">
       <h2>检索测试</h2>
-      <p className="muted">检查问题能命中哪些资料，调整片段数与最低相似度。</p>
+      <p className="muted">
+        检查问题能命中哪些资料，调整检索方式、片段数与最低分数。
+      </p>
       <form
         className="asset-form"
         onSubmit={async (event) => {
           event.preventDefault();
+          if (retrievalErrors.length) return;
           setBusy(true);
           setError("");
+          setResult(null);
           try {
             setResult(
               await searchKnowledgeBase(kb, {
                 query,
                 top_k: topK,
                 min_score: minScore,
+                retrieval,
               }),
             );
           } catch (err) {
@@ -70,9 +85,10 @@ function SearchTest({
           }
         }}
       >
-        <label className="asset-field">
-          问题
+        <div className="asset-field">
+          <label htmlFor={queryId}>问题</label>
           <textarea
+            id={queryId}
             required
             maxLength={2000}
             rows={3}
@@ -80,7 +96,7 @@ function SearchTest({
             onChange={(event) => setQuery(event.target.value)}
             placeholder="例如：退换货的期限是多久？"
           />
-        </label>
+        </div>
         <div className="knowledge-grid">
           <label className="asset-field">
             top_k
@@ -107,47 +123,80 @@ function SearchTest({
             />
           </label>
         </div>
-        <button className="button primary" disabled={busy || !query.trim()}>
+        <RetrievalFields
+          value={retrieval}
+          topK={topK}
+          models={options.rerank_models}
+          onChange={setRetrieval}
+        />
+        <button
+          className="button primary"
+          disabled={busy || !query.trim() || retrievalErrors.length > 0}
+        >
           {busy ? "正在检索…" : "检索"}
         </button>
       </form>
-      {error && <ErrorNotice message={error} />}
-      {result && (
-        <div className="knowledge-search-results" aria-live="polite">
-          <p className="muted">
-            {result.hits.length} 条命中 · 耗时 {result.duration_ms} ms
-          </p>
-          {!result.hits.length && (
-            <p>没有符合条件的片段，请调整问题或最低分数。</p>
-          )}
-          {result.hits.map((hit) => (
-            <article className="knowledge-chunk" key={hit.chunk_id}>
-              <div className="asset-section-heading">
-                <button
-                  className="text-button"
-                  onClick={() =>
-                    open({
-                      documentId: hit.document_id,
-                      name: hit.document_name,
-                      position: hit.position,
-                    })
-                  }
-                >
-                  {hit.document_name}
-                </button>
-                <strong className="knowledge-score">
-                  {hit.score.toFixed(2)}
-                </strong>
-              </div>
-              <p className="muted">
-                {hit.heading || "无标题路径"}
-                {hit.page !== null && ` · 第 ${hit.page} 页`}
-              </p>
-              <p className="knowledge-text">{hit.text}</p>
-            </article>
-          ))}
-        </div>
-      )}
+      <div
+        className="knowledge-search-results"
+        role="region"
+        aria-label="检索结果"
+        aria-live="polite"
+        aria-busy={busy}
+      >
+        {error && <ErrorNotice message={error} />}
+        {result && (
+          <>
+            <p className="muted">
+              {result.hits.length} 条命中 · 耗时 {result.duration_ms} ms
+            </p>
+            {!result.hits.length && (
+              <p>没有符合条件的片段，请调整问题或最低分数。</p>
+            )}
+            {result.hits.map((hit) => (
+              <article className="knowledge-chunk" key={hit.chunk_id}>
+                <div className="asset-section-heading">
+                  <button
+                    className="text-button"
+                    onClick={() =>
+                      open({
+                        documentId: hit.document_id,
+                        name: hit.document_name,
+                        position: hit.position,
+                      })
+                    }
+                  >
+                    {hit.document_name}
+                  </button>
+                  <strong className="knowledge-score">
+                    最终分数 {hit.score.toFixed(2)}
+                  </strong>
+                </div>
+                <div className="knowledge-scores" aria-label="分数明细">
+                  {(
+                    [
+                      ["vector", "向量"],
+                      ["keyword", "关键词"],
+                      ["rerank", "重排"],
+                    ] as const
+                  ).map(
+                    ([key, label]) =>
+                      hit.scores?.[key] != null && (
+                        <span key={key}>
+                          {label} {hit.scores[key].toFixed(2)}
+                        </span>
+                      ),
+                  )}
+                </div>
+                <p className="muted">
+                  {hit.heading || "无标题路径"}
+                  {hit.page !== null && ` · 第 ${hit.page} 页`}
+                </p>
+                <p className="knowledge-text">{hit.text}</p>
+              </article>
+            ))}
+          </>
+        )}
+      </div>
     </section>
   );
 }
@@ -468,7 +517,9 @@ export function KnowledgeDetail({ id }: { id: string }) {
             )}
           </section>
         )}
-        {tab === "search" && <SearchTest kb={id} open={setSelection} />}
+        {tab === "search" && (
+          <SearchTest kb={id} options={options} open={setSelection} />
+        )}
         {tab === "settings" && (
           <section className="panel knowledge-section" aria-label="知识库设置">
             <h2>知识库设置</h2>

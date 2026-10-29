@@ -28,6 +28,7 @@ export default defineConfig({
         "flow-editor.spec.ts",
         "flow-canvas.spec.ts",
         "knowledge.spec.ts",
+        "retrieval.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

@@ -1,6 +1,7 @@
 "use client";
 
 import { KnowledgePicker } from "./knowledge-form";
+import { RetrievalFields } from "./retrieval-fields";
 
 import { useEffect, useState } from "react";
 import type {
@@ -1027,6 +1028,13 @@ export function NodeSettings({
               </span>
             ))}
           </label>
+          <RetrievalFields
+            value={node.retrieval}
+            topK={node.top_k}
+            models={options.rerank_models ?? []}
+            issues={at("retrieval")}
+            onChange={(retrieval) => change({ ...node, retrieval })}
+          />
         </>
       );
     case "llm":
@@ -1174,6 +1182,112 @@ export function NodeSettings({
               {msg}
             </p>
           ))}
+          <fieldset className="list-editor" aria-label="知识库">
+            <legend>知识库</legend>
+            <label className="asset-field retrieval-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={Boolean(node.knowledge)}
+                onChange={(event) =>
+                  change({
+                    ...node,
+                    knowledge: event.target.checked
+                      ? {
+                          knowledge_bases: [],
+                          top_k: 5,
+                          min_score: 0.3,
+                          retrieval: {
+                            mode: "hybrid",
+                            vector_weight: 0.7,
+                            rerank: null,
+                          },
+                        }
+                      : null,
+                  })
+                }
+              />
+              让智能体检索知识库
+            </label>
+            {node.knowledge && (
+              <>
+                <KnowledgePicker
+                  options={options.knowledge_bases ?? []}
+                  value={node.knowledge.knowledge_bases}
+                  max={5}
+                  onChange={(knowledge_bases) =>
+                    change({
+                      ...node,
+                      knowledge: { ...node.knowledge!, knowledge_bases },
+                    })
+                  }
+                />
+                {at("knowledge.knowledge_bases").map((message) => (
+                  <p className="field-error" key={message}>
+                    {message}
+                  </p>
+                ))}
+                <NumberField
+                  label="top_k"
+                  min={1}
+                  max={10}
+                  value={node.knowledge.top_k}
+                  issues={at("knowledge.top_k")}
+                  onChange={(top_k) =>
+                    change({
+                      ...node,
+                      knowledge: { ...node.knowledge!, top_k },
+                    })
+                  }
+                />
+                <label className="asset-field">
+                  min_score
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step="any"
+                    value={
+                      Number.isNaN(node.knowledge.min_score)
+                        ? ""
+                        : node.knowledge.min_score
+                    }
+                    onChange={(event) =>
+                      change({
+                        ...node,
+                        knowledge: {
+                          ...node.knowledge!,
+                          min_score: event.target.valueAsNumber,
+                        },
+                      })
+                    }
+                  />
+                  {at("knowledge.min_score").map((message) => (
+                    <span className="field-error" key={message}>
+                      {message}
+                    </span>
+                  ))}
+                </label>
+                <RetrievalFields
+                  value={node.knowledge.retrieval}
+                  topK={node.knowledge.top_k}
+                  models={options.rerank_models ?? []}
+                  issues={at("knowledge.retrieval")}
+                  onChange={(retrieval) =>
+                    change({
+                      ...node,
+                      knowledge: { ...node.knowledge!, retrieval },
+                    })
+                  }
+                />
+              </>
+            )}
+          </fieldset>
+          {!node.tools.length && !node.knowledge && (
+            <p className="field-error" role="alert">
+              至少选一个数据源工具或知识库
+            </p>
+          )}
           <NumberField
             label="最多步数"
             min={1}

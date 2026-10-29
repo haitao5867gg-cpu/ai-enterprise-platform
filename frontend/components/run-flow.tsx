@@ -8,13 +8,37 @@ import {
   type FlowNode,
   type FlowStep,
 } from "../lib/flow";
-import { ApiError, errorMessage, requestJson } from "../lib/runs";
+import { ApiError, errorMessage, isRecord, requestJson } from "../lib/runs";
 import { Icon } from "./icons";
 import { FlowDiagram } from "./flow-diagram";
 import { FlowNodeDesign } from "./flow-node-design";
 
 function JsonBlock({ value }: { value: unknown }) {
   return <pre className="flow-json">{JSON.stringify(value, null, 2)}</pre>;
+}
+
+function AgentSteps({ output }: { output: unknown }) {
+  if (!isRecord(output) || !Array.isArray(output.steps)) return null;
+  return (
+    <ol className="agent-steps" aria-label="智能体步骤">
+      {output.steps.filter(isRecord).map((step, i) => (
+        <li key={i}>
+          {step.tool === "search_knowledge" ? (
+            <>
+              检索知识库：
+              {isRecord(step.args) ? String(step.args.query ?? "") : ""}（命中{" "}
+              {typeof step.hits === "number" ? step.hits : 0} 条）
+            </>
+          ) : (
+            String(step.tool ?? "工具调用")
+          )}
+          {Boolean(step.error) && (
+            <p className="flow-error">{String(step.error)}</p>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 function timeOf(value: string | null): string {
@@ -103,6 +127,7 @@ function NodeDetail({
                     </p>
                   )}
                   {step.error && <p className="flow-error">{step.error}</p>}
+                  {node.type === "agent" && <AgentSteps output={step.output} />}
                   <details open>
                     <summary>输出（这一步写回的内容）</summary>
                     {step.output == null ? (

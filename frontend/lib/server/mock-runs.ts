@@ -117,7 +117,7 @@ function advanceFlow(entry: StoredRun): Run {
         node.type === "start"
           ? { outputs: flow.input, branch: null }
           : simulateNode(node, flow.pool);
-      if (node.type === "knowledge") {
+      if (node.type === "knowledge" || node.type === "agent") {
         const sources = (run.sources ??= []);
         const hits = (result.outputs.hits as Reference[]).map((hit) => {
           const existing = sources.find(
@@ -135,15 +135,19 @@ function advanceFlow(entry: StoredRun): Run {
           else sources.push(source);
           return source;
         });
-        result.outputs = {
-          hits,
-          context: hits
+        result.outputs.hits =
+          node.type === "agent"
+            ? [...hits].sort((a, b) => a.index - b.index)
+            : hits;
+        if (node.type === "knowledge")
+          result.outputs.context = hits
             .map(
               (hit) =>
                 `[${hit.index}]《${hit.document_name}》${hit.heading}${hit.page === null ? "" : `（第 ${hit.page} 页）`}\n${hit.text}`,
             )
-            .join("\n\n"),
-        };
+            .join("\n\n");
+        else if (hits.length)
+          result.outputs.text = `根据检索到的资料：${hits.map((hit) => `${hit.text} [${hit.index}]`).join("\n\n")}`;
       }
       flow.pool[node.id] = result.outputs;
       addStep(entry.steps, node.id, structuredClone(flow.pool), result.outputs);

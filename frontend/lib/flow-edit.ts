@@ -3,6 +3,8 @@
 import type { Edge, FlowConfig, FlowNode, NodeType } from "./apps";
 import type { FlowEdge, FlowNode as DiagramNode, NodeKind } from "./flow";
 import type { ValidationIssue } from "./runs";
+import type { RerankModel } from "./knowledge";
+import { retrievalProblems } from "./retrieval";
 
 export const REF_PATTERN =
   /\{\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}\}/g;
@@ -66,7 +68,7 @@ export function ownOutputs(node: FlowNode): string[] {
     case "knowledge":
       return ["hits", "context"];
     case "agent":
-      return ["text", "steps"];
+      return ["text", "steps", "hits"];
     case "human":
       return node.mode === "form"
         ? [...node.fields.map((item) => item.key), "actor"]
@@ -78,6 +80,64 @@ export function ownOutputs(node: FlowNode): string[] {
     case "end":
       return [];
   }
+}
+
+// Run before saving, including nodes that are not currently selected in the editor.
+export function knowledgeIssues(
+  config: FlowConfig,
+  models: RerankModel[],
+): ValidationIssue[] {
+  return config.graph.nodes.flatMap((node) => {
+    const loc = ["body", "config", "graph", "nodes", node.id];
+    const issues: ValidationIssue[] = [];
+    if (node.type === "agent" && !node.tools.length && !node.knowledge)
+      issues.push({
+        loc: [...loc, "tools"],
+        msg: "至少选一个数据源工具或知识库",
+      });
+    const settings =
+      node.type === "knowledge"
+        ? node
+        : node.type === "agent"
+          ? node.knowledge
+          : null;
+    if (!settings) return issues;
+    const prefix = node.type === "agent" ? [...loc, "knowledge"] : loc;
+    const max = node.type === "agent" ? 10 : 20;
+    if (
+      !Array.isArray(settings.knowledge_bases) ||
+      settings.knowledge_bases.length < 1 ||
+      settings.knowledge_bases.length > 5 ||
+      !settings.knowledge_bases.every((id) => typeof id === "string")
+    )
+      issues.push({
+        loc: [...prefix, "knowledge_bases"],
+        msg: "请选择 1–5 个知识库",
+      });
+    if (
+      !Number.isInteger(settings.top_k) ||
+      settings.top_k < 1 ||
+      settings.top_k > max
+    )
+      issues.push({
+        loc: [...prefix, "top_k"],
+        msg: `top_k 须为 1–${max} 的整数`,
+      });
+    if (
+      !Number.isFinite(settings.min_score) ||
+      settings.min_score < 0 ||
+      settings.min_score > 1
+    )
+      issues.push({ loc: [...prefix, "min_score"], msg: "min_score 须为 0–1" });
+    for (const [path, msg] of Object.entries(
+      retrievalProblems(settings.retrieval, settings.top_k, models),
+    ))
+      issues.push({
+        loc: [...prefix, "retrieval", ...path.split(".").filter(Boolean)],
+        msg,
+      });
+    return issues;
+  });
 }
 export function outputsOf(node: FlowNode): string[] {
   return failsOver(node)

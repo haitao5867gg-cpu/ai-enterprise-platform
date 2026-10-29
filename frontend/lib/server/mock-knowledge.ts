@@ -5,8 +5,10 @@ import type {
   Hit,
   KnowledgeBase,
   KnowledgeOptions,
+  Retrieval,
 } from "../knowledge";
 import { uploadProblem } from "../knowledge";
+import { retrievalProblems, retrievalValue } from "../retrieval";
 import { isRecord } from "../runs";
 import { mockError, mockJson, noContent, readBody } from "./mock-assets";
 
@@ -14,6 +16,13 @@ export const mockKnowledgeOptions: KnowledgeOptions = {
   embedding_models: ["mock-embed", "company-embed"],
   default_embedding_model: "mock-embed",
   chunking: { size: 800, overlap: 100 },
+  retrieval: { mode: "hybrid", vector_weight: 0.7, rerank: null },
+  rerank_models: [
+    { model: "mock-rerank", kind: "rerank" },
+    ...["mock", "gpt", "azure-gpt", "claude-bedrock", "qwen", "deepseek"].map(
+      (model) => ({ model, kind: "llm" as const }),
+    ),
+  ],
 };
 type StoredDocument = {
   document: Document;
@@ -116,29 +125,65 @@ export function searchMockKnowledge(
   query: string,
   top_k = 5,
   min_score = 0.3,
+  retrieval?: Retrieval,
 ): Hit[] {
   if (!query.trim()) return [];
-  return ids
+  const settings = retrievalValue(retrieval);
+  if (settings.rerank && query.includes("重排失败"))
+    throw new Error("重排失败：模拟重排服务不可用，请稍后重试");
+  const hits = ids
     .flatMap((id) => {
       const entry = store.get(id);
       if (!entry) return [];
       return [...entry.documents.values()]
         .filter((item) => item.document.status === "ready")
         .flatMap((item) =>
-          item.chunks.map((chunk) => ({
-            ...chunk,
-            kb_id: id,
-            kb_name: entry.base.name,
-            document_name: item.document.name,
-            score:
+          item.chunks.map((chunk) => {
+            const vector =
               chunk.position === 55
                 ? 0.93
-                : Math.max(0.35, 0.86 - chunk.position * 0.005),
-          })),
+                : Math.max(0.35, 0.86 - chunk.position * 0.005);
+            const keyword =
+              chunk.position === 55
+                ? 0.75
+                : Math.max(0.25, 0.65 - chunk.position * 0.005);
+            const scores = {
+              vector: settings.mode === "keyword" ? null : vector,
+              keyword: settings.mode === "vector" ? null : keyword,
+              rerank: null as number | null,
+            };
+            return {
+              ...chunk,
+              kb_id: id,
+              kb_name: entry.base.name,
+              document_name: item.document.name,
+              scores,
+              score:
+                settings.mode === "vector"
+                  ? vector
+                  : settings.mode === "keyword"
+                    ? keyword
+                    : settings.vector_weight * vector +
+                      (1 - settings.vector_weight) * keyword,
+            };
+          }),
         );
     })
+    .sort((a, b) => b.score - a.score || a.chunk_id.localeCompare(b.chunk_id));
+  const ranked = settings.rerank
+    ? hits
+        .slice(0, settings.rerank.candidates ?? Math.max(20, top_k))
+        .map((hit) => {
+          const rerank =
+            hit.position === 55
+              ? 0.91
+              : Math.max(0.2, 0.8 - hit.position * 0.007);
+          return { ...hit, score: rerank, scores: { ...hit.scores, rerank } };
+        })
+    : hits;
+  return ranked
     .filter((hit) => hit.score >= min_score)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || a.chunk_id.localeCompare(b.chunk_id))
     .slice(0, top_k);
 }
 
@@ -321,7 +366,7 @@ export async function mockKnowledge(
   if (section === "search") {
     const body = await readBody(request);
     if (body instanceof Response) return body;
-    const { query, top_k = 5, min_score = 0.3 } = body;
+    const { query, top_k = 5, min_score = 0.3, retrieval } = body;
     if (
       typeof query !== "string" ||
       !query.trim() ||
@@ -338,10 +383,27 @@ export async function mockKnowledge(
         "问题须为 1–2000 字符，top_k 为 1–20，min_score 为 0–1",
         422,
       );
-    return mockJson({
-      hits: searchMockKnowledge([id], query, top_k, min_score),
-      duration_ms: 12,
-    });
+    const problems = Object.values(
+      retrievalProblems(retrieval, top_k, mockKnowledgeOptions.rerank_models),
+    );
+    if (problems.length) return mockError(problems.join("；"), 422);
+    try {
+      return mockJson({
+        hits: searchMockKnowledge(
+          [id],
+          query,
+          top_k,
+          min_score,
+          retrieval as Retrieval | undefined,
+        ),
+        duration_ms: 12,
+      });
+    } catch (error) {
+      return mockError(
+        error instanceof Error ? error.message : "检索失败",
+        502,
+      );
+    }
   }
   if (!docId) {
     if (method === "GET") {

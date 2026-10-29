@@ -201,6 +201,74 @@
   color: var(--purple);
   font-variant-numeric: tabular-nums;
 }
+.knowledge-scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.knowledge-scores span {
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: #f2eff8;
+  color: #5f536f;
+}
+.retrieval-fields {
+  min-width: 0;
+}
+.retrieval-modes {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.retrieval-modes button {
+  flex: 1;
+  padding: 9px 12px;
+  border: 0;
+  background: white;
+  cursor: pointer;
+  color: inherit;
+}
+.retrieval-modes button + button {
+  border-left: 1px solid var(--line);
+}
+.retrieval-modes [aria-pressed="true"] {
+  background: #eee8fa;
+  color: var(--purple);
+  font-weight: 600;
+}
+.retrieval-help {
+  font-size: 12px;
+  margin: 0;
+}
+.retrieval-weight {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.retrieval-weight input[type="range"] {
+  flex: 1;
+  min-width: 100px;
+  padding: 0;
+  accent-color: var(--purple);
+}
+.retrieval-weight output {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.asset-field.retrieval-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.agent-steps {
+  padding-left: 20px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
 .citation-marker {
   font-size: 0.7em;
   line-height: 0;

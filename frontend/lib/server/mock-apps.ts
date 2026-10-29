@@ -1,5 +1,9 @@
 import "server-only";
-import { knowledgeOptions } from "./mock-knowledge";
+import {
+  knowledgeExists,
+  knowledgeOptions,
+  mockKnowledgeOptions,
+} from "./mock-knowledge";
 import type {
   AppConfig,
   AppDetail,
@@ -85,6 +89,16 @@ function nodesFor(app: string): AppNode[] {
                       min: 1,
                       max: 20,
                     },
+                    {
+                      key: "knowledge_mode",
+                      label: "检索方式",
+                      type: "enum" as const,
+                      choices: [
+                        { value: "hybrid", label: "混合" },
+                        { value: "vector", label: "向量" },
+                        { value: "keyword", label: "关键词" },
+                      ],
+                    },
                   ]
                 : []),
             ]
@@ -136,6 +150,7 @@ function initial(app: string): StoredApp {
                       max_attempts: 3,
                       knowledge_bases: [],
                       knowledge_top_k: 5,
+                      knowledge_mode: "hybrid",
                     },
                   },
                   codegen: {
@@ -271,6 +286,7 @@ function detail(entry: StoredApp): AppDetail {
       skills: mockSkillOptions(),
       datasources: allSources(),
       knowledge_bases: knowledgeOptions(),
+      rerank_models: mockKnowledgeOptions.rerank_models,
     },
   };
 }
@@ -321,6 +337,28 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
   if (store.get(app)?.kind === "flow") {
     const errors = validateFlow(config);
     if (errors.length) return errors;
+    for (const node of (config as FlowConfig).graph.nodes) {
+      const knowledge =
+        node.type === "knowledge"
+          ? node
+          : node.type === "agent"
+            ? node.knowledge
+            : null;
+      if (knowledge?.knowledge_bases.some((id) => !knowledgeExists(id)))
+        issues.push({
+          loc: [
+            "body",
+            "config",
+            "graph",
+            "nodes",
+            node.id,
+            ...(node.type === "agent" ? ["knowledge"] : []),
+            "knowledge_bases",
+          ],
+          msg: "没有这个知识库，请重新选择",
+        });
+    }
+    if (issues.length) return issues;
     return missingReferences(config as FlowConfig)
       .filter((problem) => problem.kind !== "secret")
       .map((problem) => ({
@@ -394,7 +432,9 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
           ? []
           : setting.key === "knowledge_top_k"
             ? 5
-            : undefined);
+            : setting.key === "knowledge_mode"
+              ? "hybrid"
+              : undefined);
       let message = "";
       if (
         setting.type === "integer" &&
@@ -725,10 +765,13 @@ export async function mockApps(
             skills,
             knowledge_bases: knowledgeOptions()
               .filter((kb) =>
-                config.graph.nodes.some(
-                  (node) =>
-                    node.type === "knowledge" &&
-                    node.knowledge_bases.includes(kb.kb_id),
+                config.graph.nodes.some((node) =>
+                  (node.type === "knowledge"
+                    ? node.knowledge_bases
+                    : node.type === "agent"
+                      ? node.knowledge?.knowledge_bases
+                      : []
+                  )?.includes(kb.kb_id),
                 ),
               )
               .map(({ kb_id, name }) => ({ kb_id, name })),
@@ -832,9 +875,13 @@ export function appsReferencingKnowledge(kb: string): string[] {
       if (entry.archived) return false;
       const config = current(entry).config;
       return isFlowConfig(config)
-        ? config.graph.nodes.some(
-            (node) =>
-              node.type === "knowledge" && node.knowledge_bases.includes(kb),
+        ? config.graph.nodes.some((node) =>
+            (node.type === "knowledge"
+              ? node.knowledge_bases
+              : node.type === "agent"
+                ? node.knowledge?.knowledge_bases
+                : []
+            )?.includes(kb),
           )
         : Object.values(config.nodes).some(
             (node) =>
