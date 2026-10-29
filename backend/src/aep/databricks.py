@@ -389,10 +389,12 @@ class DevTarget:
     async def run(self, bundle: Bundle, preview_rows: int = 0) -> DevRun:
         """Deploys and runs ``bundle`` on the dev target; when it passes and
         ``preview_rows`` is set, ``preview`` has that many rows of each table."""
+        # The preview is read under the lock too: a later run of the same bundle
+        # would otherwise rewrite the tables before this one has read them.
         async with self._dev_locks[bundle.name]:
             dev = await self._run_dev(bundle, preview_rows)
-        if dev.status == "passed" and preview_rows and dev.mode != "cluster":
-            await self._preview_run(dev, preview_rows)
+            if dev.status == "passed" and preview_rows and dev.mode != "cluster":
+                await self._preview_run(dev, preview_rows)
         return dev
 
     async def _preview_run(self, dev: DevRun, rows: int) -> None:
@@ -779,6 +781,20 @@ class DevTarget:
         if resp.status_code not in (200, 201, 204):
             raise DatabricksError(f"上传 {path} 失败：HTTP {resp.status_code} {resp.text[:500]}")
 
+    async def _remove_landed(self, folder: str, paths: list[str]) -> list[str]:
+        """Deletes an ingest's landed files and their folder; warnings for what stayed."""
+        left = []
+        for path in [*paths, folder]:
+            kind = "directories" if path == folder else "files"
+            try:
+                resp = await self._send("DELETE", f"/api/2.0/fs/{kind}{quote(path)}")
+            except DatabricksError as exc:
+                left.append(f"{path}（{exc}）")
+                continue
+            if resp.status_code not in (200, 204, 404):
+                left.append(f"{path}（HTTP {resp.status_code}）")
+        return [f"抽取的落地文件没能删除：{'、'.join(left)}"] if left else []
+
     async def _task(self, name: str, spec: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         """Runs ``aep.cluster_tasks.<name>`` on the cluster; its outcome and warnings."""
         cluster_id = self._settings.databricks_cluster_id
@@ -839,21 +855,31 @@ class DevTarget:
             )
         at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
         comment = f"由 AEP 从数据源「{source_name}」抽取，运行 {run_id}，{at}"
+        # Each call lands in a folder of its own, so two runs copying the same table
+        # never load each other's files; the folders are removed once loaded.
+        batch = f"{run_id or 'ingest'}-{uuid.uuid4().hex[:8]}"
+        folders: dict[str, list[str]] = defaultdict(list)
         specs = []
-        for t in tables:
-            path = f"/Volumes/{catalog}/{t.schema}/{volume}/{source_id}/{t.table}.jsonl"
-            lines = (json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in t.rows)
-            await self._put_file(path, "".join(lines).encode())
-            specs.append(
-                {
-                    "path": path,
-                    "target": [catalog, t.schema, t.table],
-                    "columns": [[name, spark_type(kind)] for name, kind in t.columns],
-                    "comment": comment,
-                    "properties": {"aep.datasource_id": source_id, "aep.run_id": run_id},
-                }
-            )
-        outcome, warnings = await self._task("ingest", {"tables": specs})
+        try:
+            for t in tables:
+                folder = f"/Volumes/{catalog}/{t.schema}/{volume}/{source_id}/{batch}"
+                path = f"{folder}/{t.table}.jsonl"
+                folders[folder].append(path)
+                lines = (json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in t.rows)
+                await self._put_file(path, "".join(lines).encode())
+                specs.append(
+                    {
+                        "path": path,
+                        "target": [catalog, t.schema, t.table],
+                        "columns": [[name, spark_type(kind)] for name, kind in t.columns],
+                        "comment": comment,
+                        "properties": {"aep.datasource_id": source_id, "aep.run_id": run_id},
+                    }
+                )
+            outcome, warnings = await self._task("ingest", {"tables": specs})
+        finally:
+            removed = [await self._remove_landed(f, paths) for f, paths in folders.items()]
+        warnings += [w for found in removed for w in found]
         if outcome.get("errors"):
             raise DatabricksError("建表失败：" + "；".join(outcome["errors"]))
         rows = {tuple(t["target"]): t["rows"] for t in outcome.get("tables", [])}

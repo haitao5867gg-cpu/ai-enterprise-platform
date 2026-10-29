@@ -81,7 +81,8 @@ def ingest(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
 
 def preview(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
     """The first ``spec["rows"]`` rows of each of ``spec["tables"]`` (catalog, schema,
-    table), values as JSON writes them (dates as ISO text, decimals as numbers)."""
+    table), values as JSON writes them (dates as ``yyyy-MM-dd``, timestamps without a
+    zone, decimals as numbers)."""
     tables: list[dict[str, Any]] = []
     errors: list[str] = []
     for target in spec["tables"]:

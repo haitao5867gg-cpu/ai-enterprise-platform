@@ -90,8 +90,9 @@
 - 目标：`<AEP_DATABRICKS_SOURCE_CATALOG>.<schema>.<table>`，名字和源表一样，所以生成的代码（按 `source_catalog` 读源表）直接读到。schema 不存在时创建；表已存在时**整表覆盖**。
 - 步骤（每张表）：
   1. `describe_table` 拿列和类型，再用连接器的 `read_rows` 分页读出全部行（每页 5000）。行数超过 `max_rows` 时失败，不写任何东西。
-  2. 写成 JSON Lines，用 Databricks Files API 上传到 Volume `/Volumes/<catalog>/<schema>/<AEP_DATABRICKS_INGEST_VOLUME>/<datasource_id>/<table>.jsonl`（Volume 默认名 `aep_landing`；schema 和 Volume 不存在时用 Unity Catalog REST API 创建，Volume 为 MANAGED）。
+  2. 写成 JSON Lines，用 Databricks Files API 上传到 Volume `/Volumes/<catalog>/<schema>/<AEP_DATABRICKS_INGEST_VOLUME>/<datasource_id>/<run_id>-<随机 8 位>/<table>.jsonl`（每次抽取一个文件夹，两个运行同时抽同一张表也不会读到对方的文件；Volume 默认名 `aep_landing`；schema 和 Volume 不存在时用 Unity Catalog REST API 创建，Volume 为 MANAGED）。
   3. 在 `AEP_DATABRICKS_CLUSTER_ID` 集群上用命令执行接口建表：所有列先按字符串读，再按下面的类型对照转换，`CREATE OR REPLACE TABLE`；表注释写“由 AEP 从数据源「名称」抽取，运行 run_id，时间”，表属性 `aep.datasource_id`、`aep.run_id`。
+  4. 建表后（成功或失败）删掉这次的落地文件和文件夹；删不掉时只在 `warnings` 里写明。
 - 类型对照（按源列 `data_type` 小写匹配）：`tinyint smallint int integer mediumint` → INT；`bigint` → BIGINT；`decimal(p,s) numeric(p,s)` → DECIMAL(p,s)（没有精度时 DECIMAL(38,10)）；`float real double` → DOUBLE；`bool boolean` → BOOLEAN；`date` → DATE；`datetime timestamp*` → TIMESTAMP；其他 → STRING。
 - 新配置 `AEP_DATABRICKS_INGEST_VOLUME`（默认 `aep_landing`）。
 
@@ -137,7 +138,7 @@
  "preview_rows": 20}                   // 0–100；0 不预览
 ```
 
-- 执行：`DevTarget.run`，同代码应用的 verify。通过后读每张结果表的前 `preview_rows` 行：`job`、`pipeline` 模式在 `AEP_DATABRICKS_CLUSTER_ID` 集群上读结果表（没有集群时不预览，`warnings` 里写明）；`cluster` 模式由试跑程序直接带回转换结果的前几行。
+- 执行：`DevTarget.run`，同代码应用的 verify。通过后读每张结果表的前 `preview_rows` 行：`job`、`pipeline` 模式在 `AEP_DATABRICKS_CLUSTER_ID` 集群上读结果表（没有集群时不预览，`warnings` 里写明）；`cluster` 模式由试跑程序直接带回转换结果的前几行。同名 bundle 的运行排队进行，读预览也在队内：后一个运行不会在前一个读完预览之前改写结果表。
 - 结果表全名：`job`、`pipeline` 模式是 `<AEP_DATABRICKS_CATALOG>.<AEP_DATABRICKS_SCHEMA>.<目标表>`；`cluster` 模式不落表，预览取转换结果的前几行。
 
 产出：

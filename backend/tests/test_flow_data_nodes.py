@@ -2,6 +2,7 @@
 connector and the fake Databricks workspace, a lakehouse ETL flow from request to
 dev run, the relaxed loop rule and node notes."""
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -297,15 +298,19 @@ async def test_ingest_copies_the_tables_into_the_source_catalog(tmp_path, monkey
         "schemas:icsd-ace-dev.sales",
         "volumes:icsd-ace-dev.sales.aep_landing",
     }
-    # Every page was read (3 rows in pages of 2) and landed as JSON Lines.
-    landed = ws.volume_files[f"/Volumes/icsd-ace-dev/sales/aep_landing/{ds}/orders.jsonl"]
+    # Every page was read (3 rows in pages of 2) and landed as JSON Lines, in a folder
+    # of this call's own, removed once the tables were loaded.
+    (folder,) = {path.rsplit("/", 1)[0] for path in ws.volume_files}
+    assert folder.startswith(f"/Volumes/icsd-ace-dev/sales/aep_landing/{ds}/run-1-")
+    landed = ws.volume_files[f"{folder}/orders.jsonl"]
     assert [json.loads(line) for line in landed.decode().splitlines()] == ORDERS
+    assert ws.volume_deletes == [f"{folder}/orders.jsonl", f"{folder}/customers.jsonl", folder]
 
     command = ws.commands[0]["command"]
     assert command.startswith(Path(cluster_tasks.__file__).read_text())
     spec = sent_spec(command, "ingest")
     orders = spec["tables"][0]
-    assert orders["path"] == f"/Volumes/icsd-ace-dev/sales/aep_landing/{ds}/orders.jsonl"
+    assert orders["path"] == f"{folder}/orders.jsonl"
     assert orders["target"] == [CATALOG, "sales", "orders"]
     assert orders["columns"] == [
         ["order_id", "BIGINT"],
@@ -572,6 +577,39 @@ async def test_dev_run_passes_and_previews_the_result_tables(tmp_path):
         "tables": [[CATALOG, "trac_b_test", "order_facts"]],
         "rows": 5,
     }
+
+
+async def test_a_later_run_of_the_bundle_waits_for_the_preview(tmp_path, monkeypatch):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    ws.job_outputs = [PASSED, PASSED]
+    ws.cluster_outputs = [PREVIEW, PREVIEW]
+    target = ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID)
+    steps: list[str] = []
+    run_job, preview = target._run_job, target.preview
+
+    async def logged_run(bundle):
+        steps.append("run")
+        return await run_job(bundle)
+
+    async def logged_preview(tables, rows):
+        steps.append("preview")
+        await asyncio.sleep(0)  # the other run would start here without the lock
+        found = await preview(tables, rows)
+        steps.append("previewed")
+        return found
+
+    monkeypatch.setattr(target, "_run_job", logged_run)
+    monkeypatch.setattr(target, "preview", logged_preview)
+    built = codegen.render(
+        "order_facts",
+        EtlPlan.model_validate(plan()),
+        {"order_facts": PYSPARK_BODY},
+        "示例库",
+        job=True,
+    )
+    first, second = await asyncio.gather(target.run(built, 5), target.run(built, 5))
+    assert first.status == second.status == "passed"
+    assert steps == ["run", "preview", "previewed"] * 2
 
 
 async def test_dev_run_sends_fixable_errors_back_until_its_last_run(tmp_path):

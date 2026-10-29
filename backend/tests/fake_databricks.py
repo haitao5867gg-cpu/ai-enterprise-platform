@@ -22,8 +22,9 @@ the notebook could report.
 
 For ingest it keeps Unity Catalog schemas and volumes in ``catalog_objects``
 ("schemas:<catalog>.<schema>", "volumes:<catalog>.<schema>.<volume>") and files
-uploaded to a volume in ``volume_files`` (path → bytes); an upload to a volume
-that does not exist fails.
+uploaded to a volume in ``volume_files`` (path → bytes, kept when deleted); an
+upload to a volume that does not exist fails. Deleted files and folders are listed
+in ``volume_deletes``.
 """
 
 import base64
@@ -104,6 +105,7 @@ class FakeWorkspace:
         self.job_outputs: list[dict[str, Any] | str] = []
         self.catalog_objects: set[str] = set()
         self.volume_files: dict[str, bytes] = {}
+        self.volume_deletes: list[str] = []
         self.cli = tmp_path / "databricks"
         self.cli.write_text(
             CLI.format(
@@ -276,6 +278,12 @@ class FakeWorkspace:
                     return httpx.Response(404, json={"error_code": "SCHEMA_DOES_NOT_EXIST"})
             self.catalog_objects.add(f"{kind}:{parent}.{body['name']}")
             return httpx.Response(200, json={})
+        if request.method == "DELETE":
+            fs = "/api/2.0/fs"
+            self.volume_deletes.append(
+                path.removeprefix(f"{fs}/files").removeprefix(f"{fs}/directories")
+            )
+            return httpx.Response(204)
         if path.startswith("/api/2.0/fs/directories/"):
             return httpx.Response(204)
         target = path.removeprefix("/api/2.0/fs/files")
