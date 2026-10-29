@@ -68,7 +68,14 @@ async def test_tools_lists_connector_tools(api):
 
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()}
-    assert names == {"list_schemas", "list_tables", "describe_table", "sample_rows", "table_stats"}
+    assert names == {
+        "list_schemas",
+        "list_tables",
+        "describe_table",
+        "sample_rows",
+        "table_stats",
+        "read_rows",
+    }
     describe = next(t for t in resp.json() if t["name"] == "describe_table")
     assert describe["input_schema"]["required"] == ["schema", "table"]
 

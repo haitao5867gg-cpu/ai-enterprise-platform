@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from aep import cluster_harness
+from aep.config import Settings
 from aep.etl.plan import EtlPlan, QualityRule, Target
 
 PIPELINE_PY = "src/pipeline.py"
@@ -60,6 +61,17 @@ class Compute:
     node_type: str = ""
     workers: int = 1
     policy_id: str = ""
+
+
+def compute_for(settings: Settings) -> Compute | None:
+    """The pipeline compute the platform's settings ask for; None: serverless."""
+    if not (settings.databricks_pipeline_node_type or settings.databricks_pipeline_policy_id):
+        return None
+    return Compute(
+        settings.databricks_pipeline_node_type,
+        settings.databricks_pipeline_workers,
+        settings.databricks_pipeline_policy_id,
+    )
 
 
 @dataclass(frozen=True)

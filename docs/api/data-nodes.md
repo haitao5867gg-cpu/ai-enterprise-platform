@@ -90,7 +90,7 @@
 - 目标：`<AEP_DATABRICKS_SOURCE_CATALOG>.<schema>.<table>`，名字和源表一样，所以生成的代码（按 `source_catalog` 读源表）直接读到。schema 不存在时创建；表已存在时**整表覆盖**。
 - 步骤（每张表）：
   1. `describe_table` 拿列和类型，再用连接器的 `read_rows` 分页读出全部行（每页 5000）。行数超过 `max_rows` 时失败，不写任何东西。
-  2. 写成 JSON Lines，用 Databricks Files API 上传到 Volume `/Volumes/<catalog>/<schema>/<AEP_DATABRICKS_INGEST_VOLUME>/<datasource_id>/<table>.jsonl`（Volume 默认名 `aep_landing`，不存在时在集群上 `CREATE VOLUME IF NOT EXISTS`）。
+  2. 写成 JSON Lines，用 Databricks Files API 上传到 Volume `/Volumes/<catalog>/<schema>/<AEP_DATABRICKS_INGEST_VOLUME>/<datasource_id>/<table>.jsonl`（Volume 默认名 `aep_landing`；schema 和 Volume 不存在时用 Unity Catalog REST API 创建，Volume 为 MANAGED）。
   3. 在 `AEP_DATABRICKS_CLUSTER_ID` 集群上用命令执行接口建表：所有列先按字符串读，再按下面的类型对照转换，`CREATE OR REPLACE TABLE`；表注释写“由 AEP 从数据源「名称」抽取，运行 run_id，时间”，表属性 `aep.datasource_id`、`aep.run_id`。
 - 类型对照（按源列 `data_type` 小写匹配）：`tinyint smallint int integer mediumint` → INT；`bigint` → BIGINT；`decimal(p,s) numeric(p,s)` → DECIMAL(p,s)（没有精度时 DECIMAL(38,10)）；`float real double` → DOUBLE；`bool boolean` → BOOLEAN；`date` → DATE；`datetime timestamp*` → TIMESTAMP；其他 → STRING。
 - 新配置 `AEP_DATABRICKS_INGEST_VOLUME`（默认 `aep_landing`）。
@@ -103,7 +103,7 @@
 | `tables` | `[{"source": "retail.orders", "target": "`icsd-ace-dev`.retail.orders", "rows": 15000, "columns": 7}]` |
 | `summary` | 一句话，如“已把 4 张表共 52350 行抽取到 Databricks：…” |
 
-无分支。不支持单节点试跑（会写 Databricks），`POST /apps/{app}/nodes/{node}/test` 返回 400。
+无分支。不支持单节点试跑（会写 Databricks），`POST /apps/{app}/nodes/{node}/test` 返回 422（同 start、human、end）。
 
 ### etl_code_check 检查并打包
 
@@ -137,7 +137,7 @@
  "preview_rows": 20}                   // 0–100；0 不预览
 ```
 
-- 执行：`DevTarget.run`，同代码应用的 verify。通过后，有集群（`job`、`cluster` 模式）时读每张结果表的前 `preview_rows` 行；`pipeline` 模式没有集群时不预览，`warnings` 里写明。
+- 执行：`DevTarget.run`，同代码应用的 verify。通过后读每张结果表的前 `preview_rows` 行：`job`、`pipeline` 模式在 `AEP_DATABRICKS_CLUSTER_ID` 集群上读结果表（没有集群时不预览，`warnings` 里写明）；`cluster` 模式由试跑程序直接带回转换结果的前几行。
 - 结果表全名：`job`、`pipeline` 模式是 `<AEP_DATABRICKS_CATALOG>.<AEP_DATABRICKS_SCHEMA>.<目标表>`；`cluster` 模式不落表，预览取转换结果的前几行。
 
 产出：
@@ -145,7 +145,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | `status` | `passed` 或 `failed` |
-| `run` | `DevRun.as_dict()`，另加 `attempt`（这是第几次运行） |
+| `run` | `DevRun.as_dict()`（不含 `preview`），另加 `attempt`（这是第几次运行）；`catalog`、`schema` 是结果表写在哪（`job` 模式取 Job 的参数，`pipeline` 模式取平台配置，不知道时为 `null`） |
 | `url` | Databricks 上这次运行的链接，没有时为 `null` |
 | `tables` | `[{"name", "target", "rows", "dropped", "expectations"}]` |
 | `preview` | `[{"table", "target", "columns": ["…"], "rows": [{…}]}]`，值按 JSON 转换（日期为 ISO 字符串，小数为数字） |
@@ -201,11 +201,12 @@ GET /runs/{id}/manual               这次运行用的版本
   "models": [{"alias": "company", "nodes": [...]}],          // null（平台默认模型）显示为默认模型的别名
   "systems": [{"key": "databricks", "name": "Databricks",
                "detail": "工作区 adb-…；源表 catalog icsd-ace-dev；结果写到 icsd-ace-dev.trac_b_test；集群 1204-…",
-               "nodes": [...]}],                               // 用到 databricks_* 节点或代码应用的 verify 时才有；没配置时 detail 写“未配置”
+               "nodes": [...]}],                               // 用到 databricks_* 节点或代码应用的 verify 时才有；没配置时 detail 写“未配置”；代码应用的提交资产、上线审批另有 {"key": "assets", "name": "资产仓库（GitHub）"}
   "human": [{"id": "review", "title": "确认方案", "prompt": "…"}]
 }
 ```
 
+- 代码应用用到的数据源是运行时填写的，列为 `{"datasource_id": null, "name": "运行时选择（运行时填写的数据源）"}`。
 - 用到的范围：编排应用看节点设置（llm、classifier、agent 的 `skills`、`model`；knowledge 节点和 agent 的 `knowledge`；tool、agent、`etl_profile`、`databricks_ingest` 的数据源；human 节点）；代码应用看 `CONFIG` 里每个节点的 skills、模型和 `knowledge_bases` 类型的参数。
 - 已删除的 Skill 版本或知识库照样列出，`description` 写“已删除”。不出现密钥的值。
 

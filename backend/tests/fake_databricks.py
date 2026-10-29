@@ -19,6 +19,11 @@ starts with "bad" is rejected. Each job run ends with
 the next of ``job_outputs``: an outcome as the job's notebook reports it (the
 run fails when it has errors), or an error string from a run that failed before
 the notebook could report.
+
+For ingest it keeps Unity Catalog schemas and volumes in ``catalog_objects``
+("schemas:<catalog>.<schema>", "volumes:<catalog>.<schema>.<volume>") and files
+uploaded to a volume in ``volume_files`` (path → bytes); an upload to a volume
+that does not exist fails.
 """
 
 import base64
@@ -97,6 +102,8 @@ class FakeWorkspace:
         self.jobs: dict[int, dict[str, Any]] = {}
         self.job_runs: list[int] = []
         self.job_outputs: list[dict[str, Any] | str] = []
+        self.catalog_objects: set[str] = set()
+        self.volume_files: dict[str, bytes] = {}
         self.cli = tmp_path / "databricks"
         self.cli.write_text(
             CLI.format(
@@ -241,6 +248,8 @@ class FakeWorkspace:
             return httpx.Response(401, json={"error_code": "UNAUTHENTICATED"})
         if "/clusters/" in request.url.path or request.url.path.startswith("/api/1.2/"):
             return self._cluster(request)
+        if request.url.path.startswith(("/api/2.1/unity-catalog/", "/api/2.0/fs/")):
+            return self._catalog(request)
         if request.url.path.startswith(JOB_PATHS):
             return self._jobs(request)
         updates = self._state()["updates"]
@@ -250,6 +259,33 @@ class FakeWorkspace:
         if request.url.path == f"/api/2.0/pipelines/{PIPELINE_ID}/events":
             return httpx.Response(200, json={"events": self._events(updates)})
         return httpx.Response(404, json={"error_code": "RESOURCE_DOES_NOT_EXIST"})
+
+    def _catalog(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        uc = "/api/2.1/unity-catalog/"
+        if path.startswith(uc):
+            kind, _, name = path.removeprefix(uc).partition("/")
+            if request.method == "GET":
+                found = f"{kind}:{name}" in self.catalog_objects
+                return httpx.Response(200 if found else 404, json={"name": name})
+            body = json.loads(request.content)
+            parent = body["catalog_name"]
+            if kind == "volumes":
+                parent += "." + body["schema_name"]
+                if f"schemas:{parent}" not in self.catalog_objects:
+                    return httpx.Response(404, json={"error_code": "SCHEMA_DOES_NOT_EXIST"})
+            self.catalog_objects.add(f"{kind}:{parent}.{body['name']}")
+            return httpx.Response(200, json={})
+        if path.startswith("/api/2.0/fs/directories/"):
+            return httpx.Response(204)
+        target = path.removeprefix("/api/2.0/fs/files")
+        catalog, schema, volume = target.split("/")[2:5]
+        if f"volumes:{catalog}.{schema}.{volume}" not in self.catalog_objects:
+            return httpx.Response(404, json={"error_code": "NOT_FOUND"})
+        if request.method != "PUT" or request.url.params.get("overwrite") != "true":
+            return httpx.Response(400, json={"error_code": "BAD_REQUEST"})
+        self.volume_files[target] = request.content
+        return httpx.Response(204)
 
     def _cluster(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path.removeprefix("/api/")

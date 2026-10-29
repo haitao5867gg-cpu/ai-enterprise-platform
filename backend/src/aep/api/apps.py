@@ -183,6 +183,22 @@ async def get_app(app: str, catalog: Catalog) -> dict[str, Any]:
         raise _not_found(app) from exc
 
 
+@router.get("/{app}/manual")
+async def get_manual(
+    app: str, catalog: Catalog, version: int | None = None, draft: bool = False
+) -> dict[str, Any]:
+    """What the app is made of (docs/api/data-nodes.md): its current version's, a
+    ``version``'s or its ``draft``'s."""
+    try:
+        return await catalog.manual(app, version, draft)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NoDraft as exc:
+        raise HTTPException(404, f"应用 {app} 没有草稿") from exc
+    except VersionNotFound as exc:
+        raise HTTPException(404, f"应用 {app} 没有版本 {version}") from exc
+
+
 @router.get("/{app}/versions")
 async def list_versions(app: str, catalog: Catalog) -> list[dict[str, Any]]:
     try:

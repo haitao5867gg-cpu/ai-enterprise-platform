@@ -2,8 +2,10 @@
 
 Every node writes its outputs into the shared variable pool (``vars``), counts
 how often it ran (``visits``) and, if it has branches, which one it took
-(``branch``); conditional edges follow that. The end node writes the run's
-``result``. ``on_error`` is applied here, around the node type's ``run``.
+(``branch``); conditional edges follow that. A node may also keep something for
+its own next run (``private``, e.g. how often its check failed in a row). The
+end node writes the run's ``result``. ``on_error`` is applied here, around the
+node type's ``run``, which also sees the run's id as ``state["run_id"]``.
 """
 
 import asyncio
@@ -11,6 +13,7 @@ import operator
 from collections import defaultdict
 from typing import Annotated, Any, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 
@@ -43,6 +46,7 @@ class FlowState(TypedDict, total=False):
     result: dict[str, Any] | None
     citations: Annotated[dict[str, int], _merge]
     sources: Annotated[dict[str, dict[str, Any]], _merge]
+    private: Annotated[dict[str, dict[str, Any]], _merge]
 
 
 class FlowError(Exception):
@@ -109,10 +113,12 @@ def design(node: dict[str, Any], rt: Runtime | None = None) -> NodeDesign:
     prompt = None
     if spec.kind == "model":
         prompt = rt.system(node, node.get("system") or "") if rt else node.get("system")
+    note = node.get("note")
     return NodeDesign(
         title=node.get("title") or node["id"],
         kind=spec.kind,
         summary=f"{spec.label}：{spec.description}",
+        note=note if isinstance(note, str) and note.strip() else None,
         outputs="、".join(spec.produces(node)),
         prompt=prompt,
         retry=_retry_text(node) if spec.error_handling else None,
@@ -133,12 +139,13 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
     node_id = node["id"]
     limit = node.get("max_visits", DEFAULT_MAX_VISITS)
 
-    async def run(state: FlowState) -> dict[str, Any]:
+    async def run(state: FlowState, config: RunnableConfig) -> dict[str, Any]:
         visits = (state.get("visits") or {}).get(node_id, 0)
         if visits >= limit:
             raise FlowError(node, f"已经运行了 {visits} 次，达到上限 {limit} 次")
+        run_id = ((config or {}).get("configurable") or {}).get("thread_id")
         try:
-            outcome = await execute(node, dict(state), rt)
+            outcome = await execute(node, {**state, "run_id": run_id}, rt)
         except (GraphBubbleUp, FlowError):
             raise
         except Exception as exc:
@@ -156,6 +163,8 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
             update["citations"] = outcome.citations
         if outcome.sources:
             update["sources"] = outcome.sources
+        if outcome.private is not None:
+            update["private"] = {node_id: outcome.private}
         return update
 
     return run

@@ -5,7 +5,8 @@ target table like a pipeline update would: PySpark code runs with a stand-in
 for ``pyspark.pipelines`` that collects the tables and their quality rules, SQL
 targets are parsed from the pipeline file. A table read by another target is the
 transformed result with its drop rules applied, as it would be stored. The
-outcome is printed as one ``AEP_RESULT`` line of JSON.
+outcome is printed as one ``AEP_RESULT`` line of JSON; with ``spec["preview"]`` it
+also has the first rows of each table that passed.
 
 It is used two ways. ``aep.databricks`` sends it as source to the cluster with a
 call to ``main`` appended, to check the code without writing anything. And a
@@ -254,8 +255,35 @@ def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
             done[name] = materialize(name)
 
     outcome = {"tables": list(results.values()), "errors": errors, "write_errors": write_errors}
+    if spec.get("preview"):
+        outcome["preview"] = _preview(done, spec["preview"])
     print(MARKER + json.dumps(outcome))
     return outcome
+
+
+def _preview(done: dict[str, Any], rows: int) -> list[dict[str, Any]]:
+    """The first ``rows`` rows of each table that passed, values as JSON writes them."""
+    from pyspark.sql import functions as F
+
+    out = []
+    for name, df in done.items():
+        if df is None:
+            continue
+        columns = list(df.columns)
+        try:
+            # Spark's own JSON writer converts the values (toJSON is missing under
+            # Spark Connect, to_json is not).
+            found = df.limit(rows).select(F.to_json(F.struct(*[df[c] for c in columns]))).collect()
+        except Exception:  # noqa: BLE001 - a preview is a nicety, the outcome stands
+            continue
+        out.append(
+            {
+                "table": name,
+                "columns": columns,
+                "rows": [{c: json.loads(r[0]).get(c) for c in columns} for r in found],
+            }
+        )
+    return out
 
 
 def run_notebook(spark: Any, dbutils: Any, library: str) -> None:
