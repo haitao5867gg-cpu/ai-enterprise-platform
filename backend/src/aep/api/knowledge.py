@@ -15,10 +15,20 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    StringConstraints,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from aep.api.apps import Catalog
 from aep.config import Settings, get_settings
+from aep.knowledge.rerank import RerankError
+from aep.knowledge.retrieval import Retrieval, defaults
 from aep.knowledge.search import search
 from aep.knowledge.store import (
     MAX_DOCUMENTS,
@@ -148,6 +158,14 @@ class SearchBody(_Input):
     query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
     top_k: int = Field(5, ge=1, le=20)
     min_score: float = Field(0.3, ge=0, le=1)
+    retrieval: Retrieval = Field(default_factory=Retrieval)
+
+    @field_validator("retrieval")
+    @classmethod
+    def valid_retrieval(cls, value: Retrieval, info: ValidationInfo) -> Retrieval:
+        return Retrieval.model_validate(
+            value.model_dump(), context={"top_k": info.data.get("top_k", 5)}
+        )
 
 
 def _base_out(base: KnowledgeBase) -> BaseOut:
@@ -189,11 +207,13 @@ def _wake(request: Request) -> None:
 
 
 @router.get("/options")
-async def options(settings: Config) -> dict[str, Any]:
+async def options(settings: Config, catalog: Catalog) -> dict[str, Any]:
     return {
         "embedding_models": settings.embedding_models,
         "default_embedding_model": settings.default_embedding_model,
         "chunking": Chunking().model_dump(),
+        "retrieval": defaults(),
+        "rerank_models": await catalog.rerank_models(),
     }
 
 
@@ -355,15 +375,37 @@ async def reindex_base(kb: str, store: Store, request: Request) -> dict[str, int
 
 
 @router.post("/{kb}/search")
-async def search_base(kb: str, body: SearchBody, store: Store, request: Request) -> dict[str, Any]:
+async def search_base(
+    kb: str, body: SearchBody, store: Store, request: Request, settings: Config, catalog: Catalog
+) -> dict[str, Any]:
+    if body.retrieval.rerank:
+        try:
+            Retrieval.model_validate(
+                body.retrieval.model_dump(),
+                context={
+                    "top_k": body.top_k,
+                    "rerank_models": await catalog.rerank_models(),
+                },
+            )
+        except ValidationError as exc:
+            raise HTTPException(422, str(exc.errors()[0].get("ctx", {}).get("error", exc))) from exc
     await _base(store, kb)
     started = perf_counter()
     try:
         hits = await search(
-            store, request.app.state.llm_client, [kb], body.query, body.top_k, body.min_score
+            store,
+            request.app.state.llm_client,
+            [kb],
+            body.query,
+            body.top_k,
+            body.min_score,
+            body.retrieval,
+            settings=settings,
         )
     except MissingBase as exc:
         raise HTTPException(404, "没有这个知识库") from exc
+    except RerankError as exc:
+        raise HTTPException(502, str(exc)) from exc
     except (openai.OpenAIError, ValueError) as exc:
         raise HTTPException(502, f"向量模型调用失败：{exc}") from exc
     return {

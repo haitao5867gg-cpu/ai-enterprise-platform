@@ -1,5 +1,6 @@
 """Knowledge records with interchangeable in-memory and Postgres stores."""
 
+import asyncio
 import math
 import uuid
 from dataclasses import dataclass, field, replace
@@ -10,6 +11,7 @@ from typing import Any, Literal, Protocol
 from psycopg import AsyncConnection, errors
 from psycopg_pool import AsyncConnectionPool
 
+from aep.knowledge.keywords import chunk_keywords
 from aep.runtime.store import DEFAULT_TENANT
 
 DocumentKind = Literal["pdf", "docx", "md", "txt"]
@@ -84,6 +86,7 @@ class Chunk:
     page: int | None = None
     embedding: list[float] = field(default_factory=list, repr=False)
     tenant_id: str = DEFAULT_TENANT
+    keywords: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,9 @@ class Hit:
     heading: str
     page: int | None
     score: float
+    scores: dict[str, float | None] = field(
+        default_factory=lambda: {"vector": None, "keyword": None, "rerank": None}, kw_only=True
+    )
 
 
 class KnowledgeStore(Protocol):
@@ -124,9 +130,19 @@ class KnowledgeStore(Protocol):
     async def requeue(self, kb_id: str, document_id: str | None = None) -> int: ...
     async def claim(self) -> Document | None: ...
     async def recover_stale(self, before: datetime) -> int: ...
+    async def backfill_keywords(self, limit: int = 500) -> int: ...
     async def touch(self, document: Document) -> Document | None: ...
     async def replace_chunks(self, document: Document, chunks: list[Chunk]) -> None: ...
     async def fail(self, document: Document, error: str) -> None: ...
+    async def vector_candidates(self, kb_id: str, vector: list[float], n: int) -> list[str]: ...
+    async def keyword_candidates(self, kb_id: str, terms: list[str], n: int) -> list[str]: ...
+    async def score_chunks(
+        self,
+        kb_id: str,
+        chunk_ids: list[str],
+        vector: list[float] | None,
+        terms: list[str] | None,
+    ) -> list[Hit]: ...
     async def search(
         self, kb_id: str, vector: list[float], top_k: int, min_score: float
     ) -> list[Hit]: ...
@@ -290,6 +306,22 @@ class MemoryKnowledgeStore:
                 count += 1
         return count
 
+    async def backfill_keywords(self, limit: int = 500) -> int:
+        selected = [
+            chunk for chunks in self._chunks.values() for chunk in chunks if chunk.keywords is None
+        ][:limit]
+        values = await asyncio.to_thread(
+            lambda: {c.chunk_id: chunk_keywords(c.text, c.heading) for c in selected}
+        )
+        for document_id, chunks in self._chunks.items():
+            self._chunks[document_id] = [
+                replace(c, keywords=values[c.chunk_id])
+                if c.keywords is None and c.chunk_id in values
+                else c
+                for c in chunks
+            ]
+        return len(selected)
+
     def _owns_claim(self, document: Document) -> bool:
         current = self._documents.get(document.document_id)
         return bool(
@@ -317,41 +349,74 @@ class MemoryKnowledgeStore:
                 document, status="error", error=error, chunk_count=0, updated_at=_now()
             )
 
-    async def search(
-        self, kb_id: str, vector: list[float], top_k: int, min_score: float
+    async def vector_candidates(self, kb_id: str, vector: list[float], n: int) -> list[str]:
+        ids = [c.chunk_id for chunks in self._chunks.values() for c in chunks if c.kb_id == kb_id]
+        hits = await self.score_chunks(kb_id, ids, vector, None)
+        return [h.chunk_id for h in sorted(hits, key=lambda h: (-h.score, h.chunk_id))[:n]]
+
+    async def keyword_candidates(self, kb_id: str, terms: list[str], n: int) -> list[str]:
+        terms = _query_terms(terms)
+        if not terms:
+            return []
+        ids = [c.chunk_id for chunks in self._chunks.values() for c in chunks if c.kb_id == kb_id]
+        hits = await self.score_chunks(kb_id, ids, None, terms)
+        return [
+            h.chunk_id
+            for h in sorted(hits, key=lambda h: (-h.score, h.chunk_id))[:n]
+            if h.score > 0
+        ]
+
+    async def score_chunks(
+        self,
+        kb_id: str,
+        chunk_ids: list[str],
+        vector: list[float] | None,
+        terms: list[str] | None,
     ) -> list[Hit]:
         base = self._bases.get(kb_id)
         if base is None:
             return []
-        norm = math.sqrt(sum(v * v for v in vector))
+        selected = set(chunk_ids)
+        wanted = set(terms or [])
         hits: list[Hit] = []
         for document in self._documents.values():
             if document.kb_id != kb_id or document.status != "ready":
                 continue
             for chunk in self._chunks.get(document.document_id, []):
-                other_norm = math.sqrt(sum(v * v for v in chunk.embedding))
-                score = (
-                    sum(a * b for a, b in zip(vector, chunk.embedding, strict=True))
-                    / (norm * other_norm)
-                    if norm and other_norm
-                    else 0.0
-                )
-                score = max(0.0, min(1.0, score))
-                if score >= min_score:
-                    hits.append(
-                        Hit(
-                            kb_id,
-                            base.name,
-                            document.document_id,
-                            document.name,
-                            chunk.chunk_id,
-                            chunk.position,
-                            chunk.text,
-                            chunk.heading,
-                            chunk.page,
-                            score,
-                        )
+                if chunk.chunk_id not in selected:
+                    continue
+                vector_score = _cosine(vector, chunk.embedding) if vector is not None else None
+                keyword_score = None
+                if terms is not None:
+                    keyword_score = (
+                        len(wanted.intersection((chunk.keywords or "").split())) / len(wanted)
+                        if wanted
+                        else 0.0
                     )
+                hits.append(
+                    Hit(
+                        kb_id,
+                        base.name,
+                        document.document_id,
+                        document.name,
+                        chunk.chunk_id,
+                        chunk.position,
+                        chunk.text,
+                        chunk.heading,
+                        chunk.page,
+                        vector_score if vector_score is not None else keyword_score or 0.0,
+                        scores={"vector": vector_score, "keyword": keyword_score, "rerank": None},
+                    )
+                )
+        return hits
+
+    async def search(
+        self, kb_id: str, vector: list[float], top_k: int, min_score: float
+    ) -> list[Hit]:
+        ids = await self.vector_candidates(kb_id, vector, top_k)
+        hits = [
+            h for h in await self.score_chunks(kb_id, ids, vector, None) if h.score >= min_score
+        ]
         return sorted(hits, key=lambda h: (-h.score, h.chunk_id))[:top_k]
 
 
@@ -407,6 +472,10 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     " ON knowledge_documents (status, updated_at)",
     "CREATE INDEX IF NOT EXISTS knowledge_documents_kb_idx ON knowledge_documents (kb_id)",
     "CREATE INDEX IF NOT EXISTS knowledge_chunks_kb_idx ON knowledge_chunks (kb_id)",
+    "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS keywords text",
+    "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS tsv tsvector"
+    " GENERATED ALWAYS AS (to_tsvector('simple', coalesce(keywords, ''))) STORED",
+    "CREATE INDEX IF NOT EXISTS knowledge_chunks_tsv_idx ON knowledge_chunks USING gin (tsv)",
 ]
 
 BASE_SELECT = """
@@ -427,7 +496,31 @@ DOCUMENT_COLUMNS = (
     " error, chunk_count, created_at, updated_at, chunk_size, chunk_overlap"
 )
 CHUNK_COLUMNS = (
-    "chunk_id::text, document_id::text, kb_id::text, tenant_id, position, text, heading, page"
+    "chunk_id::text, document_id::text, kb_id::text, tenant_id, position, text, heading, page,"
+    " keywords"
+)
+
+
+def _cosine(vector: list[float], other: list[float]) -> float:
+    norm = math.sqrt(sum(v * v for v in vector))
+    other_norm = math.sqrt(sum(v * v for v in other))
+    score = (
+        sum(a * b for a, b in zip(vector, other, strict=True)) / (norm * other_norm)
+        if norm and other_norm
+        else 0.0
+    )
+    return max(0.0, min(1.0, score))
+
+
+def _query_terms(terms: list[str]) -> list[str]:
+    # OR is websearch syntax rather than a searchable term.
+    return [term for term in dict.fromkeys(terms) if term and term.lower() != "or"]
+
+
+KEYWORD_SCORE = (
+    "(SELECT count(*)::float8 FROM unnest(%s::text[]) AS q(term)"
+    " WHERE q.term = ANY(string_to_array(coalesce(c.keywords, ''), ' ')))"
+    " / greatest(cardinality(%s::text[]), 1)"
 )
 
 
@@ -676,6 +769,24 @@ class PostgresKnowledgeStore:
         )
         return await cur.fetchone() is not None
 
+    async def backfill_keywords(self, limit: int = 500) -> int:
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT chunk_id, text, heading FROM knowledge_chunks"
+                " WHERE keywords IS NULL AND tenant_id = %s ORDER BY chunk_id"
+                " LIMIT %s FOR UPDATE SKIP LOCKED",
+                (DEFAULT_TENANT, limit),
+            )
+            rows = await cur.fetchall()
+            values = await asyncio.to_thread(
+                lambda: [(chunk_keywords(r["text"], r["heading"]), r["chunk_id"]) for r in rows]
+            )
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    "UPDATE knowledge_chunks SET keywords = %s WHERE chunk_id = %s", values
+                )
+            return len(rows)
+
     async def replace_chunks(self, document: Document, chunks: list[Chunk]) -> None:
         async with self._pool.connection() as conn, conn.transaction():
             if not await self._lock_claim(conn, document):
@@ -686,8 +797,8 @@ class PostgresKnowledgeStore:
             async with conn.cursor() as cur:
                 await cur.executemany(
                     "INSERT INTO knowledge_chunks (chunk_id, document_id, kb_id, position,"
-                    " text, heading, page, embedding)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)",
+                    " text, heading, page, embedding, keywords)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector, %s)",
                     [
                         (
                             c.chunk_id,
@@ -698,6 +809,7 @@ class PostgresKnowledgeStore:
                             c.heading,
                             c.page,
                             _vector(c.embedding),
+                            c.keywords,
                         )
                         for c in chunks
                     ],
@@ -721,25 +833,91 @@ class PostgresKnowledgeStore:
                 (error, _key(document.document_id)),
             )
 
-    async def search(
-        self, kb_id: str, vector: list[float], top_k: int, min_score: float
-    ) -> list[Hit]:
+    async def vector_candidates(self, kb_id: str, vector: list[float], n: int) -> list[str]:
         query = _vector(vector)
         async with self._pool.connection() as conn, conn.transaction():
-            # The HNSW index is shared by all bases and filters after the scan; keep
-            # scanning until top_k rows of this base pass the filter (pgvector >= 0.8).
+            # HNSW filters after scanning: continue until this base has n ready rows. Order by
+            # distance alone: a tie-breaker column would stop the planner using the index.
             await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
             cur = await conn.execute(
-                "SELECT * FROM ("
-                " SELECT b.kb_id::text, b.name AS kb_name, d.document_id::text,"
-                " d.name AS document_name, c.chunk_id::text, c.position, c.text, c.heading, c.page,"
-                " CASE WHEN (c.embedding <=> %s::vector) = 'NaN'::float8 THEN 0.0"
-                " ELSE greatest(0.0, least(1.0, 1 - (c.embedding <=> %s::vector))) END AS score"
+                "SELECT c.chunk_id::text FROM knowledge_chunks c"
+                " JOIN knowledge_documents d USING (document_id)"
+                " JOIN knowledge_bases b ON b.kb_id = c.kb_id"
+                " WHERE c.kb_id = %s AND b.tenant_id = %s AND d.status = 'ready'"
+                " ORDER BY c.embedding <=> %s::vector LIMIT %s",
+                (_key(kb_id), DEFAULT_TENANT, query, n),
+            )
+            return [row["chunk_id"] for row in await cur.fetchall()]
+
+    async def keyword_candidates(self, kb_id: str, terms: list[str], n: int) -> list[str]:
+        terms = _query_terms(terms)
+        if not terms:
+            return []
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT c.chunk_id::text, " + KEYWORD_SCORE + " AS score"
                 " FROM knowledge_chunks c JOIN knowledge_documents d USING (document_id)"
                 " JOIN knowledge_bases b ON b.kb_id = c.kb_id"
                 " WHERE c.kb_id = %s AND b.tenant_id = %s AND d.status = 'ready'"
-                " ORDER BY c.embedding <=> %s::vector LIMIT %s"
-                ") hits WHERE score >= %s ORDER BY score DESC, chunk_id",
-                (query, query, _key(kb_id), DEFAULT_TENANT, query, top_k, min_score),
+                " AND c.tsv @@ websearch_to_tsquery('simple', %s)"
+                " ORDER BY score DESC, c.chunk_id LIMIT %s",
+                (terms, terms, _key(kb_id), DEFAULT_TENANT, " or ".join(terms), n),
             )
-            return [Hit(**row) for row in await cur.fetchall()]
+            return [row["chunk_id"] for row in await cur.fetchall()]
+
+    async def score_chunks(
+        self,
+        kb_id: str,
+        chunk_ids: list[str],
+        vector: list[float] | None,
+        terms: list[str] | None,
+    ) -> list[Hit]:
+        if not chunk_ids:
+            return []
+        query = _vector(vector) if vector is not None else None
+        words = list(dict.fromkeys(terms or []))
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT b.kb_id::text, b.name AS kb_name, d.document_id::text,"
+                " d.name AS document_name, c.chunk_id::text, c.position, c.text, c.heading, c.page,"
+                " CASE WHEN %s::vector IS NULL THEN NULL"
+                " WHEN (c.embedding <=> %s::vector) = 'NaN'::float8 THEN 0.0"
+                " ELSE greatest(0.0, least(1.0, 1 - (c.embedding <=> %s::vector))) END AS vector,"
+                " CASE WHEN %s::boolean THEN " + KEYWORD_SCORE + " ELSE NULL END AS keyword"
+                " FROM knowledge_chunks c JOIN knowledge_documents d USING (document_id)"
+                " JOIN knowledge_bases b ON b.kb_id = c.kb_id"
+                " WHERE c.kb_id = %s AND b.tenant_id = %s AND d.status = 'ready'"
+                " AND c.chunk_id = ANY(%s::uuid[])",
+                (
+                    query,
+                    query,
+                    query,
+                    terms is not None,
+                    words,
+                    words,
+                    _key(kb_id),
+                    DEFAULT_TENANT,
+                    [_key(key) for key in chunk_ids],
+                ),
+            )
+            hits = []
+            for row in await cur.fetchall():
+                scores = {
+                    "vector": row.pop("vector"),
+                    "keyword": row.pop("keyword"),
+                    "rerank": None,
+                }
+                score = (
+                    scores["vector"] if scores["vector"] is not None else scores["keyword"] or 0.0
+                )
+                hits.append(Hit(**row, score=score, scores=scores))
+            return hits
+
+    async def search(
+        self, kb_id: str, vector: list[float], top_k: int, min_score: float
+    ) -> list[Hit]:
+        ids = await self.vector_candidates(kb_id, vector, top_k)
+        hits = [
+            h for h in await self.score_chunks(kb_id, ids, vector, None) if h.score >= min_score
+        ]
+        return sorted(hits, key=lambda h: (-h.score, h.chunk_id))[:top_k]

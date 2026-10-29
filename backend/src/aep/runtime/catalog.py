@@ -27,6 +27,7 @@ from openai import AsyncOpenAI
 from aep import evals
 from aep.config import Settings
 from aep.datasources import DataSourceStore
+from aep.knowledge.rerank import rerank_options
 from aep.runtime import appconfig, design
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import builtin as flowbuiltin
@@ -141,6 +142,12 @@ class AppCatalog:
     async def models(self) -> list[str] | None:
         return await self._models() if self._models else None
 
+    async def rerank_models(self) -> list[dict[str, str]]:
+        models = await self.models()
+        return rerank_options(
+            self._settings, models if models is not None else [self._runs.default_model]
+        )
+
     async def summaries(self) -> list[dict[str, Any]]:
         return [await self._summary(app) for app in await self._runs.app_names()]
 
@@ -253,6 +260,9 @@ class AppCatalog:
                 "options": {
                     "models": models if models is not None else [default],
                     "default_model": default,
+                    "rerank_models": rerank_options(
+                        self._settings, models if models is not None else [default]
+                    ),
                     "skills": [
                         {
                             "name": s.name,
@@ -343,6 +353,9 @@ class AppCatalog:
             self._runs.tools,
             strict,
             self._runs.knowledge,
+            rerank_options(
+                self._settings, models if models is not None else [self._runs.default_model]
+            ),
         )
 
     async def check_flow(self, raw: Any, strict: bool = True) -> dict[str, Any]:

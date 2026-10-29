@@ -15,10 +15,14 @@ from typing import Any, Literal
 
 import openai
 from openai import AsyncOpenAI
+from pydantic import ValidationError
 
 from aep import llm
+from aep.config import Settings
 from aep.datasources import DataSource, DataSourceStore
 from aep.knowledge.citations import IndexedHit, Source, context
+from aep.knowledge.retrieval import Retrieval
+from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import search
 from aep.knowledge.store import KnowledgeStore
 from aep.runtime import human
@@ -81,6 +85,12 @@ class CheckEnv:
     tools: McpTools | None = None
     strict: bool = True
     knowledge: KnowledgeStore | None = None
+    rerank_models: list[dict[str, str]] = field(
+        default_factory=lambda: [
+            {"model": "mock-rerank", "kind": "rerank"},
+            {"model": "mock", "kind": "llm"},
+        ]
+    )
 
 
 @dataclass
@@ -99,6 +109,7 @@ class Runtime:
     secret: Callable[[str], Awaitable[str | None]] | None = None
     sandbox_url: str | None = None
     knowledge: KnowledgeStore | None = None
+    settings: Settings = field(default_factory=Settings)
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -803,6 +814,18 @@ async def check_knowledge(node: dict[str, Any], p: Problems, env: CheckEnv) -> N
     score = node.get("min_score", 0.3)
     if isinstance(score, bool) or not isinstance(score, int | float) or not 0 <= score <= 1:
         p.add(("min_score",), "最低相似度要在 0–1 之间")
+    try:
+        Retrieval.model_validate(
+            node.get("retrieval") or {},
+            context={
+                "top_k": top_k if isinstance(top_k, int) else 5,
+                "rerank_models": env.rerank_models if env.strict else None,
+            },
+        )
+    except ValidationError as exc:
+        for error in exc.errors():
+            cause = error.get("ctx", {}).get("error")
+            p.add(("retrieval", *error["loc"]), str(cause) if cause else "检索参数格式或范围不正确")
 
 
 async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
@@ -819,6 +842,8 @@ async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime
             query,
             node.get("top_k", 5),
             node.get("min_score", 0.3),
+            node.get("retrieval"),
+            settings=rt.settings,
         )
     except Exception as exc:  # noqa: BLE001 - retrieval failures use the node's on_error
         raise NodeFailure("knowledge_error", f"知识库检索失败：{exc}") from exc
@@ -1242,7 +1267,13 @@ TYPES: dict[str, NodeType] = {
             _none,
             _fixed("hits", "context"),
             outputs=(("hits", "命中的片段和出处编号"), ("context", "可放进提示词的资料")),
-            defaults={"knowledge_bases": [], "query": "", "top_k": 5, "min_score": 0.3},
+            defaults={
+                "knowledge_bases": [],
+                "query": "",
+                "top_k": 5,
+                "min_score": 0.3,
+                "retrieval": retrieval_defaults(),
+            },
             error_handling=True,
         ),
         NodeType(
