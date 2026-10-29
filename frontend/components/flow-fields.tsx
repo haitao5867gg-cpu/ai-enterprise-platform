@@ -66,6 +66,37 @@ export function TextField({
   );
 }
 
+export function NoteField({
+  value,
+  onChange,
+  issues = [],
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  issues?: string[];
+}) {
+  const id = useId();
+  return (
+    <div className="asset-field">
+      <label htmlFor={id}>讲解说明</label>
+      <textarea
+        id={id}
+        rows={3}
+        value={value}
+        aria-invalid={issues.length > 0}
+        aria-describedby={`${id}-count${issues.length ? ` ${id}-issues` : ""}`}
+        onChange={(event) =>
+          onChange(Array.from(event.target.value).slice(0, 500).join(""))
+        }
+      />
+      <small id={`${id}-count`} className="muted note-count">
+        {Array.from(value).length} / 500 字
+      </small>
+      <FieldIssues id={`${id}-issues`} messages={issues} />
+    </div>
+  );
+}
+
 export function NumberField({
   label,
   value,

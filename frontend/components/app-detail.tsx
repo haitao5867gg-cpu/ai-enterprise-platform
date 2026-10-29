@@ -40,6 +40,8 @@ import {
 import { FlowNodeDesign } from "./flow-node-design";
 import { ErrorNotice } from "./ui";
 import { AppMetadata } from "./app-metadata";
+import { AppManualPanel, useManual } from "./app-manual";
+import { dataNodeIssues } from "../lib/data-nodes";
 
 const evalLabels = {
   running: "评测运行中",
@@ -216,6 +218,18 @@ export function AppDetailView({ app }: { app: string }) {
   const [actor, setActor] = useState(savedActor);
   const [retry, setRetry] = useState(0);
   const [issues, setIssues] = useState<FlowIssues>(noIssues);
+  const [manualDraft, setManualDraft] = useState(false);
+  const manualRevision = data
+    ? JSON.stringify([data.current, data.draft, data.summary])
+    : "";
+  const manual = useManual(
+    `/apps/${encodeURIComponent(app)}/manual${manualDraft && data?.draft ? "?draft=true" : ""}`,
+    manualRevision,
+  );
+  const canvasManual = useManual(
+    `/apps/${encodeURIComponent(app)}/manual${view === "draft" && data?.draft ? "?draft=true" : ""}`,
+    manualRevision,
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -332,10 +346,10 @@ export function AppDetailView({ app }: { app: string }) {
     if (isFlowConfig(config)) {
       void action(async () => {
         try {
-          const localIssues = knowledgeIssues(
-            config,
-            data.options.rerank_models ?? [],
-          );
+          const localIssues = [
+            ...dataNodeIssues(config),
+            ...knowledgeIssues(config, data.options.rerank_models ?? []),
+          ];
           if (localIssues.length)
             throw new ApiError("请检查检索设置", 422, localIssues);
           accept(
@@ -534,12 +548,42 @@ export function AppDetailView({ app }: { app: string }) {
           </button>
         </div>
       </section>
+      <AppManualPanel
+        resource={manual}
+        controls={
+          data.draft && (
+            <div
+              className="asset-actions manual-version"
+              role="group"
+              aria-label="说明书版本"
+            >
+              <button
+                type="button"
+                className="button secondary"
+                aria-pressed={manualDraft}
+                onClick={() => setManualDraft(true)}
+              >
+                看草稿
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                aria-pressed={!manualDraft}
+                onClick={() => setManualDraft(false)}
+              >
+                看生效版本
+              </button>
+            </div>
+          )
+        }
+      />
       {isFlowConfig(config) ? (
         <>
           <FlowEditor
             app={app}
             data={data}
             config={config}
+            manual={canvasManual.manual}
             setConfig={(value) => {
               setConfig(value);
               setNotice("");

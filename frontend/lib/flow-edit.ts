@@ -15,8 +15,19 @@ export const BRANCHED_ERROR_TYPES = [
   "agent",
   "code",
   "knowledge",
+  "etl_profile",
+  "etl_plan_check",
+  "databricks_ingest",
+  "etl_code_check",
+  "databricks_dev_run",
 ];
-export const UNTESTABLE_TYPES = ["start", "human", "end"];
+export const UNTESTABLE_TYPES = [
+  "start",
+  "human",
+  "end",
+  "databricks_ingest",
+  "databricks_dev_run",
+];
 
 export const typeLabels: Record<FlowNode["type"], string> = {
   start: "开始",
@@ -30,11 +41,25 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   template: "文本拼接",
   code: "代码",
   end: "结束",
+  etl_profile: "探查数据",
+  etl_plan_check: "校验方案",
+  databricks_ingest: "抽取到湖仓",
+  etl_code_check: "检查并打包",
+  databricks_dev_run: "dev 运行",
 };
 
 export function nodeKind(type: FlowNode["type"]): NodeKind {
   if (["llm", "classifier", "agent"].includes(type)) return "model";
-  if (type === "tool" || type === "knowledge") return "tool";
+  if (
+    [
+      "tool",
+      "knowledge",
+      "etl_profile",
+      "databricks_ingest",
+      "databricks_dev_run",
+    ].includes(type)
+  )
+    return "tool";
   if (type === "human") return "human";
   if (type === "start" || type === "end") return "terminal";
   return "code";
@@ -77,6 +102,23 @@ export function ownOutputs(node: FlowNode): string[] {
       return ["text"];
     case "code":
       return node.outputs.map((item) => item.key);
+    case "etl_profile":
+      return [
+        "source_id",
+        "source_name",
+        "tables",
+        "names",
+        "description",
+        "summary",
+      ];
+    case "etl_plan_check":
+      return ["ok", "plan", "problems", "message", "sources", "targets"];
+    case "databricks_ingest":
+      return ["catalog", "tables", "summary"];
+    case "etl_code_check":
+      return ["ok", "code", "problems", "bundle", "summary"];
+    case "databricks_dev_run":
+      return ["status", "run", "url", "tables", "preview", "errors", "report"];
     case "end":
       return [];
   }
@@ -156,7 +198,11 @@ export function branchesOf(node: FlowNode): string[] {
           ? node.options.map((item) => item.key)
           : node.type === "end"
             ? []
-            : [""];
+            : node.type === "etl_plan_check" || node.type === "etl_code_check"
+              ? ["ok", "retry"]
+              : node.type === "databricks_dev_run"
+                ? ["passed", "retry", "failed"]
+                : [""];
   return "on_error" in node && node.on_error?.then === "branch"
     ? [...list, "error"]
     : list;
@@ -167,6 +213,16 @@ export function branchLabel(
 ): string {
   if (!branch) return "下一步";
   if (branch === "error") return "出错";
+  if (
+    node?.type === "etl_plan_check" ||
+    node?.type === "etl_code_check" ||
+    node?.type === "databricks_dev_run"
+  ) {
+    if (branch === "ok" || branch === "passed") return "通过";
+    if (branch === "retry")
+      return node.type === "databricks_dev_run" ? "带着报错重写" : "重写";
+    if (branch === "failed") return "失败";
+  }
   if (node?.type === "classifier" && branch === "other") return "都不是";
   if (node?.type === "condition" && branch === "else") return "否则";
   const items =
@@ -257,7 +313,7 @@ export function stringsOf(node: FlowNode): { path: Path; value: string }[] {
         visit(item, [...path, key]);
   }
   for (const [key, value] of Object.entries(node)) {
-    if (["id", "type", "title", "ui"].includes(key)) continue;
+    if (["id", "type", "title", "ui", "note"].includes(key)) continue;
     if (node.type === "code" && key === "code") continue;
     visit(value, [key]);
   }
@@ -282,7 +338,7 @@ function mapNodeStrings(
 ): FlowNode {
   const next = { ...node } as Record<string, unknown>;
   for (const [key, value] of Object.entries(node)) {
-    if (["id", "type", "title", "ui"].includes(key)) continue;
+    if (["id", "type", "title", "ui", "note"].includes(key)) continue;
     if (node.type === "code" && key === "code") continue;
     next[key] = mapStrings(value, change);
   }

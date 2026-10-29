@@ -49,12 +49,13 @@ import {
   type AddPosition,
 } from "./flow-canvas";
 import { FlowDiagram } from "./flow-diagram";
-import { NumberField, SelectField, TextField } from "./flow-fields";
+import { NoteField, NumberField, SelectField, TextField } from "./flow-fields";
+import type { AppManual } from "../lib/app-manual";
 import { NodeSettings, type Change } from "./flow-node-form";
 import { InputFields } from "./input-fields";
 
 // Settings every node has, rendered by the editor itself rather than the type's form.
-const commonKeys = ["id", "title", "max_visits", "on_error", "ui"];
+const commonKeys = ["id", "title", "note", "max_visits", "on_error", "ui"];
 const formKeys: Record<FlowNode["type"], string[]> = {
   start: ["inputs"],
   llm: ["model", "skills", "system", "prompt", "output"],
@@ -67,6 +68,11 @@ const formKeys: Record<FlowNode["type"], string[]> = {
   template: ["template"],
   code: ["code", "inputs", "outputs", "timeout_seconds"],
   end: ["outputs"],
+  etl_profile: ["datasource", "tables", "sample_rows"],
+  etl_plan_check: ["reply", "profile", "hits", "language", "max_attempts"],
+  databricks_ingest: ["datasource", "tables", "max_rows"],
+  etl_code_check: ["reply", "plan", "source_name", "name", "max_attempts"],
+  databricks_dev_run: ["bundle", "max_runs", "preview_rows"],
 };
 
 function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
@@ -363,6 +369,7 @@ export function FlowEditor({
   issues,
   dirty,
   disabled,
+  manual,
 }: {
   app: string;
   data: AppDetail;
@@ -371,6 +378,7 @@ export function FlowEditor({
   issues: FlowIssues;
   dirty: boolean;
   disabled: boolean;
+  manual: AppManual | null;
 }) {
   const desktop = useSyncExternalStore(
     subscribeDesktop,
@@ -648,6 +656,7 @@ export function FlowEditor({
           <FlowCanvas
             ref={canvasRef}
             config={config}
+            manual={manual}
             setConfig={setConfig}
             invalid={invalid}
             disabled={disabled}
@@ -783,6 +792,11 @@ export function FlowEditor({
                 </button>
               )}
             </div>
+            {types.find((type) => type.type === node.type)?.description && (
+              <p className="muted node-description">
+                {types.find((type) => type.type === node.type)!.description}
+              </p>
+            )}
             {canvasMode && (
               <div className="asset-actions canvas-node-actions">
                 <button
@@ -815,6 +829,11 @@ export function FlowEditor({
                 maxLength={50}
                 issues={issuesUnder(nodeIssues, "title")}
                 onChange={(title) => change({ ...node, title })}
+              />
+              <NoteField
+                value={node.note ?? ""}
+                issues={issuesUnder(nodeIssues, "note")}
+                onChange={(note) => change({ ...node, note })}
               />
               <TextField
                 label="标识"

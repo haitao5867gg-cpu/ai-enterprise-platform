@@ -49,6 +49,10 @@ AEP_MOCK_RUNS=false AEP_API_INTERNAL_URL=http://localhost:8000 npm run dev
 
 接口类型与请求函数按 [应用与 Skill 接口契约](../docs/api/apps-and-skills.md) 实现。开发 mock 共用 `AEP_MOCK_RUNS=true` 开关，内置 `etl`、`hello`、`etl-plan` 和 `etl-codegen`，状态保存于服务端内存。ETL 草稿评测约 6 秒完成：`plan.max_attempts=1` 得分 0.6，其他合法配置得分 0.9，阈值 0.8；用例链接到对应的 mock 运行详情。`hello` 无评测集，可直接发布。重启开发服务会清空这些变更。
 
+数据工程节点与说明书按 [数据节点契约](../docs/api/data-nodes.md) 实现。mock 模式下可查看 `/apps/retail-etl` 和已完成的 `/runs/retail-etl-demo`；`etl-lakehouse` 模板创建时先生成空白生效版本，将待选择知识库的流程放进草稿。5 种数据工程节点复用变量、数据源和数字控件，所有编排节点可编辑最多 500 字的讲解说明。应用说明书默认展开，独立切换已保存草稿与生效版本；运行说明书默认折叠并固定到该次运行的配置。画布资源标签来自说明书，dev 节点输出展示结果预览，运行结果复用带引用角标的 Markdown 渲染并支持表格。
+
+`GET /apps/{app}/manual`（支持 `version`、`draft` 查询）和 `GET /runs/{id}/manual` 通过同源 API 转发；mock 模式模拟相同契约，代码应用 `etl` 也支持说明书。说明书加载失败时可单独重试。
+
 ## 验证
 
 ```bash
@@ -66,6 +70,14 @@ npm test
 `tests/etl.spec.ts` 额外覆盖 ETL 完整流程、默认 PySpark / 可选 SQL、数据源故障与空状态、未知 details、检查失败、纯文本安全呈现、手机布局及 ZIP 下载后的全部文件内容。生产转发测试核对 ZIP 原始字节（含非 UTF-8 字节）和下载响应头。
 
 `tests/apps-skills.spec.ts` 覆盖保存应用草稿、评测通过与失败、发布和版本递增、回滚确认、配置对比、无评测集发布、全部设置类型和 Skill 版本选择、Skill 创建与参考资料编辑、发布与正文对比、草稿放弃、存储不可用、非法值与 409/422 提示，以及手机布局。生产转发测试额外验证应用与 Skill 的 GET/POST/PUT/DELETE、JSON 请求体、204 和错误响应。
+
+`tests/data-nodes.spec.ts` 覆盖新增 5 种数据工程节点并保存、讲解说明及字数限制、说明书版本切换与资源跳转、运行版本快照、画布资源标签、Markdown 表格与引用、dev 多表预览及无预览输出。单独验收并生成截图（输出在仓库外）：
+
+```bash
+AEP_ISSUE_84_SCREENSHOTS=/tmp/issue-84-screenshots npm test -- --project=workbench data-nodes.spec.ts
+```
+
+CI 自动把这些截图写入被忽略的 `docs/screenshots/issue-84/`，与现有截图一起上传为 `chat-workbench-screenshots` 产物；截图不提交到仓库。
 
 CI 的 frontend job 执行类型检查、ESLint、构建和以上测试，再启动真实 Compose 后端执行下文的两条浏览器联调路径，上传截图并清理测试容器。可用以下命令生成开发 mock 的页面截图（使用合成需求）：
 

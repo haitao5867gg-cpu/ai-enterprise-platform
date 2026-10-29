@@ -11,7 +11,8 @@ import {
 import { ApiError, errorMessage, isRecord, requestJson } from "../lib/runs";
 import { Icon } from "./icons";
 import { FlowDiagram } from "./flow-diagram";
-import { FlowNodeDesign } from "./flow-node-design";
+import { FlowNodeDesign, NodeNote } from "./flow-node-design";
+import { TablePreviews } from "./table-previews";
 
 function JsonBlock({ value }: { value: unknown }) {
   return <pre className="flow-json">{JSON.stringify(value, null, 2)}</pre>;
@@ -78,6 +79,7 @@ function NodeDetail({
       {node.kind === "terminal" ? (
         <>
           <h3>{node.title}</h3>
+          <NodeNote note={node.design?.note} />
           <p className="flow-summary">
             {node.id === "__start__"
               ? "运行从这里开始，带着创建运行时填的输入。"
@@ -137,7 +139,10 @@ function NodeDetail({
                           : "还没有输出。"}
                       </p>
                     ) : (
-                      <JsonBlock value={step.output} />
+                      <>
+                        {(node.type === "databricks_dev_run" || node.id === "dev_run") && <TablePreviews output={step.output} />}
+                        <JsonBlock value={step.output} />
+                      </>
                     )}
                   </details>
                   <details>

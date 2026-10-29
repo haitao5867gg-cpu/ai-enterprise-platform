@@ -17,6 +17,7 @@ export type NodeDesign = {
   title: string;
   kind: NodeKind;
   summary: string;
+  note?: string | null;
   inputs: string;
   outputs: string;
   tools: string[];

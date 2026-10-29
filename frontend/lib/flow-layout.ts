@@ -4,7 +4,7 @@ import { branchesOf } from "./flow-edit";
 
 export type Point = { x: number; y: number };
 export const CARD_WIDTH = 232;
-export const CARD_HEADING_HEIGHT = 88;
+export const CARD_HEADING_HEIGHT = 112;
 export const cardHeight = (node: FlowNode) =>
   CARD_HEADING_HEIGHT + branchesOf(node).length * 28;
 

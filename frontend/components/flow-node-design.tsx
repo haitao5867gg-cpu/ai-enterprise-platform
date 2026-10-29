@@ -1,6 +1,15 @@
 import type { ReactNode } from "react";
 import { kindLabels, type FlowNode } from "../lib/flow";
 
+export function NodeNote({ note }: { note?: string | null }) {
+  return note ? (
+    <section className="node-note" aria-label="讲解说明">
+      <h4>讲解说明</h4>
+      <p>{note}</p>
+    </section>
+  ) : null;
+}
+
 export function FlowNodeDesign({ node }: { node: FlowNode }) {
   const design = node.design;
   const facts: [string, ReactNode][] = design
@@ -32,6 +41,7 @@ export function FlowNodeDesign({ node }: { node: FlowNode }) {
         <code>{node.id}</code>
       </div>
       <h3>{node.title}</h3>
+      <NodeNote note={design?.note} />
       {design ? (
         <p className="flow-summary">{design.summary}</p>
       ) : (

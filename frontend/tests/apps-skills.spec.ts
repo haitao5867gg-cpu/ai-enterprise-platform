@@ -212,7 +212,9 @@ test("hello publishes without evaluation and tolerates unavailable browser stora
   await expect(
     page.getByRole("button", { name: "运行评测", exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByLabel("模型", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "模型", exact: true }),
+  ).toHaveCount(0);
   const noEval = await request.post("/api/apps/hello/draft/eval", { data: {} });
   expect(noEval.status()).toBe(409);
   await expect(

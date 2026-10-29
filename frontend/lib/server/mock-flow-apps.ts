@@ -24,7 +24,19 @@ import {
   typeLabels,
   upstreamOf,
   walk,
+  ownOutputs,
+  canFail,
+  branchesOf,
+  branchLabel as displayBranch,
+  nodeKind as kindOf,
 } from "../flow-edit";
+import { dataNodeIssues } from "../data-nodes";
+import {
+  dataDefaults,
+  dataDescriptions,
+  lakehouseConfig,
+  simulateDataNode,
+} from "./mock-data-nodes";
 import type { Flow, NodeKind } from "../flow";
 import { isRecord } from "../runs";
 import { mockSkillVersionExists } from "./mock-skills";
@@ -305,6 +317,14 @@ export function knowledgeConfig(): FlowConfig {
 }
 export const mockTemplates: AppTemplate[] = [
   {
+    id: "etl-lakehouse",
+    title: "数据 ETL（湖仓）",
+    summary:
+      "探查数据源、按口径知识库出方案、经人确认后抽取到 Databricks，按开发规范写 PySpark 代码并在 dev 运行，预览结果数据",
+    needs: ["datasource", "knowledge_base"],
+    config: lakehouseConfig(),
+  },
+  {
     id: "knowledge-agent",
     title: "知识库智能体",
     summary: "智能体自主检索企业资料，按引用来源回答问题。",
@@ -412,6 +432,7 @@ export const mockTemplates: AppTemplate[] = [
   },
 ];
 const defaults: FlowNode[] = [
+  ...dataDefaults,
   {
     id: "kb",
     type: "knowledge",
@@ -497,29 +518,19 @@ export const mockNodeTypes: NodeType[] = defaults.map((node) => {
   return {
     type: node.type,
     label: typeLabels[node.type],
-    description: `添加${typeLabels[node.type]}节点。`,
-    category: kind === "code" ? "logic" : kind,
-    error_handling: [
-      "llm",
-      "classifier",
-      "tool",
-      "agent",
-      "code",
-      "knowledge",
-    ].includes(node.type),
-    outputs: (node.type === "knowledge"
-      ? ["hits", "context"]
-      : node.type === "classifier"
-        ? ["class", "label"]
-        : node.type === "condition"
-          ? ["rule"]
-          : node.type === "tool"
-            ? ["result"]
-            : node.type === "human"
-              ? ["decision", "comment", "actor"]
-              : ["llm", "agent", "template"].includes(node.type)
-                ? ["text", ...(node.type === "agent" ? ["steps", "hits"] : [])]
-                : []
+    description:
+      dataDescriptions[node.type] ?? `添加${typeLabels[node.type]}节点。`,
+    category: dataDescriptions[node.type]
+      ? "data"
+      : kind === "code"
+        ? "logic"
+        : kind,
+    error_handling: canFail(node),
+    outputs: (node.type === "start" ||
+    node.type === "code" ||
+    node.type === "end"
+      ? []
+      : ownOutputs(node)
     ).map((key) => ({ key, description: key })),
     defaults: settings,
     presets:
@@ -545,49 +556,16 @@ export const mockNodeTypes: NodeType[] = defaults.map((node) => {
   } as NodeType;
 });
 export function nodeKind(node: FlowNode): NodeKind {
-  return ["llm", "classifier", "agent"].includes(node.type)
-    ? "model"
-    : node.type === "tool" || node.type === "knowledge"
-      ? "tool"
-      : node.type === "human"
-        ? "human"
-        : ["start", "end"].includes(node.type)
-          ? "terminal"
-          : "code";
+  return kindOf(node.type);
 }
 export function branches(node: FlowNode): string[] {
-  const list =
-    node.type === "classifier"
-      ? [...node.classes.map((item) => item.key), "other"]
-      : node.type === "condition"
-        ? [...node.rules.map((item) => item.key), "else"]
-        : node.type === "human" && node.mode === "approval"
-          ? node.options.map((item) => item.key)
-          : node.type === "end"
-            ? []
-            : [""];
-  return "on_error" in node && node.on_error?.then === "branch"
-    ? [...list, "error"]
-    : list;
+  return branchesOf(node);
 }
 function branchLabel(
   node: FlowNode | undefined,
   branch?: string | null,
 ): string | null {
-  if (!branch) return null;
-  if (branch === "other") return "都不是";
-  if (branch === "else") return "否则";
-  if (branch === "error") return "出错";
-  return (
-    (node?.type === "classifier"
-      ? node.classes
-      : node?.type === "condition"
-        ? node.rules
-        : node?.type === "human" && node.mode === "approval"
-          ? node.options
-          : []
-    ).find((item) => item.key === branch)?.label ?? branch
-  );
+  return branch ? displayBranch(node, branch) : null;
 }
 export function flowView(
   config: FlowConfig,
@@ -607,6 +585,7 @@ export function flowView(
         title: node.title,
         kind,
         summary: `执行${node.title}。`,
+        note: node.note ?? null,
         inputs: "按节点中的变量引用读取输入。",
         outputs: "写入该节点的产出字段。",
         tools: node.type === "tool" ? [node.tool] : [],
@@ -704,10 +683,13 @@ export function validateFlow(config: unknown): ValidationIssue[] {
     return [
       { loc: root, msg: "需要一个开始节点和至少一个结束节点，最多 50 个节点" },
     ];
-  const issues: ValidationIssue[] = knowledgeIssues(
-    config as FlowConfig,
-    mockKnowledgeOptions.rerank_models,
-  );
+  const issues: ValidationIssue[] = [
+    ...dataNodeIssues(config as FlowConfig),
+    ...knowledgeIssues(
+      config as FlowConfig,
+      mockKnowledgeOptions.rerank_models,
+    ),
+  ];
   const ids = new Set<string>();
   for (const node of nodes) {
     const loc = [...root, "nodes", node.id];
@@ -826,13 +808,18 @@ export function missingReferences(
             message: "没有这个知识库，请在节点里重新选择",
           });
     const sources =
-      node.type === "tool"
+      node.type === "tool" ||
+      node.type === "etl_profile" ||
+      node.type === "databricks_ingest"
         ? [node.datasource]
         : node.type === "agent"
           ? node.tools.map((item) => item.datasource)
           : [];
     for (const datasource_id of sources)
-      if (!allSources().some((item) => item.datasource_id === datasource_id))
+      if (
+        !datasource_id.includes("{{") &&
+        !allSources().some((item) => item.datasource_id === datasource_id)
+      )
         problems.push({
           kind: "datasource",
           datasource_id,
@@ -938,12 +925,14 @@ export function simulateNode(
   const rendered = render(
     Object.fromEntries(
       Object.entries(node).filter(
-        ([key]) => !["id", "type", "title"].includes(key),
+        ([key]) => !["id", "type", "title", "note"].includes(key),
       ),
     ),
     pool,
     true,
   ) as Record<string, unknown>;
+  const dataResult = simulateDataNode(node, rendered);
+  if (dataResult) return { ...dataResult, rendered };
   const fakeValue = (type: string): unknown =>
     type === "number"
       ? 100

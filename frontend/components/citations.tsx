@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import Markdown from "react-markdown";
+import { remarkTables } from "../lib/markdown-tables";
 import type { Reference, RunSource } from "../lib/knowledge";
 import { documentFileUrl } from "../lib/knowledge";
 
@@ -86,7 +87,23 @@ export function CitedMarkdown({ text }: { text: string }) {
   return (
     <div className="markdown-content">
       <Markdown
+        remarkPlugins={[remarkTables]}
         components={{
+          table: ({ children }) => (
+            <div className="table-scroll">
+              <table>{children}</table>
+            </div>
+          ),
+          th: ({ children, style }) => (
+            <th style={style}>
+              <CitedText>{children}</CitedText>
+            </th>
+          ),
+          td: ({ children, style }) => (
+            <td style={style}>
+              <CitedText>{children}</CitedText>
+            </td>
+          ),
           p: ({ children }) => (
             <p>
               <CitedText>{children}</CitedText>

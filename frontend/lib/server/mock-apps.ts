@@ -28,6 +28,8 @@ import {
   validateFlow,
 } from "./mock-flow-apps";
 import { mockFlow } from "./mock-flow";
+import { lakehouseConfig } from "./mock-data-nodes";
+import { buildMockManual } from "./mock-manual";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
 import { createMockEvalRun } from "./mock-runs";
 import {
@@ -197,6 +199,19 @@ const globalStore = globalThis as typeof globalThis & {
 const store = (globalStore.aepMockApps ??= new Map([
   ["etl", initial("etl")],
   ["hello", initial("hello")],
+  [
+    "retail-etl",
+    {
+      ...initial("hello"),
+      app: "retail-etl",
+      title: "零售数据 ETL",
+      summary:
+        "探查零售数据、确认业务口径，生成 Databricks 转换并预览 dev 结果。",
+      versions: [
+        { ...initial("hello").versions[0], config: lakehouseConfig(true) },
+      ],
+    },
+  ],
   [
     "order-form",
     {
@@ -650,6 +665,25 @@ export async function mockApps(
   }
   if (!entry) return mockError("应用不存在", 404);
   refresh(entry);
+  if (path[2] === "manual") {
+    const query = new URL(request.url).searchParams;
+    const snapshot = mockAppSnapshot(
+      entry.app,
+      query.has("version") ? Number(query.get("version")) : undefined,
+      query.get("draft") === "true",
+    );
+    return snapshot
+      ? mockJson(
+          buildMockManual(
+            entry.app,
+            snapshot.title,
+            snapshot.summary,
+            snapshot.version,
+            snapshot.config,
+          ),
+        )
+      : mockError("应用版本不存在", 404);
+  }
   if (path.length === 2) {
     if (request.method === "GET") return mockJson(detail(entry));
     if (entry.kind === "code") return mockError("代码应用不能改名或归档", 409);
@@ -692,6 +726,8 @@ export async function mockApps(
       current(entry).config) as FlowConfig;
     const node = config.graph?.nodes?.find((item) => item.id === path[3]);
     if (!node) return mockError("节点不存在", 404);
+    if (["databricks_ingest", "databricks_dev_run"].includes(node.type))
+      return mockError("该类型不支持单节点试跑", 400);
     if (["start", "human", "end"].includes(node.type))
       return invalid([
         {

@@ -29,6 +29,7 @@ export default defineConfig({
         "flow-canvas.spec.ts",
         "knowledge.spec.ts",
         "retrieval.spec.ts",
+        "data-nodes.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

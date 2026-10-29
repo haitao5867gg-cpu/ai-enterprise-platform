@@ -132,6 +132,42 @@ function datasourceChoices(config: FlowConfig, options: Options) {
   ];
 }
 
+function DatasourceField({
+  value,
+  onChange,
+  config,
+  options,
+  issues,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  config: FlowConfig;
+  options: Options;
+  issues: Issues;
+}) {
+  const choices = datasourceChoices(config, options);
+  return (
+    <SelectField
+      label="数据源"
+      value={value}
+      onChange={onChange}
+      issues={issuesUnder(issues, "datasource")}
+      choices={[
+        { value: "", label: "请选择数据源" },
+        ...choices,
+        ...(value && !choices.some((item) => item.value === value)
+          ? [
+              {
+                value,
+                label: value.includes("{{") ? value : `${value}（未登记）`,
+              },
+            ]
+          : []),
+      ]}
+    />
+  );
+}
+
 function ModelFields({
   node,
   options,
@@ -353,7 +389,6 @@ function ToolFields({
   variables: Variable[];
 }) {
   const { tools, error, loading } = useTools(node.datasource);
-  const choices = datasourceChoices(config, options);
   const tool = tools?.find((item) => item.name === node.tool);
   const properties = tool?.input_schema?.properties ?? {};
   const required = tool?.input_schema?.required ?? [];
@@ -374,26 +409,14 @@ function ToolFields({
   }
   return (
     <>
-      <SelectField
-        label="数据源"
+      <DatasourceField
+        config={config}
+        options={options}
         value={node.datasource}
-        issues={issuesUnder(issues, "datasource")}
+        issues={issues}
         onChange={(datasource) =>
           change({ ...node, datasource, tool: "", args: {} })
         }
-        choices={[
-          { value: "", label: "请选择数据源" },
-          ...choices,
-          ...(node.datasource &&
-          !choices.some((item) => item.value === node.datasource)
-            ? [
-                {
-                  value: node.datasource,
-                  label: `${node.datasource}（未登记）`,
-                },
-              ]
-            : []),
-        ]}
       />
       {tools ? (
         <SelectField
@@ -810,6 +833,7 @@ function HumanFields({
     ui: node.ui,
     prompt: node.prompt,
     show: node.show,
+    note: node.note,
   };
   return (
     <>
@@ -963,6 +987,168 @@ export function NodeSettings({
   const variables = variablesFor(config, node.id);
   const at = (path: string) => issuesUnder(issues, path);
   switch (node.type) {
+    case "etl_profile":
+    case "databricks_ingest":
+      return (
+        <>
+          <DatasourceField
+            config={config}
+            options={options}
+            value={node.datasource}
+            issues={issues}
+            onChange={(datasource) => change({ ...node, datasource })}
+          />
+          <RefField
+            label={node.type === "etl_profile" ? "表范围" : "表"}
+            multiline
+            value={
+              Array.isArray(node.tables) ? node.tables.join("\n") : node.tables
+            }
+            variables={variables}
+            issues={at("tables")}
+            help={
+              node.type === "etl_profile"
+                ? "schema.table 或 schema.*，逗号或换行分隔；留空为全部"
+                : "引用源表列表，或填写 schema.table，逗号或换行分隔。"
+            }
+            onChange={(tables) => change({ ...node, tables })}
+          />
+          {node.type === "etl_profile" ? (
+            <NumberField
+              label="样本行数"
+              value={node.sample_rows}
+              min={1}
+              max={20}
+              issues={at("sample_rows")}
+              onChange={(sample_rows) => change({ ...node, sample_rows })}
+            />
+          ) : (
+            <NumberField
+              label="每表最多行数"
+              value={node.max_rows}
+              min={1}
+              max={1_000_000}
+              issues={at("max_rows")}
+              onChange={(max_rows) => change({ ...node, max_rows })}
+            />
+          )}
+        </>
+      );
+    case "etl_plan_check":
+      return (
+        <>
+          <RefField
+            label="模型回答"
+            value={node.reply}
+            variables={variables}
+            issues={at("reply")}
+            onChange={(reply) => change({ ...node, reply })}
+          />
+          <RefField
+            label="探查结果"
+            value={node.profile}
+            variables={variables}
+            issues={at("profile")}
+            onChange={(profile) => change({ ...node, profile })}
+          />
+          <ListEditor
+            label="知识库命中"
+            items={node.hits}
+            max={5}
+            make={() => ""}
+            issues={(i) => at(`hits.${i}`)}
+            onChange={(hits) => change({ ...node, hits })}
+            render={(value, _i, update) => (
+              <RefField
+                label="命中引用"
+                value={value}
+                variables={variables}
+                onChange={update}
+              />
+            )}
+          />
+          {at("hits").map((msg) => (
+            <p className="field-error" key={msg}>
+              {msg}
+            </p>
+          ))}
+          <RefField
+            label="代码语言"
+            value={node.language ?? ""}
+            variables={variables}
+            issues={at("language")}
+            help="可引用 pyspark 或 sql；留空时使用方案里的语言。"
+            onChange={(language) => change({ ...node, language })}
+          />
+          <NumberField
+            label="最多连续重写次数"
+            value={node.max_attempts}
+            min={1}
+            max={5}
+            issues={at("max_attempts")}
+            onChange={(max_attempts) => change({ ...node, max_attempts })}
+          />
+        </>
+      );
+    case "etl_code_check":
+      return (
+        <>
+          {(
+            [
+              ["reply", "模型回答"],
+              ["plan", "方案"],
+              ["source_name", "数据源名称"],
+              ["name", "bundle 名"],
+            ] as const
+          ).map(([key, label]) => (
+            <RefField
+              key={key}
+              label={label}
+              value={node[key] ?? ""}
+              variables={variables}
+              issues={at(key)}
+              onChange={(value) => change({ ...node, [key]: value })}
+            />
+          ))}
+          <NumberField
+            label="最多连续重写次数"
+            value={node.max_attempts}
+            min={1}
+            max={5}
+            issues={at("max_attempts")}
+            onChange={(max_attempts) => change({ ...node, max_attempts })}
+          />
+        </>
+      );
+    case "databricks_dev_run":
+      return (
+        <>
+          <RefField
+            label="bundle"
+            value={node.bundle}
+            variables={variables}
+            issues={at("bundle")}
+            onChange={(bundle) => change({ ...node, bundle })}
+          />
+          <NumberField
+            label="最多运行次数"
+            value={node.max_runs}
+            min={1}
+            max={3}
+            issues={at("max_runs")}
+            onChange={(max_runs) => change({ ...node, max_runs })}
+          />
+          <NumberField
+            label="预览行数"
+            value={node.preview_rows}
+            min={0}
+            max={100}
+            issues={at("preview_rows")}
+            help="0 表示不预览。"
+            onChange={(preview_rows) => change({ ...node, preview_rows })}
+          />
+        </>
+      );
     case "start":
       return (
         <InputList

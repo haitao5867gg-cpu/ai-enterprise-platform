@@ -21,6 +21,7 @@ import { EtlPlanView } from "./etl-plan";
 import { EtlReleaseView, EtlTrail } from "./etl-release";
 import { GeneratedFiles } from "./generated-files";
 import { RunFlow } from "./run-flow";
+import { RunManual } from "./app-manual";
 import { savedActor, saveActor } from "../lib/actor";
 import {
   initialValues,
@@ -33,19 +34,31 @@ import { InputFields } from "./input-fields";
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;
   if (typeof result === "string") return <CitedMarkdown text={result} />;
-  const text = isRecord(result)
-    ? typeof result.answer === "string"
-      ? result.answer
-      : typeof result.text === "string"
-        ? result.text
-        : null
-    : null;
+  function renderedStrings(
+    value: unknown,
+    path = "",
+  ): { path: string; text: string }[] {
+    if (typeof value === "string") return [{ path, text: value }];
+    if (Array.isArray(value))
+      return value.flatMap((item, i) => renderedStrings(item, `${path}[${i}]`));
+    if (isRecord(value))
+      return Object.entries(value).flatMap(([key, item]) =>
+        renderedStrings(item, path ? `${path}.${key}` : key),
+      );
+    return [];
+  }
+  const strings = renderedStrings(result);
   const content = (
     <pre className="result-json">{JSON.stringify(result, null, 2)}</pre>
   );
-  return text ? (
+  return strings.length ? (
     <>
-      <CitedMarkdown text={text} />
+      {strings.map(({ path, text }) => (
+        <div key={path} className="result-field">
+          {strings.length > 1 && <h3>{path}</h3>}
+          <CitedMarkdown text={text} />
+        </div>
+      ))}
       <details>
         <summary>查看完整结果</summary>
         {content}
@@ -199,6 +212,10 @@ export function RunDetail({
     run?.app === "etl" && (run.status === "done" || release)
       ? getEtlResult(run.result)
       : null;
+  const hasReport =
+    !etlResult &&
+    isRecord(run?.result) &&
+    typeof run.result.report === "string";
   // A rejected release sends the code back to be rewritten, so the reason must be given.
   const requiredOptions =
     run?.pending?.comment_required ?? (release ? ["reject"] : []);
@@ -243,11 +260,25 @@ export function RunDetail({
               {release && <EtlReleaseView request={release} />}
               {etlResult && <EtlTrail result={etlResult} />}
               {etlResult && <GeneratedFiles result={etlResult} runId={id} />}
+              <RunManual runId={id} />
               <RunFlow
                 runId={id}
                 version={`${run.status}:${run.messages.length}`}
                 live={run.status === "running"}
               />
+              {run.status === "done" && hasReport && (
+                <section
+                  className="panel result-card run-report"
+                  aria-labelledby="result-title"
+                >
+                  <span className="result-icon">
+                    <Icon name="check" size={20} />
+                  </span>
+                  <h2 id="result-title">运行结果</h2>
+                  <ResultView result={run.result} />
+                  <SourceList />
+                </section>
+              )}
               <details
                 className={`conversation-history ${run.app === "etl" ? "collapsible" : ""}`}
                 open={run.app !== "etl" || (!plan && !release && !etlResult)}
@@ -499,7 +530,7 @@ export function RunDetail({
                 </section>
               )}
               {mutationError && <ErrorNotice message={mutationError} />}
-              {run.status === "done" && (
+              {run.status === "done" && !hasReport && (
                 <section
                   className="panel result-card"
                   aria-labelledby="result-title"
