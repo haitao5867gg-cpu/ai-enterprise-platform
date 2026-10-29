@@ -134,11 +134,12 @@
 {"model": null,
  "skills": [{"name": "sales-glossary", "version": 1}],   // 按需加载：提示词里只放名称和说明，模型要用时再读正文
  "task": "根据数据回答：{{start.question}}",               // 必填，最多 20000 字符
- "tools": [{"datasource": "ds_1a2b", "tools": null}],     // tools 为 null 表示这个数据源的全部工具，否则列工具名
+ "tools": [{"datasource": "ds_1a2b", "tools": null}],     // 0–10 个；tools 为 null 表示这个数据源的全部工具，否则列工具名
+ "knowledge": null,                                        // 可选，知识库检索工具；和 tools 至少要有一个，见 knowledge.md
  "max_steps": 8}                                           // 1–20，一次工具调用算一步
 ```
 
-产出：`text`（最终回答）、`steps`（`[{"tool", "datasource", "args", "error"}]`，按调用顺序）。
+产出：`text`（最终回答）、`steps`（`[{"tool", "datasource", "args", "error"}]`，按调用顺序）、`hits`（知识库检索命中的片段，没设 `knowledge` 时为 `[]`）。知识库怎么作为工具给模型用，见 [knowledge.md](knowledge.md#编排应用智能体调用知识库)。
 
 **human 人工**：暂停运行等人处理，两种模式。
 
@@ -269,7 +270,7 @@
 | DELETE | `/apps/{app}/secrets/{name}` | | 204；没有设过也是 204 |
 
 - `app` 符合 `^[a-z][a-z0-9-]{1,63}$`，`title` 1–50 字符，`summary` 最多 500 字符。
-- 模板有 4 个：`qa-approval`（问答加确认，和 hello 一样）、`intent-routing`（意图分类路由）、`datasource-qa`（数据源问答，Agent 调只读数据源工具，`needs` 含 `datasource`：开始节点有一个 `datasource` 类型的输入，Agent 的工具引用它，每次运行时由使用者选数据源，所以平台上至少要登记一个数据源）、`knowledge-qa`（知识问答，`needs` 含 `knowledge_base`：新建时版本 1 为空白应用，模板配置进入草稿；选好知识库后保存、发布，详见 [knowledge.md](knowledge.md#编排应用知识检索节点)）。
+- 模板有 5 个：`qa-approval`（问答加确认，和 hello 一样）、`intent-routing`（意图分类路由）、`datasource-qa`（数据源问答，Agent 调只读数据源工具，`needs` 含 `datasource`：开始节点有一个 `datasource` 类型的输入，Agent 的工具引用它，每次运行时由使用者选数据源，所以平台上至少要登记一个数据源）、`knowledge-qa`（知识问答，`needs` 含 `knowledge_base`：新建时版本 1 为空白应用，模板配置进入草稿；选好知识库后保存、发布，详见 [knowledge.md](knowledge.md#编排应用知识检索节点)）、`knowledge-agent`（知识库智能体，`needs` 同 `knowledge-qa`，见 [knowledge.md](knowledge.md#编排应用智能体调用知识库)）。
 - `From`：`{"blank": true}`（开始 → LLM → 结束，可以直接运行）、`{"template": "intent-routing"}`、`{"app": "hello", "version": 2}`（复制已有编排应用的某个版本，`version` 不写为当前版本；不能复制代码应用）。
 - 归档的应用不再出现在 `GET /apps`，`GET /apps/{app}` 返回 404，`POST /runs` 返回 404；它的运行记录照常可以查看。
 - `PUT /apps/{app}/draft` 对编排应用同样只管配置；改名称、简介用 `PATCH`。
