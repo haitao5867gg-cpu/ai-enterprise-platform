@@ -60,7 +60,8 @@ def validate_identifier(value: str) -> str:
 
 
 def quote(value: str) -> str:
-    validate_identifier(value)
+    # Column names come from uploads, which keep tabs and newlines in headers;
+    # doubling quotes is enough to keep any of them a single identifier.
     return '"' + value.replace('"', '""') + '"'
 
 

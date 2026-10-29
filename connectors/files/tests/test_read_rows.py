@@ -156,3 +156,14 @@ async def test_mcp_read_only_annotation_pagination_and_validation(
         assert not result.is_error
         page = result.structured_content
         assert page["next_offset"] == 2 and page["rows"][0]["id"] == 2
+
+
+def test_upload_headers_with_newlines_and_tabs_stay_readable(
+    database: Database, dataset: DatasetFactory
+) -> None:
+    dataset_id, schema, _ = dataset(
+        'SELECT * FROM (VALUES (1, 2)) t(id, "金额\n(元)\t含税")', table="lines"
+    )
+    page = database.read_rows(dataset_id, schema, "lines")
+    assert page["rows"] == [{"id": 1, "金额\n(元)\t含税": 2}]
+    assert database.sample_rows(dataset_id, schema, "lines")["rows"] == page["rows"]

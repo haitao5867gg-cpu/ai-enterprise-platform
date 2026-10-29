@@ -17,7 +17,8 @@ from aep_mysql.smoke import check
 
 
 async def test_seed_data_and_metadata(database: Database, admin: Connection) -> None:
-    assert (await database.list_schemas())["schemas"] == ["sales"]
+    # The retail demo seed (003-retail.sql) may also be loaded.
+    assert "sales" in (await database.list_schemas())["schemas"]
     assert (await database.list_tables("sales"))["tables"] == ["customers", "orders", "products"]
     for table, count in {"customers": 1000, "products": 200, "orders": 5000}.items():
         [actual] = await query(admin, f"SELECT count(*) AS n FROM sales.{quote_identifier(table)}")
