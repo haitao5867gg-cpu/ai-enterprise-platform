@@ -54,7 +54,13 @@ export type Hit = Omit<Chunk, "document_id"> & {
   };
 };
 export type Reference = Hit & { index: number };
-export type RunSource = Reference & { node: string; node_title: string };
+// `cited`: whether what the run shows refers to it by [n]; missing in lists
+// that are all cited.
+export type RunSource = Reference & {
+  node: string;
+  node_title: string;
+  cited?: boolean;
+};
 export type KnowledgeOption = Pick<
   KnowledgeBase,
   "kb_id" | "name" | "document_count"

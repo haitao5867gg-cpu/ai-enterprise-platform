@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import httpx
 import pytest
@@ -80,3 +81,10 @@ class FakeGateway:
 @pytest.fixture
 def gateway() -> FakeGateway:
     return FakeGateway()
+
+
+def said(messages: list[dict]) -> list[tuple]:
+    """(role, node, actor, content) of each message; every message names its step and time."""
+    for m in messages:
+        assert m["node_title"] and datetime.fromisoformat(m["at"])
+    return [(m["role"], m["node"], m["actor"], m["content"]) for m in messages]

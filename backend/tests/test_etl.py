@@ -225,6 +225,7 @@ async def test_plan_references_come_from_actual_citations_and_survive_confirmati
     )
     proposed["targets"][0]["description"] = "目标表说明[3][5]"
     proposed["targets"][0]["columns"][0]["description"] = "订单标识[1][99]"
+    proposed["targets"][0]["logic"] = "按订单号关联[2]，城市取 split(address, '-')[0]"
     # The model cannot inject references, even malformed ones.
     proposed["references"] = "模型伪造的出处"
     service, gateway, ds = await make_service(
@@ -238,11 +239,12 @@ async def test_plan_references_come_from_actual_citations_and_survive_confirmati
     view = await service.get(record.run_id)
     assert view.record.status == "waiting", view.record.error
     actual = view.pending["details"]["plan"]
-    assert [r["index"] for r in actual["references"]] == [1, 3]
+    assert [r["index"] for r in actual["references"]] == [1, 2, 3]
     assert actual["summary"] == "订单宽表[3]，保留依据[1]；不支持的标记。"
     assert actual["assumptions"] == ["按约定[1][3]。"]
     assert actual["targets"][0]["description"] == "目标表说明[3]"
     assert actual["targets"][0]["columns"][0]["description"] == "订单标识[1]"
+    assert actual["targets"][0]["logic"] == "按订单号关联[2]，城市取 split(address, '-')[0]"
     assert all(r["document_name"] == "建表.md" for r in actual["references"])
     prompt = gateway.requests[0]["body"]["messages"]
     assert "references" not in prompt[0]["content"]

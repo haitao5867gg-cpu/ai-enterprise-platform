@@ -10,6 +10,7 @@ import type {
   FlowNode,
   HumanNode,
   Input,
+  LlmNode,
   NodeType,
   Condition,
   ImportProblem,
@@ -444,7 +445,7 @@ const defaults: FlowNode[] = [
     retrieval: { ...mockKnowledgeOptions.retrieval },
   },
   blankConfig().graph.nodes[0],
-  blankConfig().graph.nodes[1],
+  { ...(blankConfig().graph.nodes[1] as LlmNode), quiet: false },
   intentConfig().graph.nodes[1],
   {
     id: "condition",
@@ -707,6 +708,15 @@ export function validateFlow(config: unknown): ValidationIssue[] {
           msg: "检索问题须为 1–2000 字符",
         });
     }
+    if (
+      node.type === "llm" &&
+      node.quiet !== undefined &&
+      typeof node.quiet !== "boolean"
+    )
+      issues.push({
+        loc: [...loc, "quiet"],
+        msg: "quiet 必须是 true 或 false",
+      });
     if (
       node.type === "agent" &&
       (node.tools.length > 10 ||

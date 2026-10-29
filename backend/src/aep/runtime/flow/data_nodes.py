@@ -155,6 +155,12 @@ def _failures(
     return count
 
 
+def _rewrite_said(problems: str, not_json: bool, failures: int, node: dict[str, Any]) -> str:
+    """What a check says when the model rewrites its reply; ``failures`` in a row so far."""
+    what = "模型没按要求的 JSON 格式回答" if not_json else problems
+    return f"{what}，让模型重写（第 {failures + 1}/{node.get('max_attempts', 3)} 次）"
+
+
 def _databricks(rt: Runtime, *needs: str) -> DevTarget:
     if rt.databricks is None:
         raise NodeFailure(
@@ -311,6 +317,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     trust = (state.get("branch") or {}).get(node["id"]) == "retry"
     raw: Any = None
     plan: EtlPlan | None = None
+    not_json = False
     try:
         raw = llm.parse_json(refs.render(node["reply"], get))
         plan = validate_plan(raw, sources, known_values(profile), trust, _hits(node, get))
@@ -319,11 +326,13 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         problems = exc.problems
     except ValueError as exc:
         problems = [f"回复不是要求的 JSON：{exc}"]
+        not_json = True
     failures = _failures(state, node, plan is not None, "方案", problems)
     if plan is None:
         text = "方案没有通过平台校验，带着问题让模型重写：\n" + "\n".join(
             f"- {p}" for p in problems
         )
+        said = _rewrite_said(f"方案有 {len(problems)} 处没通过校验", not_json, failures, node)
         outputs = {
             "ok": False,
             "plan": raw,
@@ -335,7 +344,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         return Outcome(
             outputs,
             "retry",
-            messages=[{"role": "assistant", "content": text}],
+            messages=[{"role": "assistant", "content": said}],
             private={"failures": failures},
         )
     if language in ("pyspark", "sql"):
@@ -350,10 +359,14 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         "sources": used,
         "targets": [t.name for t in plan.targets],
     }
+    # The whole plan is in ``message``, for the person who reviews it.
+    said = f"方案整理好了：{len(plan.targets)} 张目标表"
+    if plan.assumptions:
+        said += f"、{len(plan.assumptions)} 条假设待确认"
     return Outcome(
         outputs,
         "ok",
-        messages=[{"role": "assistant", "content": message}],
+        messages=[{"role": "assistant", "content": said}],
         private={"failures": 0},
     )
 
@@ -435,6 +448,7 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         plan = EtlPlan.model_validate(refs.resolve(node["plan"], get))
     except ValidationError as exc:
         raise NodeFailure("output_format", "方案要引用校验方案节点通过时的 plan") from exc
+    not_json = False
     try:
         data = llm.parse_json(refs.render(node["reply"], get))
         code = data.get("targets") if isinstance(data, dict) else None
@@ -443,6 +457,7 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         problems = codegen.check_code(plan, code)
     except ValueError as exc:
         code, problems = _last(state, node).get("code") or {}, [f"回复不是要求的 JSON：{exc}"]
+        not_json = True
     bundle = None
     if not problems:
         name = refs.as_text(refs.resolve(node.get("name") or "", get)).strip()
@@ -466,10 +481,12 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     failures = _failures(state, node, bundle is not None, "代码", problems)
     if bundle is None:
         summary = "代码没有通过检查，带着问题让模型重写：\n" + "\n".join(f"- {p}" for p in problems)
+        said = _rewrite_said(f"代码有 {len(problems)} 处没通过检查", not_json, failures, node)
     else:
         summary = f"已生成 Databricks bundle {bundle['name']}：" + "、".join(
             sorted(bundle["files"])
         )
+        said = f"代码检查通过，打包成 bundle {bundle['name']}（{len(bundle['files'])} 个文件）"
     outputs = {
         "ok": bundle is not None,
         "code": code,
@@ -480,7 +497,7 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     return Outcome(
         outputs,
         "ok" if bundle is not None else "retry",
-        messages=[{"role": "assistant", "content": summary}],
+        messages=[{"role": "assistant", "content": said}],
         private={"failures": failures},
     )
 
@@ -543,6 +560,32 @@ def dev_report(
     return "\n".join(lines)
 
 
+def dev_said(
+    dev: Any,
+    attempt: int,
+    branch: str,
+    tables: list[dict[str, Any]],
+    errors: list[str],
+    max_runs: int,
+) -> str:
+    """The dev run in one sentence, for the run's messages (the report has the rest)."""
+    if branch == "passed":
+        if not tables:
+            return "dev 运行通过"
+        verb = "得到" if dev.mode == "cluster" else "写出"
+        said = f"dev 运行通过：{verb} {len(tables)} 张表"
+        if all(t["rows"] is not None for t in tables):
+            said += f"共 {sum(t['rows'] for t in tables)} 行"
+        dropped = sum(t["dropped"] or 0 for t in tables)
+        if dropped > 0:
+            said += f"，质量规则丢弃 {dropped} 行"
+        return said
+    head = f"dev 运行失败（{len(errors)} 条报错）" if errors else "dev 运行失败"
+    if branch == "retry":
+        return f"{head}，让模型改代码（第 {attempt + 1}/{max_runs} 次运行）"
+    return f"{head}，不再重试"
+
+
 async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     databricks = _databricks(rt)
     bundle = refs.resolve(node["bundle"], rt.lookup(state))
@@ -589,7 +632,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         "errors": "\n".join(errors),
         "report": report,
     }
-    return Outcome(outputs, branch, messages=[{"role": "assistant", "content": report}])
+    said = dev_said(dev, attempt, branch, tables, errors, node.get("max_runs", 3))
+    return Outcome(outputs, branch, messages=[{"role": "assistant", "content": said}])
 
 
 def _fixed(*names: str) -> Any:

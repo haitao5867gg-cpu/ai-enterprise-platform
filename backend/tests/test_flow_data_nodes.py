@@ -180,7 +180,8 @@ async def test_plan_check_passes_a_good_plan_and_writes_it_up_for_people():
         "- [1]《01-有效订单定义.md》 有效订单（知识库「零售数据口径」）",
     ]:
         assert text in o["message"]
-    assert out.messages == [{"role": "assistant", "content": o["message"]}]
+    # The run's messages only say it is ready: the person reviews ``message``.
+    assert out.messages == [{"role": "assistant", "content": "方案整理好了：1 张目标表"}]
 
 
 async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
@@ -200,6 +201,7 @@ async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
     assert first.outputs["problems"].startswith("回复不是要求的 JSON")
     assert first.outputs["sources"] == [] and first.outputs["targets"] == []
     assert first.outputs["message"].startswith("方案没有通过平台校验，带着问题让模型重写")
+    assert first.messages[0]["content"] == "模型没按要求的 JSON 格式回答，让模型重写（第 2/3 次）"
 
     wrong = plan()
     wrong["targets"][0]["sources"] = ["sales.missing", "sales.orders"]
@@ -211,6 +213,7 @@ async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
         "order_facts 引用了不存在的源表 'sales.missing'",
         "order_facts 的主键 'nope' 不在目标列里",
     ]
+    assert second.messages[0]["content"] == "方案有 2 处没通过校验，让模型重写（第 3/3 次）"
 
     with pytest.raises(NodeFailure) as failed:
         await run(check_node(), attempt(reply(wrong), second.private), rt)
@@ -234,7 +237,9 @@ async def test_plan_check_takes_assumptions_at_their_word_only_after_one_retry()
     assert first.branch == "retry"
     assert "'refunded'" in first.outputs["problems"]
     st |= {"branch": {"check_plan": "retry"}, "private": {"check_plan": first.private}}
-    assert (await run(check_node(), st, rt)).branch == "ok"
+    passed = await run(check_node(), st, rt)
+    assert passed.branch == "ok"
+    assert passed.messages[0]["content"] == "方案整理好了：1 张目标表、1 条假设待确认"
 
 
 async def test_plan_check_needs_the_profile():
@@ -473,6 +478,9 @@ async def test_code_check_packages_code_that_passes(tmp_path):
     assert "示例库" in bundle["files"]["databricks.yml"]
     assert out.outputs["code"] == {"order_facts": PYSPARK_BODY}
     assert out.outputs["summary"].startswith("已生成 Databricks bundle order_facts：README.md、")
+    assert out.messages[0]["content"] == (
+        f"代码检查通过，打包成 bundle order_facts（{len(bundle['files'])} 个文件）"
+    )
 
     named = await run(code_node(), code_state(good, "retail_sales"), rt)
     assert named.outputs["bundle"]["name"] == "retail_sales"
@@ -493,11 +501,13 @@ async def test_code_check_sends_problems_back():
     assert first.outputs["bundle"] is None and first.outputs["code"] == bad
     assert first.outputs["problems"] == "order_facts: 不允许使用 .sql"
     assert first.outputs["summary"].startswith("代码没有通过检查，带着问题让模型重写")
+    assert first.messages[0]["content"] == "代码有 1 处没通过检查，让模型重写（第 2/3 次）"
 
     previous = first.outputs | first.private
     second = await run(code_node(), code_state("不是 JSON", previous=previous), rt)
     assert second.outputs["code"] == bad
     assert second.outputs["problems"].startswith("回复不是要求的 JSON")
+    assert second.messages[0]["content"] == "模型没按要求的 JSON 格式回答，让模型重写（第 3/3 次）"
     with pytest.raises(NodeFailure, match="代码连续 3 次没有通过检查"):
         await run(code_node(), code_state("{}", previous=second.outputs | second.private), rt)
 
@@ -590,6 +600,7 @@ async def test_dev_run_passes_and_previews_the_result_tables(tmp_path):
     assert o["run"]["attempt"] == 1 and o["run"]["mode"] == "job" and "preview" not in o["run"]
     assert o["run"]["catalog"] == CATALOG and o["run"]["schema"] == "trac_b_test"
     assert o["errors"] == ""
+    assert out.messages[0]["content"] == "dev 运行通过：写出 1 张表共 2 行，质量规则丢弃 1 行"
     for text in [
         "## dev 运行通过",
         f"- 运行方式：部署成 notebook Job，在已有集群 {fake_databricks.CLUSTER_ID} 上运行",
@@ -651,6 +662,7 @@ async def test_dev_run_sends_fixable_errors_back_until_its_last_run(tmp_path):
     assert first.outputs["errors"] == error[: data_nodes.ERROR_CHARS]
     assert "## dev 运行失败，带着报错回去重写代码" in first.outputs["report"]
     assert first.outputs["preview"] == [] and ws.commands == []
+    assert first.messages[0]["content"] == "dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）"
 
     last = await run(dev_node(), dev_state(visits=2), rt)
     assert last.branch == "failed" and last.outputs["run"]["attempt"] == 3
@@ -659,6 +671,21 @@ async def test_dev_run_sends_fixable_errors_back_until_its_last_run(tmp_path):
     # A failure that is not the code's (the job never reported) is not retried.
     broken = await run(dev_node(), dev_state(), rt)
     assert broken.branch == "failed" and broken.outputs["errors"] == "集群启动失败"
+    for out in (last, once, broken):
+        assert out.messages[0]["content"] == "dev 运行失败（1 条报错），不再重试"
+
+
+def test_dev_run_says_how_it_went_in_one_sentence():
+    cluster = DevRun("passed", "run", [], mode="cluster", cluster_id="c-1")
+    unknown = {"rows": None, "dropped": None}
+    counted = {"rows": 96, "dropped": 0}
+    for dev, branch, tables, errors, expected in [
+        (cluster, "passed", [], [], "dev 运行通过"),
+        (cluster, "passed", [counted, unknown], [], "dev 运行通过：得到 2 张表"),
+        (cluster, "passed", [counted], [], "dev 运行通过：得到 1 张表共 96 行"),
+        (DevRun("failed", "deploy", []), "failed", [], [], "dev 运行失败，不再重试"),
+    ]:
+        assert data_nodes.dev_said(dev, 1, branch, tables, errors, 3) == expected
 
 
 async def test_dev_run_needs_a_bundle_and_a_workspace(tmp_path):
@@ -724,6 +751,7 @@ def lakehouse(ds: str, kb_id: str) -> dict:
             "title": "出方案",
             "skills": [{"name": "etl-plan", "version": 1}],
             "system": "按格式输出方案",
+            "quiet": True,
             "max_visits": 10,
             "prompt": "需求：{{start.request}}\n源表：\n{{profile.description}}\n"
             "口径：{{glossary.context}}\n上一版方案：{{check_plan.plan}}\n"
@@ -746,6 +774,7 @@ def lakehouse(ds: str, kb_id: str) -> dict:
             "type": "llm",
             "title": "写代码",
             "skills": [{"name": "etl-codegen", "version": 1}],
+            "quiet": True,
             "max_visits": 10,
             "prompt": "方案：{{check_plan.plan}}\n上一版代码：{{check_code.code}}\n"
             "问题：{{check_code.problems}}\n报错：{{dev_run.errors}}",
@@ -903,7 +932,12 @@ async def lake(tmp_path):
 
 async def test_lakehouse_flow_from_request_to_dev_run(lake):
     made = await lake.api.post(
-        "/runs", json={"app": "retail-etl", "input": {"request": POLICY, "name": "order_facts"}}
+        "/runs",
+        json={
+            "app": "retail-etl",
+            "input": {"request": POLICY, "name": "order_facts"},
+            "requester": "李雷",
+        },
     )
     assert made.status_code == 201, made.text
     run_id = made.json()["run_id"]
@@ -928,6 +962,21 @@ async def test_lakehouse_flow_from_request_to_dev_run(lake):
     assert result["ingested"].startswith("已把 2 张表共 6 行抽取到 Databricks")
     assert "## dev 运行通过" in result["report"] and "- 第 2 次运行" in result["report"]
     assert "| 10 | 上海 | 2 |" in result["report"]
+    # Each step that has something to say says it in a sentence; the model's replies
+    # (plan, codegen) are quiet: only their checks speak.
+    messages = view["messages"]
+    assert [m["node"] for m in messages] == [
+        "start", "profile", "check_plan", "check_plan", "review", "check_plan", "review",
+        "ingest", "check_code", "check_code", "dev_run", "check_code", "dev_run",
+    ]  # fmt: skip
+    assert (messages[0]["actor"], messages[0]["content"]) == ("李雷", POLICY)
+    assert [m["content"] for m in messages if m["node"] == "review"] == [
+        "选了「驳回」，意见：先做全量",
+        "选了「确认」",
+    ]
+    assert messages[-1]["content"] == "dev 运行通过：写出 1 张表共 2 行，质量规则丢弃 1 行"
+    # The approved plan cites [1] in its references.
+    assert {s["index"] for s in view["sources"] if s["cited"]} == {1}
     # Only the plan's sources were copied, after the person approved.
     spec = sent_spec(lake.ws.commands[0]["command"], "ingest")
     assert [t["target"][-1] for t in spec["tables"]] == ["customers", "orders"]

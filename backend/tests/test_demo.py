@@ -160,6 +160,9 @@ def test_template_follows_the_contract():
     assert nodes["codegen"]["prompt"] == contract_block("`codegen` 的提示词")
     assert nodes["plan"]["system"] == etl_plan.OUTPUT_FORMAT
     assert nodes["codegen"]["system"] == codegen.OUTPUT_FORMAT
+    # Their replies are JSON for the checks, kept out of the run's messages.
+    assert {i for i, n in nodes.items() if "quiet" in n} == {"plan", "codegen"}
+    assert nodes["plan"]["quiet"] is True and nodes["codegen"]["quiet"] is True
     assert (
         nodes["standards"]["query"]
         == "分层与命名、主键与字段类型、数据质量规则、加载策略、PySpark 编码规范"

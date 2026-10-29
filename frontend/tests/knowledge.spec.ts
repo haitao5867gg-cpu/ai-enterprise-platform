@@ -12,7 +12,9 @@ test.describe.configure({ timeout: 90_000 });
 test.use({ actionTimeout: 15_000 });
 // Exercise the existing list editor explicitly; desktop now defaults to canvas.
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("aep.flow-editor.view", "list"));
+  await page.addInitScript(() =>
+    localStorage.setItem("aep.flow-editor.view", "list"),
+  );
 });
 
 const unique = (prefix: string) =>
@@ -218,7 +220,9 @@ test("片段按 50 分页，检索命中定位到第二页片段", async ({ page
   await page.getByLabel("问题", { exact: true }).fill("退换货期限是多久？");
   await page.getByRole("button", { name: "检索", exact: true }).click();
   await expect(page.getByText("5 条命中 · 耗时 12 ms")).toBeVisible();
-  await expect(page.locator(".knowledge-score").first()).toHaveText("最终分数 0.88");
+  await expect(page.locator(".knowledge-score").first()).toHaveText(
+    "最终分数 0.88",
+  );
   await capture(page, "search");
   await page
     .getByRole("button", { name: "退换货政策.pdf", exact: true })
@@ -504,6 +508,10 @@ test("运行引用全局编号、来源排序、Markdown 角标定位和当前�
       (source: { node_title: string }) => source.node_title === "再次检索",
     ),
   ).toBe(true);
+  // The answer cites both by [1] and [2].
+  expect(
+    run.sources.every((source: { cited: boolean }) => source.cited === true),
+  ).toBe(true);
   await page.route(`**/api/runs/${run_id}`, (route) =>
     route.fulfill({ json: { ...run, sources: [...run.sources].reverse() } }),
   );
@@ -515,6 +523,9 @@ test("运行引用全局编号、来源排序、Markdown 角标定位和当前�
     "退货政策",
   );
   await expect(page.locator(".result-card code").first()).toHaveText("[1]");
+  await expect(
+    page.locator(".result-card .citation-marker").first(),
+  ).toHaveText("[1]");
   await page
     .locator(".result-card .citation-marker")
     .getByRole("link", { name: "引用来源 2", exact: true })
@@ -531,6 +542,55 @@ test("运行引用全局编号、来源排序、Markdown 角标定位和当前�
     /knowledge-bases\/policies\/documents\/return-policy\/file$/,
   );
   await capture(page, "run-sources");
+  // A source the result does not cite is folded away, and a tag pointing to
+  // it unfolds it.
+  const [cited, uncited] = run.sources;
+  await page.route(`**/api/runs/${run_id}`, (route) =>
+    route.fulfill({
+      json: {
+        ...run,
+        sources: [cited, { ...uncited, cited: false }],
+        result: { answer: "只引用 [1]，另见 [2]" },
+      },
+    }),
+  );
+  await page.reload();
+  await expect(sources.locator(":scope > .citation-source")).toHaveCount(1);
+  const rest = sources.locator("details.uncited-sources");
+  await expect(rest.locator(":scope > summary")).toHaveText(
+    "另有 1 条检索到但未引用",
+  );
+  await expect(rest).not.toHaveAttribute("open");
+  await page
+    .locator(".result-card")
+    .getByRole("link", { name: "引用来源 2", exact: true })
+    .click();
+  await expect(rest).toHaveAttribute("open", "");
+  await expect(rest.locator(".citation-source")).toHaveAttribute("open", "");
+  await expect(rest.locator(".citation-source")).toBeFocused();
+  await expect(rest.locator(".citation-source")).toContainText("[2]");
+  // When nothing shown cites a source, the list says so and keeps them folded.
+  await page.unroute(`**/api/runs/${run_id}`);
+  await page.route(`**/api/runs/${run_id}`, (route) =>
+    route.fulfill({
+      json: {
+        ...run,
+        sources: [
+          { ...cited, cited: false },
+          { ...uncited, cited: false },
+        ],
+        result: { answer: "没有引用" },
+      },
+    }),
+  );
+  await page.reload();
+  await expect(sources).toContainText("目前显示的内容没有引用检索到的资料。");
+  await expect(sources.locator(":scope > .citation-source")).toHaveCount(0);
+  await expect(rest.locator(":scope > summary")).toHaveText(
+    "另有 2 条检索到但未引用",
+  );
+  await expect(rest).not.toHaveAttribute("open");
+  await page.unroute(`**/api/runs/${run_id}`);
   await page.goto("/knowledge/policies");
   await page.getByRole("tab", { name: "设置", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());

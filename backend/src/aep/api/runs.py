@@ -43,6 +43,17 @@ timeout, a model, tool, knowledge base, Databricks or sandbox error, or unknown;
 ``input_error`` and the others are not);
 and ``actions``: which of ``cancel``, ``retry`` and ``rerun`` it allows now.
 
+``messages`` is how the run went, oldest first. Each has ``role`` (``user``: a person;
+``assistant``: a step of the app), ``content`` (an assistant's is Markdown; a person's is
+shown as written), ``node`` and ``node_title`` (the step that said it), ``actor`` (who
+said it: the requester for a flow app's start message, whoever decided for a human
+step; null when not given, and for assistant messages) and ``at`` (when it was said, ISO
+time). The four are null in messages from before they existed and in the ``etl`` app's
+messages. docs/api/flow-apps.md ("运行") lists which steps of a flow app say what.
+``sources`` are the knowledge snippets a flow app's run numbered (``[]`` for other runs),
+each with ``cited``: whether what the run shows refers to it by ``[n]``
+(docs/api/knowledge.md, "运行记录里的出处").
+
 ``POST /runs/{id}/cancel`` (``actor``, ``reason``: optional) cancels a running or
 waiting run (202; 409 when it is in another status). A run executing in another
 process stops before its next node; work already done outside the platform stays.
@@ -134,7 +145,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
-from aep.knowledge.citations import Source
+from aep.knowledge.citations import CitedSource
 from aep.runtime.service import (
     CommentRequired,
     InvalidDecision,
@@ -229,6 +240,11 @@ class RunSummary(BaseModel):
 class Message(BaseModel):
     role: Literal["user", "assistant"]
     content: str
+    # Null in messages from before they existed, and in the etl app's.
+    node: str | None = None
+    node_title: str | None = None
+    actor: str | None = None
+    at: str | None = None
 
 
 class Pending(BaseModel):
@@ -265,7 +281,7 @@ class RunDetail(RunSummary):
     error: str | None
     # Langfuse trace of this run; null when tracing is off.
     trace_id: str | None = None
-    sources: list[Source] = []
+    sources: list[CitedSource] = []
 
 
 class FlowNode(BaseModel):

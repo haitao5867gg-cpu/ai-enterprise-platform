@@ -11,7 +11,16 @@ export const runStatuses = [
 export type RunStatus = (typeof runStatuses)[number];
 export type Decision = string;
 export type ValidationIssue = { loc: (string | number)[]; msg: string };
-export type Message = { role: string; content: string };
+// Who said what in the run, and at which step and when (null or missing in
+// messages from before steps were named, and in the etl code app's).
+export type Message = {
+  role: string;
+  content: string;
+  node?: string | null;
+  node_title?: string | null;
+  actor?: string | null;
+  at?: string | null;
+};
 export type Pending = {
   kind: "approval" | "form";
   prompt: string;
@@ -106,6 +115,21 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// A JSON object as a whole text, bare or in a code fence: what a model returns
+// as data rather than prose.
+export function jsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  const body =
+    /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed)?.[1] ?? trimmed;
+  if (!body.startsWith("{")) return null;
+  try {
+    const value: unknown = JSON.parse(body);
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function isStatus(value: unknown): value is RunStatus {
   return runStatuses.some((status) => status === value);
 }
@@ -197,6 +221,32 @@ export function formatTime(iso: string): string {
         minute: "2-digit",
         hour12: false,
       });
+}
+
+// The time of day, for messages of a run that are mostly from the same day.
+export function clockTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+}
+
+// A message's time; with its date when the day changed since the one before.
+export function messageTime(iso: string, previous?: string | null): string {
+  const date = new Date(iso);
+  const before = previous ? new Date(previous) : null;
+  if (
+    Number.isNaN(date.getTime()) ||
+    !before ||
+    Number.isNaN(before.getTime()) ||
+    before.toDateString() === date.toDateString()
+  )
+    return clockTime(iso);
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${clockTime(iso)}`;
 }
 
 export function timeAgo(iso: string, now: number): string {

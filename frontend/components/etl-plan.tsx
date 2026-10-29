@@ -4,14 +4,40 @@ import {
   CitedText,
   SourceList,
 } from "./citations";
+import type { ReactNode } from "react";
 import { languageLabels, type EtlPlan } from "../lib/etl";
 import { Icon } from "./icons";
 
 const violationLabels = { warn: "告警", drop: "丢弃记录", fail: "停止管道" };
 
-export function EtlPlanView({ plan }: { plan: EtlPlan }) {
+// A plan up for approval lists what it relies on and asks about its
+// assumptions. As part of a run's result (`asResult`) its [n] are the run's
+// sources, which the result lists.
+function OwnSources({
+  plan,
+  own,
+  children,
+}: {
+  plan: EtlPlan;
+  own: boolean;
+  children: ReactNode;
+}) {
+  return own ? (
+    <CitationScope sources={plan.references ?? []}>{children}</CitationScope>
+  ) : (
+    children
+  );
+}
+
+export function EtlPlanView({
+  plan,
+  asResult = false,
+}: {
+  plan: EtlPlan;
+  asResult?: boolean;
+}) {
   return (
-    <CitationScope sources={plan.references ?? []}>
+    <OwnSources plan={plan} own={!asResult}>
       <section className="panel etl-plan" aria-labelledby="etl-plan-title">
         <div className="section-heading">
           <h2 id="etl-plan-title">
@@ -32,10 +58,11 @@ export function EtlPlanView({ plan }: { plan: EtlPlan }) {
           >
             <h3 id="assumptions-title">
               <Icon name="alert" size={16} />
-              请确认这些假设
+              {asResult ? "方案里的假设" : "请确认这些假设"}
             </h3>
             <p>
-              需求和数据对不上或有歧义的地方，方案是这样理解的。不对的话请驳回并写明。
+              需求和数据对不上或有歧义的地方，方案是这样理解的。
+              {!asResult && "不对的话请驳回并写明。"}
             </p>
             <ul>
               {plan.assumptions.map((assumption, i) => (
@@ -157,8 +184,8 @@ export function EtlPlanView({ plan }: { plan: EtlPlan }) {
             </article>
           ))}
         </div>
-        <SourceList title="依据的资料" />
+        {!asResult && <SourceList title="依据的资料" />}
       </section>
-    </CitationScope>
+    </OwnSources>
   );
 }

@@ -163,6 +163,14 @@ test("form human node requires order ID, maps server validation to its field, su
   await expect(page.locator(".result-json")).toContainText(
     '"order_id": "A2002"',
   );
+  await page.getByText(/^运行过程 · \d+ 条消息$/).click();
+  const answered = page
+    .getByRole("list", { name: "消息记录" })
+    .getByRole("listitem")
+    .last();
+  await expect(answered.locator(".message-meta strong")).toHaveText("订单专员");
+  await expect(answered.locator(".message-step")).toHaveText("填写订单号");
+  await expect(answered).toContainText("订单号填了「A2002」");
 });
 
 test("copy a hello version, rename and archive; historical runs remain readable", async ({

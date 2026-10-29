@@ -52,7 +52,7 @@ export function CitedText({ children }: { children: ReactNode }) {
           if (!numbers.has(index)) return part;
           const target = `source-${prefix}-${index}`;
           return (
-            <sup className="citation-marker" key={i}>
+            <span className="citation-marker" key={i}>
               <a
                 href={`#${target}`}
                 aria-label={`引用来源 ${index}`}
@@ -60,8 +60,13 @@ export function CitedText({ children }: { children: ReactNode }) {
                   event.preventDefault();
                   select(index);
                   const element = document.getElementById(target);
-                  if (element instanceof HTMLDetailsElement)
-                    element.open = true;
+                  // The source itself, and any group it is folded into.
+                  for (
+                    let details = element?.closest("details") ?? null;
+                    details;
+                    details = details.parentElement?.closest("details") ?? null
+                  )
+                    details.open = true;
                   element?.scrollIntoView({
                     behavior: "smooth",
                     block: "center",
@@ -69,9 +74,9 @@ export function CitedText({ children }: { children: ReactNode }) {
                   element?.focus({ preventScroll: true });
                 }}
               >
-                {index}
+                [{index}]
               </a>
-            </sup>
+            </span>
           );
         });
       if (
@@ -166,44 +171,63 @@ export function CitedMarkdown({
     </div>
   );
 }
+function SourceItem({ source }: { source: Reference | RunSource }) {
+  const { prefix, active } = useContext(Citations);
+  return (
+    <details
+      id={`source-${prefix}-${source.index}`}
+      tabIndex={-1}
+      className={`citation-source ${active === source.index ? "highlighted" : ""}`}
+    >
+      <summary>
+        <strong>
+          [{source.index}] {source.document_name}
+        </strong>
+        <span className="citation-meta">
+          {"node_title" in source && <span>节点：{source.node_title} · </span>}
+          {source.heading || "无标题路径"}
+          {source.page !== null && ` · 第 ${source.page} 页`} · 分数{" "}
+          {source.score.toFixed(2)}
+        </span>
+      </summary>
+      <p className="knowledge-text">{source.text}</p>
+      <a
+        className="text-button"
+        href={documentFileUrl(source.kb_id, source.document_id)}
+        download
+      >
+        下载原文件
+      </a>
+    </details>
+  );
+}
+// Sources the shown text cites by [n] are listed; the rest of what was
+// retrieved is folded away. A list without `cited` counts as all cited.
 export function SourceList({ title = "引用来源" }: { title?: string }) {
-  const { sources, prefix, active } = useContext(Citations);
+  const { sources } = useContext(Citations);
   if (!sources.length) return null;
+  const sorted = [...sources].sort((a, b) => a.index - b.index);
+  const shown = sorted.filter(
+    (source) => !("cited" in source) || source.cited !== false,
+  );
+  const rest = sorted.filter((source) => !shown.includes(source));
   return (
     <section className="citation-sources" aria-label={title}>
       <h3>{title}</h3>
-      {[...sources]
-        .sort((a, b) => a.index - b.index)
-        .map((source) => (
-          <details
-            key={source.index}
-            id={`source-${prefix}-${source.index}`}
-            tabIndex={-1}
-            className={`citation-source ${active === source.index ? "highlighted" : ""}`}
-          >
-            <summary>
-              <strong>
-                [{source.index}] {source.document_name}
-              </strong>
-              <span className="citation-meta">
-                {"node_title" in source && (
-                  <span>节点：{source.node_title} · </span>
-                )}
-                {source.heading || "无标题路径"}
-                {source.page !== null && ` · 第 ${source.page} 页`} · 分数{" "}
-                {source.score.toFixed(2)}
-              </span>
-            </summary>
-            <p className="knowledge-text">{source.text}</p>
-            <a
-              className="text-button"
-              href={documentFileUrl(source.kb_id, source.document_id)}
-              download
-            >
-              下载原文件
-            </a>
-          </details>
-        ))}
+      {shown.length === 0 && (
+        <p className="muted">目前显示的内容没有引用检索到的资料。</p>
+      )}
+      {shown.map((source) => (
+        <SourceItem key={source.index} source={source} />
+      ))}
+      {rest.length > 0 && (
+        <details className="uncited-sources">
+          <summary>另有 {rest.length} 条检索到但未引用</summary>
+          {rest.map((source) => (
+            <SourceItem key={source.index} source={source} />
+          ))}
+        </details>
+      )}
     </section>
   );
 }

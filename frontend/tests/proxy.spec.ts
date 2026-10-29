@@ -70,7 +70,7 @@ for (const decision of ["approve", "reject"] as const) {
       await page.getByRole("button", { name: "确认", exact: true }).click();
     }
     await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
-    await page.getByText("查看完整结果").click();
+    await page.getByText("开发者视图", { exact: true }).click();
     await expect(page.locator(".result-json")).toContainText(
       "contract-fixture",
     );

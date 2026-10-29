@@ -430,6 +430,9 @@ def _etl_lakehouse() -> dict[str, Any]:
             "system": plan.OUTPUT_FORMAT,
             "prompt": PLAN_PROMPT,
             "output": {"kind": "text"},
+            # The reply is JSON for the check after it (so is codegen's), not for the
+            # run's messages.
+            "quiet": True,
             "max_visits": 10,
             "on_error": _retry(1, 2),
         },
@@ -487,6 +490,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "system": codegen.OUTPUT_FORMAT,
             "prompt": CODEGEN_PROMPT,
             "output": {"kind": "text"},
+            "quiet": True,
             "max_visits": 10,
             "on_error": _retry(1, 2),
         },

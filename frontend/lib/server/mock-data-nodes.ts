@@ -2,6 +2,7 @@ import "server-only";
 import type { FlowConfig, FlowNode } from "../apps";
 import type {
   DatabricksDevRunOutput,
+  EtlCodeCheckOutput,
   EtlPlanCheckOutput,
   TablePreview,
 } from "../data-nodes";
@@ -135,6 +136,7 @@ export function lakehouseConfig(ready = false): FlowConfig {
           skills: [{ name: "etl-plan", version: 1 }],
           max_visits: 10,
           output: { kind: "text" },
+          quiet: true,
           system:
             "输出 JSON，包含 summary、language、targets、assumptions；目标表包含列映射、加载方式、主键和质量规则。",
           prompt:
@@ -195,6 +197,7 @@ export function lakehouseConfig(ready = false): FlowConfig {
           model: "mock",
           skills: [{ name: "etl-codegen", version: 1 }],
           output: { kind: "text" },
+          quiet: true,
           max_visits: 10,
           system: '输出 JSON：{"targets": {"目标表": "完整代码"}}。',
           prompt:
@@ -370,7 +373,7 @@ export function simulateDataNode(
         })),
         names: ["retail.customers", "retail.orders"],
         description: "retail.customers：客户；retail.orders：订单。",
-        summary: "已探查示例库的 2 张表：retail.customers、retail.orders",
+        summary: "已探查 示例库 的 2 张表：retail.customers、retail.orders",
       },
       branch: null,
     };
@@ -388,7 +391,8 @@ export function simulateDataNode(
             columns: 7,
           },
         ],
-        summary: "已把源表抽取到 Databricks（模拟）",
+        summary:
+          "已把 1 张表共 15000 行抽取到 Databricks：`demo_source.retail.orders`（15000 行）",
       },
       branch: null,
     };
@@ -415,5 +419,51 @@ export function simulateDataNode(
       outputs: { ...demoDevOutput(node.preview_rows) },
       branch: "passed",
     };
+  return null;
+}
+
+// What a data node says in the run process, worded as the backend does
+// (docs/api/flow-apps.md, "运行"). The mock's checks always pass.
+export function dataNodeSaid(
+  node: FlowNode,
+  outputs: Record<string, unknown>,
+  branch: string | null,
+): string | null {
+  if (node.type === "etl_profile" || node.type === "databricks_ingest")
+    return typeof outputs.summary === "string" ? outputs.summary : null;
+  if (node.type === "etl_plan_check" && branch === "ok") {
+    const { plan } = outputs as EtlPlanCheckOutput;
+    if (!plan || !Array.isArray(plan.targets)) return null;
+    const assumptions = Array.isArray(plan.assumptions)
+      ? plan.assumptions.length
+      : 0;
+    return `方案整理好了：${plan.targets.length} 张目标表${assumptions ? `、${assumptions} 条假设待确认` : ""}`;
+  }
+  if (node.type === "etl_code_check" && branch === "ok") {
+    const { bundle } = outputs as EtlCodeCheckOutput;
+    return bundle
+      ? `代码检查通过，打包成 bundle ${bundle.name}（${Object.keys(bundle.files).length} 个文件）`
+      : null;
+  }
+  if (node.type === "databricks_dev_run") {
+    const dev = outputs as DatabricksDevRunOutput;
+    if (dev.status === "passed") {
+      if (!dev.tables.length) return "dev 运行通过";
+      const verb = dev.run.mode === "cluster" ? "得到" : "写出";
+      const rows = dev.tables.every((table) => table.rows !== null)
+        ? `共 ${dev.tables.reduce((sum, table) => sum + (table.rows ?? 0), 0)} 行`
+        : "";
+      const dropped = dev.tables.reduce(
+        (sum, table) => sum + (table.dropped || 0),
+        0,
+      );
+      return `dev 运行通过：${verb} ${dev.tables.length} 张表${rows}${dropped ? `，质量规则丢弃 ${dropped} 行` : ""}`;
+    }
+    const errors = dev.errors.split("\n").filter(Boolean).length;
+    const head = errors ? `dev 运行失败（${errors} 条报错）` : "dev 运行失败";
+    return branch === "retry"
+      ? `${head}，让模型改代码（第 ${dev.run.attempt + 1}/${node.max_runs ?? 3} 次运行）`
+      : `${head}，不再重试`;
+  }
   return null;
 }

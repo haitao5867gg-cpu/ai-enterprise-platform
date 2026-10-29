@@ -5,7 +5,9 @@ import { randomUUID } from "node:crypto";
 import {
   isFinished,
   isRecord,
+  jsonObject,
   type Decision,
+  type Message,
   type Run,
   type RunStatus,
   type RunSummary,
@@ -23,7 +25,13 @@ import { mockZip } from "./mock-zip";
 import { addStep, decideStep, mockFlow, type MockSteps } from "./mock-flow";
 import { mockUpload, mockUploads, mockUploadedPlan } from "./mock-uploads";
 import type { UploadedDataset } from "../uploads";
-import { isFlowConfig, type AppConfig, type FlowConfig } from "../apps";
+import {
+  isFlowConfig,
+  type AppConfig,
+  type FlowConfig,
+  type FlowNode,
+  type FormField,
+} from "../apps";
 import { defaultValues, inputPayload, validateFields } from "../input-fields";
 import { mockAppSnapshot, mockAppTitle } from "./mock-apps";
 import {
@@ -36,7 +44,7 @@ import {
 import { invalid } from "./mock-assets";
 import type { AppManual } from "../app-manual";
 import { buildMockManual } from "./mock-manual";
-import { lakehouseConfig } from "./mock-data-nodes";
+import { dataNodeSaid, lakehouseConfig } from "./mock-data-nodes";
 
 type StoredRun = {
   run: Run;
@@ -100,6 +108,7 @@ function fail(
 function detail(entry: StoredRun): Run {
   const { run } = entry;
   const failure = run.status === "error" ? entry.failure : undefined;
+  const cited = entry.flow ? citedIndexes(entry) : null;
   return {
     ...withAppTitle(run),
     // Like the backend: what the run's own configuration asks for.
@@ -113,7 +122,118 @@ function detail(entry: StoredRun): Run {
       retry: retryable(entry) && Boolean(entry.flow),
       rerun: Boolean(run.input) && Boolean(mockAppSnapshot(run.app)),
     },
+    // Like the backend, worked out when the run is read.
+    sources: cited
+      ? run.sources?.map((source) => ({
+          ...source,
+          cited: cited.has(source.index),
+        }))
+      : (run.sources ?? []),
   };
+}
+
+// Like the backend (docs/api/knowledge.md, "运行记录里的出处"): the [n] in
+// Markdown prose, leaving out code, links and images, and link definitions.
+const notProse =
+  /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[ \t]*$|(?![\s\S]))|(`+)[^`]*?\2|!?\[(?:[^[\]\n]|\[[^[\]\n]*\])*\]\([^)\n]*\)|^[ \t]{0,3}\[[^\]\n]+\]:[^\n]*$/gm;
+function citedNumbers(text: string): Set<number> {
+  return new Set(
+    [...text.replace(notProse, " ").matchAll(/\[([0-9]{1,6})\]/g)].map(
+      (match) => Number(match[1]),
+    ),
+  );
+}
+// The source numbers a flow app's run cites in what it shows: its result's
+// texts (not a knowledge node's context passed through), the latest answer of
+// each llm node that is said and of each agent, what a waiting person is shown,
+// and the references of a plan that passed its check.
+function citedIndexes(entry: StoredRun): Set<number> {
+  const { run, flow } = entry;
+  const used = new Set<number>();
+  if (!flow) return used;
+  const contexts = new Set(
+    flow.config.graph.nodes
+      .filter((node) => node.type === "knowledge")
+      .map((node) => flow.pool[node.id]?.context)
+      .filter((context): context is string => typeof context === "string"),
+  );
+  const texts = isRecord(run.result)
+    ? Object.values(run.result).filter(
+        (value): value is string =>
+          typeof value === "string" && !contexts.has(value),
+      )
+    : [];
+  for (const node of flow.config.graph.nodes) {
+    const output = flow.pool[node.id];
+    if (!isRecord(output)) continue;
+    if (
+      (node.type === "agent" ||
+        (node.type === "llm" && node.output.kind === "text" && !node.quiet)) &&
+      typeof output.text === "string" &&
+      !jsonObject(output.text)
+    )
+      texts.push(output.text);
+    if (
+      node.type === "etl_plan_check" &&
+      output.ok === true &&
+      isRecord(output.plan) &&
+      Array.isArray(output.plan.references)
+    )
+      for (const reference of output.plan.references)
+        if (isRecord(reference) && Number.isInteger(reference.index))
+          used.add(reference.index as number);
+  }
+  const details = run.pending?.details;
+  if (isRecord(details) && typeof details.show === "string")
+    texts.push(details.show);
+  for (const text of texts)
+    for (const index of citedNumbers(text)) used.add(index);
+  return used;
+}
+
+// Like the backend: a flow app's message names its step, who said it and when.
+function stamp(
+  node: { id: string; title: string },
+  message: Message,
+  actor: string | null = null,
+  at = new Date().toISOString(),
+): Message {
+  return { ...message, node: node.id, node_title: node.title, actor, at };
+}
+// What a step of a flow app says in the run process, as the backend words it
+// (docs/api/flow-apps.md, "运行"): an answer, unless it is JSON or the node is
+// quiet (data for later nodes), or what a data node did.
+function nodeSaid(
+  node: FlowNode,
+  outputs: Record<string, unknown>,
+  branch: string | null,
+): string | null {
+  if (
+    node.type === "agent" ||
+    (node.type === "llm" && node.output.kind === "text" && !node.quiet)
+  )
+    return typeof outputs.text === "string" ? outputs.text : null;
+  return dataNodeSaid(node, outputs, branch);
+}
+// What a person decided at a human step, in one sentence.
+function approvalSaid(label: string, comment?: string) {
+  return `选了「${label}」${comment ? `，意见：${comment}` : ""}`;
+}
+// A form's answers in one sentence, a part per field.
+function formSaid(fields: FormField[], values: Record<string, unknown>) {
+  return fields
+    .map((field) => {
+      const value = values[field.key];
+      if (value == null || (typeof value === "string" && !value.trim()))
+        return `${field.label}没填`;
+      if (field.type === "select")
+        return `${field.label}选了「${field.choices?.find((choice) => choice.value === value)?.label || value}」`;
+      if (field.type === "boolean")
+        return `${field.label}选了「${value ? "是" : "否"}」`;
+      const text = typeof value === "object" ? JSON.stringify(value) : value;
+      return `${field.label}填了「${String(text).trim()}」`;
+    })
+    .join("；");
 }
 // Like the backend's run store: a wait for a person is counted while it lasts.
 function setStatus(run: Run, status: RunStatus) {
@@ -199,13 +319,44 @@ function seedRetailRun() {
   const pool: VariablePool = { env: {}, secret: {} };
   const steps: MockSteps = [];
   const sources: RunSource[] = [];
+  const messages: Message[] = [];
+  // When each step spoke: the review waited seven minutes for its answer.
+  const minutes: Record<string, number> = {
+    start: 0,
+    profile: 0.5,
+    check_plan: 2,
+    review: 9,
+    ingest: 10,
+    check_code: 11,
+    dev_run: 12,
+  };
+  const at = (node: string) =>
+    new Date(
+      Date.parse("2026-10-29T08:00:00.000Z") + (minutes[node] ?? 0) * 60_000,
+    ).toISOString();
   for (const node of config.graph.nodes) {
+    // The requester asked and approved the plan; the other steps are simulated.
+    const person = node.type === "start" || node.type === "human";
+    const simulated = person ? null : simulateNode(node, pool);
     const output: Record<string, unknown> =
-      node.type === "start"
+      simulated?.outputs ??
+      (node.type === "start"
         ? input
-        : node.type === "human"
-          ? { decision: "approve", comment: "按口径执行", actor: "演示用户" }
-          : simulateNode(node, pool).outputs;
+        : { decision: "approve", comment: "按口径执行", actor: "演示用户" });
+    const said = simulated
+      ? nodeSaid(node, output, simulated.branch)
+      : node.type === "start"
+        ? input.request
+        : approvalSaid("确认", "按口径执行");
+    if (said)
+      messages.push(
+        stamp(
+          node,
+          { role: person ? "user" : "assistant", content: said },
+          person ? "演示用户" : null,
+          at(node.id),
+        ),
+      );
     if (node.type === "knowledge" && Array.isArray(output.hits)) {
       output.hits = (output.hits as Reference[]).map((hit) => {
         const source = {
@@ -244,13 +395,7 @@ function seedRetailRun() {
       pending: null,
       result: pool.end,
       error: null,
-      messages: [
-        { role: "user", content: input.request },
-        {
-          role: "assistant",
-          content: "数据转换已在 dev 运行通过，详见运行报告。",
-        },
-      ],
+      messages,
       sources,
     },
     manual: buildMockManual("retail-etl", title, summary, 1, config),
@@ -375,13 +520,9 @@ function advanceFlow(entry: StoredRun): Run {
       }
       flow.pool[node.id] = result.outputs;
       addStep(entry.steps, node.id, structuredClone(flow.pool), result.outputs);
-      // Like the backend: JSON output is data for later nodes, not a reply.
-      if (
-        (node.type === "agent" ||
-          (node.type === "llm" && node.output.kind === "text")) &&
-        typeof result.outputs.text === "string"
-      )
-        run.messages.push({ role: "assistant", content: result.outputs.text });
+      const said = nodeSaid(node, result.outputs, result.branch);
+      if (said)
+        run.messages.push(stamp(node, { role: "assistant", content: said }));
       if (node.type === "end") {
         setStatus(run, "done");
         run.result = result.outputs;
@@ -440,11 +581,6 @@ function refresh(entry: StoredRun): Run {
         plan.assumptions[0] += " [1]";
         plan.targets[0].description += " [1]";
         plan.targets[0].columns[0].description += " [1]";
-        run.sources = references.map((hit) => ({
-          ...hit,
-          node: "plan",
-          node_title: "出方案",
-        }));
       }
       const input = { input: { request: run.messages[0].content } };
       if (!entry.decision)
@@ -645,13 +781,13 @@ function create(
     if (issues.length) return invalid(issues);
   }
   const isEtl = body.app === "etl";
+  // Like the backend: a flow app's run starts with the first text filled in.
   const text = isEtl
     ? input.request
     : fields
         .filter((field) => ["text", "textarea"].includes(field.type))
         .map((field) => input[field.key])
-        .filter((value) => typeof value === "string")
-        .join("\n");
+        .find((value) => typeof value === "string" && value.trim());
   if (
     isEtl &&
     (typeof text !== "string" ||
@@ -664,6 +800,11 @@ function create(
   )
     return json({ detail: "Invalid app or input" }, 422);
   const created = new Date().toISOString();
+  const requester =
+    typeof body.requester === "string" && body.requester.trim()
+      ? body.requester.trim()
+      : null;
+  const start = flow?.graph.nodes.find((node) => node.type === "start");
   const run: Run = {
     run_id: randomUUID(),
     app: body.app,
@@ -681,19 +822,26 @@ function create(
           .filter((field) => ["text", "textarea"].includes(field.type))
           .map((field) => runTitle(input[field.key]))
           .find(Boolean) ?? null),
-    created_by:
-      typeof body.requester === "string" && body.requester.trim()
-        ? body.requester.trim()
-        : null,
+    created_by: requester,
     created_at: created,
     updated_at: created,
     finished_at: null,
     step: null,
     waiting_since: null,
     wait_seconds: 0,
+    // The etl code app's messages say nothing of steps, as in the backend.
     messages:
       typeof text === "string" && text.trim()
-        ? [{ role: "user", content: text.trim() }]
+        ? [
+            start
+              ? stamp(
+                  start,
+                  { role: "user", content: text },
+                  requester,
+                  created,
+                )
+              : { role: "user", content: text },
+          ]
         : [],
     pending: null,
     result: null,
@@ -723,7 +871,7 @@ function create(
               snapshot.secrets.map((name) => [name, "******"]),
             ),
           },
-          next: flow.graph.nodes.find((node) => node.type === "start")!.id,
+          next: start!.id,
           visits: {},
           count: 0,
           input,
@@ -971,13 +1119,28 @@ export async function mockRuns(request: Request, path: string[]) {
           (edge.branch ?? null) ===
             (pending.kind === "form" ? null : body.decision),
       )?.to ?? "";
-    run.messages.push({
-      role: "user",
-      content:
-        pending.kind === "form"
-          ? JSON.stringify(values)
-          : `${pending.option_labels?.[body.decision] ?? body.decision}${body.comment ? `：${body.comment}` : ""}`,
-    });
+    const human = entry.flow.config.graph.nodes.find(
+      (item) => item.id === node,
+    );
+    run.messages.push(
+      stamp(
+        { id: node, title: human?.title ?? node },
+        {
+          role: "user",
+          content:
+            pending.kind === "form"
+              ? formSaid(
+                  pending.fields ?? [],
+                  inputPayload(pending.fields ?? [], values),
+                )
+              : approvalSaid(
+                  pending.option_labels?.[body.decision] ?? body.decision,
+                  body.comment,
+                ),
+        },
+        typeof body.actor === "string" ? body.actor : null,
+      ),
+    );
     run.pending = null;
     setStatus(run, "running");
     entry.readyAt = Date.now() + 100;

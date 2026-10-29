@@ -203,7 +203,9 @@ class Runtime:
 class Outcome:
     outputs: dict[str, Any]
     branch: str | None = None
-    messages: list[dict[str, str]] = field(default_factory=list)
+    # What the node says in the run (``role``, ``content``, and ``actor`` for a person);
+    # the graph adds which node said it and when.
+    messages: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
     citations: dict[str, int] = field(default_factory=dict)
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -409,8 +411,9 @@ def answers(
 
 def _first_text(fields: list[dict[str, Any]], values: dict[str, Any]) -> str:
     for f in fields:
-        if f.get("type") in ("text", "textarea") and isinstance(values.get(f["key"]), str):
-            return values[f["key"]]
+        value = values.get(f["key"])
+        if f.get("type") in ("text", "textarea") and isinstance(value, str) and value.strip():
+            return value
     return ""
 
 
@@ -430,7 +433,8 @@ async def run_start(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     given = state.get("input") or {}
     values = {f["key"]: given.get(f["key"], f.get("default")) for f in fields}
     text = _first_text(fields, values)
-    return Outcome(values, messages=[{"role": "user", "content": text}] if text else [])
+    said = {"role": "user", "content": text, "actor": state.get("requester")}
+    return Outcome(values, messages=[said] if text else [])
 
 
 # llm
@@ -440,6 +444,8 @@ async def check_llm(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     await _model_and_skills(node, p, env)
     _text(node, "system", p, "系统提示词")
     _text(node, "prompt", p, "提示词", required=True)
+    if "quiet" in node and not isinstance(node["quiet"], bool):
+        p.add(("quiet",), "quiet 必须是 true 或 false")
     output = node.get("output", {"kind": "text"})
     if not isinstance(output, dict) or output.get("kind") not in ("text", "json"):
         p.add(("output",), "输出方式只能是 text 或 json")
@@ -512,7 +518,9 @@ async def run_llm(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
     messages.append({"role": "user", "content": refs.render(node["prompt"], get)})
     if fields is None:
         text = await rt.chat(node, messages)
-        return Outcome({"text": text}, messages=[{"role": "assistant", "content": text}])
+        # A quiet node's answer is only for later nodes: it stays out of the run's messages.
+        said = [] if node.get("quiet") else [{"role": "assistant", "content": text}]
+        return Outcome({"text": text}, messages=said)
 
     def valid(data: Any) -> str | None:
         if not isinstance(data, dict):
@@ -694,9 +702,9 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             fields=fields,
         )
         values = answer.get("values") or {}
-        said = "；".join(f"{f['label']}：{refs.as_text(values.get(f['key']))}" for f in fields)
         outputs = {**{f["key"]: values.get(f["key"]) for f in fields}, "actor": answer.get("actor")}
-        return Outcome(outputs, messages=[{"role": "user", "content": said}])
+        said = {"role": "user", "content": _form_said(fields, values), "actor": answer.get("actor")}
+        return Outcome(outputs, messages=[said])
     options = node["options"]
     labels = {o["key"]: o.get("label", o["key"]) for o in options}
     answer = human.ask(
@@ -708,11 +716,29 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     )
     decision = answer.get("decision")
     comment = answer.get("comment")
-    said = labels.get(decision, decision or "")
+    text = f"选了「{labels.get(decision, decision or '')}」"
     if comment:
-        said += f"：{comment}"
+        text += f"，意见：{comment}"
     outputs = {"decision": decision, "comment": comment, "actor": answer.get("actor")}
-    return Outcome(outputs, decision, messages=[{"role": "user", "content": said}])
+    said = {"role": "user", "content": text, "actor": answer.get("actor")}
+    return Outcome(outputs, decision, messages=[said])
+
+
+def _form_said(fields: list[dict[str, Any]], values: dict[str, Any]) -> str:
+    """A form's answers in one sentence, a part per field: ``订单号填了「A1001」；件数没填``."""
+    parts = []
+    for f in fields:
+        value = values.get(f["key"])
+        if value is None or (isinstance(value, str) and not value.strip()):
+            parts.append(f"{f['label']}没填")
+        elif f.get("type") == "select":
+            labels = {c.get("value"): c.get("label") for c in f.get("choices") or []}
+            parts.append(f"{f['label']}选了「{labels.get(value) or value}」")
+        elif f.get("type") == "boolean":
+            parts.append(f"{f['label']}选了「{'是' if value else '否'}」")
+        else:
+            parts.append(f"{f['label']}填了「{refs.as_text(value).strip()}」")
+    return "；".join(parts)
 
 
 # template
@@ -1221,6 +1247,7 @@ TYPES: dict[str, NodeType] = {
                 "system": "",
                 "prompt": "",
                 "output": {"kind": "text"},
+                "quiet": False,
             },
             presets=(
                 {

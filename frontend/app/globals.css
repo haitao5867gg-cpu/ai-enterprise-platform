@@ -269,19 +269,23 @@
   line-height: 1.8;
   overflow-wrap: anywhere;
 }
+/* [n] as a small tag in the text. */
 .citation-marker {
-  font-size: 0.7em;
-  line-height: 0;
-  margin: 0 2px;
+  font-size: 0.8em;
+  line-height: 1;
+  margin: 0 1px;
+  vertical-align: baseline;
+  white-space: nowrap;
 }
 .citation-marker a {
   color: var(--purple);
-  padding: 3px;
-  border-radius: 3px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: #f3effa;
   font-weight: 600;
 }
 .citation-marker a:hover {
-  background: #eee8ff;
+  background: #e6ddfa;
 }
 .citation-sources {
   margin-top: 22px;
@@ -313,6 +317,14 @@
 }
 .citation-source .knowledge-text {
   margin: 14px 0;
+}
+.citation-sources .uncited-sources {
+  margin: 12px 0 0;
+}
+.citation-sources .uncited-sources > summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
 }
 .highlighted {
   border-color: var(--purple);
@@ -1310,16 +1322,42 @@ textarea::placeholder {
 .message-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin: 3px 0 12px;
+  min-width: 0;
 }
 .message-meta strong {
   font-size: 11px;
   font-weight: 550;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.message-meta > span {
+.message-step {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f3effa;
+  color: #8f72ba;
+  font-size: 10px;
+}
+.message-meta time,
+.message-index {
+  flex-shrink: 0;
   color: #c0b7ca;
   font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+/* Time and number sit on the right, or the number alone in older messages. */
+.message-meta time,
+.message-meta > :not(time) + .message-index {
+  margin-left: auto;
 }
 .message-content {
   font-size: 12px;
@@ -1418,6 +1456,7 @@ textarea::placeholder {
   margin-top: 8px;
 }
 .approval-card {
+  scroll-margin: 24px;
   border: 1px solid #e9dbbd;
   border-radius: 10px;
   padding: 23px;
@@ -1640,6 +1679,15 @@ textarea::placeholder {
   color: #aa9ab8;
   font-size: 10px;
 }
+.result-text {
+  text-align: left;
+  min-width: 0;
+}
+.result-text + .result-text {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
 .result-json {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1687,20 +1735,46 @@ textarea::placeholder {
   display: grid;
   gap: 20px;
 }
+/* Open, the summary is the head of the panel below it. */
+.conversation-history {
+  min-width: 0;
+}
 .conversation-history > summary {
-  display: none;
-}
-.conversation-history.collapsible > summary {
-  display: block;
-  color: #65567b;
-  font-size: 12px;
-  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 22px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 10px;
   background: white;
+  cursor: pointer;
 }
-.conversation-history.collapsible[open] > summary {
-  margin-bottom: 10px;
+.conversation-history > summary::before {
+  content: "▸";
+  color: var(--purple);
+}
+.conversation-history[open] > summary::before {
+  content: "▾";
+}
+.conversation-history > summary h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+}
+.conversation-history > summary h2 svg {
+  color: #a08db8;
+}
+.conversation-history > summary .muted {
+  font-size: 11px;
+  font-weight: 400;
+}
+.conversation-history[open] > summary {
+  border-radius: 10px 10px 0 0;
+}
+.conversation-history > .conversation-panel {
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
 }
 .trace-link {
   display: flex;
@@ -2479,6 +2553,9 @@ textarea::placeholder {
   .detail-grid .approval-card {
     grid-row: 1;
   }
+  .human-show-panel .jump-to-decision {
+    display: inline-flex;
+  }
   .footer {
     margin: 0 22px;
   }
@@ -3129,14 +3206,28 @@ a.asset-card:hover,
   margin: 14px 0 20px;
   overflow-wrap: anywhere;
 }
+/* What a waiting human step shows, above the steps of the run. */
+.human-show-panel {
+  padding: 22px 24px;
+  border-color: #e9dbbd;
+}
+.human-show-panel h2 {
+  font-size: 13px;
+  color: #91753f;
+}
 .human-show {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: inherit;
-  padding: 12px;
-  background: #ffffff99;
-  border-radius: 8px;
-  margin: 12px 0;
+  font-size: 13px;
+  margin-top: 12px;
+}
+.jump-to-decision {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  margin-top: 14px;
+  color: #8f72ba;
+  font-size: 12px;
+  font-weight: 600;
 }
 .flow-config-comparison {
   display: grid;
@@ -3878,17 +3969,6 @@ a.asset-card:hover,
 }
 .note-count {
   text-align: right;
-}
-.result-field {
-  text-align: left;
-  margin: 16px 0;
-  min-width: 0;
-}
-.result-field h3 {
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
 }
 .table-scroll {
   overflow-x: auto;

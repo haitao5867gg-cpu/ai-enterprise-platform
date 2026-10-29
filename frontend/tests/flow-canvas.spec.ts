@@ -74,8 +74,10 @@ async function expectPathOutsideCards(page: Page, from: string, branch = "") {
     expect(
       points.some(
         (point) =>
-          point.x > rect.x + 2 && point.x < rect.x + rect.width - 2 &&
-          point.y > rect.y + 2 && point.y < rect.y + rect.height - 2,
+          point.x > rect.x + 2 &&
+          point.x < rect.x + rect.width - 2 &&
+          point.y > rect.y + 2 &&
+          point.y < rect.y + rect.height - 2,
       ),
       `${from}:${branch} crosses ${rect.id}`,
     ).toBe(false);
@@ -290,6 +292,8 @@ test("鼠标搭出意图分类路由，保存的配置与列表版一致（除�
       skills: [],
       prompt: "售后问题：{{start.question}}",
       output: { kind: "text" },
+      // New llm nodes start from the node type's defaults.
+      quiet: false,
     },
     {
       id: "human",
@@ -405,7 +409,9 @@ test("无坐标模板自动排布不重叠，自动整理才写入全部坐标",
   for (const label of ["售后", "产品咨询", "都不是", "确认回复", "驳回重写"])
     await expect(labels.getByText(label, { exact: true })).toBeVisible();
   const inlet = await middle(page.getByTestId("canvas-in-route"));
-  const heading = await middle(node(page, "route").locator(".canvas-node-heading"));
+  const heading = await middle(
+    node(page, "route").locator(".canvas-node-heading"),
+  );
   expect(Math.abs(inlet.x - byId.route.x)).toBeLessThan(2);
   expect(Math.abs(inlet.y - heading.y)).toBeLessThan(2);
   // Persisted edge order must not override the classifier's outlet order.
@@ -466,7 +472,10 @@ test("普通连线没有标签，点击线条后可用 Delete 和中点按钮删
   await expect(edge).toBeAttached();
   await expect(canvas(page).locator(".canvas-edge-label")).toHaveCount(0);
   await clickEdge(page, "start");
-  const remove = page.getByRole("button", { name: "删除选中连线", exact: true });
+  const remove = page.getByRole("button", {
+    name: "删除选中连线",
+    exact: true,
+  });
   await expect(remove).toBeVisible();
   await expect(remove.locator("..")).toHaveText("×");
   const midpoint = await middle(remove);
@@ -498,7 +507,9 @@ test("已保存的纵向坐标保持不变，自动整理才改为横向", async
   config.graph.nodes.forEach((node, index) => {
     node.ui = { x: 48, y: 48 + index * 200 };
   });
-  const response = await request.put(`/api/apps/${app}/draft`, { data: { config } });
+  const response = await request.put(`/api/apps/${app}/draft`, {
+    data: { config },
+  });
   expect(response.ok()).toBe(true);
   await page.reload();
   await fit(page);
@@ -509,7 +520,9 @@ test("已保存的纵向坐标保持不变，自动整理才改为横向", async
     });
     expect(position).toEqual(item.ui);
   }
-  await expect(page.getByText("有未保存的修改", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("有未保存的修改", { exact: true })).toHaveCount(
+    0,
+  );
   await expect(edgePath(page, "answer")).toHaveAttribute("d", /Q/);
   await expectPathOutsideCards(page, "answer");
   await page.getByRole("button", { name: "自动整理", exact: true }).click();
@@ -752,7 +765,10 @@ test("分支设置同步出口，允许拖到节点卡片并拒绝连到开始",
   expect(config.graph.edges.some((edge) => edge.to === "start")).toBe(false);
 });
 
-test("工具栏按分类添加节点，从视口中心落点避开已有节点", async ({ page, request }) => {
+test("工具栏按分类添加节点，从视口中心落点避开已有节点", async ({
+  page,
+  request,
+}) => {
   const app = await create(request, page);
   await fit(page);
   const center = await canvas(page).evaluate((element) => {
