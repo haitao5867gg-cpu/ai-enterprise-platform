@@ -291,6 +291,15 @@ async def get_flow(run_id: str, service: Service) -> Flow:
         raise HTTPException(404, "run not found") from exc
 
 
+@router.get("/{run_id}/manual")
+async def get_manual(run_id: str, request: Request) -> dict[str, Any]:
+    """The manual of the app configuration this run used (docs/api/data-nodes.md)."""
+    try:
+        return await request.app.state.catalog.run_manual(run_id)
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+
+
 @router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
 async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
     try:

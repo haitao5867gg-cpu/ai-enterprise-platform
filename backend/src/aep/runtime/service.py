@@ -206,6 +206,7 @@ class RunService:
             sandbox_url=self._ctx.settings.sandbox_url,
             knowledge=self.knowledge,
             settings=self._ctx.settings,
+            databricks=self._ctx.databricks,
         )
 
     async def _graph(self, record: RunRecord) -> CompiledStateGraph:

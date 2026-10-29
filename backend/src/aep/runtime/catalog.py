@@ -28,7 +28,7 @@ from aep import evals
 from aep.config import Settings
 from aep.datasources import DataSourceStore
 from aep.knowledge.rerank import rerank_options
-from aep.runtime import appconfig, design
+from aep.runtime import appconfig, design, manual
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import builtin as flowbuiltin
 from aep.runtime.flow import files as flowfiles
@@ -38,7 +38,7 @@ from aep.runtime.flow.check import check_common, check_config
 from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems
 from aep.runtime.flow.store import AppExists
 from aep.runtime.service import RunService, RunView
-from aep.runtime.versions import AppVersion, Draft, VersionNotFound
+from aep.runtime.versions import AppVersion, Draft, NoDraft, VersionNotFound
 from aep.skills import Skill
 
 log = logging.getLogger(__name__)
@@ -283,6 +283,52 @@ class AppCatalog:
                 },
             }
         )
+
+    async def manual(self, app: str, version: int | None = None, draft: bool = False) -> dict:
+        """The manual of the app's ``version`` (the current one if None), or of its draft
+        (``NoDraft`` without one); see ``aep.runtime.manual``."""
+        await self._check(app)
+        await self._runs.ensure_versions(app)
+        if draft:
+            found_draft = await self._runs.versions.draft(app)
+            if found_draft is None:
+                raise NoDraft(app)
+            return await self._manual(app, found_draft.config, None)
+        number = version or await self._runs.versions.current(app)
+        found = await self._runs.versions.version(app, number)
+        if found is None:
+            raise VersionNotFound(f"{app} v{number}")
+        return await self._manual(app, found.config, number)
+
+    async def run_manual(self, run_id: str) -> dict[str, Any]:
+        """The manual of the configuration a run used (``RunNotFound`` without the run)."""
+        record = (await self._runs.get(run_id)).record
+        return await self._manual(record.app, record.config, record.app_version)
+
+    async def _manual(
+        self, app: str, config: dict[str, Any] | None, version: int | None
+    ) -> dict[str, Any]:
+        summary = await self._summary(app)
+        head = {
+            "app": app,
+            "title": summary["title"],
+            "summary": summary["summary"],
+            "kind": summary["kind"],
+            "version": version,
+        }
+        lookups = manual.Lookups(
+            self._runs.skills,
+            self._runs.knowledge,
+            self._datasources,
+            self._settings,
+            self._runs.default_model,
+        )
+        if app in self._runs.code_apps:
+            options = self._runs.options[app]
+            nodes, _ = design.shape(self._runs.graph(app), {})
+            stored = config or appconfig.default_config(options)
+            return await manual.code_manual(head, nodes, stored, options, lookups)
+        return await manual.flow_manual(head, self._runs.flow_config(app, config), lookups)
 
     async def used_by(self) -> dict[str, list[dict[str, Any]]]:
         """Per skill, the app nodes whose current version uses it."""
@@ -604,6 +650,8 @@ class AppCatalog:
         spec = TYPES.get(node.get("type"))  # type: ignore[arg-type]
         if spec is None or node["type"] in ("start", "human", "end"):
             raise NotTestable("开始、人工和结束节点不能单独试跑")
+        if node["type"] in ("databricks_ingest", "databricks_dev_run"):
+            raise NotTestable(f"{spec.label}节点会写 Databricks，不能单独试跑")
         p = Problems(("config", "graph", "nodes", node_id))
         check_common(node, p)
         await spec.check(node, p, self._env(await self.models()))

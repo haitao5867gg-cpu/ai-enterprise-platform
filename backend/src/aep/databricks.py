@@ -21,6 +21,12 @@ there: in ``job`` mode the job is created or updated through the REST API, in
 ``pipeline`` mode ``bundle deploy -t prod`` deploys the pipeline and the job that
 refreshes it.
 
+Flow apps' data-engineering nodes also use the workspace: ``ingest`` copies rows
+read from a data source into tables of ``AEP_DATABRICKS_SOURCE_CATALOG`` (landed as
+JSON Lines in a volume through the Files API, then loaded on the existing
+cluster), and ``preview`` reads the first rows of result tables there
+(``aep.cluster_tasks``).
+
 Off unless ``AEP_DATABRICKS_HOST`` and ``AEP_DATABRICKS_TOKEN`` are set.
 """
 
@@ -37,11 +43,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 import yaml
 
-from aep import cluster_harness
+from aep import cluster_harness, cluster_tasks
 from aep.config import Settings
 from aep.etl.codegen import PIPELINE_PY, PIPELINE_SQL, Bundle, CodeError, parse_sql
 
@@ -54,6 +61,7 @@ EVENT_PAGE = 250
 REQUEST_ATTEMPTS = 4
 POLL_SECONDS = 3.0
 CLUSTER_POLL_SECONDS = 15.0
+PLAIN_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class DatabricksError(Exception):
@@ -86,6 +94,8 @@ class DevRun:
     workspace or the configuration, not the generated code. In ``job`` mode the
     stages are ``deploy`` (files and job) and ``run`` (``job_id``, ``run_id``) on
     ``cluster_id``; in ``cluster`` mode there is only the ``run`` stage.
+    ``catalog`` and ``schema`` say where the tables were written (when known), and
+    ``preview`` holds the first rows of each table when they were asked for.
     """
 
     status: Literal["passed", "failed"]
@@ -102,9 +112,62 @@ class DevRun:
     cluster_id: str | None = None
     job_id: int | None = None
     run_id: int | None = None
+    catalog: str | None = None
+    schema: str | None = None
+    preview: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class Landing:
+    """Rows read from one source table, to be loaded into Databricks: ``columns`` are
+    the names and the source's data types."""
+
+    schema: str
+    table: str
+    columns: list[tuple[str, str]]
+    rows: list[dict[str, Any]]
+
+
+def full_name(*parts: str) -> str:
+    """A table's name as SQL takes it, parts quoted only where they need it."""
+    return ".".join(p if PLAIN_NAME.match(p) else "`" + p.replace("`", "``") + "`" for p in parts)
+
+
+DECIMAL = re.compile(r"\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)")
+
+
+def spark_type(data_type: str) -> str:
+    """The Spark SQL type a source column becomes (docs/api/data-nodes.md)."""
+    text = data_type.strip().lower()
+    if text.endswith("]"):  # a PostgreSQL array (integer[]): kept as its JSON text
+        return "STRING"
+    word = re.match(r"[a-z]*", text)[0]  # type: ignore[index]
+    unsigned = "unsigned" in text.split()
+    if word in ("tinyint", "smallint", "mediumint"):
+        return "INT"
+    if word in ("int", "integer"):
+        return "BIGINT" if unsigned else "INT"
+    if word == "bigint":
+        return "DECIMAL(20,0)" if unsigned else "BIGINT"
+    if word in ("decimal", "numeric"):
+        size = DECIMAL.search(text)
+        if size is None:
+            return "DECIMAL(38,10)"
+        precision = min(int(size[1]), 38)
+        scale = min(int(size[2] or 0), precision)
+        return f"DECIMAL({precision},{scale})"
+    if word in ("float", "real", "double"):
+        return "DOUBLE"
+    if word in ("bool", "boolean"):
+        return "BOOLEAN"
+    if word == "date":
+        return "DATE"
+    if word == "datetime" or word.startswith("timestamp"):
+        return "TIMESTAMP"
+    return "STRING"
 
 
 @dataclass
@@ -204,6 +267,10 @@ class DevTarget:
             return cls(settings)
         return None
 
+    @property
+    def settings(self) -> Settings:
+        return self._settings
+
     async def close(self) -> None:
         await self._http.aclose()
 
@@ -272,25 +339,39 @@ class DevTarget:
             return False, f"databricks {' '.join(args[:2])} 超过 {limit:g} 秒没有结束"
         return proc.returncode == 0, out.decode(errors="replace")
 
-    async def _request(
-        self, method: str, path: str, body: dict[str, Any] | None = None, **params: Any
-    ) -> dict[str, Any]:
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        content: bytes | None = None,
+        **params: Any,
+    ) -> httpx.Response:
+        headers = {"Authorization": f"Bearer {self._settings.databricks_token}"}
+        if content is not None:
+            headers["Content-Type"] = "application/octet-stream"
         for attempt in range(1, REQUEST_ATTEMPTS + 1):
             try:
-                resp = await self._http.request(
+                return await self._http.request(
                     method,
                     f"{self._host}{path}",
                     params=params or None,
                     json=body,
-                    headers={"Authorization": f"Bearer {self._settings.databricks_token}"},
+                    content=content,
+                    headers=headers,
                 )
-                break
             except httpx.TransportError as exc:
                 if attempt == REQUEST_ATTEMPTS:
                     raise DatabricksError(f"{path}: {exc!r}") from exc
                 await asyncio.sleep(attempt)
             except httpx.HTTPError as exc:
                 raise DatabricksError(f"{path}: {exc!r}") from exc
+        raise AssertionError("unreachable")
+
+    async def _request(
+        self, method: str, path: str, body: dict[str, Any] | None = None, **params: Any
+    ) -> dict[str, Any]:
+        resp = await self._send(method, path, body, **params)
         if resp.status_code != 200:
             raise DatabricksError(f"{path}: HTTP {resp.status_code} {resp.text[:500]}")
         return resp.json()
@@ -310,14 +391,38 @@ class DevTarget:
         events = await self._get(f"/api/2.0/pipelines/{pipeline_id}/events", max_results=EVENT_PAGE)
         return updates[0].get("update_id"), events.get("events") or []
 
-    async def run(self, bundle: Bundle) -> DevRun:
+    async def run(self, bundle: Bundle, preview_rows: int = 0) -> DevRun:
+        """Deploys and runs ``bundle`` on the dev target; when it passes and
+        ``preview_rows`` is set, ``preview`` has that many rows of each table."""
+        # The preview is read under the lock too: a later run of the same bundle
+        # would otherwise rewrite the tables before this one has read them.
         async with self._dev_locks[bundle.name]:
-            return await self._run_dev(bundle)
+            dev = await self._run_dev(bundle, preview_rows)
+            if dev.status == "passed" and preview_rows and dev.mode != "cluster":
+                await self._preview_run(dev, preview_rows)
+        return dev
 
-    async def _run_dev(self, bundle: Bundle) -> DevRun:
+    async def _preview_run(self, dev: DevRun, rows: int) -> None:
+        """The first rows of the tables a job or pipeline wrote, read on the cluster."""
+        if not self._settings.databricks_cluster_id:
+            dev.warnings.append("没有配置集群（AEP_DATABRICKS_CLUSTER_ID），不预览结果数据")
+            return
+        if not (dev.catalog and dev.schema):
+            dev.warnings.append("不知道结果表写在哪个 catalog 和 schema，不预览结果数据")
+            return
+        targets = [(dev.catalog, dev.schema, t.name) for t in dev.tables if t.status != "FAILED"]
+        try:
+            found, warnings = await self.preview(targets, rows)
+        except DatabricksError as exc:
+            dev.warnings.append(f"读取结果数据预览失败：{exc}")
+            return
+        dev.warnings += warnings
+        dev.preview = found
+
+    async def _run_dev(self, bundle: Bundle, preview_rows: int = 0) -> DevRun:
         mode = self._settings.databricks_deploy_mode
         if mode == "cluster":
-            return await self._run_on_cluster(bundle)
+            return await self._run_on_cluster(bundle, preview_rows)
         if mode == "job":
             return await self._run_job(bundle)
         with tempfile.TemporaryDirectory(prefix="aep-bundle-") as scratch:
@@ -359,6 +464,9 @@ class DevTarget:
         dev = DevRun(
             "passed" if ran.ok else "failed", "run", steps, pipeline_id=pipeline_id, url=url
         )
+        # The bundle's own defaults (a per-user schema) are not known here.
+        dev.catalog = self._settings.databricks_catalog or None
+        dev.schema = self._settings.databricks_schema or None
         try:
             dev.update_id, events = await self._update_outcome(pipeline_id)
         except DatabricksError as exc:
@@ -380,21 +488,22 @@ class DevTarget:
 
     # --- cluster mode -------------------------------------------------------
 
-    def _harness_spec(self, bundle: Bundle) -> dict[str, Any]:
+    def _harness_spec(self, bundle: Bundle, preview_rows: int = 0) -> dict[str, Any]:
         source_catalog = self._settings.databricks_source_catalog
+        extra = {"preview": preview_rows} if preview_rows else {}
         if PIPELINE_PY in bundle.files:
             return {
                 "language": "pyspark",
                 "source_catalog": source_catalog,
                 "code": bundle.files[PIPELINE_PY],
-            }
+            } | extra
         return {
             "language": "sql",
             "source_catalog": source_catalog,
             "targets": parse_sql(bundle.files[PIPELINE_SQL]),
-        }
+        } | extra
 
-    async def _cluster_running(self, cluster_id: str, dev: DevRun) -> None:
+    async def _cluster_running(self, cluster_id: str, warnings: list[str]) -> None:
         """Waits for the cluster to run, starting it once if it is stopped."""
         deadline = time.monotonic() + self._settings.databricks_timeout_seconds
         started = False
@@ -405,7 +514,7 @@ class DevTarget:
                 return
             if state == "TERMINATED" and not started:
                 await self._post("/api/2.0/clusters/start", {"cluster_id": cluster_id})
-                dev.warnings.append(f"集群 {cluster_id} 原本是停止的，已启动它来试跑")
+                warnings.append(f"集群 {cluster_id} 原本是停止的，已启动它")
                 started = True
             elif state == "TERMINATED" or state == "ERROR":
                 raise DatabricksError(f"集群 {cluster_id} 没能启动：{cluster.get('state_message')}")
@@ -435,7 +544,7 @@ class DevTarget:
                 if time.monotonic() > deadline:
                     await self._post("/api/1.2/commands/cancel", ids | {"commandId": cmd["id"]})
                     limit = self._settings.databricks_timeout_seconds
-                    raise DatabricksError(f"集群上的试跑超过 {limit:g} 秒没有结束")
+                    raise DatabricksError(f"集群上的程序超过 {limit:g} 秒没有结束")
                 await asyncio.sleep(POLL_SECONDS)
         finally:
             try:
@@ -445,10 +554,10 @@ class DevTarget:
         results = status.get("results") or {}
         if status.get("status") != "Finished" or results.get("resultType") == "error":
             cause = results.get("summary") or results.get("cause") or status.get("status")
-            raise DatabricksError(f"集群上的试跑程序出错：{str(cause)[:2000]}")
+            raise DatabricksError(f"集群上的程序出错：{str(cause)[:2000]}")
         return str(results.get("data") or "")
 
-    async def _run_on_cluster(self, bundle: Bundle) -> DevRun:
+    async def _run_on_cluster(self, bundle: Bundle, preview_rows: int = 0) -> DevRun:
         cluster_id = self._settings.databricks_cluster_id
         dev = DevRun(
             "failed",
@@ -464,7 +573,7 @@ class DevTarget:
             ]
             return dev
         try:
-            spec = self._harness_spec(bundle)
+            spec = self._harness_spec(bundle, preview_rows)
         except CodeError as exc:
             dev.errors = [str(exc)]
             return dev
@@ -475,7 +584,7 @@ class DevTarget:
             ]
         )
         try:
-            await self._cluster_running(cluster_id, dev)
+            await self._cluster_running(cluster_id, dev.warnings)
             output = await self._execute(cluster_id, command)
         except DatabricksError as exc:
             dev.steps.append(Step("cluster", False, _tail(str(exc))))
@@ -615,6 +724,9 @@ class DevTarget:
             short_name = re.sub(r"[^a-z0-9]+", "_", user.split("@")[0].lower()).strip("_")
             root = f"/Users/{user}/.bundle/{bundle.name}/{TARGET}/files"
             settings = self._job_settings(config, bundle.name, short_name, root)
+            task = (settings.get("tasks") or [{}])[0]
+            written = (task.get("notebook_task") or {}).get("base_parameters") or {}
+            dev.catalog, dev.schema = written.get("catalog"), written.get("schema")
             existing = await self._owned_job(settings["name"], {"aep_bundle": bundle.name})
             await self._upload(root, bundle.files)
             dev.job_id = await self._put_job(settings, existing)
@@ -648,6 +760,164 @@ class DevTarget:
             return dev
         _apply(dev, outcome)
         return dev
+
+    # --- ingest and preview (flow apps' data-engineering nodes) -------------
+
+    async def _ensure(self, path: str, create: str, body: dict[str, Any]) -> None:
+        """Creates the Unity Catalog object at ``path`` (through ``create``) if missing."""
+        resp = await self._send("GET", path)
+        if resp.status_code == 200:
+            return
+        if resp.status_code != 404:
+            raise DatabricksError(f"{path}: HTTP {resp.status_code} {resp.text[:500]}")
+        await self._post(create, body)
+
+    async def _put_file(self, path: str, content: bytes) -> None:
+        """Uploads ``content`` to ``path`` in a volume (Files API), replacing the file."""
+        folder = quote(path.rsplit("/", 1)[0])
+        resp = await self._send("PUT", f"/api/2.0/fs/directories{folder}")
+        if resp.status_code not in (200, 201, 204):
+            raise DatabricksError(
+                f"创建目录 {folder} 失败：HTTP {resp.status_code} {resp.text[:500]}"
+            )
+        resp = await self._send(
+            "PUT", f"/api/2.0/fs/files{quote(path)}", content=content, overwrite="true"
+        )
+        if resp.status_code not in (200, 201, 204):
+            raise DatabricksError(f"上传 {path} 失败：HTTP {resp.status_code} {resp.text[:500]}")
+
+    async def _remove_landed(self, folder: str, paths: list[str]) -> list[str]:
+        """Deletes an ingest's landed files and their folder; warnings for what stayed."""
+        left = []
+        for path in [*paths, folder]:
+            kind = "directories" if path == folder else "files"
+            try:
+                resp = await self._send("DELETE", f"/api/2.0/fs/{kind}{quote(path)}")
+            except DatabricksError as exc:
+                left.append(f"{path}（{exc}）")
+                continue
+            if resp.status_code not in (200, 204, 404):
+                left.append(f"{path}（HTTP {resp.status_code}）")
+        return [f"抽取的落地文件没能删除：{'、'.join(left)}"] if left else []
+
+    async def _task(self, name: str, spec: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        """Runs ``aep.cluster_tasks.<name>`` on the cluster; its outcome and warnings."""
+        cluster_id = self._settings.databricks_cluster_id
+        warnings: list[str] = []
+        await self._cluster_running(cluster_id, warnings)
+        command = "\n".join(
+            [
+                Path(cluster_tasks.__file__).read_text(),
+                f"{name}(spark, json.loads({json.dumps(json.dumps(spec, ensure_ascii=False))}))",
+            ]
+        )
+        outcome = _outcome(await self._execute(cluster_id, command))
+        if outcome is None:
+            raise DatabricksError("集群上的程序没有输出结果")
+        return outcome, warnings
+
+    def _needs(self, what: str, *settings: str) -> None:
+        values = {
+            "AEP_DATABRICKS_CLUSTER_ID": self._settings.databricks_cluster_id,
+            "AEP_DATABRICKS_SOURCE_CATALOG": self._settings.databricks_source_catalog,
+        }
+        missing = [name for name in settings if not values[name]]
+        if missing:
+            raise DatabricksError(f"{what}需要设置 " + "、".join(missing))
+
+    async def ingest(
+        self, tables: list[Landing], source_id: str, source_name: str, run_id: str
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Replaces ``<source catalog>.<schema>.<table>`` with each table's rows.
+
+        The rows land as JSON Lines in the volume ``AEP_DATABRICKS_INGEST_VOLUME`` of
+        the schema (schema and volume are created when missing) and are loaded on the
+        cluster. Returns ``{"source", "target", "rows", "columns"}`` per table and
+        warnings; raises ``DatabricksError`` when a table could not be loaded.
+        """
+        self._needs(
+            "抽取到 Databricks ", "AEP_DATABRICKS_CLUSTER_ID", "AEP_DATABRICKS_SOURCE_CATALOG"
+        )
+        catalog = self._settings.databricks_source_catalog
+        volume = self._settings.databricks_ingest_volume
+        uc = "/api/2.1/unity-catalog"
+        for schema in sorted({t.schema for t in tables}):
+            await self._ensure(
+                f"{uc}/schemas/{quote(f'{catalog}.{schema}')}",
+                f"{uc}/schemas",
+                {"catalog_name": catalog, "name": schema, "comment": "由 AEP 从数据源抽取的源表"},
+            )
+            await self._ensure(
+                f"{uc}/volumes/{quote(f'{catalog}.{schema}.{volume}')}",
+                f"{uc}/volumes",
+                {
+                    "catalog_name": catalog,
+                    "schema_name": schema,
+                    "name": volume,
+                    "volume_type": "MANAGED",
+                    "comment": "AEP 抽取数据时的落地文件",
+                },
+            )
+        at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+        comment = f"由 AEP 从数据源「{source_name}」抽取，运行 {run_id}，{at}"
+        # Each call lands in a folder of its own, so two runs copying the same table
+        # never load each other's files; the folders are removed once loaded.
+        batch = f"{run_id or 'ingest'}-{uuid.uuid4().hex[:8]}"
+        folders: dict[str, list[str]] = defaultdict(list)
+        specs = []
+        try:
+            for t in tables:
+                folder = f"/Volumes/{catalog}/{t.schema}/{volume}/{source_id}/{batch}"
+                path = f"{folder}/{t.table}.jsonl"
+                folders[folder].append(path)
+                lines = (json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in t.rows)
+                await self._put_file(path, "".join(lines).encode())
+                specs.append(
+                    {
+                        "path": path,
+                        "target": [catalog, t.schema, t.table],
+                        "columns": [[name, spark_type(kind)] for name, kind in t.columns],
+                        "comment": comment,
+                        "properties": {"aep.datasource_id": source_id, "aep.run_id": run_id},
+                    }
+                )
+            outcome, warnings = await self._task("ingest", {"tables": specs})
+        finally:
+            removed = [await self._remove_landed(f, paths) for f, paths in folders.items()]
+        warnings += [w for found in removed for w in found]
+        if outcome.get("errors"):
+            raise DatabricksError("建表失败：" + "；".join(outcome["errors"]))
+        rows = {tuple(t["target"]): t["rows"] for t in outcome.get("tables", [])}
+        loaded = [
+            {
+                "source": f"{t.schema}.{t.table}",
+                "target": full_name(catalog, t.schema, t.table),
+                "rows": rows.get((catalog, t.schema, t.table)),
+                "columns": len(t.columns),
+            }
+            for t in tables
+        ]
+        return loaded, warnings
+
+    async def preview(
+        self, tables: list[tuple[str, str, str]], rows: int
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """The first ``rows`` rows of each table (catalog, schema, table), read on the
+        cluster: ``{"table", "target", "columns", "rows"}`` each, and warnings."""
+        self._needs("预览结果数据", "AEP_DATABRICKS_CLUSTER_ID")
+        spec = {"tables": [list(t) for t in tables], "rows": rows}
+        outcome, warnings = await self._task("preview", spec)
+        warnings += [f"读取结果数据失败：{e}" for e in outcome.get("errors", [])]
+        found = [
+            {
+                "table": t["target"][-1],
+                "target": full_name(*t["target"]),
+                "columns": t["columns"],
+                "rows": t["rows"],
+            }
+            for t in outcome.get("tables", [])
+        ]
+        return found, warnings
 
     # --- release to prod ----------------------------------------------------
 
@@ -756,6 +1026,9 @@ def _outcome(text: str) -> dict[str, Any] | None:
 
 def _apply(dev: DevRun, outcome: dict[str, Any]) -> None:
     dev.tables = [TableResult(**t) for t in outcome.get("tables", [])]
+    dev.preview = [
+        {"table": p["table"], "target": p["table"]} | p for p in outcome.get("preview", [])
+    ]
     code_errors = outcome.get("errors", [])
     dev.errors = code_errors + outcome.get("write_errors", [])
     if not dev.errors:

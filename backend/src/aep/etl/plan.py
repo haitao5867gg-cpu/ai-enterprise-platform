@@ -98,7 +98,11 @@ AGGREGATE = re.compile(
 
 
 class PlanError(ValueError):
-    pass
+    """The plan does not hold; ``problems`` lists what is wrong, one by one."""
+
+    def __init__(self, message: str, problems: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.problems = problems or [message]
 
 
 @dataclass(frozen=True)
@@ -252,7 +256,8 @@ def validate_plan(
                 )
     problems += _value_problems(plan, known or {}, trust_assumptions)
     if problems:
-        raise PlanError("；".join(dict.fromkeys(problems)))
+        unique = list(dict.fromkeys(problems))
+        raise PlanError("；".join(unique), unique)
     return plan
 
 

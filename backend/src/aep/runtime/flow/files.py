@@ -13,6 +13,8 @@ from aep.runtime.flow import graph as flowgraph
 
 FORMAT = "aep-app/1"
 MAX_BYTES = 1024 * 1024
+# Node types with a ``datasource`` setting (agents name theirs per tool).
+DATASOURCE_NODES = ("tool", "etl_profile", "databricks_ingest")
 
 
 class BadFile(ValueError):
@@ -23,7 +25,7 @@ def datasource_ids(config: dict[str, Any]) -> list[str]:
     """The data sources the app names directly (not through a reference)."""
     found: list[str] = []
     for node in flowgraph.nodes(config):
-        values = [node.get("datasource")] if node["type"] == "tool" else []
+        values = [node.get("datasource")] if node["type"] in DATASOURCE_NODES else []
         if node["type"] == "agent":
             values = [entry.get("datasource") for entry in node.get("tools") or []]
         for value in values:

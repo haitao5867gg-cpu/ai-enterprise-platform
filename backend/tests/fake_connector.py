@@ -111,6 +111,19 @@ def build(delay_seconds: float = 0) -> MCPServer:
         return {"schema": schema, "table": table, "rows": _table(schema, table)["rows"][:limit]}
 
     @server.tool()
+    def read_rows(schema: str, table: str, offset: int = 0, limit: int = 1000) -> dict:
+        """A page of rows in primary key order."""
+        t = _table(schema, table)
+        end = offset + limit
+        return {
+            "schema": schema,
+            "table": table,
+            "columns": [c["name"] for c in t["columns"]],
+            "rows": t["rows"][offset:end],
+            "next_offset": end if end < len(t["rows"]) else None,
+        }
+
+    @server.tool()
     def table_stats(schema: str, table: str) -> dict:
         """Row estimate, per column the null fraction and distinct count of a sample, and
         value counts of text columns."""

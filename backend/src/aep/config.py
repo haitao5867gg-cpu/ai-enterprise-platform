@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     databricks_prod_timezone: str = "Asia/Shanghai"
     databricks_cli: str = "databricks"
     databricks_timeout_seconds: float = 3600.0
+    # Flow apps' ingest node lands source rows in this Unity Catalog volume, one per
+    # schema of databricks_source_catalog, before loading them into tables there.
+    databricks_ingest_volume: str = "aep_landing"
 
     # The assets repository (aep.assets): bundles that passed on dev are opened there
     # as pull requests under pipelines/<name>/. Off unless repo (owner/name) and token

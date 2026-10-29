@@ -367,13 +367,7 @@ def _asset_body(state: "EtlState", result: dict[str, Any], run_url: str, trace: 
 
 def build(ctx: AppContext) -> StateGraph:
     job = ctx.settings.databricks_deploy_mode == "job"
-    compute = None
-    if ctx.settings.databricks_pipeline_node_type or ctx.settings.databricks_pipeline_policy_id:
-        compute = codegen.Compute(
-            ctx.settings.databricks_pipeline_node_type,
-            ctx.settings.databricks_pipeline_workers,
-            ctx.settings.databricks_pipeline_policy_id,
-        )
+    compute = codegen.compute_for(ctx.settings)
 
     def model_for(state: EtlState, step: str, node: NodeConfig) -> str:
         """The run's choice for the step, else the app version's, else the default."""

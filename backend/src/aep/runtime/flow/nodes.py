@@ -3,7 +3,8 @@
 Every type is a ``NodeType`` in ``TYPES``: the text ``GET /node-types`` shows, a
 ``check`` of a node's settings (problems are reported where they are), the
 ``branches`` its outgoing edges use, the fields it ``produces`` and ``run``, which
-does the work in a run. Settings are documented in docs/api/flow-apps.md.
+does the work in a run. Settings are documented in docs/api/flow-apps.md; the
+data-engineering types (``aep.runtime.flow.data_nodes``) in docs/api/data-nodes.md.
 """
 
 import ast
@@ -19,6 +20,7 @@ from pydantic import ValidationError
 
 from aep import llm
 from aep.config import Settings
+from aep.databricks import DevTarget
 from aep.datasources import DataSource, DataSourceStore
 from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
@@ -44,6 +46,7 @@ ERROR_TYPES = (
     "code_error",
     "sandbox_unavailable",
     "step_limit",
+    "databricks_error",
 )
 # Variables a node that failed and went on (``on_error.then`` default or branch) has.
 ERROR_FIELDS = ("error_type", "error_message")
@@ -98,7 +101,8 @@ class Runtime:
     """What running a node needs. ``skills`` holds the text of every skill version the
     app uses, loaded before the run; ``env`` the app's constants; ``secret`` reads
     one of the app's secrets when a tool needs it; ``sandbox_url`` is where code
-    nodes run; ``knowledge`` holds the bases and chunks retrieval searches."""
+    nodes run; ``knowledge`` holds the bases and chunks retrieval searches;
+    ``databricks`` is the workspace data-engineering nodes use (None: not set up)."""
 
     llm_client: AsyncOpenAI
     default_model: str
@@ -110,6 +114,7 @@ class Runtime:
     sandbox_url: str | None = None
     knowledge: KnowledgeStore | None = None
     settings: Settings = field(default_factory=Settings)
+    databricks: DevTarget | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -198,6 +203,9 @@ class Outcome:
     result: dict[str, Any] | None = None
     citations: dict[str, int] = field(default_factory=dict)
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # What the node keeps for its own next run (``state["private"][node id]``), not
+    # a variable other nodes can read; None leaves what it kept before.
+    private: dict[str, Any] | None = None
 
 
 Check = Callable[[dict[str, Any], Problems, CheckEnv], Awaitable[None]]
@@ -209,7 +217,7 @@ class NodeType:
     type: str
     label: str
     description: str
-    category: Literal["model", "logic", "tool", "human", "terminal"]
+    category: Literal["model", "logic", "tool", "human", "terminal", "data"]
     # How the run's flow view draws it (see aep.runtime.design).
     kind: Literal["model", "tool", "human", "code", "terminal"]
     check: Check
@@ -1432,3 +1440,8 @@ TYPES: dict[str, NodeType] = {
         ),
     )
 }
+
+# The data-engineering types use the helpers above; they register themselves here.
+from aep.runtime.flow import data_nodes  # noqa: E402
+
+TYPES.update(data_nodes.TYPES)

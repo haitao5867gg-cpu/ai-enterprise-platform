@@ -29,9 +29,8 @@ DEFAULT_MAX_VISITS = 3
 MAX_VISITS = 10
 VAR_TYPES = {"string": str, "number": (int, float), "boolean": bool}
 # Settings that hold no references.
-NOT_SETTINGS = {"id", "type", "title", "ui", "on_error", "max_visits"}
-# Nodes a loop must pass through to be able to leave it.
-DECIDERS = {"classifier", "condition"}
+NOT_SETTINGS = {"id", "type", "title", "note", "ui", "on_error", "max_visits"}
+MAX_NOTE = 500
 
 Problem = tuple[list[str | int], str]
 
@@ -106,6 +105,11 @@ def check_common(node: dict[str, Any], p: Problems) -> None:
         p.add(("max_visits",), f"最多运行次数要在 1–{MAX_VISITS} 之间")
     if "ui" in node and not isinstance(node["ui"], dict):
         p.add(("ui",), "ui 必须是对象")
+    note = node.get("note")
+    if note is not None and not isinstance(note, str):
+        p.add(("note",), "讲解说明必须是文字")
+    elif note is not None and len(note) > MAX_NOTE:
+        p.add(("note",), f"讲解说明最多 {MAX_NOTE} 个字符")
     on_error = node.get("on_error")
     if on_error is None:
         return
@@ -334,15 +338,14 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
         for n in comp:
             component[n] = k
         looped = len(comp) > 1 or comp[0] in succ.get(comp[0], [])
-        decides = any(
-            by_id[n]["type"] in DECIDERS
-            or (by_id[n]["type"] == "human" and by_id[n].get("mode", "approval") == "approval")
-            for n in comp
-        )
+        # A node with branches of its own can leave the loop; the error branch of
+        # ``on_error`` does not count, it is not how the loop is meant to end.
+        decides = any(TYPES[by_id[n]["type"]].branches(by_id[n]) for n in comp)
         if looped and not decides and comp[0] in reached:
             add(
                 ["graph", "nodes", comp[0]],
-                "这个循环没有经过人工确认、条件判断或意图分类节点，会一直循环下去",
+                "这个循环里没有能决定离开循环的节点（人工确认、条件判断、意图分类或带分支的"
+                "校验节点），会一直循环下去",
             )
             endless.update(comp)
     for n in ids:
