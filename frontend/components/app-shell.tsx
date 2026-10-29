@@ -33,7 +33,7 @@ function BackendHealth() {
       <span
         className={`dot ${healthy === null ? "" : healthy ? "green" : "amber"}`}
       />
-      后端状态：{healthy === null ? "检查中" : healthy ? "正常" : "不可用"}
+      服务状态：{healthy === null ? "检查中" : healthy ? "正常" : "不可用"}
     </span>
   );
 }
@@ -57,17 +57,9 @@ export function AppShell({
             <Icon name="grid" size={21} />
           </span>
           <span>
-            AEP<span className="brand-subtitle">AI Enterprise Platform</span>
+            AEP<span className="brand-subtitle">企业 AI 应用平台</span>
           </span>
         </Link>
-        <div className="workspace">
-          <span className="workspace-avatar">W</span>
-          <div>
-            <strong>默认工作空间</strong>
-            <small>企业 AI 工作台</small>
-          </div>
-          <span className="workspace-chevron">⌄</span>
-        </div>
         <div className="nav-label">工作台</div>
         <nav aria-label="主导航">
           <Link
@@ -106,16 +98,6 @@ export function AppShell({
             新建运行
           </Link>
         </nav>
-        <div className="sidebar-bottom">
-          <span className="mini-app">
-            <Icon name="spark" />
-          </span>
-          <div>
-            <strong>hello / etl</strong>
-            <small>示例与数据工作流 · M2</small>
-          </div>
-          <span className="version">v0.1</span>
-        </div>
       </aside>
       <div className="main-shell">
         <header className="topbar">
@@ -149,7 +131,7 @@ export function AppShell({
           {children}
         </main>
         <footer className="footer">
-          AI Enterprise Platform<span>让每一个需求，成为可追踪的交付。</span>
+          企业 AI 应用平台<span>让每一个需求，成为可追踪的交付。</span>
         </footer>
       </div>
     </div>

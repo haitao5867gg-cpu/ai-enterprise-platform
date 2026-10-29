@@ -521,9 +521,9 @@ async def run_llm(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
         return None
 
     data = await _ask_json(rt, node, messages, valid)
-    outputs = {f["key"]: data[f["key"]] for f in fields}
-    text = json.dumps(outputs, ensure_ascii=False)
-    return Outcome(outputs, messages=[{"role": "assistant", "content": text}])
+    # JSON output is data for later nodes, not a reply: it stays out of the conversation
+    # (the flow view shows it as the node's output).
+    return Outcome({f["key"]: data[f["key"]] for f in fields})
 
 
 # classifier

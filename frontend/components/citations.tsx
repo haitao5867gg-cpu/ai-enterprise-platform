@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import Markdown from "react-markdown";
+import { remarkBreaks } from "../lib/markdown-breaks";
 import { remarkTables } from "../lib/markdown-tables";
 import type { Reference, RunSource } from "../lib/knowledge";
 import { documentFileUrl } from "../lib/knowledge";
@@ -83,12 +84,26 @@ export function CitedText({ children }: { children: ReactNode }) {
   }
   return <>{sources.length ? enhance(children) : children}</>;
 }
-export function CitedMarkdown({ text }: { text: string }) {
+// `breaks` keeps single line breaks (chat replies). Images are shown as links:
+// model output can carry any URL, and an image would be fetched on page load.
+export function CitedMarkdown({
+  text,
+  breaks = false,
+}: {
+  text: string;
+  breaks?: boolean;
+}) {
   return (
     <div className="markdown-content">
       <Markdown
-        remarkPlugins={[remarkTables]}
+        remarkPlugins={breaks ? [remarkTables, remarkBreaks] : [remarkTables]}
         components={{
+          img: ({ src, alt }) =>
+            typeof src === "string" ? (
+              <a href={src} target="_blank" rel="noopener noreferrer">
+                图片：{alt || src}
+              </a>
+            ) : null,
           table: ({ children }) => (
             <div className="table-scroll">
               <table>{children}</table>

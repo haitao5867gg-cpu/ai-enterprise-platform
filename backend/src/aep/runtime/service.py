@@ -327,7 +327,15 @@ class RunService:
         nodes, edges = flowgraph.shape(config, await self.runtime(config))
         app = await self.flows.get(record.app)
         if app is not None:
-            flow["design"] = {"title": app.title, "summary": app.summary, **flowgraph.DESIGN}
+            # Only the app's own description: flowgraph.DESIGN is the same builder text for
+            # every flow app and stays on the app's page.
+            flow["design"] = {
+                "title": app.title,
+                "summary": app.summary,
+                "pattern": "",
+                "knowledge": "",
+                "skills": "",
+            }
         by_id = {n["id"]: n for n in flowgraph.nodes(config)}
         for node in nodes:
             settings = by_id.get(node["id"], {})

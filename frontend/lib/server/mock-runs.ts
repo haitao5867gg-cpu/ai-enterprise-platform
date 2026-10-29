@@ -228,8 +228,10 @@ function advanceFlow(entry: StoredRun): Run {
       }
       flow.pool[node.id] = result.outputs;
       addStep(entry.steps, node.id, structuredClone(flow.pool), result.outputs);
+      // Like the backend: JSON output is data for later nodes, not a reply.
       if (
-        (node.type === "llm" || node.type === "agent") &&
+        (node.type === "agent" ||
+          (node.type === "llm" && node.output.kind === "text")) &&
         typeof result.outputs.text === "string"
       )
         run.messages.push({ role: "assistant", content: result.outputs.text });
@@ -621,20 +623,27 @@ export async function mockRuns(request: Request, path: string[]) {
       },
     });
   }
-  if (request.method === "GET" && path[2] === "flow")
-    return json(
-      entry.flow
-        ? {
-            ...flowView(
-              entry.flow.config,
-              entry.flow.title,
-              entry.flow.summary,
-            ),
-            steps: entry.steps,
-            current: run.status === "waiting" ? entry.flow.next : null,
-          }
-        : mockFlow(run.app, entry.steps, run.status === "done"),
+  if (request.method === "GET" && path[2] === "flow") {
+    if (!entry.flow)
+      return json(mockFlow(run.app, entry.steps, run.status === "done"));
+    const view = flowView(
+      entry.flow.config,
+      entry.flow.title,
+      entry.flow.summary,
     );
+    return json({
+      ...view,
+      // Like the backend: a flow app's run shows only its own title and summary.
+      design: view.design && {
+        ...view.design,
+        pattern: "",
+        knowledge: "",
+        skills: "",
+      },
+      steps: entry.steps,
+      current: run.status === "waiting" ? entry.flow.next : null,
+    });
+  }
   if (request.method === "GET") return json(run);
   if (
     !isRecord(body) ||

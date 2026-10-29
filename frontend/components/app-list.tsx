@@ -29,7 +29,7 @@ export function AppList() {
   }, [retry]);
   return (
     <div className="asset-page">
-      <AssetHeading eyebrow="DESIGN, TEST, DELIVER" title="应用">
+      <AssetHeading title="应用">
         查看工作流设计，调整节点配置，评测后发布新版本。
       </AssetHeading>
       <div className="asset-actions">

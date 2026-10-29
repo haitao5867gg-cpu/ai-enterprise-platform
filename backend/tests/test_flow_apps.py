@@ -318,7 +318,7 @@ async def test_intent_routing_runs_each_branch():
 
         flow_view = (await p.api.get(f"/runs/{run['run_id']}/flow")).json()
         assert flow_view["design"]["title"] == "support"
-        assert flow_view["design"]["pattern"].startswith("编排应用")
+        assert flow_view["design"]["pattern"] == ""
         nodes = {n["id"]: n for n in flow_view["nodes"]}
         assert nodes["route"]["type"] == "classifier" and nodes["route"]["kind"] == "model"
         assert nodes["route"]["model"] == "mock"
@@ -380,6 +380,8 @@ async def test_json_output_condition_and_constants():
         await p.new_app("refund", config)
         run = await p.run("refund", {"question": "退 800 元"})
         assert run["result"] == {"out": "800 超过 500，要审批"}
+        # The JSON answer is the node's output, not a chat message.
+        assert run["messages"] == [{"role": "user", "content": "退 800 元"}]
         assert "amount（number）" in p.gateway.requests[0]["body"]["messages"][0]["content"]
         assert "缺少字段 amount" in p.gateway.requests[1]["body"]["messages"][-1]["content"]
         assert (await p.run("refund", {"question": "退 20 元"}))["result"] == {"out": "直接退款"}

@@ -155,7 +155,6 @@ export function NewRun() {
       </Link>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">START WITH AN IDEA</div>
           <h1>新建运行</h1>
           <p>告诉应用你想完成什么，接下来的过程在这里展开。</p>
         </div>

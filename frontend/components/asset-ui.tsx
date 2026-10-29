@@ -9,7 +9,7 @@ export function AssetHeading({
   children,
   action,
 }: {
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
   children?: ReactNode;
   action?: ReactNode;
@@ -17,7 +17,7 @@ export function AssetHeading({
   return (
     <div className="page-heading asset-heading">
       <div>
-        <div className="eyebrow">{eyebrow}</div>
+        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
         <h1>{title}</h1>
         {children && <p>{children}</p>}
       </div>

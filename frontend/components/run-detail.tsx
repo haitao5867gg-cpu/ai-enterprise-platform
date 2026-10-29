@@ -31,6 +31,41 @@ import {
 } from "../lib/input-fields";
 import { InputFields } from "./input-fields";
 
+// A JSON object as a whole message, bare or in a code fence: what LLM nodes with
+// JSON output used to add to the conversation (older runs still hold them), and
+// what text nodes asked for JSON (such as plan and codegen) still add.
+function jsonMessage(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  const body =
+    /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed)?.[1] ?? trimmed;
+  if (!body.startsWith("{")) return null;
+  try {
+    const value: unknown = JSON.parse(body);
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// What a person typed is shown as typed; replies are Markdown with [n]
+// citations, and raw JSON is folded away.
+function MessageContent({ role, content }: { role: string; content: string }) {
+  if (role === "user") return <p className="message-content">{content}</p>;
+  const data = jsonMessage(content);
+  if (data)
+    return (
+      <details className="message-content message-data">
+        <summary>模型返回的结构化数据</summary>
+        <pre>{JSON.stringify(data, null, 2)}</pre>
+      </details>
+    );
+  return (
+    <div className="message-content message-markdown">
+      <CitedMarkdown text={content} breaks />
+    </div>
+  );
+}
+
 function ResultView({ result }: { result: unknown }) {
   if (result === null) return <p>应用已完成本次运行。</p>;
   if (typeof result === "string") return <CitedMarkdown text={result} />;
@@ -232,7 +267,6 @@ export function RunDetail({
       </Link>
       <div className="page-heading detail-heading">
         <div>
-          <div className="eyebrow">EVERY STEP, CONNECTED</div>
           <h1>运行详情{run && <StatusBadge status={run.status} />}</h1>
           <p className="detail-id">{id}</p>
         </div>
@@ -319,7 +353,10 @@ export function RunDetail({
                             </strong>
                             <span>{String(index + 1).padStart(2, "0")}</span>
                           </div>
-                          <p className="message-content">{message.content}</p>
+                          <MessageContent
+                            role={message.role}
+                            content={message.content}
+                          />
                         </div>
                       </li>
                     ))}
@@ -327,6 +364,12 @@ export function RunDetail({
                   {run.messages.length === 0 && (
                     <p className="panel-padding muted">应用暂未返回消息。</p>
                   )}
+                  {/* Until the result card shows them, [n] in replies point here. */}
+                  {run.status !== "done" && run.sources?.length ? (
+                    <div className="panel-padding">
+                      <SourceList />
+                    </div>
+                  ) : null}
                   <div className="conversation-state" role="status">
                     {run.status === "running" ? (
                       <>

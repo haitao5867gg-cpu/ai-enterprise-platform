@@ -61,7 +61,8 @@ while the run waits for the release approval.
 ``GET /runs/{id}/flow`` shows how the run's app is built and what this run did,
 for explaining it (see ``aep.runtime.design``). ``design`` is the app as a whole
 (``title``, ``summary``, ``pattern``: a fixed workflow or an agent, ``knowledge``,
-``skills``), or null. ``nodes`` are the graph's nodes in order, ``__start__`` and
+``skills``; for a flow app only ``title`` and ``summary`` are filled, the other three
+are empty), or null. ``nodes`` are the graph's nodes in order, ``__start__`` and
 ``__end__`` included: ``id``, ``title``, ``kind`` (``tool``, ``model``, ``human``,
 ``code``, or ``terminal`` for start and end), ``model`` (the alias this run uses,
 for model nodes), ``skills`` (``name`` and ``version`` of each skill the node

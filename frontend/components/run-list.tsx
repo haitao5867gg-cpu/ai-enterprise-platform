@@ -51,7 +51,6 @@ export function RunList() {
     <>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">YOUR WORK, IN MOTION</div>
           <h1>运行记录</h1>
           <p>从需求到结果，每一步都可追踪。</p>
         </div>

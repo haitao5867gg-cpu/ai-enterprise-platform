@@ -176,7 +176,7 @@ jobs:
         run: |
           curl -sf http://localhost:8000/llm/chat -H 'content-type: application/json' \
             -d '{"messages":[{"role":"user","content":"hi"}]}' | grep -q "mock"
-      - run: curl -sf http://localhost:3000 | grep -q "后端状态"
+      - run: curl -sf http://localhost:3000 | grep -q "服务状态"
       - name: Run survives an API restart while waiting for approval
         run: scripts/smoke-runs.sh
       - name: The API image carries the Databricks CLI and its Terraform
