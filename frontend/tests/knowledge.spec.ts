@@ -218,7 +218,7 @@ test("片段按 50 分页，检索命中定位到第二页片段", async ({ page
   await page.getByLabel("问题", { exact: true }).fill("退换货期限是多久？");
   await page.getByRole("button", { name: "检索", exact: true }).click();
   await expect(page.getByText("5 条命中 · 耗时 12 ms")).toBeVisible();
-  await expect(page.locator(".knowledge-score").first()).toHaveText("0.93");
+  await expect(page.locator(".knowledge-score").first()).toHaveText("最终分数 0.88");
   await capture(page, "search");
   await page
     .getByRole("button", { name: "退换货政策.pdf", exact: true })

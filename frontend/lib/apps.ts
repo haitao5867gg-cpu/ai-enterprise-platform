@@ -1,4 +1,9 @@
-import type { KnowledgeOption } from "./knowledge";
+import type {
+  KnowledgeOption,
+  Reference,
+  RerankModel,
+  Retrieval,
+} from "./knowledge";
 import type { FlowEdge, NodeDesign, NodeKind } from "./flow";
 import { ApiError, isRecord, requestJson } from "./runs";
 
@@ -106,13 +111,31 @@ export type KnowledgeNode = NodeBase &
     query: string;
     top_k: number;
     min_score: number;
+    retrieval?: Retrieval;
   };
+export type AgentKnowledge = Pick<
+  KnowledgeNode,
+  "knowledge_bases" | "top_k" | "min_score" | "retrieval"
+>;
+export type AgentStep = {
+  tool: string;
+  datasource: string | null;
+  args: Record<string, unknown>;
+  error: string | null;
+  hits?: number;
+};
+export type AgentOutput = {
+  text: string;
+  steps: AgentStep[];
+  hits: Reference[];
+};
 export type AgentNode = NodeBase &
   ModelSettings &
   Fallible & {
     type: "agent";
     task: string;
     tools: { datasource: string; tools: string[] | null }[];
+    knowledge?: AgentKnowledge | null;
     max_steps: number;
   };
 export type HumanNode = NodeBase & {
@@ -295,6 +318,7 @@ export type AppDetail = AppSummary & {
     knowledge_bases: KnowledgeOption[];
     datasources: { datasource_id: string; name: string; kind: string }[];
     models: string[];
+    rerank_models: RerankModel[];
     default_model: string;
     skills: {
       name: string;

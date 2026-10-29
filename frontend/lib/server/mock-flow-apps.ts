@@ -1,5 +1,9 @@
 import "server-only";
-import { knowledgeExists, searchMockKnowledge } from "./mock-knowledge";
+import {
+  knowledgeExists,
+  mockKnowledgeOptions,
+  searchMockKnowledge,
+} from "./mock-knowledge";
 import type {
   AppTemplate,
   FlowConfig,
@@ -9,10 +13,12 @@ import type {
   NodeType,
   Condition,
   ImportProblem,
+  AgentOutput,
 } from "../apps";
 import { NODE_ID_PATTERN } from "../apps";
 import {
   outputsOf,
+  knowledgeIssues,
   REF_PATTERN,
   stringsOf,
   typeLabels,
@@ -270,6 +276,7 @@ export function knowledgeConfig(): FlowConfig {
           query: "{{start.question}}",
           top_k: 5,
           min_score: 0.3,
+          retrieval: { ...mockKnowledgeOptions.retrieval },
         },
         {
           id: "answer",
@@ -297,6 +304,51 @@ export function knowledgeConfig(): FlowConfig {
   };
 }
 export const mockTemplates: AppTemplate[] = [
+  {
+    id: "knowledge-agent",
+    title: "知识库智能体",
+    summary: "智能体自主检索企业资料，按引用来源回答问题。",
+    needs: ["knowledge_base"],
+    config: {
+      ...blankConfig(),
+      graph: {
+        nodes: [
+          {
+            id: "start",
+            type: "start",
+            title: "开始",
+            inputs: [questionInput],
+          },
+          {
+            id: "agent",
+            type: "agent",
+            title: "知识库智能体",
+            model: null,
+            skills: [],
+            tools: [],
+            max_steps: 6,
+            task: "先检索知识库，再根据资料回答，按 [n] 标出处：{{start.question}}",
+            knowledge: {
+              knowledge_bases: [],
+              top_k: 5,
+              min_score: 0.3,
+              retrieval: { ...mockKnowledgeOptions.retrieval },
+            },
+          },
+          {
+            id: "end",
+            type: "end",
+            title: "结束",
+            outputs: [{ key: "answer", from: ["{{agent.text}}"] }],
+          },
+        ],
+        edges: [
+          { from: "start", to: "agent" },
+          { from: "agent", to: "end" },
+        ],
+      },
+    },
+  },
   {
     id: "knowledge-qa",
     title: "知识问答",
@@ -341,6 +393,7 @@ export const mockTemplates: AppTemplate[] = [
             skills: [],
             task: "根据数据回答：{{start.question}}",
             tools: [],
+            knowledge: null,
             max_steps: 8,
           },
           {
@@ -367,6 +420,7 @@ const defaults: FlowNode[] = [
     query: "",
     top_k: 5,
     min_score: 0.3,
+    retrieval: { ...mockKnowledgeOptions.retrieval },
   },
   blankConfig().graph.nodes[0],
   blankConfig().graph.nodes[1],
@@ -400,6 +454,7 @@ const defaults: FlowNode[] = [
     skills: [],
     task: "回答：{{start.question}}",
     tools: [],
+    knowledge: null,
     max_steps: 8,
   },
   {
@@ -463,7 +518,7 @@ export const mockNodeTypes: NodeType[] = defaults.map((node) => {
             : node.type === "human"
               ? ["decision", "comment", "actor"]
               : ["llm", "agent", "template"].includes(node.type)
-                ? ["text", ...(node.type === "agent" ? ["steps"] : [])]
+                ? ["text", ...(node.type === "agent" ? ["steps", "hits"] : [])]
                 : []
     ).map((key) => ({ key, description: key })),
     defaults: settings,
@@ -649,7 +704,10 @@ export function validateFlow(config: unknown): ValidationIssue[] {
     return [
       { loc: root, msg: "需要一个开始节点和至少一个结束节点，最多 50 个节点" },
     ];
-  const issues: ValidationIssue[] = [];
+  const issues: ValidationIssue[] = knowledgeIssues(
+    config as FlowConfig,
+    mockKnowledgeOptions.rerank_models,
+  );
   const ids = new Set<string>();
   for (const node of nodes) {
     const loc = [...root, "nodes", node.id];
@@ -657,16 +715,6 @@ export function validateFlow(config: unknown): ValidationIssue[] {
       issues.push({ loc: [...loc, "id"], msg: "节点 id 重复" });
     ids.add(node.id);
     if (node.type === "knowledge") {
-      if (
-        !Array.isArray(node.knowledge_bases) ||
-        node.knowledge_bases.length < 1 ||
-        node.knowledge_bases.length > 5 ||
-        !node.knowledge_bases.every((id) => typeof id === "string")
-      )
-        issues.push({
-          loc: [...loc, "knowledge_bases"],
-          msg: "请选择 1–5 个存在的知识库",
-        });
       if (
         typeof node.query !== "string" ||
         !node.query.trim() ||
@@ -676,15 +724,18 @@ export function validateFlow(config: unknown): ValidationIssue[] {
           loc: [...loc, "query"],
           msg: "检索问题须为 1–2000 字符",
         });
-      if (!Number.isInteger(node.top_k) || node.top_k < 1 || node.top_k > 20)
-        issues.push({ loc: [...loc, "top_k"], msg: "top_k 须为 1–20 的整数" });
-      if (
-        !Number.isFinite(node.min_score) ||
-        node.min_score < 0 ||
-        node.min_score > 1
-      )
-        issues.push({ loc: [...loc, "min_score"], msg: "min_score 须为 0–1" });
     }
+    if (
+      node.type === "agent" &&
+      (node.tools.length > 10 ||
+        !Number.isInteger(node.max_steps) ||
+        node.max_steps < 1 ||
+        node.max_steps > 20)
+    )
+      issues.push({
+        loc: [...loc, "tools"],
+        msg: "数据源工具最多 10 个，最多步数须为 1–20 的整数",
+      });
     try {
       for (const branch of branches(node))
         if (
@@ -760,8 +811,14 @@ export function missingReferences(
             ...ref,
             message: "没有这个 Skill 版本",
           });
-    if (node.type === "knowledge")
-      for (const kb_id of node.knowledge_bases)
+    const knowledge =
+      node.type === "knowledge"
+        ? node
+        : node.type === "agent"
+          ? node.knowledge
+          : null;
+    if (knowledge)
+      for (const kb_id of knowledge.knowledge_bases)
         if (!knowledgeExists(kb_id))
           problems.push({
             kind: "knowledge_base",
@@ -905,6 +962,7 @@ export function simulateNode(
       String(rendered.query),
       node.top_k,
       node.min_score,
+      node.retrieval,
     ).map((hit, index) => ({ ...hit, index: index + 1 }));
     outputs = {
       hits,
@@ -927,8 +985,43 @@ export function simulateNode(
             ]),
           );
   if (node.type === "agent") {
-    if (!node.tools.length) throw new Error("请先在智能体节点选择数据源");
-    outputs = { text: `（模拟回答）${render(node.task, pool)}`, steps: [] };
+    if (!node.tools.length && !node.knowledge)
+      throw new Error("至少选一个数据源工具或知识库");
+    const output: AgentOutput = {
+      text: `（模拟回答）${render(node.task, pool)}`,
+      steps: [],
+      hits: [],
+    };
+    if (node.knowledge) {
+      const query = String(pool.start?.question ?? rendered.task);
+      const step: AgentOutput["steps"][number] = {
+        tool: "search_knowledge",
+        datasource: null,
+        args: { query, knowledge_bases: node.knowledge.knowledge_bases },
+        error: null,
+        hits: 0,
+      };
+      try {
+        for (const id of node.knowledge.knowledge_bases)
+          if (!knowledgeExists(id)) throw new Error("知识库不存在");
+        output.hits = searchMockKnowledge(
+          node.knowledge.knowledge_bases,
+          query,
+          node.knowledge.top_k,
+          node.knowledge.min_score,
+          node.knowledge.retrieval,
+        ).map((hit, i) => ({ ...hit, index: i + 1 }));
+        step.hits = output.hits.length;
+        output.text = output.hits.length
+          ? `根据检索到的资料：${output.hits.map((hit) => `${hit.text} [${hit.index}]`).join("\n\n")}`
+          : "没有找到相关资料";
+      } catch (error) {
+        step.error = error instanceof Error ? error.message : "检索失败";
+        output.text = `知识库检索未成功：${step.error}`;
+      }
+      output.steps.push(step);
+    }
+    outputs = output;
   }
   if (node.type === "classifier") {
     branch = node.classes[0]?.key ?? "other";

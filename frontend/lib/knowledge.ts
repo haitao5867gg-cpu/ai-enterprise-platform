@@ -2,6 +2,12 @@ import { requestJson } from "./runs";
 
 // docs/api/knowledge.md is the source of truth for these wire types.
 export type Chunking = { size: number; overlap: number };
+export type Retrieval = {
+  mode: "hybrid" | "vector" | "keyword";
+  vector_weight: number;
+  rerank: { model: string; candidates: number } | null;
+};
+export type RerankModel = { model: string; kind: "rerank" | "llm" };
 export type DocumentStatus = "queued" | "processing" | "ready" | "error";
 export type KnowledgeBase = {
   kb_id: string;
@@ -41,6 +47,11 @@ export type Hit = Omit<Chunk, "document_id"> & {
   document_id: string;
   document_name: string;
   score: number;
+  scores: {
+    vector: number | null;
+    keyword: number | null;
+    rerank: number | null;
+  };
 };
 export type Reference = Hit & { index: number };
 export type RunSource = Reference & { node: string; node_title: string };
@@ -52,6 +63,8 @@ export type KnowledgeOptions = {
   embedding_models: string[];
   default_embedding_model: string;
   chunking: Chunking;
+  retrieval: Retrieval;
+  rerank_models: RerankModel[];
 };
 export type KnowledgeInput = Pick<KnowledgeBase, "name"> &
   Partial<Pick<KnowledgeBase, "description" | "embedding_model" | "chunking">>;
@@ -114,7 +127,12 @@ export const reindexKnowledgeBase = (kb: string) =>
   }>;
 export const searchKnowledgeBase = (
   kb: string,
-  input: { query: string; top_k?: number; min_score?: number },
+  input: {
+    query: string;
+    top_k?: number;
+    min_score?: number;
+    retrieval?: Retrieval;
+  },
 ) =>
   requestJson(`${base(kb)}/search`, json("POST", input)) as Promise<{
     hits: Hit[];

@@ -31,7 +31,12 @@ import { AppSettings, settingError } from "./app-settings";
 import { FlowDiagram } from "./flow-diagram";
 import { FlowEditor } from "./flow-editor";
 import { FlowEnv } from "./flow-env";
-import { noIssues, sortIssues, type FlowIssues } from "../lib/flow-edit";
+import {
+  knowledgeIssues,
+  noIssues,
+  sortIssues,
+  type FlowIssues,
+} from "../lib/flow-edit";
 import { FlowNodeDesign } from "./flow-node-design";
 import { ErrorNotice } from "./ui";
 import { AppMetadata } from "./app-metadata";
@@ -327,6 +332,12 @@ export function AppDetailView({ app }: { app: string }) {
     if (isFlowConfig(config)) {
       void action(async () => {
         try {
+          const localIssues = knowledgeIssues(
+            config,
+            data.options.rerank_models ?? [],
+          );
+          if (localIssues.length)
+            throw new ApiError("请检查检索设置", 422, localIssues);
           accept(
             await saveAppDraft(app, config),
             "草稿已保存，上次评测结果已清空。",
