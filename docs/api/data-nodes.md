@@ -316,13 +316,15 @@ Databricks dev 运行的报错（为空时忽略）：{{dev_run.errors}}
 
 `make demo` 一次准备好演示环境，可以重复执行，结果不变：
 
-1. **检查**：API 能访问；模型网关里有 `AEP_DEMO_MODEL`（默认 `company`）这个别名；平台配了 Databricks 的 host、token、`AEP_DATABRICKS_CLUSTER_ID`、`AEP_DATABRICKS_SOURCE_CATALOG`。逐项打印 ✓ 或 ✗ 和缺什么；缺 Databricks 时只警告（应用照样建好，跑到抽取会失败）。新接口 `GET /health/demo` 返回这些检查项 `[{"key", "ok", "detail"}]`，不返回密钥。
+1. **检查**：API 能访问；模型网关里有 `AEP_DEMO_MODEL`（默认 `company`）这个别名；知识库的向量模型 `AEP_DEMO_EMBEDDING_MODEL`（默认 `company-embed`）在 `AEP_EMBEDDING_MODELS` 里且模型网关上有（`mock-embed` 不经网关）；登记了数据源“MySQL 示例库”且能读到 `retail` 库；平台配了 Databricks 的 host、token、`AEP_DATABRICKS_CLUSTER_ID`（并查一次集群状态，令牌失效在这里就能发现）、`AEP_DATABRICKS_SOURCE_CATALOG`、`AEP_DATABRICKS_CATALOG` 和 `AEP_DATABRICKS_SCHEMA`。逐项打印 ✓、✗（必需项）或 !（只警告）和缺什么；缺 Databricks 时只警告（应用照样建好，跑到抽取会失败）。新接口 `GET /health/demo` 返回这些检查项 `[{"key", "ok", "detail", "required", "value"}]`：`key` 依次为 `api`、`model`、`embedding`、`datasource`、`databricks`，配了工作区时再有 `databricks_cluster`、`databricks_source_catalog`、`databricks_target`；`required` 为 false 的是 Databricks 各项；`value` 只有 `model`、`embedding` 有，是模型别名。不返回密钥。
 2. **示例库**：MySQL 里没有 `retail` 库时，执行 `docker compose exec -T source-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' < connectors/mysql/seed/003-retail.sql`（新卷会在初始化时自动执行这个文件，已有的卷靠这一步补）。
-3. **知识库**：按名称找，没有就建；`demo/knowledge/` 里的文件按文件名对比，缺的上传、大小或内容变了的删掉重传、多余的不动；等全部文档处理完成（最多 5 分钟）。
-4. **应用**：应用 id `retail-etl`，标题“零售数据 ETL”。不存在时用模板 `etl-lakehouse` 新建；把两个知识库填进 `glossary`、`standards`，`plan`、`codegen` 的模型设为 `AEP_DEMO_MODEL`，开始节点的默认值：数据源为“MySQL 示例库”，`tables` 为 `retail.*`，`request` 为设计文档里的演示需求；保存草稿并发布。生效版本的配置已经一样时不再发新版本。
+3. **知识库**：按名称找，没有就用检查过的向量模型建（说明不一样时改成上面的说明）；已有的知识库向量模型不一样时，里面只有演示文档就全部删掉、改向量模型、重新上传，有别的文档就停下并说明（换模型要先清空文档，别人加的文档不删）；`demo/knowledge/<目录>/` 里除 `README.md` 外的 `.md` 文件按文件名对比，缺的上传、大小或内容（下载原文件比较）变了的删掉重传、处理出错的重新处理、多余的不动；等全部文档处理完成（最多 5 分钟），有出错的就停下并打印原因。
+4. **应用**：应用 id `retail-etl`，标题“零售数据 ETL”。不存在时用模板 `etl-lakehouse` 新建；从 `GET /app-templates` 取模板配置，把两个知识库填进 `glossary`、`standards`，`plan`、`codegen` 的模型设为 `AEP_DEMO_MODEL`、Skill 设为各自最新发布的版本，开始节点的默认值：数据源为“MySQL 示例库”，`tables` 为 `retail.*`，`request` 为设计文档里的演示需求；保存草稿，保存后的草稿和生效版本的配置一样时丢弃草稿、不发新版本，否则发布。原来有草稿时会被覆盖，打印里写明。
 5. 最后打印应用页、两个知识库页的地址和演示需求。
 
-实现为后端包里的脚本 `aep.demo`（`uv run aep-demo --api http://localhost:8000`，只调平台接口，不直接连数据库），Makefile 的 `demo` 目标先跑第 2 步再调它。
+实现为后端包里的脚本 `aep.demo`（`uv run aep-demo --api http://localhost:8000 [--web http://localhost:3000]`，只调平台接口，不直接连数据库），Makefile 的 `demo` 目标先跑第 2 步再调它（`make demo API=… WEB=…`）。
+
+模板里 `plan`、`codegen` 的 Skill 写的是内置版本 1；两个知识检索节点的 `min_score` 为 0.2（混合检索的分数比纯向量低，口径文档要尽量都检索到）。
 
 ## 测试
 

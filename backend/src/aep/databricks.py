@@ -503,6 +503,12 @@ class DevTarget:
             "targets": parse_sql(bundle.files[PIPELINE_SQL]),
         } | extra
 
+    async def cluster_state(self) -> str:
+        """The state of ``AEP_DATABRICKS_CLUSTER_ID`` (``RUNNING``, ``TERMINATED``, ...)."""
+        cluster_id = self._settings.databricks_cluster_id
+        cluster = await self._get("/api/2.0/clusters/get", cluster_id=cluster_id)
+        return str(cluster.get("state") or "UNKNOWN")
+
     async def _cluster_running(self, cluster_id: str, warnings: list[str]) -> None:
         """Waits for the cluster to run, starting it once if it is stopped."""
         deadline = time.monotonic() + self._settings.databricks_timeout_seconds

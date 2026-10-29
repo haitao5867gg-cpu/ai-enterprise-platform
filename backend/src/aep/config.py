@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     eval_parallel: int = 3
     eval_timeout_seconds: float = 1800.0
 
+    # The model alias ``make demo`` gives the demo app's plan and code nodes, and the
+    # embedding model of the demo's knowledge bases; GET /health/demo checks both.
+    demo_model: str = "company"
+    demo_embedding_model: str = "company-embed"
+
     # Langfuse tracing. Off unless both keys are set; the names are shared with
     # the gateway, which reports model calls to the same project.
     langfuse_public_key: str = Field("", validation_alias="LANGFUSE_PUBLIC_KEY")

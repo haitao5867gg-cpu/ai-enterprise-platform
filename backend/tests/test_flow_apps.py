@@ -532,6 +532,7 @@ async def test_node_types_and_templates():
             "datasource-qa",
             "knowledge-qa",
             "knowledge-agent",
+            "etl-lakehouse",
         ]
         assert templates[2]["needs"] == ["datasource"]
 

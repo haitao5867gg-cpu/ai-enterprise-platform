@@ -109,6 +109,18 @@ AEP_ASSETS_GITHUB_TOKEN=<令牌>
 # AEP_WEB_URL=http://localhost:3000   # PR 里 run 链接的地址
 ```
 
+### ETL 演示
+
+演示用的编排应用「零售数据 ETL」（`retail-etl`）由模板「数据 ETL（湖仓）」建成：探查 MySQL 示例库的 `retail` 库（一家连锁零售商一年的订单，故意埋了脏数据）→ 查知识库「零售数据口径」→ 出方案、校验、人确认 → 把用到的源表抽取到 Databricks → 查知识库「数仓开发规范」→ 写 PySpark、检查打包 → 在 dev 集群上运行并预览结果数据。两个知识库的文档在 [demo/knowledge](demo/knowledge)。节点和接口见 [docs/api/data-nodes.md](docs/api/data-nodes.md)。
+
+`.env` 里配好真实模型（别名默认 `company`，用 `AEP_DEMO_MODEL` 换；知识库的向量模型默认 `company-embed`，用 `AEP_DEMO_EMBEDDING_MODEL` 换）和 Databricks（`AEP_DATABRICKS_HOST`、`AEP_DATABRICKS_TOKEN`、`AEP_DATABRICKS_CLUSTER_ID`、`AEP_DATABRICKS_SOURCE_CATALOG`、`AEP_DATABRICKS_CATALOG`、`AEP_DATABRICKS_SCHEMA`），`make up` 之后：
+
+```bash
+make demo
+```
+
+它会检查模型网关、示例库和 Databricks（`GET /health/demo`，逐项打印 ✓ 或缺什么；缺 Databricks 只警告），没有 `retail` 库时导入它，建好两个知识库并等文档处理完，用模板建好并发布应用，最后打印应用页、知识库页地址和演示需求。可以重复执行：已经一样的东西不会再动，知识库文档改了就重新上传，应用配置被改过就按模板重新发布一版。
+
 ### 评测
 
 `evals/etl/cases.yaml` 是 ETL 评测集：示例库上的一组需求，以及好的结果要满足什么（目标表、列、假设、试跑行数等，写法见文件开头）。平台起来之后：
