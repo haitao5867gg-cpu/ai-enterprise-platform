@@ -41,7 +41,8 @@
   "title": "起草售后回复",     // 1–50 字符
   "max_visits": 3,            // 一次运行里最多跑几次，1–10，不写为 3；超过时运行失败并写明原因
   "on_error": OnError,        // 只有 llm、classifier、tool、knowledge、agent、code 可以设；不写等于 {"then": "stop"}
-  "ui": {"x": 120, "y": 40}   // 留给以后的画布，平台原样保存，不参与运行
+  "ui": {"x": 120, "y": 40},  // 留给以后的画布，平台原样保存，不参与运行
+  "note": "讲解说明"           // 可选，最多 500 字符，只给人看，见 data-nodes.md
 }
 
 // OnError
@@ -68,6 +69,8 @@
 每种类型的设置字段如下（公共字段不再重复）。“产出”是这个节点写进变量池的字段，“分支”是它的出边要用的 `branch` 名。
 
 **knowledge 知识检索**的设置、产出和引用编号规则见 [knowledge.md](knowledge.md#编排应用知识检索节点)。
+
+**数据工程节点** `etl_profile`、`etl_plan_check`、`databricks_ingest`、`etl_code_check`、`databricks_dev_run` 见 [data-nodes.md](data-nodes.md)。
 
 **start 开始**：恰好一个。
 
@@ -203,11 +206,11 @@
 | 列表里的某一项 | `["body", "config", "graph", "nodes", "start", "inputs", 0, "key"]` |
 | 某个分支没连、连了不存在的分支 | `["body", "config", "graph", "nodes", "route", "branches", "product"]` |
 | 出边指向不存在的节点 | `["body", "config", "graph", "edges", 3, "to"]` |
-| 节点从开始到不了、到不了结束、循环没有经过人工 / 条件 / 分类节点 | `["body", "config", "graph", "nodes", "answer"]` |
+| 节点从开始到不了、到不了结束、循环里没有带分支的节点 | `["body", "config", "graph", "nodes", "answer"]` |
 | 整张图的问题（没有开始节点、超过 50 个节点） | `["body", "config", "graph"]` |
 | 常量 | `["body", "config", "env", "vars", 0, "key"]` |
 
-检查的完整清单：恰好一个开始节点，至少一个结束节点；节点 id 不重复；每个节点的每个分支恰好一条出边、没有多余的出边；从开始能到每个节点，每个节点能到某个结束节点；每个循环至少经过一个人工、条件或分类节点；变量引用的节点和字段存在且一定已经跑过（循环例外见上）；模型别名在网关上、Skill 版本已发布、数据源已登记、工具在该数据源上；`{{secret.*}}` 只在工具参数里且已在 `env.secrets` 里声明；最多 50 个节点、200 条边、50 个常量、20 个密钥。
+检查的完整清单：恰好一个开始节点，至少一个结束节点；节点 id 不重复；每个节点的每个分支恰好一条出边、没有多余的出边；从开始能到每个节点，每个节点能到某个结束节点；每个循环至少经过一个带分支的节点（人工、条件、分类和带分支的数据工程节点，`error` 分支不算）；变量引用的节点和字段存在且一定已经跑过（循环例外见上）；模型别名在网关上、Skill 版本已发布、数据源已登记、工具在该数据源上；`{{secret.*}}` 只在工具参数里且已在 `env.secrets` 里声明；最多 50 个节点、200 条边、50 个常量、20 个密钥。
 
 运行时还有总步数上限：一次运行最多执行 200 个节点。
 
@@ -220,7 +223,7 @@
   "type": "llm",
   "label": "调用模型",
   "description": "调一次模型，产出一段文字或几个字段",
-  "category": "model" | "logic" | "tool" | "human" | "terminal",
+  "category": "model" | "logic" | "tool" | "data" | "human" | "terminal",
   "error_handling": true,                 // 能否设 on_error
   "outputs": [{"key": "text", "description": "模型的回答"}],   // 固定产出；随设置变化的（JSON 字段、表单字段、代码返回值）不在这里
   "defaults": {"model": null, "skills": [], "prompt": "", "output": {"kind": "text"}},   // 新建节点时用，不含公共字段
