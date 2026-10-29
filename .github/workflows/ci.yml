@@ -120,8 +120,20 @@ jobs:
             mysql -uroot sales < connectors/mysql/seed/001-source.sql
           docker exec -i -e MYSQL_PWD=local-source-admin ${{ job.services.mysql.id }} \
             mysql -uroot sales < connectors/mysql/seed/002-reader.sql
-      # The tests start a real HTTP listener and call all five MCP tools as well.
+      # The tests start a real HTTP listener and call all six MCP tools as well.
       - run: uv run --frozen --project connectors/mysql pytest connectors/mysql/tests -q
+      - name: Verify the repeatable retail seed with the SELECT-only account
+        run: |
+          for attempt in 1 2; do
+            docker exec -i -e MYSQL_PWD=local-source-admin ${{ job.services.mysql.id }} \
+              mysql -uroot < connectors/mysql/seed/003-retail.sql
+          done
+          counts=$(docker exec -e MYSQL_PWD=local-source-reader ${{ job.services.mysql.id }} \
+            mysql -usource_reader --batch --skip-column-names -e \
+            "SELECT CONCAT_WS(',', (SELECT COUNT(*) FROM retail.customers),
+              (SELECT COUNT(*) FROM retail.products), (SELECT COUNT(*) FROM retail.orders),
+              (SELECT COUNT(*) FROM retail.order_items))")
+          test "$counts" = "1200,150,15000,36000"
       - if: failure()
         run: docker logs ${{ job.services.mysql.id }}
 
@@ -176,15 +188,15 @@ jobs:
           id=$(curl -sf http://localhost:8000/datasources |
             python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["name"] == "示例库"))')
           curl -sf "http://localhost:8000/datasources/$id/tools" |
-            python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert {"describe_table", "sample_rows", "table_stats"} <= names'
+            python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert {"describe_table", "sample_rows", "read_rows", "table_stats"} <= names'
       - name: MySQL is registered as the second source and exposes the same tools
         run: |
           id=$(curl -sf http://localhost:8000/datasources |
             python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["kind"] == "mysql" and d["name"] == "MySQL 示例库"))')
           curl -sf "http://localhost:8000/datasources/$id/tools" |
-            python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert names == {"list_schemas", "list_tables", "describe_table", "sample_rows", "table_stats"}'
+            python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert names == {"list_schemas", "list_tables", "describe_table", "sample_rows", "read_rows", "table_stats"}'
 
-      - name: Upload a CSV, verify registration and call all five files connector tools
+      - name: Upload a CSV, verify registration and call all six files connector tools
         run: scripts/smoke-files.sh
       - name: A code node runs in the sandbox, which reaches neither the internet nor the database
         run: scripts/smoke-sandbox.sh

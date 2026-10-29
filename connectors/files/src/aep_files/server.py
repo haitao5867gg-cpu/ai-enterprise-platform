@@ -61,6 +61,17 @@ def create_app(settings: Settings | None = None) -> Starlette:
         return await call(ctx, "sample_rows", schema, table, limit)
 
     @server.tool(annotations=READ_ONLY)
+    async def read_rows(
+        schema: str,
+        table: str,
+        ctx: Context,
+        offset: Annotated[int, Field(strict=True, ge=0)] = 0,
+        limit: Annotated[int, Field(strict=True, ge=1, le=5000)] = 1000,
+    ) -> dict[str, Any]:
+        """Read a stable page ordered by primary key, or all columns when there is no key."""
+        return await call(ctx, "read_rows", schema, table, offset, limit)
+
+    @server.tool(annotations=READ_ONLY)
     async def table_stats(schema: str, table: str, ctx: Context) -> dict[str, Any]:
         """Return row counts and bounded-sample null fractions/distinct counts.
 

@@ -1,4 +1,4 @@
-"""Call all five tools against an uploaded dataset over real MCP HTTP."""
+"""Call all six tools against an uploaded dataset over real MCP HTTP."""
 
 import argparse
 import asyncio
@@ -7,7 +7,7 @@ from typing import Any
 
 from mcp import Client
 
-TOOLS = {"list_schemas", "list_tables", "describe_table", "sample_rows", "table_stats"}
+TOOLS = {"list_schemas", "list_tables", "describe_table", "sample_rows", "read_rows", "table_stats"}
 
 
 async def check(url: str) -> dict[str, Any]:
@@ -28,7 +28,11 @@ async def check(url: str) -> dict[str, Any]:
         for table in tables:
             columns = (await call("describe_table", schema=schema, table=table))["columns"]
             rows = (await call("sample_rows", schema=schema, table=table, limit=5))["rows"]
+            page = await call("read_rows", schema=schema, table=table, limit=5)
             stats = await call("table_stats", schema=schema, table=table)
+            assert page["columns"] == [c["name"] for c in columns]
+            assert len(page["rows"]) == min(5, stats["estimated_row_count"])
+            assert page["next_offset"] == (5 if stats["estimated_row_count"] > 5 else None)
             assert stats["sample_row_count"] <= stats["sample_limit"]
             assert stats["estimated_row_count"] >= len(rows)
             assert {c["name"] for c in columns} == {c["name"] for c in stats["columns"]}

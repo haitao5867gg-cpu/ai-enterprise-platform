@@ -9,7 +9,7 @@ from mcp import Client
 
 from aep_postgres.config import Settings
 
-TOOLS = {"list_schemas", "list_tables", "describe_table", "sample_rows", "table_stats"}
+TOOLS = {"list_schemas", "list_tables", "describe_table", "sample_rows", "read_rows", "table_stats"}
 
 
 async def check(url: str) -> dict[str, Any]:

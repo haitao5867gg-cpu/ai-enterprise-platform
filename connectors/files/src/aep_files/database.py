@@ -51,7 +51,17 @@ def validate_dataset_id(value: str) -> str:
     return value
 
 
+def validate_identifier(value: str) -> str:
+    if not value or any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise ConnectorError(
+            "File identifiers must be nonempty and contain no controls or surrogates"
+        )
+    return value
+
+
 def quote(value: str) -> str:
+    # Column names come from uploads, which keep tabs and newlines in headers;
+    # doubling quotes is enough to keep any of them a single identifier.
     return '"' + value.replace('"', '""') + '"'
 
 
@@ -126,6 +136,8 @@ class Database:
                 ) from None
 
     def _table(self, dataset_id: str, schema: str, table: str) -> tuple[Path, Table]:
+        validate_identifier(schema)
+        validate_identifier(table)
         directory, manifest = self.manifest(dataset_id)
         if schema == manifest.schema_name:
             for entry in manifest.tables:
@@ -175,6 +187,33 @@ class Database:
             "schema": schema,
             "table": table,
             "rows": json.loads(json.dumps(rows, default=_json_value)),
+        }
+
+    def read_rows(
+        self, dataset_id: str, schema: str, table: str, offset: int = 0, limit: int = 1000
+    ) -> dict[str, Any]:
+        if type(offset) is not int or offset < 0:
+            raise ConnectorError("offset must be a non-negative integer")
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise ConnectorError("limit must be an integer between 1 and 5000")
+        path, entry = self._table(dataset_id, schema, table)
+        names = [c.name for c in entry.columns]
+        primary_key = [c.name for c in entry.columns if c.primary_key]
+        projection = ", ".join(quote(name) for name in names)
+        ordering = ", ".join(quote(name) for name in primary_key or names)
+        with self.connect(dataset_id) as conn:
+            values = conn.execute(
+                f"SELECT {projection} FROM read_parquet(?) AS {quote(table)} "
+                f"ORDER BY {ordering} LIMIT ? OFFSET ?",
+                [str(path), limit + 1, offset],
+            ).fetchall()
+        rows = [dict(zip(names, row, strict=True)) for row in values[:limit]]
+        return {
+            "schema": schema,
+            "table": table,
+            "columns": names,
+            "rows": json.loads(json.dumps(rows, default=_json_value)),
+            "next_offset": offset + limit if len(values) > limit else None,
         }
 
     def table_stats(self, dataset_id: str, schema: str, table: str) -> dict[str, Any]:
