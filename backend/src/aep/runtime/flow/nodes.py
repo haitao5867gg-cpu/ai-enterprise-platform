@@ -24,7 +24,7 @@ from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import search
-from aep.knowledge.store import KnowledgeStore
+from aep.knowledge.store import Hit, KnowledgeStore
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.skills import SkillContent, SkillStore
@@ -800,23 +800,25 @@ async def run_end(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
 # knowledge
 
 
-async def check_knowledge(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+async def _check_knowledge_settings(
+    node: dict[str, Any], p: Problems, env: CheckEnv, max_top_k: int
+) -> None:
     bases = _list(node, "knowledge_bases", p, "知识库", 1, 5)
     for i, kb_id in enumerate(bases):
         if not isinstance(kb_id, str) or not kb_id.strip():
             p.add(("knowledge_bases", i), "要选择知识库")
         elif env.strict and (env.knowledge is None or await env.knowledge.get(kb_id) is None):
             p.add(("knowledge_bases", i), f"没有知识库 {kb_id}")
-    _text(node, "query", p, "检索问题", required=True, max_length=2000)
     top_k = node.get("top_k", 5)
-    if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 20:
-        p.add(("top_k",), "检索片段数要在 1–20 之间")
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= max_top_k:
+        p.add(("top_k",), f"检索片段数要在 1–{max_top_k} 之间")
     score = node.get("min_score", 0.3)
     if isinstance(score, bool) or not isinstance(score, int | float) or not 0 <= score <= 1:
         p.add(("min_score",), "最低相似度要在 0–1 之间")
     try:
+        retrieval = node.get("retrieval")
         Retrieval.model_validate(
-            node.get("retrieval") or {},
+            retrieval if retrieval is not None else {},
             context={
                 "top_k": top_k if isinstance(top_k, int) else 5,
                 "rerank_models": env.rerank_models if env.strict else None,
@@ -826,6 +828,30 @@ async def check_knowledge(node: dict[str, Any], p: Problems, env: CheckEnv) -> N
         for error in exc.errors():
             cause = error.get("ctx", {}).get("error")
             p.add(("retrieval", *error["loc"]), str(cause) if cause else "检索参数格式或范围不正确")
+
+
+async def check_knowledge(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+    await _check_knowledge_settings(node, p, env, 20)
+    _text(node, "query", p, "检索问题", required=True, max_length=2000)
+
+
+def _index_knowledge_hits(
+    found: list[Hit], citations: dict[str, int], node: dict[str, Any]
+) -> tuple[list[IndexedHit], dict[str, dict[str, Any]]]:
+    """Extend the run's numbering in place and record this node as the latest source."""
+    next_index = max(citations.values(), default=0) + 1
+    hits: list[IndexedHit] = []
+    sources: dict[str, dict[str, Any]] = {}
+    for hit in found:
+        if hit.chunk_id not in citations:
+            citations[hit.chunk_id] = next_index
+            next_index += 1
+        indexed = IndexedHit(**asdict(hit), index=citations[hit.chunk_id])
+        hits.append(indexed)
+        sources[hit.chunk_id] = asdict(
+            Source(**asdict(indexed), node=node["id"], node_title=node["title"])
+        )
+    return hits, sources
 
 
 async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
@@ -848,18 +874,7 @@ async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime
     except Exception as exc:  # noqa: BLE001 - retrieval failures use the node's on_error
         raise NodeFailure("knowledge_error", f"知识库检索失败：{exc}") from exc
     citations = dict(state.get("citations") or {})
-    next_index = max(citations.values(), default=0) + 1
-    hits: list[IndexedHit] = []
-    sources: dict[str, dict[str, Any]] = {}
-    for hit in found:
-        if hit.chunk_id not in citations:
-            citations[hit.chunk_id] = next_index
-            next_index += 1
-        indexed = IndexedHit(**asdict(hit), index=citations[hit.chunk_id])
-        hits.append(indexed)
-        sources[hit.chunk_id] = asdict(
-            Source(**asdict(indexed), node=node["id"], node_title=node["title"])
-        )
+    hits, sources = _index_knowledge_hits(found, citations, node)
     return Outcome(
         {"hits": [asdict(hit) for hit in hits], "context": context(hits)},
         citations=citations,
@@ -867,7 +882,7 @@ async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime
     )
 
 
-# tool and agent: data source tools
+# tool and agent
 
 # How much of a tool's result goes back to the agent's model.
 MAX_TOOL_RESULT = 8000
@@ -939,7 +954,7 @@ async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
 async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     await _model_and_skills(node, p, env)
     _text(node, "task", p, "任务说明", required=True)
-    entries = _list(node, "tools", p, "允许的工具", 1, 10)
+    entries = _list(node, "tools", p, "允许的工具", 0, 10)
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
             p.add(("tools", i), "每项要有 datasource 和 tools")
@@ -958,6 +973,15 @@ async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
             names,
             ("tools", i, "tools"),
         )
+    knowledge = node.get("knowledge")
+    if knowledge is not None:
+        if not isinstance(knowledge, dict):
+            p.add(("knowledge",), "知识库设置必须是对象")
+        else:
+            nested = Problems((*p.prefix, "knowledge"), p.found)
+            await _check_knowledge_settings(knowledge, nested, env, 10)
+    elif not entries:
+        p.add(("tools",), "至少选一个数据源工具或知识库")
     steps = node.get("max_steps", 8)
     if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 20:
         p.add(("max_steps",), "最多步数要在 1–20 之间")
@@ -972,22 +996,42 @@ AGENT_PROTOCOL = """每次只输出一个 JSON 对象，三选一：
 
 async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     get = rt.lookup(state)
-    offered: dict[str, tuple[DataSource, ToolInfo]] = {}
+    offered: dict[str, tuple[DataSource, ToolInfo] | None] = {}
+    lines = []
     for entry in node["tools"]:
         source = await rt.source(refs.resolve(entry["datasource"], get))
         wanted = entry.get("tools")
         for tool in await rt.list_tools(source):
             if wanted is None or tool.name in wanted:
-                offered[f"t{len(offered) + 1}"] = (source, tool)
+                key = f"t{len(offered) + 1}"
+                offered[key] = (source, tool)
+                lines.append(
+                    f"- {key}：数据源「{source.name}」的 {tool.name}。{tool.description}"
+                    f" 参数：{json.dumps(tool.input_schema, ensure_ascii=False)}"
+                )
+    knowledge = node.get("knowledge")
+    bases: dict[str, str] = {}
+    if knowledge is not None:
+        descriptions = []
+        for kb_id in knowledge["knowledge_bases"]:
+            base = await rt.knowledge.get(kb_id) if rt.knowledge else None
+            if base is not None:
+                bases[base.name] = base.kb_id
+                descriptions.append(f"「{base.name}」：{base.description}")
+        offered["kb"] = None
+        lines.append(
+            "- kb：在知识库里检索资料。\n"
+            + "\n".join(descriptions)
+            + '\n 参数：{"query": "要查的内容", "knowledge_bases": ["知识库名称"]}。'
+            "query 必须是非空字符串；knowledge_bases 可选，不写查全部，"
+            "写了只查这些名称对应的知识库。"
+        )
     if not offered:
         raise NodeFailure("tool_error", "选的数据源上没有可用的工具")
-    lines = [
-        f"- {key}：数据源「{source.name}」的 {tool.name}。{tool.description}"
-        f" 参数：{json.dumps(tool.input_schema, ensure_ascii=False)}"
-        for key, (source, tool) in offered.items()
-    ]
     skills = {s["name"]: rt.skills[(s["name"], s["version"])] for s in node.get("skills") or []}
     parts = [AGENT_PROTOCOL, "可以用的工具：\n" + "\n".join(lines)]
+    if knowledge is not None:
+        parts.append("用到检索到的资料时，在回答里按资料前的 [n] 标出处；资料里没有的不要编。")
     if skills:
         listed = "\n".join(f"- {name}：{c.description}" for name, c in skills.items())
         parts.append("可以读取的 Skill（需要时用 read_skill 读全文）：\n" + listed)
@@ -1001,15 +1045,32 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         if action == "answer":
             return None if isinstance(data.get("text"), str) else "answer 要有文字 text"
         if action == "call":
-            if data.get("tool") not in offered:
+            if not isinstance(data.get("tool"), str) or data["tool"] not in offered:
                 return f"没有工具 {data.get('tool')}，只能用 " + "、".join(offered)
-            return None if isinstance(data.get("args", {}), dict) else "args 必须是对象"
+            args = data.get("args", {})
+            if not isinstance(args, dict):
+                return "args 必须是对象"
+            if data["tool"] == "kb":
+                query = args.get("query")
+                if not isinstance(query, str) or not query.strip():
+                    return "query 必须是非空字符串"
+                if "knowledge_bases" in args:
+                    names = args["knowledge_bases"]
+                    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+                        return "knowledge_bases 必须是知识库名称列表"
+                    for name in names:
+                        if name not in bases:
+                            return f"没有知识库「{name}」，只能用 " + "、".join(bases)
+            return None
         if action == "read_skill":
             return None if data.get("name") in skills else f"没有 Skill {data.get('name')}"
         return "action 只能是 call、read_skill 或 answer"
 
     limit = node.get("max_steps", 8)
     steps: list[dict[str, Any]] = []
+    citations = dict(state.get("citations") or {})
+    sources: dict[str, dict[str, Any]] = {}
+    hits: dict[int, IndexedHit] = {}
     forced = False
     while True:
         data = await _ask_json(rt, node, messages, valid)
@@ -1017,7 +1078,10 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         if data["action"] == "answer":
             text = data["text"]
             return Outcome(
-                {"text": text, "steps": steps}, messages=[{"role": "assistant", "content": text}]
+                {"text": text, "steps": steps, "hits": [asdict(hits[i]) for i in sorted(hits)]},
+                messages=[{"role": "assistant", "content": text}],
+                citations=citations,
+                sources=sources,
             )
         if len(steps) >= limit:
             if forced:
@@ -1046,15 +1110,56 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                 }
             )
             continue
-        source, tool = offered[data["tool"]]
         args = data.get("args") or {}
-        step = {"tool": tool.name, "datasource": source.datasource_id, "args": args, "error": None}
-        try:
-            result = await rt.call(source, tool.name, args)
-            reply = json.dumps(result, ensure_ascii=False, default=str)[:MAX_TOOL_RESULT]
-        except NodeFailure as exc:
-            step["error"] = exc.message
-            reply = f"出错了：{exc.message}"
+        if data["tool"] == "kb":
+            names = args.get("knowledge_bases", list(bases))
+            kb_ids = (
+                [bases[name] for name in names]
+                if "knowledge_bases" in args
+                else knowledge["knowledge_bases"]
+            )
+            step = {
+                "tool": "search_knowledge",
+                "datasource": None,
+                "args": {"query": args["query"], "knowledge_bases": names},
+                "error": None,
+                "hits": 0,
+            }
+            try:
+                if rt.knowledge is None:
+                    raise ValueError("平台没有配置知识库")
+                found = await search(
+                    rt.knowledge,
+                    rt.llm_client,
+                    kb_ids,
+                    args["query"],
+                    knowledge.get("top_k", 5),
+                    knowledge.get("min_score", 0.3),
+                    knowledge.get("retrieval"),
+                    settings=rt.settings,
+                )
+                indexed, latest = _index_knowledge_hits(found, citations, node)
+                hits.update((hit.index, hit) for hit in indexed)
+                sources.update(latest)
+                step["hits"] = len(indexed)
+                reply = context(indexed)[:MAX_TOOL_RESULT] if indexed else "没有找到相关资料"
+            except Exception as exc:  # noqa: BLE001 - tool errors go back to the model
+                step["error"] = f"知识库检索失败：{exc}"
+                reply = f"出错了：{step['error']}"
+        else:
+            source, tool = offered[data["tool"]]
+            step = {
+                "tool": tool.name,
+                "datasource": source.datasource_id,
+                "args": args,
+                "error": None,
+            }
+            try:
+                result = await rt.call(source, tool.name, args)
+                reply = json.dumps(result, ensure_ascii=False, default=str)[:MAX_TOOL_RESULT]
+            except NodeFailure as exc:
+                step["error"] = exc.message
+                reply = f"出错了：{exc.message}"
         steps.append(step)
         messages += [said, {"role": "user", "content": f"工具 {data['tool']} 返回：\n{reply}"}]
 
@@ -1245,13 +1350,18 @@ TYPES: dict[str, NodeType] = {
             check_agent,
             run_agent,
             _none,
-            _fixed("text", "steps"),
-            outputs=(("text", "最终回答"), ("steps", "调用过的工具")),
+            _fixed("text", "steps", "hits"),
+            outputs=(
+                ("text", "最终回答"),
+                ("steps", "调用过的工具"),
+                ("hits", "命中的片段和出处编号"),
+            ),
             defaults={
                 "model": None,
                 "skills": [],
                 "task": "",
                 "tools": [{"datasource": "", "tools": None}],
+                "knowledge": None,
                 "max_steps": 8,
             },
             error_handling=True,

@@ -278,6 +278,30 @@ def _knowledge_qa() -> dict[str, Any]:
     return config
 
 
+def _knowledge_agent() -> dict[str, Any]:
+    config = blank()
+    config["graph"]["nodes"][1] = {
+        "id": "agent",
+        "type": "agent",
+        "title": "检索资料并回答",
+        "model": None,
+        "skills": [],
+        "task": (
+            "先检索知识库里的资料，再回答问题：{{start.question}}\n"
+            "用 [n] 标注出处；资料里没有答案就直说，不要编造。"
+        ),
+        "tools": [],
+        "knowledge": {"knowledge_bases": [], "top_k": 5, "min_score": 0.3},
+        "max_steps": 6,
+    }
+    config["graph"]["nodes"][-1]["outputs"] = [{"key": "answer", "from": ["{{agent.text}}"]}]
+    config["graph"]["edges"] = [
+        {"from": "start", "to": "agent"},
+        {"from": "agent", "to": "end"},
+    ]
+    return config
+
+
 @dataclass(frozen=True)
 class Template:
     id: str
@@ -323,6 +347,13 @@ TEMPLATES = {
             "知识问答",
             "检索知识库里的资料，由模型回答问题并标注出处。",
             _knowledge_qa(),
+            needs=("knowledge_base",),
+        ),
+        Template(
+            "knowledge-agent",
+            "知识库智能体",
+            "智能体按需检索知识库里的资料，回答问题并标注出处。",
+            _knowledge_agent(),
             needs=("knowledge_base",),
         ),
     )

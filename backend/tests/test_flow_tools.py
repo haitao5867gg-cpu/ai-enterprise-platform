@@ -230,6 +230,7 @@ async def test_datasource_qa_agent_calls_tools_and_answers():
         flow = (await p.api.get(f"/runs/{run['run_id']}/flow")).json()
         agent = next(s for s in flow["steps"] if s["node"] == "agent")
         steps = agent["output"]["vars"]["agent"]["steps"]
+        assert agent["output"]["vars"]["agent"]["hits"] == []
         assert [(s["tool"], s["args"]) for s in steps] == [
             ("list_schemas", {}),
             ("list_tables", {"schema": "sales"}),
