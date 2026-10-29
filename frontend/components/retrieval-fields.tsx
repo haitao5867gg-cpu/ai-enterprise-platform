@@ -74,7 +74,7 @@ export function RetrievalFields({
           type="checkbox"
           role="switch"
           checked={current.rerank !== null}
-          disabled={!models.length}
+          disabled={!models.length && current.rerank === null}
           aria-describedby={!models.length ? `${id}-unavailable` : undefined}
           onChange={(event) =>
             update({
