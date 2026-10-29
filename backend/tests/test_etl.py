@@ -126,6 +126,7 @@ async def test_request_to_bundle_with_one_rejection():
     run_id = await start(service, ds)
     view = await service.get(run_id)
     assert view.record.status == "waiting", view.record.error
+    assert view.record.step == {"node": "review", "title": "确认方案"}
     assert view.pending["details"]["type"] == "etl_plan"
     assert view.pending["details"]["plan"]["targets"][0]["load"]["mode"] == "incremental"
     profiled = gateway.requests[0]["body"]["messages"][1]["content"]

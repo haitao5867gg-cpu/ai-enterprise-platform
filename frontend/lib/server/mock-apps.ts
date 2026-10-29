@@ -329,6 +329,11 @@ export function mockSkillUsage(name: string): SkillUsage[] {
       );
     });
 }
+// Like the backend, runs show their app's title as it is now, archived apps included.
+export function mockAppTitle(app: string): string | undefined {
+  return store.get(app)?.title;
+}
+
 export function mockAppSnapshot(app: string, version?: number, draft = false) {
   const entry = store.get(app);
   if (!entry || entry.archived) return null;

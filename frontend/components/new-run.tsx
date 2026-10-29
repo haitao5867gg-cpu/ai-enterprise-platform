@@ -16,6 +16,7 @@ import {
   type FieldValues,
 } from "../lib/input-fields";
 import { InputFields } from "./input-fields";
+import { savedActor, saveActor } from "../lib/actor";
 
 export function NewRun() {
   const router = useRouter();
@@ -37,7 +38,13 @@ export function NewRun() {
   const [error, setError] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const requester = useRef<HTMLInputElement>(null);
   const busy = useRef(false);
+  // Filled in after mounting: the server has no storage.
+  useEffect(() => {
+    if (requester.current && !requester.current.value)
+      requester.current.value = savedActor();
+  }, []);
   useEffect(() => {
     const controller = new AbortController();
     async function loadSources() {
@@ -131,6 +138,8 @@ export function NewRun() {
     busy.current = true;
     setSubmitting(true);
     setError("");
+    const name = requester.current?.value.trim() ?? "";
+    if (name) saveActor(name);
     try {
       const receipt = await createRun({
         app,
@@ -138,6 +147,7 @@ export function NewRun() {
           app === "etl"
             ? { datasource_id: datasourceId, request: text.trim(), language }
             : inputPayload(fields, values),
+        ...(name ? { requester: name } : {}),
       });
       router.push(`/runs/${encodeURIComponent(receipt.run_id)}`);
     } catch (err) {
@@ -360,6 +370,23 @@ export function NewRun() {
               </select>
             </div>
           )}
+          <div className="form-section">
+            <label htmlFor="requester">
+              你的名字<span className="muted">（选填）</span>
+            </label>
+            <input
+              id="requester"
+              className="requester-input"
+              autoComplete="name"
+              maxLength={100}
+              ref={requester}
+              disabled={submitting}
+              aria-describedby="requester-hint"
+            />
+            <p className="field-hint" id="requester-hint">
+              会显示在运行记录里，方便大家知道这个需求是谁提的。
+            </p>
+          </div>
           {error && <ErrorNotice message={error} />}
           <div className="form-actions">
             <span>运行过程与结果将自动记录</span>

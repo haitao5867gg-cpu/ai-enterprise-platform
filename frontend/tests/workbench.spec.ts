@@ -26,16 +26,23 @@ test("new run → approval → done, then reject with a comment", async ({
   await page
     .getByLabel("你想完成什么？")
     .fill("请整理一份客户数据清洗方案，并在执行前让我确认。");
+  await page.getByLabel("你的名字").fill(" 李雷 ");
   await capture(page, "new-run");
   const created = page.waitForResponse(
     (r) => r.url().endsWith("/api/runs") && r.request().method() === "POST",
   );
   await create.click();
   expect((await created).status()).toBe(201);
+  expect((await created).request().postDataJSON().requester).toBe("李雷");
   await expect(page).toHaveURL(/\/runs\/[a-z0-9-]+$/);
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
   ).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(
+    "请整理一份客户数据清洗方案，并在执行前让我确认。",
+  );
+  await expect(page.locator(".detail-meta")).toContainText("李雷 提出 · 刚刚");
+  await expect(page.locator(".run-info")).toContainText("停在「确认」");
   await expect(
     page.getByRole("list", { name: "消息记录" }).getByRole("listitem"),
   ).toHaveCount(2);
@@ -58,6 +65,8 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
 
   await page.getByRole("main").getByRole("link", { name: "新建运行" }).click();
+  // The name is remembered for the next run.
+  await expect(page.getByLabel("你的名字")).toHaveValue("李雷");
   await page
     .getByLabel("你想完成什么？")
     .fill("检查订单数据的字段映射，执行前请确认。");
@@ -70,9 +79,11 @@ test("new run → approval → done, then reject with a comment", async ({
     (r) => r.url().endsWith("/resume") && r.method() === "POST",
   );
   await page.getByRole("button", { name: "驳回", exact: true }).click();
+  // The name given when starting the run is who decides, too.
   expect((await resumed).postDataJSON()).toEqual({
     decision: "reject",
     comment: "请先补充空值与重复数据的处理规则。",
+    actor: "李雷",
   });
   await expect(
     page.getByRole("list", { name: "消息记录" }).getByRole("listitem"),
@@ -88,7 +99,15 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
 
   await page.getByRole("link", { name: "返回运行记录" }).click();
-  await expect(page.getByRole("table")).toContainText("客户数据清洗方案");
+  const row = page
+    .getByRole("row")
+    .filter({ has: page.locator(`a[href="/runs/${id}"]`) });
+  await expect(row).toContainText("客户数据清洗方案");
+  await expect(row).toContainText("李雷");
+  await expect(row).toContainText("问答示例");
+  await expect(row).toContainText("已完成");
+  // How long people took depends on this test's speed; the list test checks it.
+  await expect(row).toContainText(/机器 \d+ 秒/);
   await expect(page.getByRole("table")).toContainText("订单数据");
   await capture(page, "run-list");
   expect([...origins]).toEqual(["http://127.0.0.1:3100"]);
@@ -121,7 +140,98 @@ test("empty list, filters, loading failure and retry", async ({ page }) => {
     page.getByRole("heading", { name: "这个状态下还没有运行" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "等待确认", exact: true }).click();
-  await expect(page.getByRole("table")).toContainText("filter-test");
+  // A run without a title is named after its app.
+  await expect(page.getByRole("table")).toContainText("hello 的运行");
+});
+
+test("the run list says what each run is about, who asked, where it is and how long it took", async ({
+  page,
+}) => {
+  await page.clock.install({ time: new Date("2026-10-29T10:00:00Z") });
+  const running = {
+    run_id: "list-running",
+    app: "retail-etl",
+    app_title: "零售数据 ETL",
+    app_version: 3,
+    draft: false,
+    status: "running",
+    title: "按城市和月份统计有效订单销售额",
+    created_by: "李雷",
+    created_at: "2026-10-29T07:50:00Z",
+    updated_at: "2026-10-29T09:55:00Z",
+    finished_at: null,
+    step: { node: "plan", title: "出方案" },
+    waiting_since: null,
+    wait_seconds: 7200,
+  };
+  const old = {
+    run_id: "list-old",
+    app: "hello",
+    app_title: "问答示例",
+    app_version: 1,
+    draft: false,
+    status: "done",
+    title: null,
+    created_by: null,
+    created_at: "2026-10-27T10:00:00Z",
+    updated_at: "2026-10-27T10:03:00Z",
+    finished_at: "2026-10-27T10:03:00Z",
+    step: { node: "end", title: "结束" },
+    waiting_since: null,
+    // From before waits were counted.
+    wait_seconds: null,
+  };
+  // Development mode loads the list twice on mounting; what counts is what comes later.
+  let later = false;
+  let refreshes = 0;
+  await page.route("**/api/runs", (route) => {
+    if (later) refreshes += 1;
+    return route.fulfill({
+      json: !later
+        ? [running, old]
+        : [
+            {
+              ...running,
+              status: "waiting",
+              step: { node: "review", title: "确认需求" },
+              waiting_since: "2026-10-29T10:00:00Z",
+            },
+            old,
+          ],
+    });
+  });
+  await page.goto("/");
+  const rows = page.getByRole("table").getByRole("row");
+  const first = rows.nth(1);
+  await expect(first).toContainText("按城市和月份统计有效订单销售额");
+  await expect(first).toContainText("李雷");
+  await expect(first).toContainText("零售数据 ETL");
+  await expect(first).toContainText("v3");
+  await expect(first).toContainText("进行到「出方案」");
+  await expect(first).toContainText("2 小时前");
+  await expect(first.locator("time")).toHaveAttribute("title", /2026/);
+  await expect(first.locator(".run-duration span")).toHaveText([
+    "机器 10 分钟",
+    "等人 2 小时",
+  ]);
+  await expect(first).not.toContainText("list-running");
+  const second = rows.nth(2);
+  await expect(second).toContainText("问答示例 的运行");
+  await expect(second).toContainText("2 天前");
+  await expect(second).toContainText("用时 3 分钟");
+
+  // While a run is running the list refreshes itself, and stops once none is.
+  later = true;
+  await page.clock.fastForward(10_000);
+  await expect(first).toContainText("停在「确认需求」");
+  expect(refreshes).toBe(1);
+  const extra = page.waitForRequest("**/api/runs", { timeout: 1_000 }).then(
+    () => true,
+    () => false,
+  );
+  await page.clock.fastForward(30_000);
+  expect(await extra).toBe(false);
+  expect(refreshes).toBe(1);
 });
 
 test("failed creation preserves the input and can be retried", async ({

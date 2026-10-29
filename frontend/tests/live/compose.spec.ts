@@ -61,6 +61,7 @@ test("Compose: reject with feedback → revised answer → approve → done", as
   const comment = "请先补充空值与重复数据的处理规则。";
   await page.goto("/runs/new");
   await page.getByLabel("问题").fill("检查订单数据的字段映射，执行前请确认。");
+  await page.getByLabel("你的名字").fill("李雷");
   await page.getByRole("button", { name: "开始运行" }).click();
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
@@ -86,9 +87,13 @@ test("Compose: reject with feedback → revised answer → approve → done", as
   expect((await response.json()).status).toBe("done");
   expect((await response.json()).messages).toHaveLength(5);
   await page.getByRole("link", { name: "返回运行记录" }).click();
-  await expect(
-    page.getByRole("link", { name: `查看运行 ${id}`, exact: true }),
-  ).toBeVisible();
+  const row = page
+    .getByRole("row")
+    .filter({ has: page.locator(`a[href="/runs/${id}"]`) });
+  await expect(row).toContainText("检查订单数据的字段映射，执行前请确认。");
+  await expect(row).toContainText("李雷");
+  await expect(row).toContainText("问答示例");
+  await expect(row).toContainText("机器");
   await capture(page, "run-list");
 });
 

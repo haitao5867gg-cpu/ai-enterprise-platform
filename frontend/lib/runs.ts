@@ -17,13 +17,25 @@ export type Pending = {
   details?: unknown;
 };
 export type Approval = Pending;
+export type RunStep = { node: string; title: string };
 export type RunSummary = {
   app_version?: number | null;
   draft?: boolean;
   run_id: string;
   app: string;
+  app_title?: string;
   status: RunStatus;
-  messages?: Message[];
+  // What the run is about, in one line; null when its input has no text.
+  title?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  finished_at?: string | null;
+  step?: RunStep | null;
+  // The current wait for a person, and the seconds of waits already over
+  // (null: the run is from before waits were counted).
+  waiting_since?: string | null;
+  wait_seconds?: number | null;
 };
 export type Run = RunSummary & {
   messages: Message[];
@@ -61,6 +73,9 @@ function isMessages(value: unknown): value is Message[] {
   );
 }
 
+const optional = (value: unknown, type: "string" | "number") =>
+  value === undefined || value === null || typeof value === type;
+
 function isSummary(
   value: unknown,
 ): value is RunSummary & Record<string, unknown> {
@@ -70,8 +85,94 @@ function isSummary(
     value.run_id.length > 0 &&
     typeof value.app === "string" &&
     isStatus(value.status) &&
-    (value.messages === undefined || isMessages(value.messages))
+    ["app_title", "title", "created_by", "created_at", "finished_at"].every(
+      (key) => optional(value[key], "string"),
+    ) &&
+    optional(value.waiting_since, "string") &&
+    optional(value.wait_seconds, "number") &&
+    (value.step === undefined ||
+      value.step === null ||
+      (isRecord(value.step) && typeof value.step.title === "string"))
   );
+}
+
+export function runTitle(run: RunSummary): string {
+  return run.title || `${run.app_title || run.app} 的运行`;
+}
+
+export function versionLabel(run: RunSummary): string {
+  return run.draft
+    ? "草稿试运行"
+    : run.app_version
+      ? `v${run.app_version}`
+      : "";
+}
+
+// Where the run is, for its status: the step it is at, waits at, or failed in.
+export function stepText(run: RunSummary): string {
+  const title = run.step?.title;
+  if (!title) return "";
+  return run.status === "running"
+    ? `进行到「${title}」`
+    : run.status === "waiting"
+      ? `停在「${title}」`
+      : run.status === "error"
+        ? `失败于「${title}」`
+        : "";
+}
+
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)
+    return minutes % 60
+      ? `${hours} 小时 ${minutes % 60} 分钟`
+      : `${hours} 小时`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days} 天 ${hours % 24} 小时` : `${days} 天`;
+}
+
+export function formatTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+}
+
+export function timeAgo(iso: string, now: number): string {
+  const seconds = (now - Date.parse(iso)) / 1000;
+  if (Number.isNaN(seconds)) return "";
+  if (seconds < 60) return "刚刚";
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)} 小时前`;
+  if (seconds < 7 * 86_400) return `${Math.floor(seconds / 86_400)} 天前`;
+  return formatTime(iso);
+}
+
+// How long the run took so far: the machine's part and the wait for people, or
+// only the whole time for runs from before waits were counted.
+export function durationText(run: RunSummary, now: number): string {
+  if (!run.created_at) return "";
+  const end = run.finished_at ? Date.parse(run.finished_at) : now;
+  const total = Math.max(0, (end - Date.parse(run.created_at)) / 1000);
+  if (Number.isNaN(total)) return "";
+  if (typeof run.wait_seconds !== "number")
+    return `用时 ${formatDuration(total)}`;
+  const current = run.waiting_since
+    ? Math.max(0, (end - Date.parse(run.waiting_since)) / 1000) || 0
+    : 0;
+  const waited = run.wait_seconds + current;
+  const machine = `机器 ${formatDuration(Math.max(0, total - waited))}`;
+  return waited >= 1 ? `${machine} · 等人 ${formatDuration(waited)}` : machine;
 }
 
 export class ApiError extends Error {
@@ -240,6 +341,7 @@ export type CreateRunInput = {
   input: Record<string, unknown>;
   app_version?: number;
   draft?: boolean;
+  requester?: string;
 };
 export type ResumeInput = {
   decision: string;
