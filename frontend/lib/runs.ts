@@ -127,7 +127,11 @@ export async function requestJson(
     };
     let detail = "";
     let issues: ValidationIssue[] = [];
-    if (response.status === 409 || response.status === 422) {
+    if (
+      response.status === 409 ||
+      response.status === 422 ||
+      response.status === 502
+    ) {
       try {
         const value: unknown = await response.json();
         if (isRecord(value)) {
