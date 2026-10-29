@@ -3430,3 +3430,181 @@ a.asset-card:hover,
 .list-editor > p {
   font-size: 12px;
 }
+
+/* The editable canvas is separate from the read-only run diagram. */
+.flow-view-switch {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: #f1eef7;
+  border-radius: 7px;
+}
+.flow-view-switch [aria-pressed="true"] {
+  background: white;
+  border-radius: 5px;
+  color: var(--purple);
+  box-shadow: 0 1px 4px #35234815;
+}
+.flow-view-switch .text-button {
+  padding: 5px 12px;
+  font-size: 12px;
+  line-height: 20px;
+}
+.canvas-editor-body {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+.canvas-editor-body.with-node-panel {
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 400px);
+}
+.canvas-editor-body > .node-panel {
+  min-width: 0;
+  max-height: 744px;
+  overflow-y: auto;
+  border-left: 1px solid var(--line);
+}
+.canvas-editor-body .flow-detail-heading h3 {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.canvas-node-actions {
+  margin-bottom: 12px;
+}
+.flow-canvas-editor {
+  min-width: 0;
+}
+.canvas-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 64px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.canvas-toolbar > .text-button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.canvas-stage {
+  position: relative;
+  height: 680px;
+  background: #faf9fc;
+}
+.canvas-node-card {
+  position: relative;
+  width: 232px;
+  border: 1px solid #cfc5df;
+  border-radius: 10px;
+  background: white;
+  box-shadow: 0 3px 12px #3523480c;
+  font-size: 12px;
+}
+.canvas-stage .react-flow__node.selected .canvas-node-card,
+.canvas-stage .react-flow__node:focus-visible .canvas-node-card {
+  outline: 2px solid var(--purple);
+  outline-offset: 3px;
+}
+.canvas-node-card.invalid {
+  border: 2px solid #b5533c;
+  background: #fff7f4;
+}
+.canvas-node-heading {
+  height: 87px;
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 4px;
+  padding: 10px 14px;
+}
+.canvas-node-heading strong,
+.canvas-node-heading code {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.canvas-node-heading code {
+  color: var(--muted);
+  font-size: 11px;
+}
+.canvas-branch {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 0 15px;
+  height: 28px;
+  border-top: 1px solid #f0edf5;
+  color: #635574;
+}
+.canvas-branch > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-stage .react-flow__handle {
+  width: 12px;
+  height: 12px;
+  background: #896bb4;
+  border: 2px solid white;
+}
+.canvas-stage .react-flow__handle:hover {
+  background: #503379;
+  box-shadow: 0 0 0 4px #b2a1d340;
+}
+.canvas-edge-label {
+  position: absolute;
+  pointer-events: all;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 1px solid #e6e0ed;
+  border-radius: 5px;
+  background: #fffffff2;
+  color: #635574;
+  font-size: 11px;
+}
+.canvas-edge-label.selected {
+  border-color: var(--purple);
+}
+.canvas-edge-label button {
+  border: 0;
+  background: #f6e4df;
+  color: #9d3c26;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.canvas-edge-label .canvas-edge-name {
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.canvas-stage .react-flow__minimap {
+  width: 140px;
+  height: 100px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.canvas-add-menu {
+  position: absolute;
+  z-index: 10;
+  width: 320px;
+  max-width: calc(100% - 16px);
+  max-height: min(460px, calc(100% - 16px));
+  overflow-y: auto;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px #35234825;
+}
+.canvas-add-menu .add-node {
+  margin: 0;
+}
+.canvas-add-menu .node-type-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+.flow-editor > .remove-node {
+  margin: 16px;
+}

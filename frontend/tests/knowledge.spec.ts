@@ -10,6 +10,11 @@ import type { Document, KnowledgeBase } from "../lib/knowledge";
 
 test.describe.configure({ timeout: 90_000 });
 test.use({ actionTimeout: 15_000 });
+// Exercise the existing list editor explicitly; desktop now defaults to canvas.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("aep.flow-editor.view", "list"));
+});
+
 const unique = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const policy =

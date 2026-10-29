@@ -26,6 +26,7 @@ export default defineConfig({
         "apps-skills.spec.ts",
         "flow-apps.spec.ts",
         "flow-editor.spec.ts",
+        "flow-canvas.spec.ts",
         "knowledge.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },

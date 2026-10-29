@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   getNodeTypes,
   NODE_ID_PATTERN,
@@ -42,18 +42,17 @@ import {
   type FieldValues,
 } from "../lib/input-fields";
 import { createRun, errorMessage, fieldErrors } from "../lib/runs";
+import { AddNodePanel, type Pending } from "./flow-add-node";
+import {
+  FlowCanvas,
+  type CanvasActions,
+  type AddPosition,
+} from "./flow-canvas";
 import { FlowDiagram } from "./flow-diagram";
 import { NumberField, SelectField, TextField } from "./flow-fields";
 import { NodeSettings, type Change } from "./flow-node-form";
 import { InputFields } from "./input-fields";
 
-const categories: { key: NodeType["category"]; label: string }[] = [
-  { key: "model", label: "模型" },
-  { key: "logic", label: "逻辑" },
-  { key: "tool", label: "工具" },
-  { key: "human", label: "人工" },
-  { key: "terminal", label: "开始和结束" },
-];
 // Settings every node has, rendered by the editor itself rather than the type's form.
 const commonKeys = ["id", "title", "max_visits", "on_error", "ui"];
 const formKeys: Record<FlowNode["type"], string[]> = {
@@ -69,89 +68,6 @@ const formKeys: Record<FlowNode["type"], string[]> = {
   code: ["code", "inputs", "outputs", "timeout_seconds"],
   end: ["outputs"],
 };
-
-type Pending = { from: string; branch: string } | null;
-
-function AddNodePanel({
-  types,
-  config,
-  pending,
-  add,
-  close,
-}: {
-  types: NodeType[];
-  config: FlowConfig;
-  pending: Pending;
-  add: (type: NodeType, preset?: NodeType["presets"][number]) => void;
-  close: () => void;
-}) {
-  return (
-    <div
-      className="add-node"
-      role="dialog"
-      aria-label={
-        pending
-          ? `新建节点并连到「${config.graph.nodes.find((n) => n.id === pending.from)?.title ?? pending.from}」`
-          : "添加节点"
-      }
-    >
-      <div className="asset-section-heading">
-        <h3>
-          {pending
-            ? `新建节点并连到「${config.graph.nodes.find((n) => n.id === pending.from)?.title ?? pending.from}」`
-            : "添加节点"}
-        </h3>
-        <button type="button" className="text-button" onClick={close}>
-          取消
-        </button>
-      </div>
-      {categories.map((category) => {
-        const list = types.filter((type) => type.category === category.key);
-        if (!list.length) return null;
-        return (
-          <section key={category.key} aria-label={category.label}>
-            <h4>{category.label}</h4>
-            <div className="node-type-grid">
-              {list.map((type) => {
-                const full =
-                  type.max_count !== null &&
-                  config.graph.nodes.filter((node) => node.type === type.type)
-                    .length >= type.max_count;
-                return (
-                  <div className="node-type" key={type.type}>
-                    <button
-                      type="button"
-                      disabled={full}
-                      onClick={() => add(type)}
-                      aria-describedby={`type-${type.type}`}
-                    >
-                      {type.label}
-                    </button>
-                    <small id={`type-${type.type}`}>
-                      {full ? `最多 ${type.max_count} 个。` : type.description}
-                    </small>
-                    {!full &&
-                      type.presets.map((preset) => (
-                        <button
-                          key={preset.key}
-                          type="button"
-                          className="text-button"
-                          title={preset.description}
-                          onClick={() => add(type, preset)}
-                        >
-                          {type.label} · {preset.label}
-                        </button>
-                      ))}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        );
-      })}
-    </div>
-  );
-}
 
 function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
   if (!canFail(node)) return null;
@@ -421,6 +337,24 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
   );
 }
 
+const VIEW_KEY = "aep.flow-editor.view";
+function subscribeDesktop(notify: () => void) {
+  const media = window.matchMedia("(min-width: 900px)");
+  media.addEventListener("change", notify);
+  return () => media.removeEventListener("change", notify);
+}
+function subscribeView(notify: () => void) {
+  window.addEventListener("storage", notify);
+  return () => window.removeEventListener("storage", notify);
+}
+function savedView(): "canvas" | "list" {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "canvas";
+  } catch {
+    return "canvas";
+  }
+}
+
 export function FlowEditor({
   app,
   data,
@@ -438,6 +372,21 @@ export function FlowEditor({
   dirty: boolean;
   disabled: boolean;
 }) {
+  const desktop = useSyncExternalStore(
+    subscribeDesktop,
+    () => window.matchMedia("(min-width: 900px)").matches,
+    () => false,
+  );
+  const storedView = useSyncExternalStore(
+    subscribeView,
+    savedView,
+    () => "canvas" as const,
+  );
+  const [chosenView, setChosenView] = useState<"canvas" | "list" | null>(null);
+  const canvasMode = desktop && (chosenView ?? storedView) === "canvas";
+  const canvasRef = useRef<CanvasActions>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [addPosition, setAddPosition] = useState<AddPosition | null>(null);
   const nodes = config.graph.nodes;
   const [selected, setSelected] = useState(nodes[0]?.id ?? "");
   const [types, setTypes] = useState<NodeType[]>([]);
@@ -476,13 +425,29 @@ export function FlowEditor({
   };
   function add(type: NodeType, preset?: NodeType["presets"][number]) {
     const created = newNode(config, type, preset);
+    if (canvasMode)
+      created.ui = addPosition?.point ?? canvasRef.current?.center();
     let updated = insertNode(config, created, pending?.from ?? node?.id);
     if (pending)
       updated = setNext(updated, pending.from, pending.branch, created.id);
     setConfig(updated);
     setSelected(created.id);
+    setPanelOpen(true);
+    setAddPosition(null);
     setAdding(false);
     setPending(null);
+  }
+  function copyNode(item: FlowNode) {
+    const point = canvasRef.current?.positionOf(item.id) ?? item.ui;
+    const copy = {
+      ...structuredClone(item),
+      id: freeId(config, item.id),
+      title: `${item.title}（副本）`.slice(0, 50),
+      ...(point ? { ui: { x: point.x + 40, y: point.y + 40 } } : {}),
+    };
+    setConfig(insertNode(config, copy, item.id));
+    setSelected(copy.id);
+    setPanelOpen(true);
   }
   function commitId() {
     if (!idDraft || !node || idDraft.node !== node.id) return;
@@ -522,17 +487,122 @@ export function FlowEditor({
         .map(([key, msg]) => (key ? `${key}：${msg}` : msg))
     : [];
 
+  const removalDialog =
+    removal && removingNode ? (
+      <div
+        className="remove-node"
+        role="dialog"
+        aria-label={`删除节点「${removingNode.title}」`}
+      >
+        <strong>删除「{removingNode.title}」？</strong>
+        {removal.edges.length > 0 && (
+          <>
+            <p>会一起删除这些连线：</p>
+            <ul>
+              {removal.edges.map((edge) => (
+                <li key={edge}>{edge}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        {removal.references.length > 0 && (
+          <>
+            <p>这些设置引用了它的变量，删除后需要修改：</p>
+            <ul>
+              {removal.references.map((ref) => (
+                <li key={ref}>{ref}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        {!removal.edges.length && !removal.references.length && (
+          <p>没有连线和变量引用受影响。</p>
+        )}
+        <div className="asset-actions">
+          <button
+            type="button"
+            className="button reject"
+            onClick={() => {
+              setConfig(deleteNode(config, removing));
+              if (selected === removing)
+                setSelected(nodes.find((n) => n.id !== removing)?.id ?? "");
+              setRemoving("");
+            }}
+          >
+            确认删除
+          </button>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => setRemoving("")}
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    ) : null;
+
   return (
-    <section className="panel flow-editor" aria-label="编排">
+    <section
+      className="panel flow-editor"
+      aria-label="编排"
+      onKeyDown={(event) => {
+        if (
+          !canvasMode ||
+          adding ||
+          removing ||
+          !["Delete", "Backspace"].includes(event.key)
+        )
+          return;
+        if (
+          event.target instanceof Element &&
+          event.target.closest(
+            "input, textarea, select, [contenteditable], [role=dialog]",
+          )
+        )
+          return;
+        if (canvasRef.current?.deleteSelection()) event.preventDefault();
+      }}
+    >
       <div className="section-heading">
         <h2>编排</h2>
         <span className="muted">
           {dirty
             ? "有未保存的修改，保存草稿后生效"
-            : "增删节点、设置每个节点，用“下一步”连线"}
+            : canvasMode
+              ? "拖动出口连线，点击节点修改设置"
+              : "增删节点、设置每个节点，用“下一步”连线"}
         </span>
       </div>
       <div className="flow-editor-toolbar">
+        {desktop && (
+          <div className="flow-view-switch" role="group" aria-label="编排视图">
+            {(
+              [
+                ["canvas", "画布"],
+                ["list", "列表"],
+              ] as const
+            ).map(([view, label]) => (
+              <button
+                key={view}
+                type="button"
+                className="text-button"
+                aria-pressed={(chosenView ?? storedView) === view}
+                onClick={() => {
+                  setChosenView(view);
+                  setAdding(false);
+                  try {
+                    localStorage.setItem(VIEW_KEY, view);
+                  } catch {
+                    /* Storage may be unavailable. */
+                  }
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         <button
           type="button"
           className="button secondary"
@@ -552,138 +622,135 @@ export function FlowEditor({
       {runOpen && !runReason && (
         <DraftRun key={data.draft?.created_at} app={app} data={data} />
       )}
-      <div className="flow-editor-preview">
-        <FlowDiagram
-          flow={diagramOf(config)}
-          selectedId={node?.id}
-          select={setSelected}
-          invalid={invalid}
-          designMode
-        />
-      </div>
-      <div className="flow-editor-body">
-        <aside className="node-list" aria-label="节点列表">
-          <ul>
-            {nodes.map((item) => (
-              <li
-                key={item.id}
-                className={`${item.id === node?.id ? "selected" : ""} ${invalid.has(item.id) ? "invalid" : ""}`}
-              >
-                <button
-                  type="button"
-                  className="node-list-select"
-                  aria-pressed={item.id === node?.id}
-                  aria-label={`${item.title}（${item.id}）${invalid.has(item.id) ? "，有问题" : ""}`}
-                  onClick={() => setSelected(item.id)}
-                >
-                  <span className={`node-type-badge ${item.type}`}>
-                    {typeLabels[item.type]}
-                  </span>
-                  <strong>{item.title}</strong>
-                  <code>{item.id}</code>
-                </button>
-                <span className="node-list-actions">
-                  <button
-                    type="button"
-                    className="text-button"
-                    disabled={disabled || item.type === "start"}
-                    aria-label={`复制节点 ${item.title}`}
-                    onClick={() => {
-                      const copy = {
-                        ...structuredClone(item),
-                        id: freeId(config, item.id),
-                        title: `${item.title}（副本）`.slice(0, 50),
-                      };
-                      setConfig(insertNode(config, copy, item.id));
-                      setSelected(copy.id);
-                    }}
-                  >
-                    复制
-                  </button>
-                  <button
-                    type="button"
-                    className="text-button"
-                    disabled={disabled}
-                    aria-label={`删除节点 ${item.title}`}
-                    onClick={() => setRemoving(item.id)}
-                  >
-                    删除
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-          {removal && removingNode && (
-            <div
-              className="remove-node"
-              role="dialog"
-              aria-label={`删除节点「${removingNode.title}」`}
-            >
-              <strong>删除「{removingNode.title}」？</strong>
-              {removal.edges.length > 0 && (
-                <>
-                  <p>会一起删除这些连线：</p>
-                  <ul>
-                    {removal.edges.map((edge) => (
-                      <li key={edge}>{edge}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {removal.references.length > 0 && (
-                <>
-                  <p>这些设置引用了它的变量，删除后需要修改：</p>
-                  <ul>
-                    {removal.references.map((ref) => (
-                      <li key={ref}>{ref}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {!removal.edges.length && !removal.references.length && (
-                <p>没有连线和变量引用受影响。</p>
-              )}
-              <div className="asset-actions">
-                <button
-                  type="button"
-                  className="button reject"
-                  onClick={() => {
-                    setConfig(deleteNode(config, removing));
-                    if (selected === removing)
-                      setSelected(
-                        nodes.find((n) => n.id !== removing)?.id ?? "",
-                      );
-                    setRemoving("");
-                  }}
-                >
-                  确认删除
-                </button>
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => setRemoving("")}
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-          )}
-          <button
-            type="button"
-            className="button secondary add-node-button"
-            disabled={disabled || !types.length}
-            onClick={() => {
-              setPending(null);
+      {canvasMode && removalDialog}
+      {canvasMode && typesError && (
+        <p className="field-error">读取节点类型失败：{typesError}</p>
+      )}
+      {!canvasMode && (
+        <div className="flow-editor-preview">
+          <FlowDiagram
+            flow={diagramOf(config)}
+            selectedId={node?.id}
+            select={setSelected}
+            invalid={invalid}
+            designMode
+          />
+        </div>
+      )}
+      <div
+        className={
+          canvasMode
+            ? `flow-editor-body canvas-editor-body${panelOpen && !adding ? " with-node-panel" : ""}`
+            : "flow-editor-body"
+        }
+      >
+        {canvasMode && (
+          <FlowCanvas
+            ref={canvasRef}
+            config={config}
+            setConfig={setConfig}
+            invalid={invalid}
+            disabled={disabled}
+            selectedId={panelOpen ? (node?.id ?? "") : ""}
+            select={(id) => {
+              if (id) setSelected(id);
+              setPanelOpen(Boolean(id));
+            }}
+            removeNode={setRemoving}
+            canAdd={Boolean(types.length)}
+            openAdd={(position) => {
+              setAddPosition(position);
+              setPending(position.pending);
               setAdding(true);
             }}
-          >
-            添加节点
-          </button>
-          {typesError && (
-            <p className="field-error">读取节点类型失败：{typesError}</p>
-          )}
-        </aside>
-        {adding ? (
+            menu={
+              adding ? (
+                <div
+                  className="canvas-add-menu"
+                  style={{
+                    left: addPosition?.menu.x ?? 16,
+                    top: addPosition?.menu.y ?? 16,
+                    maxHeight: `min(460px, calc(100% - ${(addPosition?.menu.y ?? 16) + 8}px))`,
+                  }}
+                >
+                  <AddNodePanel
+                    types={types}
+                    config={config}
+                    pending={pending}
+                    add={add}
+                    close={() => {
+                      setAdding(false);
+                      setPending(null);
+                      setAddPosition(null);
+                    }}
+                  />
+                </div>
+              ) : null
+            }
+          />
+        )}
+        {!canvasMode && (
+          <aside className="node-list" aria-label="节点列表">
+            <ul>
+              {nodes.map((item) => (
+                <li
+                  key={item.id}
+                  className={`${item.id === node?.id ? "selected" : ""} ${invalid.has(item.id) ? "invalid" : ""}`}
+                >
+                  <button
+                    type="button"
+                    className="node-list-select"
+                    aria-pressed={item.id === node?.id}
+                    aria-label={`${item.title}（${item.id}）${invalid.has(item.id) ? "，有问题" : ""}`}
+                    onClick={() => setSelected(item.id)}
+                  >
+                    <span className={`node-type-badge ${item.type}`}>
+                      {typeLabels[item.type]}
+                    </span>
+                    <strong>{item.title}</strong>
+                    <code>{item.id}</code>
+                  </button>
+                  <span className="node-list-actions">
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={disabled || item.type === "start"}
+                      aria-label={`复制节点 ${item.title}`}
+                      onClick={() => copyNode(item)}
+                    >
+                      复制
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={disabled}
+                      aria-label={`删除节点 ${item.title}`}
+                      onClick={() => setRemoving(item.id)}
+                    >
+                      删除
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {!canvasMode && removalDialog}
+            <button
+              type="button"
+              className="button secondary add-node-button"
+              disabled={disabled || !types.length}
+              onClick={() => {
+                setPending(null);
+                setAdding(true);
+              }}
+            >
+              添加节点
+            </button>
+            {typesError && (
+              <p className="field-error">读取节点类型失败：{typesError}</p>
+            )}
+          </aside>
+        )}
+        {adding && !canvasMode ? (
           <AddNodePanel
             types={types}
             config={config}
@@ -694,7 +761,7 @@ export function FlowEditor({
               setPending(null);
             }}
           />
-        ) : node ? (
+        ) : node && (!canvasMode || (panelOpen && !adding)) ? (
           <div
             className="node-panel"
             role="region"
@@ -705,7 +772,37 @@ export function FlowEditor({
                 {typeLabels[node.type]}
               </span>
               <h3>{node.title}</h3>
+              {canvasMode && (
+                <button
+                  type="button"
+                  className="text-button"
+                  aria-label="关闭节点设置"
+                  onClick={() => setPanelOpen(false)}
+                >
+                  关闭
+                </button>
+              )}
             </div>
+            {canvasMode && (
+              <div className="asset-actions canvas-node-actions">
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={disabled || node.type === "start"}
+                  onClick={() => copyNode(node)}
+                >
+                  复制
+                </button>
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={disabled}
+                  onClick={() => setRemoving(node.id)}
+                >
+                  删除节点
+                </button>
+              </div>
+            )}
             {unplaced.map((msg) => (
               <p className="field-error node-issue" key={msg}>
                 {msg}
@@ -753,6 +850,7 @@ export function FlowEditor({
                       }
                       onChange={(to) => {
                         if (to === "__new__") {
+                          setAddPosition(null);
                           setPending({ from: node.id, branch });
                           setAdding(true);
                         } else setConfig(setNext(config, node.id, branch, to));
@@ -795,9 +893,9 @@ export function FlowEditor({
               />
             )}
           </div>
-        ) : (
+        ) : !canvasMode ? (
           <p className="muted">还没有节点。</p>
-        )}
+        ) : null}
       </div>
     </section>
   );
