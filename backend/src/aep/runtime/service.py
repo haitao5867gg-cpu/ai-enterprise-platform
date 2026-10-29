@@ -205,6 +205,7 @@ class RunService:
             secret=secret,
             sandbox_url=self._ctx.settings.sandbox_url,
             knowledge=self.knowledge,
+            settings=self._ctx.settings,
         )
 
     async def _graph(self, record: RunRecord) -> CompiledStateGraph:

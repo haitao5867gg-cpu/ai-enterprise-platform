@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120.0
     embedding_models: list[str] = ["mock-embed", "company-embed"]
     default_embedding_model: str = "mock-embed"
+    rerank_models: list[str] = ["mock-rerank"]
     knowledge_dir: Path = Path("/data/knowledge")
     # Each call to a connector (MCP server) tool.
     tool_timeout_seconds: float = 30.0

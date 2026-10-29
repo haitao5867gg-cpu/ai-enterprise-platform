@@ -451,7 +451,13 @@ async def test_node_type_contract_and_runs_without_retrieval_have_no_sources(p):
     types = (await p.api.get("/node-types")).json()
     kind = next(t for t in types if t["type"] == "knowledge")
     assert (kind["label"], kind["category"], kind["error_handling"]) == ("知识检索", "tool", True)
-    assert kind["defaults"] == {"knowledge_bases": [], "query": "", "top_k": 5, "min_score": 0.3}
+    assert kind["defaults"] == {
+        "knowledge_bases": [],
+        "query": "",
+        "top_k": 5,
+        "min_score": 0.3,
+        "retrieval": {"mode": "hybrid", "vector_weight": 0.7, "rerank": None},
+    }
     assert [o["key"] for o in kind["outputs"]] == ["hits", "context"]
     await p.publish(builtin.blank())
     assert (await p.run())["sources"] == []
@@ -498,6 +504,7 @@ async def test_etl_knowledge_setting_contract_and_accepted_values(p):
             "max_attempts": 3,
             "knowledge_bases": ids,
             "knowledge_top_k": count,
+            "knowledge_mode": "hybrid",
         }
     detail = response.json()
     settings = next(n for n in detail["nodes"] if n["id"] == "plan")["settings"]

@@ -204,6 +204,7 @@ services:
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek/deepseek-chat}
       COMPANY_MODEL: ${COMPANY_MODEL:-openai/deepseek-v4.1-flash-new}
       COMPANY_EMBED_MODEL: ${COMPANY_EMBED_MODEL:-openai/text-embedding-v4}
+      COMPANY_RERANK_MODEL: ${COMPANY_RERANK_MODEL:-hosted_vllm/gte-rerank-v2}
     ports:
       - "4000:4000"
     healthcheck:

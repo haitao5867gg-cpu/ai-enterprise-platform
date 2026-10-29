@@ -88,6 +88,13 @@ CONFIG = {
                 "出方案前按需求检索这些知识库，方案里标出依据",
             ),
             Param("knowledge_top_k", "检索片段数", "integer", 5, min=1, max=20),
+            Param(
+                "knowledge_mode",
+                "检索方式",
+                "enum",
+                "hybrid",
+                choices=(("hybrid", "混合"), ("vector", "向量"), ("keyword", "关键词")),
+            ),
         ),
     ),
     "codegen": NodeOptions(
@@ -417,6 +424,11 @@ def build(ctx: AppContext) -> StateGraph:
                     node.params["knowledge_bases"],
                     inp["request"],
                     node.params["knowledge_top_k"],
+                    retrieval={
+                        "mode": node.params["knowledge_mode"],
+                        "vector_weight": 0.7,
+                        "rerank": None,
+                    },
                 )
                 references = [IndexedHit(**asdict(hit), index=i) for i, hit in enumerate(hits, 1)]
             except Exception as exc:  # noqa: BLE001 - reference material is optional

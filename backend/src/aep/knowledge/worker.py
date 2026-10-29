@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from aep import llm
 from aep.knowledge.chunk import chunk
 from aep.knowledge.extract import extract
+from aep.knowledge.keywords import chunk_keywords
 from aep.knowledge.store import Chunk, Document, KnowledgeStore
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,11 @@ class KnowledgeWorker:
                     self.wakeup.set()
             except Exception:
                 log.exception("could not recover stale knowledge documents")
+            try:
+                while await self.store.backfill_keywords(limit=500) == 500:
+                    pass
+            except Exception:
+                log.exception("could not backfill knowledge keywords")
             await asyncio.sleep(60)
 
     async def run(self) -> None:
@@ -78,6 +84,9 @@ class KnowledgeWorker:
             chunks: list[Chunk] = []
             for start in range(0, len(pieces), llm.EMBEDDING_BATCH_SIZE):
                 batch = pieces[start : start + llm.EMBEDDING_BATCH_SIZE]
+                keywords = await asyncio.to_thread(
+                    lambda batch=batch: [chunk_keywords(p.text, p.heading) for p in batch]
+                )
                 for attempt in range(3):
                     try:
                         vectors = await llm.embed(
@@ -102,6 +111,7 @@ class KnowledgeWorker:
                         heading=piece.heading,
                         page=piece.page,
                         embedding=vector,
+                        keywords=keywords[i],
                     )
                     for i, (piece, vector) in enumerate(zip(batch, vectors, strict=True))
                 )

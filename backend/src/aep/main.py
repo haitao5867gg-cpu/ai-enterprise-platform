@@ -20,6 +20,7 @@ from aep.config import Settings, get_settings
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis
+from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
 from aep.runtime.catalog import AppCatalog, GatewayModels
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await asyncio.to_thread(warm)
         llm_client = llm.make_client(settings)
         # One pool for run records and LangGraph checkpoints; the saver needs
         # autocommit and dict rows.

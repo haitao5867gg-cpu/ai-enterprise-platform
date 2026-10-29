@@ -79,6 +79,11 @@ async def test_options_and_base_crud(api):
         "embedding_models": ["mock-embed", "company-embed"],
         "default_embedding_model": "mock-embed",
         "chunking": {"size": 800, "overlap": 100},
+        "retrieval": {"mode": "hybrid", "vector_weight": 0.7, "rerank": None},
+        "rerank_models": [
+            {"model": "mock-rerank", "kind": "rerank"},
+            {"model": "mock", "kind": "llm"},
+        ],
     }
     base = await api.create(name="B", description="说明")
     other = await api.create(name="A")

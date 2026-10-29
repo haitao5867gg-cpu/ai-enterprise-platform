@@ -56,6 +56,14 @@ model_list:
       api_base: os.environ/COMPANY_API_BASE
       api_key: os.environ/COMPANY_API_KEY
 
+  # OpenAI-compatible hosted gateways need a rerank provider (not openai/).
+  # Set COMPANY_RERANK_MODEL=hosted_vllm/<gateway model id> after confirmation.
+  - model_name: company-rerank
+    litellm_params:
+      model: os.environ/COMPANY_RERANK_MODEL
+      api_base: os.environ/COMPANY_API_BASE
+      api_key: os.environ/COMPANY_API_KEY
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
