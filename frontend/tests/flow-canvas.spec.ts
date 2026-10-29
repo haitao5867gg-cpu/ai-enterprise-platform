@@ -16,6 +16,70 @@ const node = (page: Page, id: string) =>
   canvas(page).locator(`.react-flow__node[data-id="${id}"]`);
 const outlet = (page: Page, id: string, branch = "next") =>
   page.getByTestId(`canvas-out-${id}-${branch}`);
+const edgePath = (page: Page, from: string, branch = "") =>
+  canvas(page).locator(
+    `.react-flow__edge[data-id="${from}:${branch}"] .react-flow__edge-path`,
+  );
+
+async function nodeRects(page: Page) {
+  return canvas(page)
+    .locator(".react-flow__node")
+    .evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const { x, y, width, height } = node.getBoundingClientRect();
+        return { id: node.getAttribute("data-id")!, x, y, width, height };
+      }),
+    );
+}
+async function expectNoOverlap(page: Page) {
+  const rects = await nodeRects(page);
+  for (let i = 0; i < rects.length; i++)
+    for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i],
+        b = rects[j];
+      expect(
+        a.x + a.width <= b.x ||
+          b.x + b.width <= a.x ||
+          a.y + a.height <= b.y ||
+          b.y + b.height <= a.y,
+        `${a.id} and ${b.id} overlap`,
+      ).toBe(true);
+    }
+}
+async function clickEdge(page: Page, from: string, branch = "") {
+  await canvas(page).scrollIntoViewIfNeeded();
+  const point = await edgePath(page, from, branch).evaluate((element) => {
+    const path = element as SVGPathElement;
+    const point = path
+      .getPointAtLength(path.getTotalLength() / 2)
+      .matrixTransform(path.getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  });
+  await page.mouse.click(point.x, point.y);
+  await expect(edgePath(page, from, branch).locator("..")).toHaveClass(
+    /selected/,
+  );
+}
+async function expectPathOutsideCards(page: Page, from: string, branch = "") {
+  const points = await edgePath(page, from, branch).evaluate((element) => {
+    const path = element as SVGPathElement;
+    return Array.from({ length: 201 }, (_, i) => {
+      const point = path
+        .getPointAtLength((path.getTotalLength() * i) / 200)
+        .matrixTransform(path.getScreenCTM()!);
+      return { x: point.x, y: point.y };
+    });
+  });
+  for (const rect of await nodeRects(page))
+    expect(
+      points.some(
+        (point) =>
+          point.x > rect.x + 2 && point.x < rect.x + rect.width - 2 &&
+          point.y > rect.y + 2 && point.y < rect.y + rect.height - 2,
+      ),
+      `${from}:${branch} crosses ${rect.id}`,
+    ).toBe(false);
+}
 
 async function create(
   request: APIRequestContext,
@@ -88,18 +152,27 @@ async function createFromOutlet(
 ) {
   await fit(page);
   await canvas(page).scrollIntoViewIfNeeded();
-  const blank = await canvas(page).evaluate((element) => {
+  const blank = await canvas(page).evaluate((element, from) => {
     const rect = element.getBoundingClientRect();
+    const source = element
+      .querySelector(`.react-flow__node[data-id="${from}"]`)!
+      .getBoundingClientRect();
     const occupied = [
       ...element.querySelectorAll(".react-flow__node, .react-flow__minimap"),
     ].map((node) => node.getBoundingClientRect());
-    for (const x of [0.8, 0.2, 0.65, 0.35])
+    const columns = [
+      source.right + 100,
+      rect.right - 50,
+      ...[0.8, 0.2, 0.65, 0.35].map((x) => rect.left + rect.width * x),
+    ];
+    for (const x of columns)
       for (const y of [0.3, 0.5, 0.7, 0.15]) {
         const point = {
-          x: rect.left + rect.width * x,
+          x,
           y: rect.top + rect.height * y,
         };
         if (
+          point.x < rect.right - 24 &&
           occupied.every(
             (node) =>
               point.x < node.left - 30 ||
@@ -111,12 +184,13 @@ async function createFromOutlet(
           return point;
       }
     throw new Error("No empty canvas position");
-  });
+  }, from);
   await drag(page, await middle(outlet(page, from, branch)), blank);
   const menu = page.getByRole("dialog", { name: /新建节点并连到/ });
   await expect(menu).toBeVisible();
   await menu.getByRole("button", { name: label, exact: true }).click();
   await expect(panel(page)).toBeVisible();
+  await expectNoOverlap(page);
 }
 async function select(page: Page, id: string) {
   await fit(page);
@@ -302,33 +376,62 @@ test("无坐标模板自动排布不重叠，自动整理才写入全部坐标",
   request,
 }) => {
   const app = await create(request, page, "intent-routing");
-  expect(
-    (await configOf(request, app)).graph.nodes.every((node) => !node.ui),
-  ).toBe(true);
+  const original = await configOf(request, app);
+  expect(original.graph.nodes.every((node) => !node.ui)).toBe(true);
   await expect(page.getByText("有未保存的修改", { exact: true })).toHaveCount(
     0,
   );
   await fit(page);
-  const rects = await canvas(page)
+  const rects = await nodeRects(page);
+  expect(rects.length).toBe(7);
+  await expectNoOverlap(page);
+  const byId = Object.fromEntries(rects.map((rect) => [rect.id, rect]));
+  expect(byId.draft.y).toBeLessThan(byId.answer.y);
+  expect(byId.answer.y).toBeLessThan(byId.handoff.y);
+  for (const edge of original.graph.edges) {
+    const path = edgePath(page, edge.from, edge.branch ?? "");
+    if (edge.from === "review" && edge.branch === "reject") {
+      await expect(path).toHaveAttribute("d", /Q/);
+      await expectPathOutsideCards(page, edge.from, edge.branch);
+      continue;
+    }
+    const source = rects.find((rect) => rect.id === edge.from)!;
+    const target = rects.find((rect) => rect.id === edge.to)!;
+    expect(target.x, `${edge.from} → ${edge.to}`).toBeGreaterThan(source.x);
+    await expect(path).toHaveAttribute("d", /C/);
+  }
+  const labels = canvas(page).locator(".canvas-edge-label");
+  await expect(labels.getByText("下一步", { exact: true })).toHaveCount(0);
+  for (const label of ["售后", "产品咨询", "都不是", "确认回复", "驳回重写"])
+    await expect(labels.getByText(label, { exact: true })).toBeVisible();
+  const inlet = await middle(page.getByTestId("canvas-in-route"));
+  const heading = await middle(node(page, "route").locator(".canvas-node-heading"));
+  expect(Math.abs(inlet.x - byId.route.x)).toBeLessThan(2);
+  expect(Math.abs(inlet.y - heading.y)).toBeLessThan(2);
+  // Persisted edge order must not override the classifier's outlet order.
+  const positions = await canvas(page)
     .locator(".react-flow__node")
     .evaluateAll((nodes) =>
-      nodes.map((node) => {
-        const { x, y, width, height } = node.getBoundingClientRect();
-        return { x, y, width, height };
-      }),
+      nodes.map((node) => ({
+        id: node.getAttribute("data-id")!,
+        transform: (node as HTMLElement).style.transform,
+      })),
     );
-  expect(rects.length).toBe(7);
-  for (let i = 0; i < rects.length; i++)
-    for (let j = i + 1; j < rects.length; j++) {
-      const a = rects[i],
-        b = rects[j];
-      expect(
-        a.x + a.width <= b.x ||
-          b.x + b.width <= a.x ||
-          a.y + a.height <= b.y ||
-          b.y + b.height <= a.y,
-      ).toBe(true);
-    }
+  const reordered = {
+    ...original,
+    graph: { ...original.graph, edges: [...original.graph.edges].reverse() },
+  };
+  const response = await request.put(`/api/apps/${app}/draft`, {
+    data: { config: reordered },
+  });
+  expect(response.ok()).toBe(true);
+  await page.reload();
+  await fit(page);
+  for (const position of positions)
+    await expect(node(page, position.id)).toHaveAttribute(
+      "style",
+      expect.stringContaining(position.transform),
+    );
   await page.getByRole("button", { name: "自动整理", exact: true }).click();
   await expect(page.getByText("有未保存的修改", { exact: true })).toBeVisible();
   await save(page);
@@ -338,15 +441,85 @@ test("无坐标模板自动排布不重叠，自动整理才写入全部坐标",
     ),
   ).toBe(true);
   if (process.env.AEP_CAPTURE_FLOW_SCREENSHOTS === "1") {
-    await select(page, "route");
-    await page.getByRole("button", { name: "适应画布", exact: true }).click();
-    await settle(page);
-    await mkdir("docs/screenshots/issue-72", { recursive: true });
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await fit(page);
+    const directory =
+      process.env.AEP_FLOW_SCREENSHOT_DIR ?? "docs/screenshots/issue-72";
+    await mkdir(directory, { recursive: true });
     await page.getByRole("region", { name: "编排", exact: true }).screenshot({
-      path: "docs/screenshots/issue-72/flow-canvas.png",
+      path: `${directory}/flow-canvas.png`,
       animations: "disabled",
     });
   }
+});
+
+test("普通连线没有标签，点击线条后可用 Delete 和中点按钮删除", async ({
+  page,
+  request,
+}) => {
+  await create(request, page);
+  await fit(page);
+  const edge = canvas(page).getByRole("button", {
+    name: "开始 → 回答，下一步",
+    exact: true,
+  });
+  await expect(edge).toBeAttached();
+  await expect(canvas(page).locator(".canvas-edge-label")).toHaveCount(0);
+  await clickEdge(page, "start");
+  const remove = page.getByRole("button", { name: "删除选中连线", exact: true });
+  await expect(remove).toBeVisible();
+  await expect(remove.locator("..")).toHaveText("×");
+  const midpoint = await middle(remove);
+  const pathMidpoint = await edgePath(page, "start").evaluate((element) => {
+    const path = element as SVGPathElement;
+    const point = path
+      .getPointAtLength(path.getTotalLength() / 2)
+      .matrixTransform(path.getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  });
+  expect(midpoint.x).toBeCloseTo(pathMidpoint.x, 0);
+  expect(midpoint.y).toBeCloseTo(pathMidpoint.y, 0);
+  await page.keyboard.press("Delete");
+  await expect(edge).toHaveCount(0);
+  await expect(node(page, "start")).toBeVisible();
+  await expect(node(page, "answer")).toBeVisible();
+  await connect(page, "start", "next", "answer");
+  await clickEdge(page, "start");
+  await remove.click();
+  await expect(edge).toHaveCount(0);
+});
+
+test("已保存的纵向坐标保持不变，自动整理才改为横向", async ({
+  page,
+  request,
+}) => {
+  const app = await create(request, page);
+  const config = await configOf(request, app);
+  config.graph.nodes.forEach((node, index) => {
+    node.ui = { x: 48, y: 48 + index * 200 };
+  });
+  const response = await request.put(`/api/apps/${app}/draft`, { data: { config } });
+  expect(response.ok()).toBe(true);
+  await page.reload();
+  await fit(page);
+  for (const item of config.graph.nodes) {
+    const position = await node(page, item.id).evaluate((element) => {
+      const matrix = new DOMMatrix(getComputedStyle(element).transform);
+      return { x: matrix.e, y: matrix.f };
+    });
+    expect(position).toEqual(item.ui);
+  }
+  await expect(page.getByText("有未保存的修改", { exact: true })).toHaveCount(0);
+  await expect(edgePath(page, "answer")).toHaveAttribute("d", /Q/);
+  await expectPathOutsideCards(page, "answer");
+  await page.getByRole("button", { name: "自动整理", exact: true }).click();
+  await fit(page);
+  await expectNoOverlap(page);
+  const rects = await nodeRects(page);
+  const byId = Object.fromEntries(rects.map((rect) => [rect.id, rect]));
+  expect(byId.answer.x).toBeGreaterThan(byId.start.x);
+  expect(byId.end.x).toBeGreaterThan(byId.answer.x);
+  await save(page);
 });
 
 test("删除连线后 422 定位到分支下拉和红色节点，支持连线删除按钮", async ({
@@ -460,6 +633,9 @@ test("列表和画布共用设置、记住选择，390px 手机只有列表且�
       exact: true,
     }),
   ).toBeAttached();
+  await fit(page);
+  await expectPathOutsideCards(page, "answer");
+  await select(page, "answer");
   await panel(page)
     .getByRole("group", { name: "下一步", exact: true })
     .getByRole("combobox")
@@ -576,7 +752,7 @@ test("分支设置同步出口，允许拖到节点卡片并拒绝连到开始",
   expect(config.graph.edges.some((edge) => edge.to === "start")).toBe(false);
 });
 
-test("工具栏按分类添加节点，位置为当前视口中心", async ({ page, request }) => {
+test("工具栏按分类添加节点，从视口中心落点避开已有节点", async ({ page, request }) => {
   const app = await create(request, page);
   await fit(page);
   const center = await canvas(page).evaluate((element) => {
@@ -604,12 +780,13 @@ test("工具栏按分类添加节点，位置为当前视口中心", async ({ pa
     .getByRole("button", { name: "文本拼接", exact: true })
     .click();
   await expect(panel(page)).toHaveAccessibleName("节点设置：文本拼接");
+  await expectNoOverlap(page);
   await connect(page, "start", "next", "template");
   await connect(page, "template", "next", "answer");
   await save(page);
   const created = (await configOf(request, app)).graph.nodes.find(
     (node) => node.id === "template",
   )!;
-  expect(created.ui!.x).toBeCloseTo(center.x, 2);
-  expect(created.ui!.y).toBeCloseTo(center.y, 2);
+  expect(created.ui!.x + 232 / 2).toBeCloseTo(center.x, 2);
+  expect(created.ui!.y + 116 / 2).toBeGreaterThanOrEqual(center.y - 0.01);
 });
