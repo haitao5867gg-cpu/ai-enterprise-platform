@@ -4,6 +4,7 @@ const categories: { key: NodeType["category"]; label: string }[] = [
   { key: "model", label: "模型" },
   { key: "logic", label: "逻辑" },
   { key: "tool", label: "工具" },
+  { key: "data", label: "数据工程" },
   { key: "human", label: "人工" },
   { key: "terminal", label: "开始和结束" },
 ];

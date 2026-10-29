@@ -51,6 +51,7 @@ export type OnError = { retry?: { max: number; interval_seconds: number } } & (
 export type NodeBase = {
   id: string;
   title: string;
+  note?: string;
   max_visits?: number;
   ui?: { x: number; y: number };
 };
@@ -163,6 +164,45 @@ export type EndNode = NodeBase & {
   type: "end";
   outputs: { key: string; from: string[] }[];
 };
+export type EtlProfileNode = NodeBase &
+  Fallible & {
+    type: "etl_profile";
+    datasource: string;
+    tables: string | string[];
+    sample_rows: number;
+  };
+export type EtlPlanCheckNode = NodeBase &
+  Fallible & {
+    type: "etl_plan_check";
+    reply: string;
+    profile: string;
+    hits: string[];
+    language?: string;
+    max_attempts: number;
+  };
+export type DatabricksIngestNode = NodeBase &
+  Fallible & {
+    type: "databricks_ingest";
+    datasource: string;
+    tables: string | string[];
+    max_rows: number;
+  };
+export type EtlCodeCheckNode = NodeBase &
+  Fallible & {
+    type: "etl_code_check";
+    reply: string;
+    plan: string;
+    source_name: string;
+    name?: string;
+    max_attempts: number;
+  };
+export type DatabricksDevRunNode = NodeBase &
+  Fallible & {
+    type: "databricks_dev_run";
+    bundle: string;
+    max_runs: number;
+    preview_rows: number;
+  };
 export type FlowNode =
   | StartNode
   | LlmNode
@@ -174,6 +214,11 @@ export type FlowNode =
   | HumanNode
   | TemplateNode
   | CodeNode
+  | EtlProfileNode
+  | EtlPlanCheckNode
+  | DatabricksIngestNode
+  | EtlCodeCheckNode
+  | DatabricksDevRunNode
   | EndNode;
 export type Edge = { from: string; to: string; branch?: string | null };
 export type FlowConfig = {
@@ -196,7 +241,7 @@ export type NodeType = {
     type: K;
     label: string;
     description: string;
-    category: "model" | "logic" | "tool" | "human" | "terminal";
+    category: "model" | "logic" | "tool" | "data" | "human" | "terminal";
     error_handling: boolean;
     outputs: { key: string; description: string }[];
     defaults: SettingsFor<K>;

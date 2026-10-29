@@ -110,6 +110,107 @@ function snapshot(entry: StoredKnowledge): KnowledgeBase {
     },
   };
 }
+for (const [id, name, filenames] of [
+  [
+    "retail-metrics",
+    "零售数据口径",
+    [
+      "01-有效订单定义.md",
+      "02-销售额与客单价.md",
+      "03-城市与会员等级.md",
+      "04-时间口径.md",
+      "05-客户数与复购.md",
+      "06-毛利.md",
+    ],
+  ],
+  [
+    "dw-standards",
+    "数仓开发规范",
+    [
+      "01-分层与命名.md",
+      "02-主键与字段.md",
+      "03-数据质量规则.md",
+      "04-加载策略.md",
+      "05-PySpark编码规范.md",
+    ],
+  ],
+] as const) {
+  if (store.has(id)) continue;
+  const text =
+    id === "retail-metrics"
+      ? "有效订单包含 paid、shipped、completed；排除测试账号，统一城市名称后统计销售额。"
+      : "按数仓分层命名，明确主键、加载策略和质量规则，用 PySpark 编写转换。";
+  store.set(id, {
+    base: {
+      kb_id: id,
+      name,
+      description: text,
+      embedding_model: "mock-embed",
+      chunking: { size: 800, overlap: 100 },
+      document_count: filenames.length,
+      chunk_count: filenames.length,
+      status_counts: {
+        queued: 0,
+        processing: 0,
+        ready: filenames.length,
+        error: 0,
+      },
+      created_at: now(),
+      updated_at: now(),
+    },
+    documents: new Map(
+      filenames.map((filename, i) => {
+        const document_id = `${id}-${i + 1}`;
+        return [
+          document_id,
+          {
+            document: {
+              document_id,
+              kb_id: id,
+              name: filename,
+              kind: "md" as const,
+              size_bytes: new TextEncoder().encode(text).length,
+              status: "ready" as const,
+              error: null,
+              chunk_count: 1,
+              created_at: now(),
+              updated_at: now(),
+            },
+            chunks: [
+              {
+                chunk_id: `${document_id}-chunk`,
+                document_id,
+                position: 0,
+                text,
+                heading: filename,
+                page: null,
+              },
+            ],
+            text,
+            bytes: new TextEncoder().encode(text),
+            polls: 3,
+          },
+        ];
+      }),
+    ),
+  });
+}
+export function mockKnowledgeManual(id: string) {
+  const entry = store.get(id);
+  return {
+    kb_id: id,
+    name: entry?.base.name ?? id,
+    description: entry?.base.description ?? "已删除",
+    document_count: entry?.documents.size ?? 0,
+    documents: entry
+      ? [...entry.documents.values()].map(({ document }) => ({
+          document_id: document.document_id,
+          filename: document.name,
+          status: document.status,
+        }))
+      : [],
+  };
+}
 export const knowledgeOptions = () =>
   [...store.values()]
     .map(snapshot)

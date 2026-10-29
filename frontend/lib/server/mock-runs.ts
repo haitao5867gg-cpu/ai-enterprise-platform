@@ -27,9 +27,13 @@ import {
   type VariablePool,
 } from "./mock-flow-apps";
 import { invalid } from "./mock-assets";
+import type { AppManual } from "../app-manual";
+import { buildMockManual } from "./mock-manual";
+import { lakehouseConfig } from "./mock-data-nodes";
 
 type StoredRun = {
   run: Run;
+  manual?: AppManual;
   readyAt: number;
   decision?: Decision;
   comment?: string;
@@ -62,6 +66,79 @@ const globalStore = globalThis as typeof globalThis & {
   aepMockRuns?: Map<string, StoredRun>;
 };
 const store = (globalStore.aepMockRuns ??= new Map<string, StoredRun>());
+
+function seedRetailRun() {
+  if (store.has("retail-etl-demo")) return;
+  const config = lakehouseConfig(true);
+  const input = {
+    datasource: "sample-postgres",
+    request: "按城市和月份统计有效订单销售额",
+    tables: "retail.*",
+    language: "pyspark",
+    name: "retail_sales",
+  };
+  const pool: VariablePool = { env: {}, secret: {} };
+  const steps: MockSteps = [];
+  const sources: RunSource[] = [];
+  for (const node of config.graph.nodes) {
+    const output: Record<string, unknown> =
+      node.type === "start"
+        ? input
+        : node.type === "human"
+          ? { decision: "approve", comment: "按口径执行", actor: "演示用户" }
+          : simulateNode(node, pool).outputs;
+    if (node.type === "knowledge" && Array.isArray(output.hits)) {
+      output.hits = (output.hits as Reference[]).map((hit) => {
+        const source = {
+          ...hit,
+          index: sources.length + 1,
+          node: node.id,
+          node_title: node.title,
+        };
+        sources.push(source);
+        return source;
+      });
+    }
+    addStep(steps, node.id, structuredClone(pool), output);
+    pool[node.id] = output;
+  }
+  const title = "零售数据 ETL",
+    summary =
+      "探查零售数据、确认业务口径，生成 Databricks 转换并预览 dev 结果。";
+  store.set("retail-etl-demo", {
+    run: {
+      run_id: "retail-etl-demo",
+      app: "retail-etl",
+      app_version: 1,
+      draft: false,
+      status: "done",
+      pending: null,
+      result: pool.end,
+      error: null,
+      messages: [
+        { role: "user", content: input.request },
+        {
+          role: "assistant",
+          content: "数据转换已在 dev 运行通过，详见运行报告。",
+        },
+      ],
+      sources,
+    },
+    manual: buildMockManual("retail-etl", title, summary, 1, config),
+    readyAt: 0,
+    steps,
+    flow: {
+      config,
+      pool,
+      next: "",
+      visits: {},
+      count: steps.length,
+      input,
+      title,
+      summary,
+    },
+  });
+}
 
 export function createMockEvalRun(caseId: string, score: number): string {
   const run_id = randomUUID();
@@ -351,6 +428,7 @@ const mockTools = [
 ];
 
 export async function mockRuns(request: Request, path: string[]) {
+  seedRetailRun();
   if (path[0] === "datasources") {
     if (path[1] === "files") return mockUpload(request);
     if (path[2] === "tools") {
@@ -455,6 +533,13 @@ export async function mockRuns(request: Request, path: string[]) {
     };
     store.set(run.run_id, {
       run,
+      manual: buildMockManual(
+        body.app,
+        snapshot.title,
+        snapshot.summary,
+        snapshot.version,
+        snapshot.config,
+      ),
       readyAt: Date.now() + 600,
       steps: [],
       flow: flow
@@ -505,6 +590,25 @@ export async function mockRuns(request: Request, path: string[]) {
   const entry = store.get(path[1]);
   if (!entry) return json({ detail: "Run not found" }, 404);
   const run = refresh(entry);
+  if (request.method === "GET" && path[2] === "manual") {
+    if (entry.manual) return json(entry.manual);
+    const snapshot = mockAppSnapshot(
+      run.app,
+      run.app_version ?? undefined,
+      run.draft,
+    );
+    return snapshot
+      ? json(
+          buildMockManual(
+            run.app,
+            snapshot.title,
+            snapshot.summary,
+            snapshot.version,
+            snapshot.config,
+          ),
+        )
+      : json({ detail: "应用说明书不存在" }, 404);
+  }
   if (request.method === "GET" && path[2] === "files.zip") {
     const result = getEtlResult(run.result);
     if (!result || Object.keys(result.files).length === 0)

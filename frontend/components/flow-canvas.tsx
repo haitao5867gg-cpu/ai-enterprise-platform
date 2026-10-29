@@ -44,6 +44,8 @@ import {
   type Point,
 } from "../lib/flow-layout";
 import type { Pending } from "./flow-add-node";
+import { resourceUses, type AppManual } from "../lib/app-manual";
+import { UsesTags } from "./app-manual";
 
 export type AddPosition = { point?: Point; menu: Point; pending: Pending };
 export type CanvasActions = {
@@ -51,7 +53,10 @@ export type CanvasActions = {
   positionOf: (id: string) => Point;
   deleteSelection: () => boolean;
 };
-type CanvasNode = Node<{ node: FlowNode; invalid: boolean }, "flow">;
+type CanvasNode = Node<
+  { node: FlowNode; invalid: boolean; uses: string[] },
+  "flow"
+>;
 type CanvasEdge = Edge<
   {
     text: string;
@@ -92,6 +97,7 @@ function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
           {typeLabels[node.type]}
         </span>
         <strong>{node.title}</strong>
+        <UsesTags uses={data.uses} limit={3} />
         <code>
           {node.id}
           {invalid ? " · 有问题" : ""}
@@ -186,6 +192,7 @@ export function FlowCanvas({
   canAdd,
   openAdd,
   menu,
+  manual,
 }: {
   ref: Ref<CanvasActions>;
   config: FlowConfig;
@@ -198,6 +205,7 @@ export function FlowCanvas({
   canAdd: boolean;
   openAdd: (position: AddPosition) => void;
   menu?: ReactNode;
+  manual: AppManual | null;
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const [instance, setInstance] = useState<ReactFlowInstance<
@@ -279,7 +287,13 @@ export function FlowCanvas({
     position: positionOf(node.id),
     width: CARD_WIDTH,
     measured: { width: CARD_WIDTH, height: cardHeight(node) },
-    data: { node, invalid: invalid.has(node.id) },
+    data: {
+      node,
+      invalid: invalid.has(node.id),
+      uses: resourceUses(
+        manual?.steps.find((step) => step.id === node.id)?.uses ?? [],
+      ),
+    },
     selected: !selectedEdge && node.id === selectedId,
     ariaLabel: `${node.title}（${node.id}）${invalid.has(node.id) ? "，有问题" : ""}`,
     ariaRole: "button",
@@ -294,7 +308,10 @@ export function FlowCanvas({
     const corridor =
       target.x <= source.x
         ? config.graph.nodes
-            .map((node) => ({ ...positionOf(node.id), height: cardHeight(node) }))
+            .map((node) => ({
+              ...positionOf(node.id),
+              height: cardHeight(node),
+            }))
             .filter(
               (point) =>
                 point.x <= source.x + CARD_WIDTH + 40 &&
@@ -304,7 +321,8 @@ export function FlowCanvas({
     const loop = corridor.length
       ? {
           top: Math.min(...corridor.map((point) => point.y)) - 40,
-          bottom: Math.max(...corridor.map((point) => point.y + point.height)) + 40,
+          bottom:
+            Math.max(...corridor.map((point) => point.y + point.height)) + 40,
         }
       : undefined;
     return {
@@ -338,9 +356,7 @@ export function FlowCanvas({
           type="button"
           className="button secondary"
           disabled={disabled || !canAdd || !instance}
-          onClick={() =>
-            openAdd({ menu: { x: 16, y: 16 }, pending: null })
-          }
+          onClick={() => openAdd({ menu: { x: 16, y: 16 }, pending: null })}
         >
           添加节点
         </button>

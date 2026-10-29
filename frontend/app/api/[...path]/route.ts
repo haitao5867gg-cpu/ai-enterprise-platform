@@ -20,7 +20,7 @@ async function handle(request: Request, context: Context) {
     [/^datasources\/files$/, ["POST"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}\/tools$/, ["GET"]],
     [/^runs$/, ["GET", "POST"]],
-    [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow))?$/, ["GET"]],
+    [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow|manual))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],
     [/^knowledge-bases$/, ["GET", "POST"]],
     [/^knowledge-bases\/options$/, ["GET"]],
@@ -43,6 +43,7 @@ async function handle(request: Request, context: Context) {
     [/^apps$/, ["GET", "POST"]],
     [/^apps\/import$/, ["POST"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}$/, ["GET", "PATCH", "DELETE"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/manual$/, ["GET"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/draft\/import$/, ["POST"]],
     [
       /^apps\/[a-z][a-z0-9-]{1,63}\/nodes\/[a-z][a-z0-9_]{0,31}\/test$/,
