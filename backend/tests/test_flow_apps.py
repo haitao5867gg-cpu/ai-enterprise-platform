@@ -13,12 +13,12 @@ from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import AppCatalog
 from aep.runtime.flow import builtin
 from aep.runtime.flow.check import check_config
-from aep.runtime.flow.nodes import TYPES, CheckEnv, holds
+from aep.runtime.flow.nodes import TYPES, CheckEnv, _form_said, holds
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import InvalidValues, RunService
 from aep.runtime.store import MemoryRunStore
 from aep.skills import MemorySkillStore
-from tests.conftest import SETTINGS, FakeGateway
+from tests.conftest import SETTINGS, FakeGateway, said
 
 ENV = CheckEnv(models=["mock", "qwen"], skills=MemorySkillStore())
 
@@ -76,9 +76,11 @@ async def test_problems_are_located_by_node_and_setting():
     node(config, "draft")["prompt"] = "{{nope.text}} {{answer.text}} {{route.colour}}"
     node(config, "route")["model"] = "gpt-9"
     node(config, "review")["comment_required"] = ["maybe"]
+    node(config, "draft")["quiet"] = "yes"
     found = await problems(config)
     nodes = ("config", "graph", "nodes")
     assert found == {
+        (*nodes, "draft", "quiet"): "quiet 必须是 true 或 false",
         (*nodes, "route", "model"): "模型网关上没有 gpt-9",
         (*nodes, "review", "comment_required"): "必须写意见的选项要在选项里",
         (*nodes, "route", "branches", "product"): "分支「产品咨询」没有连到下一个节点",
@@ -298,12 +300,12 @@ async def test_intent_routing_runs_each_branch():
         run = await p.resume(run, decision="approve", actor="小王")
         assert run["status"] == "done"
         assert run["result"] == {"reply": "很抱歉……第二稿"}
-        assert run["messages"] == [
-            {"role": "user", "content": "我要退货"},
-            {"role": "assistant", "content": "很抱歉……第一稿"},
-            {"role": "user", "content": "驳回：语气再软一点"},
-            {"role": "assistant", "content": "很抱歉……第二稿"},
-            {"role": "user", "content": "确认"},
+        assert said(run["messages"]) == [
+            ("user", "start", None, "我要退货"),
+            ("assistant", "draft", None, "很抱歉……第一稿"),
+            ("user", "review", None, "选了「驳回」，意见：语气再软一点"),
+            ("assistant", "draft", None, "很抱歉……第二稿"),
+            ("user", "review", "小王", "选了「确认」"),
         ]
 
         assert (await p.run("support", {"question": "多少钱"}))["result"] == {
@@ -328,6 +330,21 @@ async def test_intent_routing_runs_each_branch():
         assert labels[("route", "handoff")] == "都不是"
         assert labels[("draft", "review")] is None
         assert [s["node"] for s in flow_view["steps"]][:3] == ["start", "route", "draft"]
+
+
+async def test_quiet_llm_keeps_its_answer_out_of_the_run_process():
+    config = copy.deepcopy(builtin.HELLO.config)
+    node(config, "draft")["quiet"] = True
+    async with Platform(["只给后面的步骤看"]) as p:
+        await p.new_app("quiet", config)
+        run = await p.run("quiet", {"text": "你好"})
+        assert run["status"] == "waiting"
+        assert said(run["messages"]) == [("user", "start", None, "你好")]
+        # Later nodes still use the answer.
+        assert run["pending"]["details"]["show"] == "只给后面的步骤看"
+        run = await p.resume(run, decision="approve")
+        assert run["result"] == {"answer": "只给后面的步骤看"}
+        assert said(run["messages"][-1:]) == [("user", "review", None, "选了「确认」")]
 
 
 async def test_json_output_condition_and_constants():
@@ -381,7 +398,7 @@ async def test_json_output_condition_and_constants():
         run = await p.run("refund", {"question": "退 800 元"})
         assert run["result"] == {"out": "800 超过 500，要审批"}
         # The JSON answer is the node's output, not a chat message.
-        assert run["messages"] == [{"role": "user", "content": "退 800 元"}]
+        assert said(run["messages"]) == [("user", "start", None, "退 800 元")]
         assert "amount（number）" in p.gateway.requests[0]["body"]["messages"][0]["content"]
         assert "缺少字段 amount" in p.gateway.requests[1]["body"]["messages"][-1]["content"]
         assert (await p.run("refund", {"question": "退 20 元"}))["result"] == {"out": "直接退款"}
@@ -493,7 +510,63 @@ async def test_form_mode_asks_for_values():
         }
         run = await p.resume(run, decision="submit", values={"order_id": "A1001"}, actor="小王")
         assert run["result"] == {"out": "小王 提交了 A1001"}
-        assert run["messages"][-1] == {"role": "user", "content": "订单号：A1001；件数："}
+        assert said(run["messages"][-1:]) == [
+            ("user", "ask_order", "小王", "订单号填了「A1001」；件数没填")
+        ]
+        assert run["messages"][-1]["node_title"] == "补充订单号"
+
+
+def test_form_answers_read_as_one_sentence():
+    fields = [
+        {
+            "key": "period",
+            "label": "统计时段",
+            "type": "select",
+            "choices": [{"value": "y2026", "label": "只看 2026 年"}, {"value": "all"}],
+        },
+        {"key": "scope", "label": "门店范围", "type": "select", "choices": [{"value": "all"}]},
+        {"key": "refund", "label": "含退款", "type": "boolean"},
+        {"key": "test", "label": "含测试单", "type": "boolean"},
+        {"key": "count", "label": "件数", "type": "number"},
+        {"key": "note", "label": "备注", "type": "textarea"},
+        {"key": "order_id", "label": "订单号", "type": "text"},
+    ]
+    values = {
+        "period": "y2026",
+        "scope": "all",
+        "refund": True,
+        "test": False,
+        "count": 0,
+        "note": "  ",
+        "order_id": " A1001 ",
+    }
+    assert _form_said(fields, values) == (
+        "统计时段选了「只看 2026 年」；门店范围选了「all」；含退款选了「是」；含测试单选了「否」；"
+        "件数填了「0」；备注没填；订单号填了「A1001」"
+    )
+
+
+@pytest.mark.parametrize(
+    ("given", "content"),
+    [
+        ({"title": "  ", "question": " 怎么退货\n"}, " 怎么退货\n"),
+        ({"title": "", "question": "怎么退货"}, "怎么退货"),
+        ({"title": "退货", "question": "怎么退货"}, "退货"),
+        ({"title": " "}, None),
+    ],
+)
+async def test_the_start_says_the_first_text_filled_in_as_written(given, content):
+    start = {
+        "id": "start",
+        "type": "start",
+        "inputs": [
+            {"key": "title", "label": "标题", "type": "text"},
+            {"key": "question", "label": "问题", "type": "textarea"},
+        ],
+    }
+    out = await TYPES["start"].run(start, {"input": given, "requester": "李雷"}, None)
+    said_ = [{"role": "user", "content": content, "actor": "李雷"}] if content else []
+    assert out.messages == said_
 
 
 async def test_a_node_stops_the_run_past_its_visit_limit():
@@ -535,6 +608,7 @@ async def test_node_types_and_templates():
         assert [t["type"] for t in types] == list(TYPES)
         llm_type = next(t for t in types if t["type"] == "llm")
         assert llm_type["error_handling"] is True
+        assert llm_type["defaults"]["quiet"] is False
         assert llm_type["presets"][0]["key"] == "extract"
         assert next(t for t in types if t["type"] == "start")["max_count"] == 1
         templates = (await p.api.get("/app-templates")).json()

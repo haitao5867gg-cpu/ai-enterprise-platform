@@ -5,18 +5,25 @@ how often it ran (``visits``) and, if it has branches, which one it took
 (``branch``); conditional edges follow that. A node may also keep something for
 its own next run (``private``, e.g. how often its check failed in a row). The
 end node writes the run's ``result``. ``on_error`` is applied here, around the
-node type's ``run``, which also sees the run's id as ``state["run_id"]``.
+node type's ``run``, which also sees the run's id as ``state["run_id"]`` and who
+asked for it as ``state["requester"]``. What a node says goes into the run's
+``messages`` tagged here with the node, its title and the time.
 """
 
 import asyncio
+import json
 import operator
+import re
 from collections import defaultdict
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 
+from aep.knowledge.citations import cited_numbers
 from aep.runtime.design import NodeDesign
 from aep.runtime.flow.check import DEFAULT_MAX_VISITS, branches
 from aep.runtime.flow.nodes import ERROR, INPUT_ERROR, TYPES, NodeFailure, Outcome, Runtime
@@ -42,7 +49,7 @@ class FlowState(TypedDict, total=False):
     vars: Annotated[dict[str, dict[str, Any]], _merge]
     visits: Annotated[dict[str, int], _merge]
     branch: Annotated[dict[str, str], _merge]
-    messages: Annotated[list[dict[str, str]], operator.add]
+    messages: Annotated[list[dict[str, Any]], operator.add]
     result: dict[str, Any] | None
     citations: Annotated[dict[str, int], _merge]
     sources: Annotated[dict[str, dict[str, Any]], _merge]
@@ -147,9 +154,11 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
         visits = (state.get("visits") or {}).get(node_id, 0)
         if visits >= limit:
             raise FlowError(node, f"已经运行了 {visits} 次，达到上限 {limit} 次", "max_visits")
-        run_id = ((config or {}).get("configurable") or {}).get("thread_id")
+        configurable = (config or {}).get("configurable") or {}
+        run_id = configurable.get("thread_id")
+        requester = configurable.get("requester")
         try:
-            outcome = await execute(node, {**state, "run_id": run_id}, rt)
+            outcome = await execute(node, {**state, "run_id": run_id, "requester": requester}, rt)
         except (GraphBubbleUp, FlowError):
             raise
         except Exception as exc:
@@ -160,7 +169,12 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
             "branch": {node_id: outcome.branch or NEXT},
         }
         if outcome.messages:
-            update["messages"] = outcome.messages
+            at = datetime.now(UTC).isoformat()
+            title = node.get("title") or node_id
+            update["messages"] = [
+                {"actor": None, **m, "node": node_id, "node_title": title, "at": at}
+                for m in outcome.messages
+            ]
         if outcome.result is not None:
             update["result"] = outcome.result
         if outcome.citations:
@@ -249,3 +263,69 @@ def shape(config: dict[str, Any], rt: Runtime | None = None) -> tuple[list[dict]
                 {"source": node["id"], "target": "__end__", "conditional": False, "label": None}
             )
     return drawn, edges
+
+
+# A reply in a code fence, as models often wrap JSON.
+_FENCED = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.S)
+
+
+def _json_object(text: str) -> bool:
+    """Whether the text is one JSON object, bare or fenced: data the run page folds
+    away, not prose."""
+    body = text.strip()
+    fenced = _FENCED.match(body)
+    if fenced:
+        body = fenced[1]
+    if not body.startswith("{"):
+        return False
+    try:
+        return isinstance(json.loads(body, parse_constant=_not_json), dict)
+    except (ValueError, RecursionError):
+        return False
+
+
+def _not_json(name: str) -> None:
+    # NaN and Infinity: Python reads them, the run page's JSON.parse does not.
+    raise ValueError(name)
+
+
+def cited(config: dict[str, Any], state: dict[str, Any], extra: Sequence[str] = ()) -> set[int]:
+    """The source numbers the run cites in what it shows (docs/api/knowledge.md, "运行记录
+    里的出处"): the ``[n]`` in the result's top-level texts (a knowledge node's
+    ``context`` passed through is not one), in the latest answer of every llm node with
+    text output that is not ``quiet`` and of every agent node (unless it is a JSON
+    object) and in ``extra``; and the references of a plan that passed its check."""
+    values = state.get("vars") or {}
+    retrieved = [values.get(n["id"]) or {} for n in nodes(config) if n["type"] == "knowledge"]
+    contexts = {v["context"] for v in retrieved if isinstance(v.get("context"), str)}
+    result = state.get("result")
+    texts = [
+        v
+        for v in (result.values() if isinstance(result, dict) else [])
+        if isinstance(v, str) and v not in contexts
+    ]
+    used: set[int] = set()
+    for node in nodes(config):
+        out = values.get(node["id"])
+        if not isinstance(out, dict):
+            continue
+        kind = node["type"]
+        shown = kind == "agent" or (
+            kind == "llm"
+            and (node.get("output") or {}).get("kind") != "json"
+            and not node.get("quiet")
+        )
+        text = out.get("text")
+        if shown and isinstance(text, str) and not _json_object(text):
+            texts.append(text)
+        if kind == "etl_plan_check" and out.get("ok") is True:
+            plan = out.get("plan")
+            references = (plan.get("references") if isinstance(plan, dict) else None) or []
+            used |= {
+                r["index"]
+                for r in references
+                if isinstance(r, dict) and isinstance(r.get("index"), int)
+            }
+    for text in [*texts, *extra]:
+        used |= cited_numbers(text)
+    return used

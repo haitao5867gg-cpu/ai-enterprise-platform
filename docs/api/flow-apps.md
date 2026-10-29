@@ -90,10 +90,13 @@
  "system": "你是售后客服……",           // 可选，最多 20000 字符；拼在 Skill 正文后面
  "prompt": "客户问：{{start.question}}", // 必填，最多 20000 字符
  "output": {"kind": "text"}
-        |  {"kind": "json", "fields": [{"key": "amount", "type": "string" | "number" | "boolean" | "array" | "object", "description": "退款金额"}]}}
+        |  {"kind": "json", "fields": [{"key": "amount", "type": "string" | "number" | "boolean" | "array" | "object", "description": "退款金额"}]},
+ "quiet": false}                       // 可选，默认 false；true 时文本回答不写进运行过程
 ```
 
 产出：`text`；JSON 输出时是每个字段（不再有 `text`）。模型没按格式回答时自动重试一次，仍不对就按 `output_format` 出错处理。无分支（设了失败分支时另有 `error`）。
+
+`quiet` 只管运行过程（`messages`），不改产出：设了 `quiet` 的节点照样产出 `text`，后面的节点照常引用，流程视图里照常能看。给回答只是中间结果的步骤用，比如 `etl-lakehouse` 模板的「出方案」「写代码」。JSON 输出本来就不写进运行过程。`quiet` 不是 true 或 false 时保存报错，`loc` 指到 `quiet`。
 
 **classifier 意图分类**
 
@@ -226,7 +229,7 @@
   "category": "model" | "logic" | "tool" | "data" | "human" | "terminal",
   "error_handling": true,                 // 能否设 on_error
   "outputs": [{"key": "text", "description": "模型的回答"}],   // 固定产出；随设置变化的（JSON 字段、表单字段、代码返回值）不在这里
-  "defaults": {"model": null, "skills": [], "prompt": "", "output": {"kind": "text"}},   // 新建节点时用，不含公共字段
+  "defaults": {"model": null, "skills": [], "prompt": "", "output": {"kind": "text"}, "quiet": false},   // 新建节点时用，不含公共字段
   "presets": [{"key": "extract", "label": "抽取字段", "description": "从文本里抽取结构化字段",
                "settings": {"output": {"kind": "json", "fields": []}, "prompt": "从下面的文本中抽取字段：\n{{start.question}}"}}],
   "max_count": null                        // 一个应用里最多几个，start 为 1
@@ -340,7 +343,33 @@ requires:                 # 方便导入时核对
 - `POST /runs` 用于编排应用时，`input` 按开始节点的 `inputs` 校验，不合格返回 422，`loc` 为 `["body", "input", "question"]`。`hello` 的输入仍是 `{"text": "……"}`。
 - `POST /runs` 新增可选字段 `draft`（布尔）：为 true 时用当前草稿的配置运行（编辑页的“用草稿试运行”），没有草稿 409，不能和 `app_version` 同时给。草稿运行的 `app_version` 为 null，运行记录新增 `draft: true`（其他运行为 false），运行列表可以据此标注“草稿试运行”。代码应用也可以这样试跑草稿。
 - 编排应用的 `result` 就是结束节点的 `outputs`。`hello` 的结果仍是 `{"answer": "……"}`。
-- 编排应用的 `messages`：开头是输入里的文本字段（user），llm 节点（文本输出）和 agent 节点的回答记为 assistant，每次人工处理记为 user。llm 节点按 JSON 输出时，产出是给后面节点用的数据，不记入对话，在流程视图里看。
+- 编排应用的 `messages` 是运行过程，按发生的先后排列。每条有：
+  - `role`：`user` 是人说的（提出需求、人工处理），`assistant` 是应用的某一步说的；
+  - `content`：`assistant` 的按 Markdown 显示，`user` 的按原样显示；
+  - `node`、`node_title`：哪一步说的（节点 id 和这次运行用的标题）；
+  - `actor`：谁说的。开始节点的消息是提出人（`POST /runs` 的 `requester`），人工节点的消息是处理人（`resume` 的 `actor`）；没给时为 null，`assistant` 的总是 null；
+  - `at`：说这句话的时间（ISO）；人工节点是做出处理的时间。
+
+  这四个字段在之前的运行里没有，接口返回 null；`etl` 代码应用的消息也没有。说话人的身份（`audience`，如业务方）第二批再加。
+- 哪些节点说什么。表里的“第 k/n 次”是说接下来是第 k 次、最多 n 次：校验节点算的是连续第几次（n 是 `max_attempts`），dev 运行算的是这个节点第几次运行（n 是 `max_runs`）。
+
+| 节点 | role | content |
+| --- | --- | --- |
+| start | user | 按开始节点里的顺序，第一个填了字的文本输入（text、textarea，只有空格不算），原样显示；都没填就不说 |
+| llm，文本输出 | assistant | 模型的回答；`quiet: true` 时不说 |
+| llm，JSON 输出 | — | 不说：产出给后面节点用，在流程视图里看 |
+| agent | assistant | 最后的回答 |
+| human，确认模式 | user | `选了「确认」`；写了意见时 `选了「驳回」，意见：语气再软一点` |
+| human，填写模式 | user | 每个字段一句，用“；”连接：`订单号填了「A1001」`；下拉和是否 `统计时段选了「只看 2026 年」`（下拉写选项的名称，是否写“是”或“否”）；没填 `件数没填` |
+| etl_profile | assistant | `已探查 示例库 的 2 张表：sales.customers、sales.orders` |
+| etl_plan_check 通过 | assistant | `方案整理好了：1 张目标表、2 条假设待确认`（没有假设时只说目标表）；完整方案在产出 `message` 里 |
+| etl_plan_check 不过 | assistant | `方案有 2 处没通过校验，让模型重写（第 2/3 次）`；回答不是 JSON 时 `模型没按要求的 JSON 格式回答，让模型重写（第 2/3 次）`；连续不过到上限时不说，运行失败，`error` 写明问题 |
+| databricks_ingest | assistant | `已把 2 张表共 6 行抽取到 Databricks：…`，每条注意事项另起一行 `注意：…` |
+| etl_code_check 通过 | assistant | `代码检查通过，打包成 bundle order_facts（5 个文件）` |
+| etl_code_check 不过 | assistant | `代码有 1 处没通过检查，让模型重写（第 2/3 次）`；不是 JSON 时（包括没有 `targets` 对象）同上；到上限时同上 |
+| databricks_dev_run | assistant | 通过：`dev 运行通过：写出 1 张表共 96 行，质量规则丢弃 1 行`（cluster 模式说“得到”；有表行数不明时不说行数；没丢弃不说丢弃；没有结果表时只说 `dev 运行通过`）。带着报错重写：`dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）`。不再重试：`dev 运行失败（1 条报错），不再重试`。没有报错时是 `dev 运行失败，……`。完整报告在产出 `report` 里 |
+| 其他节点（classifier、condition、template、tool、code、knowledge、end），以及出错后走默认值或失败分支 | — | 不说 |
+
 - 运行失败时 `error` 写明节点：`节点「起草售后回复」(draft)：模型没有按格式回答`。
 
 ### 人工节点在工作台上的样子

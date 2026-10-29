@@ -1272,6 +1272,13 @@ export function NodeSettings({
               })
             }
           />
+          {node.output.kind === "text" && (
+            <CheckField
+              label="回答不写进运行过程"
+              checked={Boolean(node.quiet)}
+              onChange={(quiet) => change({ ...node, quiet })}
+            />
+          )}
           {node.output.kind === "json" && (
             <OutputFields
               label="输出字段"

@@ -65,6 +65,8 @@ export type LlmNode = NodeBase &
     system?: string;
     prompt: string;
     output: { kind: "text" } | { kind: "json"; fields: OutputField[] };
+    // A text answer that is only for later steps stays out of the run process.
+    quiet?: boolean;
   };
 export type ClassifierNode = NodeBase &
   ModelSettings &

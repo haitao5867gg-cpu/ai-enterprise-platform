@@ -11,9 +11,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from aep.main import app
 from aep.runtime.registry import AppContext, default_apps
-from aep.runtime.service import NotCancellable, NotWaiting, RunService
+from aep.runtime.service import NotCancellable, NotWaiting, RunService, _config
 from aep.runtime.store import MemoryRunStore
-from tests.conftest import SETTINGS, FakeGateway
+from tests.conftest import SETTINGS, FakeGateway, said
 
 
 @pytest.fixture
@@ -39,22 +39,25 @@ async def api(service):
         yield client
 
 
-async def start(api, service, text="你好") -> str:
-    resp = await api.post("/runs", json={"app": "hello", "input": {"text": text}})
+async def start(api, service, text="你好", requester=None) -> str:
+    resp = await api.post(
+        "/runs", json={"app": "hello", "input": {"text": text}, "requester": requester}
+    )
     assert resp.status_code == 201
     await service.wait_idle()
     return resp.json()["run_id"]
 
 
 async def test_create_runs_until_approval(api, service, gateway):
-    run_id = await start(api, service)
+    run_id = await start(api, service, requester="李雷")
 
     body = (await api.get(f"/runs/{run_id}")).json()
     assert body["status"] == "waiting"
-    assert body["messages"] == [
-        {"role": "user", "content": "你好"},
-        {"role": "assistant", "content": "第一版回答"},
+    assert said(body["messages"]) == [
+        ("user", "start", "李雷", "你好"),
+        ("assistant", "draft", None, "第一版回答"),
     ]
+    assert [m["node_title"] for m in body["messages"]] == ["开始", "回答"]
     assert body["pending"]["kind"] == "approval"
     assert body["pending"]["options"] == ["approve", "reject"]
     assert body["result"] is None
@@ -63,8 +66,10 @@ async def test_create_runs_until_approval(api, service, gateway):
 
 async def test_approve_finishes_run(api, service):
     run_id = await start(api, service)
+    waited = (await api.get(f"/runs/{run_id}")).json()["messages"]
 
-    resp = await api.post(f"/runs/{run_id}/resume", json={"decision": "approve"})
+    decided = datetime.now(UTC)
+    resp = await api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "actor": "韩梅梅"})
     assert resp.status_code == 202
     await service.wait_idle()
 
@@ -72,6 +77,10 @@ async def test_approve_finishes_run(api, service):
     assert body["status"] == "done"
     assert body["pending"] is None
     assert body["result"] == {"answer": "第一版回答"}
+    assert said(body["messages"][-1:]) == [("user", "review", "韩梅梅", "选了「确认」")]
+    # A decision is timed when it is made, not when the step started waiting.
+    at = datetime.fromisoformat(body["messages"][-1]["at"])
+    assert at >= decided > datetime.fromisoformat(waited[-1]["at"])
 
 
 async def test_reject_redrafts_with_feedback_and_waits_again(api, service, gateway):
@@ -82,12 +91,33 @@ async def test_reject_redrafts_with_feedback_and_waits_again(api, service, gatew
 
     body = (await api.get(f"/runs/{run_id}")).json()
     assert body["status"] == "waiting"
-    assert body["messages"][-2:] == [
-        {"role": "user", "content": "驳回：更短一点"},
-        {"role": "assistant", "content": "修改后的回答"},
+    assert said(body["messages"][-2:]) == [
+        ("user", "review", None, "选了「驳回」，意见：更短一点"),
+        ("assistant", "draft", None, "修改后的回答"),
     ]
     second_prompt = gateway.requests[1]["body"]["messages"]
     assert "更短一点" in second_prompt[-1]["content"]
+
+
+async def test_messages_from_before_steps_were_named_still_read(api, service):
+    run_id = await start(api, service)
+    record = await service._store.get(run_id)
+    # A run saved before messages named their step: only role and content.
+    graph = await service._graph(record)
+    await graph.aupdate_state(
+        _config(run_id), {"messages": [{"role": "user", "content": "旧消息"}]}
+    )
+
+    resp = await api.get(f"/runs/{run_id}")
+    assert resp.status_code == 200
+    assert resp.json()["messages"][-1] == {
+        "role": "user",
+        "content": "旧消息",
+        "node": None,
+        "node_title": None,
+        "actor": None,
+        "at": None,
+    }
 
 
 async def test_resume_rules(api, service):
@@ -355,9 +385,9 @@ async def test_retry_a_run_that_failed_on_the_model(api, service, gateway):
     body = (await api.get(f"/runs/{run_id}")).json()
     assert body["status"] == "waiting"
     assert body["error"] is None and body["failed"] is None
-    assert body["messages"] == [
-        {"role": "user", "content": "你好"},
-        {"role": "assistant", "content": "第一版回答"},
+    assert said(body["messages"]) == [
+        ("user", "start", None, "你好"),
+        ("assistant", "draft", None, "第一版回答"),
     ]
     steps = (await api.get(f"/runs/{run_id}/flow")).json()["steps"]
     draft = [s for s in steps if s["node"] == "draft"][-1]
@@ -410,12 +440,22 @@ async def test_a_failure_waits_until_it_is_retried():
 
 async def test_retry_before_the_first_step_starts_from_the_input(service):
     # It failed before anything was saved (say, its configuration could not be read).
-    record = await service._store.create("hello", {"text": "你好"})
+    record = await service._store.create("hello", {"text": "你好"}, created_by="李雷")
     await service._store.set_status(record.run_id, "error", "启动失败")
 
     await service.retry(record.run_id)
     await service.wait_idle()
-    assert (await service.get(record.run_id)).record.status == "waiting"
+    view = await service.get(record.run_id)
+    assert view.record.status == "waiting"
+    assert said(view.messages)[0] == ("user", "start", "李雷", "你好")
+
+
+async def test_a_run_recovered_before_its_first_step_names_its_requester(service):
+    record = await service._store.create("hello", {"text": "你好"}, created_by="李雷")
+
+    assert await service.recover() == 1
+    await service.wait_idle()
+    assert said((await service.get(record.run_id)).messages)[0] == ("user", "start", "李雷", "你好")
 
 
 async def test_rerun_copies_the_version_and_input(api, service):

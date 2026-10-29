@@ -109,14 +109,17 @@ async def test_recover_restarts_runs_left_running():
 
     async with platform(gateway) as first:
         # Simulate a crash right after the record was written, before any step ran.
-        record = await first._store.create("hello", {"text": "你好"})
+        record = await first._store.create("hello", {"text": "你好"}, created_by="李雷")
 
     async with platform(gateway) as second:
         assert await second.recover() >= 1
         await second.wait_idle()
         view = await second.get(record.run_id)
         assert view.record.status == "waiting"
-        assert view.messages[-1] == {"role": "assistant", "content": "恢复后的回答"}
+        assert [(m["node"], m["actor"], m["content"]) for m in view.messages] == [
+            ("start", "李雷", "你好"),
+            ("draft", None, "恢复后的回答"),
+        ]
 
 
 async def test_status_changes_only_from_the_expected_status():

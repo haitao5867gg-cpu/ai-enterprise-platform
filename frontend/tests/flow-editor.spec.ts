@@ -12,7 +12,9 @@ test.describe.configure({ timeout: 90_000 });
 
 // Exercise the existing list editor explicitly; desktop now defaults to canvas.
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("aep.flow-editor.view", "list"));
+  await page.addInitScript(() =>
+    localStorage.setItem("aep.flow-editor.view", "list"),
+  );
 });
 
 const id = (prefix: string) =>
@@ -392,6 +394,45 @@ test("constants save with the draft; secrets show set without echoing the value"
   expect(detail.secrets).toContainEqual(
     expect.objectContaining({ name: "crm_token", set: true }),
   );
+});
+
+test("llm 节点「回答不写进运行过程」保存后保留", async ({ page, request }) => {
+  const app = await blank(request, page);
+  await nodeButton(page, "回答", "answer").click();
+  const quiet = panel(page).getByRole("checkbox", {
+    name: "回答不写进运行过程",
+    exact: true,
+  });
+  await expect(quiet).not.toBeChecked();
+  await quiet.check();
+  await save(page);
+  await expect(page.locator(".asset-notice")).toContainText("草稿已保存");
+  expect(
+    (await draftConfig(request, app)).graph.nodes.find(
+      (node) => node.id === "answer",
+    ),
+  ).toMatchObject({ quiet: true });
+  // The answer is still the result; the run process only has the question.
+  const created = await request.post("/api/runs", {
+    data: { app, draft: true, input: { question: "退货" } },
+  });
+  const { run_id } = await created.json();
+  await expect
+    .poll(
+      async () =>
+        (await (await request.get(`/api/runs/${run_id}`)).json()).status,
+    )
+    .toBe("done");
+  const run = await (await request.get(`/api/runs/${run_id}`)).json();
+  expect(run.result.answer).toContain("退货");
+  expect(run.messages.map((message: { node: string }) => message.node)).toEqual(
+    ["start"],
+  );
+  // JSON output never goes into the run process, so there is nothing to choose.
+  await panel(page)
+    .getByLabel("输出方式", { exact: true })
+    .selectOption("json");
+  await expect(quiet).toHaveCount(0);
 });
 
 test("draft trial run asks to save first, then runs the draft and is labelled", async ({

@@ -162,7 +162,11 @@ function isTarget(value: unknown): value is EtlTarget {
 // Malformed or future details fall back to the prompt and approval controls.
 export function getEtlPlan(details: unknown): EtlPlan | null {
   if (!isRecord(details) || details.type !== "etl_plan") return null;
-  const plan = details.plan;
+  return readEtlPlan(details.plan);
+}
+
+// A plan as the code app's approval and a flow app's result carry it.
+export function readEtlPlan(plan: unknown): EtlPlan | null {
   return isRecord(plan) &&
     typeof plan.summary === "string" &&
     isLanguage(plan.language) &&

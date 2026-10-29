@@ -263,14 +263,16 @@ GET /runs/{id}/manual               这次运行用的版本
 | `start` | start | 开始 | 输入 `datasource`（数据源，必填）、`request`（需求，textarea，必填）、`tables`（表范围，text）、`language`（select：pyspark、sql，默认 pyspark）、`name`（bundle 名，text） |
 | `profile` | etl_profile | 探查数据 | `datasource: {{start.datasource}}`，`tables: {{start.tables}}`，出错重试 2 次 |
 | `glossary` | knowledge | 查业务口径 | `query: {{start.request}}`，`top_k` 12，混合检索；知识库留空 |
-| `plan` | llm | 出方案 | Skill `etl-plan`（内置 Skill 的最新发布版本），`system` 为 `aep.etl.plan.OUTPUT_FORMAT`，输出 text，`max_visits` 10，出错重试 1 次；提示词见下 |
+| `plan` | llm | 出方案 | Skill `etl-plan`（内置 Skill 的最新发布版本），`system` 为 `aep.etl.plan.OUTPUT_FORMAT`，输出 text，`max_visits` 10，出错重试 1 次，`quiet: true`（回答是给校验节点的 JSON，不写进运行过程）；提示词见下 |
 | `check_plan` | etl_plan_check | 校验方案 | `reply: {{plan.text}}`，`profile: {{profile.tables}}`，`hits: ["{{glossary.hits}}", "{{standards.hits}}"]`，`language: {{start.language}}`，`max_visits` 10 |
 | `review` | human | 确认方案 | 确认模式，`show: {{check_plan.message}}`，选项确认、驳回，驳回必须写意见，`max_visits` 5 |
 | `ingest` | databricks_ingest | 抽取到湖仓 | `datasource: {{start.datasource}}`，`tables: {{check_plan.sources}}`，出错重试 2 次 |
-| `codegen` | llm | 写代码 | Skill `etl-codegen`，`system` 为 `aep.etl.codegen.OUTPUT_FORMAT`，输出 text，`max_visits` 10，出错重试 1 次；提示词见下 |
+| `codegen` | llm | 写代码 | Skill `etl-codegen`，`system` 为 `aep.etl.codegen.OUTPUT_FORMAT`，输出 text，`max_visits` 10，出错重试 1 次，`quiet: true`（回答是给校验节点的 JSON，不写进运行过程）；提示词见下 |
 | `check_code` | etl_code_check | 检查并打包 | `reply: {{codegen.text}}`，`plan: {{check_plan.plan}}`，`source_name: {{profile.source_name}}`，`name: {{start.name}}`，`max_visits` 10 |
 | `dev_run` | databricks_dev_run | dev 运行 | `bundle: {{check_code.bundle}}`，`max_visits` 3，出错重试 2 次 |
 | `end` | end | 结束 | 输出 `report` ← `{{dev_run.report}}`，`plan` ← `{{check_plan.plan}}`，`ingested` ← `{{ingest.summary}}` |
+
+每个节点在运行过程里说什么，见 [flow-apps.md](flow-apps.md#运行)。
 
 “出错重试 n 次”是 `on_error: {"retry": {"max": n, "interval_seconds": 5}, "then": "stop"}`（模型节点间隔 2 秒）：连接器或集群一时忙、模型网关超时这类会自己好的错误，先自动再试，仍不行才停下。
 

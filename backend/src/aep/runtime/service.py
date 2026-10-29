@@ -158,10 +158,11 @@ class InvalidValues(Exception):
 @dataclass(frozen=True)
 class RunView:
     record: RunRecord
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     pending: dict[str, Any] | None
     result: dict[str, Any] | None
     trace_id: str | None = None
+    # A flow app's numbered sources, each with ``cited`` (see flowgraph.cited).
     sources: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -422,17 +423,25 @@ class RunService:
         pending = (
             state.interrupts[0].value if record.status == "waiting" and state.interrupts else None
         )
+        sources: list[dict[str, Any]] = []
+        if record.app not in self._graphs:
+            found = sorted((values.get("sources") or {}).values(), key=lambda hit: hit["index"])
+            if found:
+                # Worked out each time the run is read, so runs from before it have it too.
+                show = ((pending or {}).get("details") or {}).get("show")
+                used = flowgraph.cited(
+                    self.flow_config(record.app, record.config),
+                    values,
+                    [show] if isinstance(show, str) else [],
+                )
+                sources = [{**hit, "cited": hit["index"] in used} for hit in found]
         return RunView(
             record=record,
             messages=values.get("messages", []),
             pending=pending,
             result=values.get("result"),
             trace_id=tracing.trace_id(run_id) if self._tracer.enabled else None,
-            sources=(
-                sorted((values.get("sources") or {}).values(), key=lambda hit: hit["index"])
-                if record.app not in self._graphs
-                else []
-            ),
+            sources=sources,
         )
 
     async def flow(self, run_id: str) -> dict[str, Any]:
@@ -651,7 +660,12 @@ class RunService:
                 graph = await self._graph(record)
                 nodes = await self.node_configs(record)
                 run_config: dict[str, Any] = {
-                    "configurable": {**config["configurable"], appconfig.CONFIG_KEY: nodes},
+                    "configurable": {
+                        **config["configurable"],
+                        appconfig.CONFIG_KEY: nodes,
+                        # Who asked for the run: a flow app's start message is theirs.
+                        "requester": record.created_by,
+                    },
                     "callbacks": [*segment.callbacks, StepTracker(self._store, record.run_id)],
                 }
                 if record.app not in self._graphs:

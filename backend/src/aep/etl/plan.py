@@ -84,6 +84,8 @@ def _references(plan: EtlPlan, hits: list[IndexedHit]) -> None:
     plan.assumptions = [clean(text) for text in plan.assumptions]
     for target in plan.targets:
         target.description = clean(target.description)
+        # The recipe may hold indexes such as split(x)[0]: count, never rewrite.
+        used.update(n for n in CITATION.findall(target.logic) if n in allowed)
         for column in target.columns:
             column.description = clean(column.description)
     plan.references = sorted((allowed[n] for n in used), key=lambda hit: hit.index)

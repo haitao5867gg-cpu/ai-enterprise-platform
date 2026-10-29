@@ -77,7 +77,7 @@ async function capture(page: Page, name: string, info: TestInfo) {
     : name.endsWith("manual")
       ? manual(page)
       : name === "run-report"
-        ? page.locator(".result-field").first()
+        ? page.getByRole("region", { name: "运行结果", exact: true })
         : page.getByRole("region", { name: "节点 dev 运行", exact: true });
   await target.screenshot({ path, animations: "disabled" });
   await info.attach(name, { path, contentType: "image/png" });
@@ -430,6 +430,58 @@ test("Markdown report renders real tables with citations, and dev output has per
   await expect(
     result.getByRole("cell", { name: "128560.50", exact: true }),
   ).toBeVisible();
+  // The plan the result carries is read in the main column, not as JSON paths.
+  const plan = page.getByRole("region", { name: "ETL 方案", exact: true });
+  expect(
+    await plan.evaluate((element) => Boolean(element.closest(".run-main"))),
+  ).toBe(true);
+  await expect(
+    result.getByRole("region", { name: "ETL 方案", exact: true }),
+  ).toHaveCount(0);
+  // Each text of the result is read as it is, without its key as a heading.
+  await expect(result.locator(".result-text")).toHaveCount(2);
+  await expect(
+    result.getByRole("heading", { name: /^(report|ingested|plan)/ }),
+  ).toHaveCount(0);
+  // The plan's tags point at the run's sources.
+  await expect(plan.locator(".citation-marker").first()).toHaveText("[1]");
+  await plan
+    .getByRole("link", { name: "引用来源 1", exact: true })
+    .first()
+    .click();
+  await expect(result.locator(".citation-source.highlighted")).toContainText(
+    "01-有效订单定义.md",
+  );
+  // With a result to read, how the run went starts folded.
+  await expect(
+    page.locator("details.conversation-history"),
+  ).not.toHaveAttribute("open");
+  await page.getByText(/^运行过程 · \d+ 条消息$/).click();
+  const chat = page.getByRole("list", { name: "消息记录" });
+  // The plan and the code are checked and said in a sentence, not as JSON.
+  await expect(chat.locator(".message-meta strong")).toHaveText([
+    "演示用户",
+    "探查数据",
+    "校验方案",
+    "演示用户",
+    "抽取到湖仓",
+    "检查并打包",
+    "dev 运行",
+  ]);
+  await expect(chat.locator("details.message-data")).toHaveCount(0);
+  await expect(chat.getByRole("listitem").nth(5)).toContainText(
+    "代码检查通过，打包成 bundle retail_sales（2 个文件）",
+  );
+  await expect(chat.getByRole("listitem").last()).toContainText(
+    "dev 运行通过：写出 2 张表共 1296 行",
+  );
+  await page.getByText(/^运行过程 · \d+ 条消息$/).click();
+  const uncited = result
+    .locator("summary")
+    .filter({ hasText: /^另有 \d+ 条检索到但未引用$/ });
+  await expect(uncited).toHaveCount(1);
+  await expect(uncited.locator("..")).not.toHaveAttribute("open");
+  await expect(result.locator(".citation-marker").first()).toHaveText("[1]");
   await result
     .getByRole("link", { name: "引用来源 1", exact: true })
     .first()
@@ -587,9 +639,14 @@ test("numeric limits, no-preview output and Markdown code/links retain their beh
   await expect(result.locator('a[href="https://example.com"]')).toHaveText(
     "普通链接 [1]",
   );
+  // Only the result's own texts are read; the rest is in the developer view.
   await expect(
     result.locator("strong").filter({ hasText: "嵌套报告" }),
-  ).toBeVisible();
+  ).toHaveCount(0);
+  await result.getByText("开发者视图", { exact: true }).click();
+  await expect(result.locator(".developer-view .result-json")).toContainText(
+    '"report": "**嵌套报告**"',
+  );
   expect(await page.evaluate(() => "untrusted" in window)).toBe(false);
   const flow = page.getByRole("region", { name: "工作流程", exact: true });
   await flow

@@ -234,10 +234,56 @@ async def test_knowledge_qa_template_starts_as_draft_then_runs_with_mock_embeddi
     [source] = run["sources"]
     assert source["index"] == 1 and source["text"] == POLICY
     assert (source["node"], source["node_title"]) == ("kb", "检索资料")
+    assert source["cited"] is True
     prompt = p.gateway.requests[-1]["body"]["messages"][-1]["content"]
     assert f"[1]《政策.md》退货期限\n{POLICY}" in prompt
     assert all("embeddings" not in request["url"] for request in p.gateway.requests)
     assert all("sources" not in r for r in (await p.api.get("/runs")).json())
+
+
+async def test_a_source_shown_for_a_decision_is_cited_while_it_waits(p):
+    kb_id = await p.seed()
+    config = knowledge_flow([kb_id])
+    nodes = config["graph"]["nodes"]
+    nodes[2:2] = [
+        {
+            "id": "answer",
+            "type": "llm",
+            "title": "回答",
+            "prompt": "{{kb.context}}",
+            "output": {"kind": "text"},
+            "quiet": True,
+        },
+        {
+            "id": "review",
+            "type": "human",
+            "title": "确认",
+            "mode": "approval",
+            "prompt": "请确认",
+            "show": "{{answer.text}}",
+            "options": [{"key": "approve", "label": "确认"}, {"key": "reject", "label": "驳回"}],
+        },
+    ]
+    nodes[-1]["outputs"] = [{"key": "hits", "from": ["{{kb.hits}}"]}]
+    config["graph"]["edges"] = [
+        {"from": "start", "to": "kb"},
+        {"from": "kb", "to": "answer"},
+        {"from": "answer", "to": "review"},
+        {"from": "review", "to": "end", "branch": "approve"},
+        {"from": "review", "to": "answer", "branch": "reject"},
+    ]
+    await p.publish(config)
+    run = await p.run()
+    assert run["status"] == "waiting", run["error"]
+    # Only the approver's view cites it: the quiet answer is not in the run process.
+    assert [s["cited"] for s in run["sources"]] == [True]
+
+    resumed = await p.api.post(f"/runs/{run['run_id']}/resume", json={"decision": "approve"})
+    assert resumed.status_code == 202, resumed.text
+    await p.service.wait_idle()
+    done = (await p.api.get(f"/runs/{run['run_id']}")).json()
+    assert done["status"] == "done", done["error"]
+    assert [s["cited"] for s in done["sources"]] == [False]
 
 
 async def test_node_outputs_context_empty_query_and_single_node_tests(p):
@@ -247,7 +293,8 @@ async def test_node_outputs_context_empty_query_and_single_node_tests(p):
     [hit] = run["result"]["hits"]
     assert hit["index"] == 1 and hit["score"] == pytest.approx(1)
     assert run["result"]["context"] == f"[1]《政策.md》退货期限\n{POLICY}"
-    assert run["sources"] == [{**hit, "node": "kb", "node_title": "检索政策"}]
+    # The result is the hits and their context passed through, which cite nothing.
+    assert run["sources"] == [{**hit, "node": "kb", "node_title": "检索政策", "cited": False}]
     flow = (await p.api.get(f"/runs/{run['run_id']}/flow")).json()
     assert next(n for n in flow["nodes"] if n["id"] == "kb")["kind"] == "tool"
     kb_step = next(s for s in flow["steps"] if s["node"] == "kb")

@@ -43,9 +43,17 @@ test("new run → approval → done, then reject with a comment", async ({
   );
   await expect(page.locator(".detail-meta")).toContainText("李雷 提出 · 刚刚");
   await expect(page.locator(".run-info")).toContainText("停在「确认」");
+  // The draft to check is shown above, so how the run went starts folded,
+  // and where the run is still reaches a screen reader.
   await expect(
-    page.getByRole("list", { name: "消息记录" }).getByRole("listitem"),
-  ).toHaveCount(2);
+    page.locator("details.conversation-history"),
+  ).not.toHaveAttribute("open");
+  await expect(
+    page.getByRole("status").filter({ hasText: "应用已暂停，等待人工确认" }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByText("运行过程 · 2 条消息", { exact: true }),
+  ).toBeVisible();
   const id = new URL(page.url()).pathname.split("/").at(-1)!;
   const invalidDecision = await request.post(`/api/runs/${id}/resume`, {
     data: { decision: ["approve"], comment: "" },
@@ -57,6 +65,11 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(
     page.getByRole("button", { name: "确认", exact: true }),
   ).toHaveCount(0);
+  // Once there is a result, how the run went is folded until asked for.
+  await expect(
+    page.locator("details.conversation-history"),
+  ).not.toHaveAttribute("open");
+  await page.getByText(/^运行过程 · \d+ 条消息$/).click();
   await expect(
     page.getByRole("list", { name: "消息记录" }).getByRole("listitem"),
   ).toHaveCount(3);
@@ -85,18 +98,36 @@ test("new run → approval → done, then reject with a comment", async ({
     comment: "请先补充空值与重复数据的处理规则。",
     actor: "李雷",
   });
+  // Waiting again with the new draft shown above, 运行过程 is folded.
+  const summary = page.getByText("运行过程 · 4 条消息", { exact: true });
+  await expect(summary).toBeVisible();
   await expect(
-    page.getByRole("list", { name: "消息记录" }).getByRole("listitem"),
-  ).toHaveCount(4);
+    page.locator("details.conversation-history"),
+  ).not.toHaveAttribute("open");
+  await summary.click();
+  const rejected = page
+    .getByRole("list", { name: "消息记录" })
+    .getByRole("listitem")
+    .nth(2);
+  await expect(rejected.locator(".message-meta strong")).toHaveText("李雷");
+  await expect(rejected.locator(".message-step")).toHaveText("确认");
+  await expect(rejected).toContainText(
+    "选了「驳回」，意见：请先补充空值与重复数据的处理规则。",
+  );
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
   ).toBeVisible();
-  await expect(page.getByRole("list", { name: "消息记录" })).toContainText(
-    "请先补充空值与重复数据的处理规则。",
-  );
   await capture(page, "rejected");
   await page.getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
+  // Opened by the person, it stays open when the result comes.
+  await expect(page.locator("details.conversation-history")).toHaveAttribute(
+    "open",
+    "",
+  );
+  await expect(
+    page.getByRole("status").filter({ hasText: "本次运行已结束" }),
+  ).toHaveCount(1);
 
   await page.getByRole("link", { name: "返回运行记录" }).click();
   const row = page
@@ -681,4 +712,259 @@ test("conversation renders replies as Markdown, keeps typed text as is and folds
   await expect(page.getByText("hello / etl")).toHaveCount(0);
   await expect(page.getByText("默认工作空间")).toHaveCount(0);
   await expect(page.getByText("EVERY STEP, CONNECTED")).toHaveCount(0);
+});
+
+test("运行过程标明步骤和说话人，有结果后默认收起", async ({ page }) => {
+  const hit = (index: number, cited: boolean) => ({
+    chunk_id: `chunk-${index}`,
+    position: index,
+    text: `片段 ${index} 的原文`,
+    heading: "有效订单",
+    page: null,
+    kb_id: "retail-metrics",
+    kb_name: "零售数据口径",
+    document_id: `doc-${index}`,
+    document_name: `0${index}-口径.md`,
+    score: 0.8,
+    scores: { vector: 0.8, keyword: null, rerank: null },
+    index,
+    node: "glossary",
+    node_title: "查业务口径",
+    cited,
+  });
+  await page.route("**/api/runs/steps-run", (route) =>
+    route.fulfill({
+      json: {
+        run_id: "steps-run",
+        app: "retail-etl",
+        app_title: "零售数据 ETL",
+        status: "done",
+        messages: [
+          {
+            role: "user",
+            content: "按城市和月份统计有效订单销售额",
+            node: "start",
+            node_title: "开始",
+            actor: "李雷",
+            at: "2026-10-29T08:00:01.123456+00:00",
+          },
+          {
+            role: "assistant",
+            content: "方案整理好了：1 张目标表、2 条假设待确认",
+            node: "check_plan",
+            node_title: "校验方案",
+            actor: null,
+            at: "2026-10-29T08:02:00+00:00",
+          },
+          {
+            role: "user",
+            content: "选了「驳回」，意见：先做全量",
+            node: "review",
+            node_title: "确认方案",
+            actor: "韩梅梅",
+            at: "2026-10-29T08:05:00+00:00",
+          },
+          // From before messages named their step.
+          { role: "user", content: "旧消息" },
+          { role: "assistant", content: "旧回答" },
+        ],
+        pending: null,
+        result: { answer: "好的 [1]" },
+        error: null,
+        sources: [hit(1, true), hit(2, false)],
+      },
+    }),
+  );
+  await page.goto("/runs/steps-run");
+  const result = page.getByRole("region", { name: "运行结果", exact: true });
+  await expect(result.locator(".citation-marker")).toHaveText("[1]");
+  const history = page.locator("details.conversation-history");
+  await expect(history).not.toHaveAttribute("open");
+  await page.getByText("运行过程 · 5 条消息", { exact: true }).click();
+  await expect(history).toHaveAttribute("open", "");
+  const chat = page.getByRole("list", { name: "消息记录" });
+  await expect(chat.locator(".message-meta strong")).toHaveText([
+    "李雷",
+    "校验方案",
+    "韩梅梅",
+    "未署名",
+    "零售数据 ETL",
+  ]);
+  await expect(chat.locator(".message-avatar").first()).toHaveText("李");
+  await expect(chat.locator(".message-step")).toHaveText(["开始", "确认方案"]);
+  await expect(chat.locator("time")).toHaveCount(3);
+  await expect(chat.locator("time").first()).toHaveAttribute(
+    "datetime",
+    "2026-10-29T08:00:01.123456+00:00",
+  );
+  await expect(chat).toContainText("选了「驳回」，意见：先做全量");
+  const developer = result.locator(".developer-view");
+  await expect(developer).not.toHaveAttribute("open");
+  await expect(developer.locator(".result-json")).toContainText('"answer"');
+  await expect(
+    result.getByText("另有 1 条检索到但未引用", { exact: true }),
+  ).toBeVisible();
+  await page.getByText("运行过程 · 5 条消息", { exact: true }).click();
+  await expect(history).not.toHaveAttribute("open");
+});
+
+test("long names stay on the page on a phone, and a new day shows its date", async ({
+  page,
+}) => {
+  await page.route("**/api/runs/long-run", (route) =>
+    route.fulfill({
+      json: {
+        run_id: "long-run",
+        app: "hello",
+        status: "running",
+        messages: [
+          {
+            role: "user",
+            content: "统计有效订单",
+            node: "start",
+            node_title: "开始",
+            actor: "一个名字特别特别特别长的审批人员名字测试用",
+            at: "2026-10-29T08:00:00+00:00",
+          },
+          {
+            role: "assistant",
+            content: "好的",
+            node: "draft",
+            node_title: "调用模型生成一份非常长的方案以及说明的节点标题",
+            actor: null,
+            at: "2026-10-30T09:10:00+00:00",
+          },
+        ],
+        pending: null,
+        result: null,
+        error: null,
+      },
+    }),
+  );
+  await page.setViewportSize({ width: 390, height: 840 });
+  await page.goto("/runs/long-run");
+  const chat = page.getByRole("list", { name: "消息记录" });
+  await expect(chat.locator("time").last()).toContainText("10月30日");
+  await expect(chat.locator("time").first()).not.toContainText("月");
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 840 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
+});
+
+test("a result with no text to read says so and keeps its data in the developer view", async ({
+  page,
+}) => {
+  await page.route("**/api/runs/count-run", (route) =>
+    route.fulfill({
+      json: {
+        run_id: "count-run",
+        app: "hello",
+        status: "done",
+        messages: [],
+        pending: null,
+        result: { count: 3 },
+        error: null,
+      },
+    }),
+  );
+  await page.goto("/runs/count-run");
+  const result = page.getByRole("region", { name: "运行结果", exact: true });
+  await expect(result).toContainText(
+    "应用已完成本次运行，结果在下面的开发者视图里。",
+  );
+  await expect(result.locator(".developer-view .result-json")).toContainText(
+    '"count": 3',
+  );
+  await page.route("**/api/runs/count-run", (route) =>
+    route.fulfill({
+      json: {
+        run_id: "count-run",
+        app: "hello",
+        status: "done",
+        messages: [],
+        pending: null,
+        result: { reply: null, note: " " },
+        error: null,
+      },
+    }),
+  );
+  await page.reload();
+  await expect(result).toContainText("应用已完成本次运行，没有产出结果。");
+});
+
+test("what a person is asked to check reads as Markdown, and its tags open the sources", async ({
+  page,
+}) => {
+  const hit = (index: number, cited: boolean) => ({
+    chunk_id: `chunk-${index}`,
+    position: index,
+    text: `片段 ${index} 的原文`,
+    heading: "有效订单",
+    page: null,
+    kb_id: "retail-metrics",
+    kb_name: "零售数据口径",
+    document_id: `doc-${index}`,
+    document_name: `0${index}-口径.md`,
+    score: 0.8,
+    scores: { vector: 0.8, keyword: null, rerank: null },
+    index,
+    node: "glossary",
+    node_title: "查业务口径",
+    cited,
+  });
+  await page.route("**/api/runs/show-run", (route) =>
+    route.fulfill({
+      json: {
+        run_id: "show-run",
+        app: "hello",
+        status: "waiting",
+        step: { node: "review", title: "确认方案" },
+        messages: [{ role: "user", content: "统计有效订单" }],
+        pending: {
+          kind: "approval",
+          prompt: "请确认",
+          options: ["approve", "reject"],
+          details: {
+            type: "flow_human",
+            node: "review",
+            show: "**请看** [1]，另见 [2]",
+          },
+        },
+        result: null,
+        error: null,
+        sources: [hit(1, true), hit(2, false)],
+      },
+    }),
+  );
+  await page.goto("/runs/show-run");
+  const shown = page.getByRole("region", { name: "确认方案", exact: true });
+  expect(
+    await shown.evaluate((element) => Boolean(element.closest(".run-main"))),
+  ).toBe(true);
+  await expect(shown.locator(".human-show strong")).toHaveText("请看");
+  await expect(shown.locator(".citation-marker")).toHaveText(["[1]", "[2]"]);
+  // The content is shown above, so how the run went starts folded.
+  const history = page.locator("details.conversation-history");
+  await expect(history).not.toHaveAttribute("open");
+  await shown.getByRole("link", { name: "引用来源 2", exact: true }).click();
+  await expect(history).toHaveAttribute("open", "");
+  await expect(page.locator("details.uncited-sources")).toHaveAttribute(
+    "open",
+    "",
+  );
+  await expect(page.locator(".citation-source.highlighted")).toContainText(
+    "02-口径.md",
+  );
+  // Opened by the tag, it still closes with one click.
+  await page.getByText(/^运行过程 · \d+ 条消息$/).click();
+  await expect(history).not.toHaveAttribute("open");
+  // On a phone the decision comes after the page; a link leads there.
+  await page.setViewportSize({ width: 390, height: 840 });
+  await shown.getByRole("link", { name: "去确认" }).click();
+  await expect(page).toHaveURL(/#approval$/);
 });

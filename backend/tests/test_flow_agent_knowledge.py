@@ -174,6 +174,7 @@ async def test_knowledge_agent_template_starts_as_draft_and_runs_without_datasou
     [source] = run["sources"]
     assert source["index"] == 1 and source["text"] == POLICY
     assert (source["node"], source["node_title"]) == ("agent", agent["title"])
+    assert source["cited"] is True
     system = p.gateway.requests[0]["body"]["messages"][0]["content"]
     assert "kb：在知识库里检索资料" in system
     assert "「售后政策」：商品退换货的期限和凭证要求" in system
@@ -249,8 +250,9 @@ async def test_agent_accumulates_shared_numbers_and_deduplicates_hits_across_sea
     assert [(h["index"], h["text"]) for h in hits] == [(1, POLICY), (2, OTHER)]
     assert hits[0]["chunk_id"] == earlier["chunk_id"]
     assert [s["hits"] for s in run["result"]["steps"]] == [1, 1, 1]
+    # The answer cites both.
     assert run["sources"] == [
-        {**hit, "node": "agent", "node_title": "检索资料并回答"} for hit in hits
+        {**hit, "node": "agent", "node_title": "检索资料并回答", "cited": True} for hit in hits
     ]
     flow = await p.service.flow(run["run_id"])
     output = next(s for s in flow["steps"] if s["node"] == "agent")["output"]

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
   cancelRun,
+  messageTime,
   durationText,
   errorMessage,
   failureText,
@@ -13,6 +14,7 @@ import {
   formatTime,
   isFinished,
   isRecord,
+  jsonObject,
   retryRun,
   readReceipt,
   readRun,
@@ -26,7 +28,13 @@ import {
 } from "../lib/runs";
 import { Icon } from "./icons";
 import { ErrorNotice, StatusBadge } from "./ui";
-import { etlFailed, getEtlPlan, getEtlRelease, getEtlResult } from "../lib/etl";
+import {
+  etlFailed,
+  getEtlPlan,
+  getEtlRelease,
+  getEtlResult,
+  readEtlPlan,
+} from "../lib/etl";
 import { EtlPlanView } from "./etl-plan";
 import { EtlReleaseView, EtlTrail } from "./etl-release";
 import { GeneratedFiles } from "./generated-files";
@@ -41,27 +49,13 @@ import {
 } from "../lib/input-fields";
 import { InputFields } from "./input-fields";
 
-// A JSON object as a whole message, bare or in a code fence: what LLM nodes with
-// JSON output used to add to the conversation (older runs still hold them), and
-// what text nodes asked for JSON (such as plan and codegen) still add.
-function jsonMessage(text: string): Record<string, unknown> | null {
-  const trimmed = text.trim();
-  const body =
-    /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed)?.[1] ?? trimmed;
-  if (!body.startsWith("{")) return null;
-  try {
-    const value: unknown = JSON.parse(body);
-    return isRecord(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 // What a person typed is shown as typed; replies are Markdown with [n]
-// citations, and raw JSON is folded away.
+// citations. A reply that is one JSON object is folded away: LLM nodes with JSON
+// output used to add them, and so did text nodes asked for JSON before they
+// could be quiet (such as plan and codegen in older runs and apps).
 function MessageContent({ role, content }: { role: string; content: string }) {
   if (role === "user") return <p className="message-content">{content}</p>;
-  const data = jsonMessage(content);
+  const data = jsonObject(content);
   if (data)
     return (
       <details className="message-content message-data">
@@ -76,41 +70,40 @@ function MessageContent({ role, content }: { role: string; content: string }) {
   );
 }
 
+// The result's own texts (its top-level strings) are read as Markdown; the
+// whole result, structured parts included, is in the developer view.
 function ResultView({ result }: { result: unknown }) {
-  if (result === null) return <p>应用已完成本次运行。</p>;
+  if (result == null) return <p>应用已完成本次运行。</p>;
   if (typeof result === "string") return <CitedMarkdown text={result} />;
-  function renderedStrings(
-    value: unknown,
-    path = "",
-  ): { path: string; text: string }[] {
-    if (typeof value === "string") return [{ path, text: value }];
-    if (Array.isArray(value))
-      return value.flatMap((item, i) => renderedStrings(item, `${path}[${i}]`));
-    if (isRecord(value))
-      return Object.entries(value).flatMap(([key, item]) =>
-        renderedStrings(item, path ? `${path}.${key}` : key),
-      );
-    return [];
-  }
-  const strings = renderedStrings(result);
-  const content = (
-    <pre className="result-json">{JSON.stringify(result, null, 2)}</pre>
-  );
-  return strings.length ? (
+  const texts = isRecord(result)
+    ? Object.entries(result).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[1] === "string" && entry[1].trim() !== "",
+      )
+    : [];
+  return (
     <>
-      {strings.map(({ path, text }) => (
-        <div key={path} className="result-field">
-          {strings.length > 1 && <h3>{path}</h3>}
+      {texts.map(([key, text]) => (
+        <div key={key} className="result-text">
           <CitedMarkdown text={text} />
         </div>
       ))}
-      <details>
-        <summary>查看完整结果</summary>
-        {content}
+      {texts.length === 0 && (
+        <p>
+          {isRecord(result) &&
+          Object.values(result).every(
+            (value) =>
+              value == null || (typeof value === "string" && !value.trim()),
+          )
+            ? "应用已完成本次运行，没有产出结果。"
+            : "应用已完成本次运行，结果在下面的开发者视图里。"}
+        </p>
+      )}
+      <details className="developer-view">
+        <summary>开发者视图</summary>
+        <pre className="result-json">{JSON.stringify(result, null, 2)}</pre>
       </details>
     </>
-  ) : (
-    content
   );
 }
 
@@ -137,6 +130,10 @@ export function RunDetail({
   const [submitting, setSubmitting] = useState<Decision | null>(null);
   const [rechecking, setRechecking] = useState(false);
   const [revision, setRevision] = useState(0);
+  // Whether the run process is open, once someone opened or closed it (the
+  // page is keyed by the run, so another run starts afresh).
+  const [historyOpen, setHistoryOpen] = useState<boolean | null>(null);
+  const historyRef = useRef<HTMLDetailsElement>(null);
   const pollAbort = useRef<AbortController | null>(null);
   const mutationAbort = useRef<AbortController | null>(null);
   const busy = useRef(false);
@@ -196,6 +193,16 @@ export function RunDetail({
         if (value.run_id !== id)
           throw new ApiError("服务返回的运行编号不匹配，请重试。");
         if (controlsHoldFocus()) refocus.current = true;
+        // 运行过程 does not fold away under someone reading in it.
+        const history = historyRef.current;
+        const active = document.activeElement;
+        if (
+          history?.open &&
+          active &&
+          history.contains(active) &&
+          active !== history.querySelector("summary")
+        )
+          setHistoryOpen((open) => open ?? true);
         setRun(value);
         // A confirmation for a cancel that is no longer offered must not come back.
         if (!value.actions?.cancel) setConfirmingCancel(false);
@@ -365,6 +372,36 @@ export function RunDetail({
     isRecord(run?.pending?.details) && run.pending.details.type === "flow_human"
       ? run.pending.details
       : null;
+  const humanShow =
+    run?.status === "waiting" &&
+    typeof humanDetails?.show === "string" &&
+    humanDetails.show
+      ? humanDetails.show
+      : "";
+  // A flow app's ETL plan, as its result carries it.
+  const resultPlan =
+    run?.status === "done" && !etlResult && isRecord(run.result)
+      ? readEtlPlan(run.result.plan)
+      : null;
+  // How the run went is open until there is something else to read.
+  const historyDefault = !(
+    humanShow ||
+    plan ||
+    release ||
+    etlResult ||
+    (run?.status === "done" && run.result != null)
+  );
+  const showHistory = historyOpen ?? historyDefault;
+  const stateText =
+    run?.status === "running"
+      ? "应用正在运行，消息将自动更新"
+      : run?.status === "waiting"
+        ? "应用已暂停，等待人工确认"
+        : run?.status === "done"
+          ? "本次运行已结束"
+          : run?.status === "cancelled"
+            ? "本次运行已取消"
+            : "本次运行失败";
   return (
     <CitationScope sources={run?.sources ?? []}>
       <Link className="back-link" href="/">
@@ -500,6 +537,24 @@ export function RunDetail({
         run && (
           <div className="detail-grid">
             <div className="run-main">
+              {humanShow && (
+                <section
+                  className="panel human-show-panel"
+                  aria-labelledby="human-show-title"
+                >
+                  <h2 id="human-show-title">
+                    {run.step?.title ?? "待确认的内容"}
+                  </h2>
+                  <div className="human-show">
+                    <CitedMarkdown text={humanShow} breaks />
+                  </div>
+                  {/* On a narrow screen the decision comes after the whole page. */}
+                  <a className="jump-to-decision" href="#approval">
+                    {run.pending?.kind === "form" ? "去填写" : "去确认"}
+                    <Icon name="arrow" size={14} />
+                  </a>
+                </section>
+              )}
               {plan && <EtlPlanView plan={plan} />}
               {release && <EtlReleaseView request={release} />}
               {etlResult && <EtlTrail result={etlResult} />}
@@ -510,6 +565,7 @@ export function RunDetail({
                 version={`${run.status}:${run.messages.length}`}
                 live={run.status === "running"}
               />
+              {resultPlan && <EtlPlanView plan={resultPlan} asResult />}
               {run.status === "done" && hasReport && (
                 <section
                   className="panel result-card run-report"
@@ -524,52 +580,92 @@ export function RunDetail({
                 </section>
               )}
               <details
-                className={`conversation-history ${run.app === "etl" ? "collapsible" : ""}`}
-                open={run.app !== "etl" || (!plan && !release && !etlResult)}
+                ref={historyRef}
+                className="conversation-history"
+                open={showHistory}
+                // A citation tag may open it to show a source inside.
+                onToggle={(event) => {
+                  if (event.currentTarget.open !== showHistory)
+                    setHistoryOpen(event.currentTarget.open);
+                }}
               >
-                <summary>查看对话过程 · {run.messages.length} 条消息</summary>
+                <summary
+                  onClick={(event) => {
+                    // A person's choice holds when a poll changes the default.
+                    event.preventDefault();
+                    setHistoryOpen(!showHistory);
+                  }}
+                >
+                  <h2>
+                    <Icon name="runs" />
+                    运行过程
+                    <span className="muted">
+                      {" "}
+                      · {run.messages.length} 条消息
+                    </span>
+                  </h2>
+                </summary>
                 <section
                   className="panel conversation-panel"
-                  aria-label="运行对话"
+                  aria-label="运行过程"
                 >
-                  <div className="section-heading">
-                    <h2>
-                      <Icon name="runs" />
-                      对话过程
-                    </h2>
-                    <span className="muted">{run.messages.length} 条消息</span>
-                  </div>
                   <ol className="messages" aria-label="消息记录">
-                    {run.messages.map((message, index) => (
-                      <li
-                        className={`message ${message.role === "user" ? "user-message" : ""}`}
-                        key={index}
-                      >
-                        <span className="message-avatar">
-                          {message.role === "user" ? (
-                            "你"
-                          ) : (
-                            <Icon name="spark" size={18} />
-                          )}
-                        </span>
-                        <div className="message-body">
-                          <div className="message-meta">
-                            <strong>
-                              {message.role === "user"
-                                ? "你"
-                                : message.role === "assistant"
-                                  ? run.app
-                                  : "系统"}
-                            </strong>
-                            <span>{String(index + 1).padStart(2, "0")}</span>
+                    {run.messages.map((message, index) => {
+                      // A person is named by who they said they are; a step
+                      // of the app by its title.
+                      const fromPerson = message.role === "user";
+                      // Without a name, a person is not taken for the reader.
+                      // A request from before messages named their step is
+                      // the requester's.
+                      const name = fromPerson
+                        ? message.actor?.trim() ||
+                          (!message.node && index === 0
+                            ? run.created_by?.trim()
+                            : "") ||
+                          "未署名"
+                        : message.node_title || run.app_title || run.app;
+                      const step = fromPerson ? message.node_title : null;
+                      return (
+                        <li
+                          className={`message ${fromPerson ? "user-message" : ""}`}
+                          key={index}
+                        >
+                          <span className="message-avatar" aria-hidden="true">
+                            {fromPerson ? (
+                              [...name][0]
+                            ) : (
+                              <Icon name="spark" size={18} />
+                            )}
+                          </span>
+                          <div className="message-body">
+                            <div className="message-meta">
+                              <strong>{name}</strong>
+                              {step && (
+                                <span className="message-step">{step}</span>
+                              )}
+                              {message.at && (
+                                <time
+                                  dateTime={message.at}
+                                  title={formatTime(message.at)}
+                                >
+                                  {messageTime(
+                                    message.at,
+                                    run.messages[index - 1]?.at,
+                                  )}
+                                </time>
+                              )}
+                              <span className="message-index">
+                                {String(index + 1).padStart(2, "0")}
+                              </span>
+                            </div>
+                            <MessageContent
+                              role={message.role}
+                              content={message.content}
+                            />
                           </div>
-                          <MessageContent
-                            role={message.role}
-                            content={message.content}
-                          />
-                        </div>
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ol>
                   {run.messages.length === 0 && (
                     <p className="panel-padding muted">应用暂未返回消息。</p>
@@ -580,36 +676,26 @@ export function RunDetail({
                       <SourceList />
                     </div>
                   ) : null}
-                  <div className="conversation-state" role="status">
+                  <div className="conversation-state" aria-hidden="true">
                     {run.status === "running" ? (
-                      <>
-                        <span className="spinner" />
-                        应用正在运行，消息将自动更新
-                      </>
+                      <span className="spinner" />
                     ) : run.status === "waiting" ? (
-                      <>
-                        <span className="dot amber" />
-                        应用已暂停，等待人工确认
-                      </>
+                      <span className="dot amber" />
                     ) : run.status === "done" ? (
-                      <>
-                        <Icon name="check" size={16} />
-                        本次运行已结束
-                      </>
+                      <Icon name="check" size={16} />
                     ) : run.status === "cancelled" ? (
-                      <>
-                        <Icon name="close" size={16} />
-                        本次运行已取消
-                      </>
+                      <Icon name="close" size={16} />
                     ) : (
-                      <>
-                        <Icon name="alert" size={16} />
-                        本次运行失败
-                      </>
+                      <Icon name="alert" size={16} />
                     )}
+                    {stateText}
                   </div>
                 </section>
               </details>
+              {/* Heard even while 运行过程 is closed. */}
+              <p className="sr-only" role="status">
+                {stateText}
+              </p>
             </div>
             <aside className="run-sidebar">
               <div className="panel run-info">
@@ -685,6 +771,7 @@ export function RunDetail({
               </div>
               {run.status === "waiting" && (
                 <section
+                  id="approval"
                   className="approval-card"
                   aria-labelledby="approval-title"
                 >
@@ -699,11 +786,6 @@ export function RunDetail({
                   {run.pending ? (
                     <>
                       <p className="message-content">{run.pending.prompt}</p>
-                      {humanDetails &&
-                        typeof humanDetails.show === "string" &&
-                        humanDetails.show && (
-                          <pre className="human-show">{humanDetails.show}</pre>
-                        )}
                       {run.pending.kind === "form" && (
                         <InputFields
                           key={String(humanDetails?.node ?? "form")}
