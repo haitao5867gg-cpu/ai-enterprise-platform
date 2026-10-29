@@ -92,7 +92,12 @@ def describe_for_model(tables: list[dict[str, Any]]) -> str:
     parts = []
     for t in tables:
         stats = {c["name"]: c for c in t["column_stats"]}
-        lines = [f"表 {t['name']}（约 {t['estimated_row_count']} 行）"]
+        head = f"约 {t['estimated_row_count']} 行"
+        rows, limit = t.get("sample_row_count"), t.get("sample_limit")
+        if isinstance(rows, int) and isinstance(limit, int) and rows >= limit:
+            # Otherwise a column's distinct count reads like the table's row count.
+            head += f"；空值率、不同值和取值分布只统计了 {rows} 行样本"
+        lines = [f"表 {t['name']}（{head}）"]
         for col in t["columns"]:
             s = stats.get(col["name"], {})
             flags = [col["data_type"]]

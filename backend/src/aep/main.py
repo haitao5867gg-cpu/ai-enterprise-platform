@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
-from typing import Annotated
+from typing import Annotated, Any
 
 import openai
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,7 +19,7 @@ from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
-from aep.health import check_llm_gateway, check_postgres, check_redis
+from aep.health import check_llm_gateway, check_postgres, check_redis, demo_checks
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
@@ -137,6 +137,7 @@ def create_app() -> FastAPI:
         app.state.datasources = sources
         app.state.asset_store = asset_store
         app.state.mcp_tools = tools
+        app.state.databricks = databricks
         app.state.knowledge = knowledge_store
         knowledge_worker = KnowledgeWorker(knowledge_store, llm_client)
         app.state.knowledge_worker = knowledge_worker
@@ -192,6 +193,21 @@ def create_app() -> FastAPI:
         status_code = 503 if errors else 200
         body = {"status": "error" if errors else "ok", "checks": checks, "errors": errors}
         return JSONResponse(body, status_code=status_code)
+
+    @app.get("/health/demo")
+    async def health_demo(
+        request: Request, settings: Annotated[Settings, Depends(get_settings)]
+    ) -> list[dict[str, Any]]:
+        """What the ETL demo needs (``make demo``): the model alias, the sample data
+        source and the Databricks workspace; see docs/api/data-nodes.md."""
+        state = request.app.state
+        return await demo_checks(
+            settings,
+            await state.catalog.models(),
+            state.datasources,
+            state.mcp_tools,
+            getattr(state, "databricks", None),
+        )
 
     @app.post("/llm/chat")
     async def llm_chat(

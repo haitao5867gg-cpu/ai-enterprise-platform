@@ -16,7 +16,7 @@ from aep import llm
 from aep.datasources import MemoryDataSourceStore
 from aep.etl import codegen
 from aep.etl.plan import EtlPlan, KnownValues, PlanError, compared_literals, validate_plan
-from aep.etl.profile import known_values
+from aep.etl.profile import describe_for_model, known_values
 from aep.knowledge.citations import IndexedHit
 from aep.knowledge.search import search
 from aep.knowledge.store import Chunk, Document
@@ -579,6 +579,26 @@ def test_known_values_from_the_profile():
     assert known == {"status": KnownValues(frozenset({"paid", "x", "new"}), complete=False)}
     alone = known_values([table(3, 1000, [{"name": "s", "distinct_count": 0, "top_values": []}])])
     assert alone == {"s": KnownValues(frozenset(), complete=True)}
+
+
+def test_the_profile_text_says_when_its_stats_come_from_a_sample():
+    def table(rows):
+        return {
+            "name": "retail.customers",
+            "estimated_row_count": 1200,
+            "sample_row_count": rows,
+            "sample_limit": 1000,
+            "columns": [{"name": "customer_id", "data_type": "bigint", "primary_key": True}],
+            "column_stats": [{"name": "customer_id", "null_fraction": 0, "distinct_count": rows}],
+            "foreign_keys": [],
+            "sample": [],
+        }
+
+    sampled = describe_for_model([table(1000)])
+    assert sampled.startswith(
+        "表 retail.customers（约 1200 行；空值率、不同值和取值分布只统计了 1000 行样本）\n"
+    )
+    assert describe_for_model([table(900)]).startswith("表 retail.customers（约 1200 行）\n")
 
 
 async def test_a_made_up_value_goes_back_to_the_model():

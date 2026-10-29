@@ -57,8 +57,9 @@ PROD = "prod"
 OUTPUT_TAIL = 4000
 EVENT_PAGE = 250
 # Connections to the workspace can drop mid-request (seen through egress proxies
-# to Azure China); requests are retried this many times before giving up.
-REQUEST_ATTEMPTS = 4
+# to Azure China), several times in a row; requests are retried this many times,
+# waiting 1, 2, 4, ... seconds (31 in all), before giving up.
+REQUEST_ATTEMPTS = 6
 POLL_SECONDS = 3.0
 CLUSTER_POLL_SECONDS = 15.0
 PLAIN_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -363,7 +364,7 @@ class DevTarget:
             except httpx.TransportError as exc:
                 if attempt == REQUEST_ATTEMPTS:
                     raise DatabricksError(f"{path}: {exc!r}") from exc
-                await asyncio.sleep(attempt)
+                await asyncio.sleep(2 ** (attempt - 1))
             except httpx.HTTPError as exc:
                 raise DatabricksError(f"{path}: {exc!r}") from exc
         raise AssertionError("unreachable")
@@ -502,6 +503,12 @@ class DevTarget:
             "source_catalog": source_catalog,
             "targets": parse_sql(bundle.files[PIPELINE_SQL]),
         } | extra
+
+    async def cluster_state(self) -> str:
+        """The state of ``AEP_DATABRICKS_CLUSTER_ID`` (``RUNNING``, ``TERMINATED``, ...)."""
+        cluster_id = self._settings.databricks_cluster_id
+        cluster = await self._get("/api/2.0/clusters/get", cluster_id=cluster_id)
+        return str(cluster.get("state") or "UNKNOWN")
 
     async def _cluster_running(self, cluster_id: str, warnings: list[str]) -> None:
         """Waits for the cluster to run, starting it once if it is stopped."""

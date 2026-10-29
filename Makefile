@@ -1,4 +1,4 @@
-.PHONY: up up-full down logs test lint fmt eval
+.PHONY: up up-full down logs test lint fmt eval demo
 
 up:        ## Start the full local stack
 	docker compose up --build -d
@@ -22,6 +22,23 @@ logs:
 API ?= http://localhost:8000
 eval:      ## Run evals/etl/cases.yaml and print the scores
 	cd backend && uv run aep-eval ../evals/etl/cases.yaml --api $(API) $(if $(MODEL),--model $(MODEL)) $(if $(ONLY),--only $(ONLY))
+
+# Prepare the ETL demo on the running stack (docs/api/data-nodes.md): the MySQL sample
+# database retail (a new volume loads it by itself), the two knowledge bases from
+# demo/knowledge and the app retail-etl. Running it again changes nothing.
+RETAIL_SQL = connectors/mysql/seed/003-retail.sql
+SOURCE_MYSQL = docker compose exec -T source-mysql \
+	sh -c 'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" exec mysql -uroot "$$@"' mysql
+demo:      ## Load the retail sample, the demo knowledge bases and the app retail-etl
+	@command -v uv >/dev/null || { echo "✗ 需要 uv（macOS：brew install uv）"; exit 1; }
+	@found=$$($(SOURCE_MYSQL) -N -e "SHOW DATABASES LIKE 'retail'") || \
+		{ echo "✗ 连不上 MySQL 示例库（source-mysql），先 make up"; exit 1; }; \
+	if [ -z "$$found" ]; then \
+		echo "导入 MySQL 示例库 retail"; $(SOURCE_MYSQL) < $(RETAIL_SQL) || exit 1; \
+	else \
+		echo "MySQL 示例库已有 retail 库"; \
+	fi
+	cd backend && uv run aep-demo --api $(API) $(if $(WEB),--web $(WEB))
 
 test: test-connectors      ## Connector + backend tests + frontend type check
 	cd backend && uv run pytest -q
