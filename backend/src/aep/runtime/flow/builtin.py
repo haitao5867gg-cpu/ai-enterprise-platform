@@ -311,8 +311,12 @@ PLAN_PROMPT = """需求：{{start.request}}
 公司数据口径（参考资料）：
 {{glossary.context}}
 
-需求里的指标和口径资料有关时按资料定义，并在 summary、assumptions、目标表和字段说明里用 [n] \
-标注依据；没有资料依据的内容不要编号。资料和需求冲突时以需求为准，并写进 assumptions。
+数仓开发规范（参考资料）：
+{{standards.context}}
+
+需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式\
+按开发规范。在 summary、assumptions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要\
+编号。资料和需求冲突时以需求为准，并写进 assumptions。
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}
@@ -333,8 +337,9 @@ CODEGEN_PROMPT = """已确认的方案：
 Databricks dev 运行的报错（为空时忽略）：{{dev_run.errors}}
 有上一版代码时，按问题和报错修改，输出全部目标表的完整代码。"""
 
-# The standards are needed in full every time, whatever the request says.
-STANDARDS_QUERY = "表命名、主键、字段类型、数据质量规则、加载策略、PySpark 写法"
+# The standards are needed in full every time, whatever the request says: the query
+# is the documents' subjects and top_k takes nearly every chunk.
+STANDARDS_QUERY = "分层与命名、主键与字段类型、数据质量规则、加载策略、PySpark 编码规范"
 
 
 def _etl_lakehouse() -> dict[str, Any]:
@@ -389,7 +394,20 @@ def _etl_lakehouse() -> dict[str, Any]:
             "检索到的片段带 [n] 编号，方案引用时会标出出处。",
             "knowledge_bases": [],
             "query": "{{start.request}}",
-            "top_k": 6,
+            "top_k": 12,
+            "min_score": 0.2,
+            "retrieval": retrieval,
+        },
+        {
+            "id": "standards",
+            "type": "knowledge",
+            "title": "查开发规范",
+            "note": "检索「数仓开发规范」知识库：分层和命名、主键和字段类型、数据质量规则、"
+            "加载策略、PySpark 写法。出方案时按它定表名、主键、质量规则和加载方式，"
+            "写代码时按它的写法。规范每次都要查全，所以检索词是固定的，不随需求变。",
+            "knowledge_bases": [],
+            "query": STANDARDS_QUERY,
+            "top_k": 20,
             "min_score": 0.2,
             "retrieval": retrieval,
         },
@@ -397,7 +415,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "id": "plan",
             "type": "llm",
             "title": "出方案",
-            "note": "模型按 Skill etl-plan 的做法，结合需求、探查结果和口径资料写 ETL 方案："
+            "note": "模型按 Skill etl-plan 的做法，结合需求、探查结果、口径和开发规范写 ETL 方案："
             "目标表、列映射、清洗和质量规则、需要人确认的假设。"
             "系统提示词是平台规定的输出格式，Skill 管怎么做，两者分开维护。",
             "model": None,
@@ -416,7 +434,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "通过后把方案整理成给人看的格式，列出引用的资料。",
             "reply": "{{plan.text}}",
             "profile": "{{profile.tables}}",
-            "hits": ["{{glossary.hits}}"],
+            "hits": ["{{glossary.hits}}", "{{standards.hits}}"],
             "language": "{{start.language}}",
             "max_attempts": 3,
             "max_visits": 10,
@@ -448,18 +466,6 @@ def _etl_lakehouse() -> dict[str, Any]:
             "datasource": "{{start.datasource}}",
             "tables": "{{check_plan.sources}}",
             "max_rows": 200000,
-        },
-        {
-            "id": "standards",
-            "type": "knowledge",
-            "title": "查开发规范",
-            "note": "检索「数仓开发规范」知识库：分层和命名、主键和字段类型、数据质量规则、"
-            "加载策略、PySpark 写法。规范每次都要查全，所以检索词是固定的，不随需求变。",
-            "knowledge_bases": [],
-            "query": STANDARDS_QUERY,
-            "top_k": 8,
-            "min_score": 0.2,
-            "retrieval": retrieval,
         },
         {
             "id": "codegen",
@@ -515,14 +521,14 @@ def _etl_lakehouse() -> dict[str, Any]:
     edges = [
         ("start", None, "profile"),
         ("profile", None, "glossary"),
-        ("glossary", None, "plan"),
+        ("glossary", None, "standards"),
+        ("standards", None, "plan"),
         ("plan", None, "check_plan"),
         ("check_plan", "ok", "review"),
         ("check_plan", "retry", "plan"),
         ("review", "approve", "ingest"),
         ("review", "reject", "plan"),
-        ("ingest", None, "standards"),
-        ("standards", None, "codegen"),
+        ("ingest", None, "codegen"),
         ("codegen", None, "check_code"),
         ("check_code", "ok", "dev_run"),
         ("check_code", "retry", "codegen"),

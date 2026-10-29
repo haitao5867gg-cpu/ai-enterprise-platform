@@ -186,13 +186,19 @@ async def test_without_databricks_the_run_says_it_skipped(tmp_path):
 
 
 async def test_dropped_connections_are_retried(tmp_path, monkeypatch):
-    monkeypatch.setattr("aep.databricks.asyncio.sleep", _no_sleep)
+    waits: list[float] = []
+
+    async def wait(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr("aep.databricks.asyncio.sleep", wait)
     workspace = fake_databricks.FakeWorkspace(tmp_path, runs=[True])
-    workspace.drop(2)
+    workspace.drop(5)
 
     dev = await workspace.target().run(bundle())
 
     assert dev.status == "passed" and dev.warnings == []
+    assert waits[:5] == [1, 2, 4, 8, 16]
     assert dev.tables[0].rows == 4990
 
 

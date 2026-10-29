@@ -50,11 +50,14 @@ model_list:
         thinking:
           type: disabled
 
+  # The platform asks for 1024-dimension vectors; LiteLLM passes `dimensions` on to
+  # openai/ models only for OpenAI's text-embedding-3, so it is allowed here.
   - model_name: company-embed
     litellm_params:
       model: os.environ/COMPANY_EMBED_MODEL
       api_base: os.environ/COMPANY_API_BASE
       api_key: os.environ/COMPANY_API_KEY
+      allowed_openai_params: ["dimensions"]
 
   # OpenAI-compatible hosted gateways need a rerank provider (not openai/).
   # Set COMPANY_RERANK_MODEL=hosted_vllm/<gateway model id> after confirmation.

@@ -48,7 +48,7 @@ def test_documents_are_the_ones_the_contract_names():
         assert (KNOWLEDGE / folder / "README.md").is_file()
         for name, text in docs(folder).items():
             assert text.startswith("# "), name
-            for field in ("适用范围", "版本", "维护部门"):
+            for field in ("适用范围", "版本", "维护部门", "要点"):
                 assert f"- {field}：" in text, (name, field)
 
 
@@ -137,11 +137,11 @@ def test_template_follows_the_contract():
         ("start", "start", "开始"),
         ("profile", "etl_profile", "探查数据"),
         ("glossary", "knowledge", "查业务口径"),
+        ("standards", "knowledge", "查开发规范"),
         ("plan", "llm", "出方案"),
         ("check_plan", "etl_plan_check", "校验方案"),
         ("review", "human", "确认方案"),
         ("ingest", "databricks_ingest", "抽取到湖仓"),
-        ("standards", "knowledge", "查开发规范"),
         ("codegen", "llm", "写代码"),
         ("check_code", "etl_code_check", "检查并打包"),
         ("dev_run", "databricks_dev_run", "dev 运行"),
@@ -154,16 +154,19 @@ def test_template_follows_the_contract():
     assert nodes["codegen"]["system"] == codegen.OUTPUT_FORMAT
     assert (
         nodes["standards"]["query"]
-        == "表命名、主键、字段类型、数据质量规则、加载策略、PySpark 写法"
+        == "分层与命名、主键与字段类型、数据质量规则、加载策略、PySpark 编码规范"
     )
+    assert (nodes["glossary"]["top_k"], nodes["standards"]["top_k"]) == (12, 20)
+    assert nodes["check_plan"]["hits"] == ["{{glossary.hits}}", "{{standards.hits}}"]
     edges = {(e["from"], e.get("branch"), e["to"]) for e in template.config["graph"]["edges"]}
     assert edges == {
         ("start", None, "profile"), ("profile", None, "glossary"),
-        ("glossary", None, "plan"), ("plan", None, "check_plan"),
+        ("glossary", None, "standards"), ("standards", None, "plan"),
+        ("plan", None, "check_plan"),
         ("check_plan", "ok", "review"), ("check_plan", "retry", "plan"),
         ("review", "approve", "ingest"), ("review", "reject", "plan"),
-        ("ingest", None, "standards"), ("standards", None, "codegen"),
-        ("codegen", None, "check_code"), ("check_code", "ok", "dev_run"),
+        ("ingest", None, "codegen"), ("codegen", None, "check_code"),
+        ("check_code", "ok", "dev_run"),
         ("check_code", "retry", "codegen"), ("dev_run", "passed", "end"),
         ("dev_run", "retry", "codegen"), ("dev_run", "failed", "end"),
     }  # fmt: skip
@@ -372,10 +375,10 @@ async def test_demo_makes_everything_once_and_the_app_runs_to_the_end(platform, 
     assert "## dev 运行通过" in result["report"] and "| 10 | 上海 | 2 |" in result["report"]
     flow = (await platform.api.get(f"/runs/{run_id}/flow")).json()
     assert [s["node"] for s in flow["steps"]] == [
-        "start", "profile", "glossary",
+        "start", "profile", "glossary", "standards",
         "plan", "check_plan", "plan", "check_plan", "review",
         "plan", "check_plan", "review",
-        "ingest", "standards", "codegen", "check_code", "codegen", "check_code", "dev_run",
+        "ingest", "codegen", "check_code", "codegen", "check_code", "dev_run",
         "codegen", "check_code", "dev_run", "end",
     ]  # fmt: skip
     prompts = [r["body"]["messages"] for r in platform.gateway.requests if "messages" in r["body"]]

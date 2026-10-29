@@ -30,6 +30,7 @@ RETAIL_SQL = connectors/mysql/seed/003-retail.sql
 SOURCE_MYSQL = docker compose exec -T source-mysql \
 	sh -c 'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" exec mysql -uroot "$$@"' mysql
 demo:      ## Load the retail sample, the demo knowledge bases and the app retail-etl
+	@command -v uv >/dev/null || { echo "✗ 需要 uv（macOS：brew install uv）"; exit 1; }
 	@found=$$($(SOURCE_MYSQL) -N -e "SHOW DATABASES LIKE 'retail'") || \
 		{ echo "✗ 连不上 MySQL 示例库（source-mysql），先 make up"; exit 1; }; \
 	if [ -z "$$found" ]; then \

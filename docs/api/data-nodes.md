@@ -71,6 +71,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | `ok` | 是否通过 |
+| `standards` | knowledge | 查开发规范 | 固定的 `query: "分层与命名、主键与字段类型、数据质量规则、加载策略、PySpark 编码规范"`（规范每次都要查全，不随需求变：检索词是各篇的主题，`top_k` 20 几乎取全），混合检索；知识库留空。放在出方案之前：方案里的表名、主键、字段类型、质量规则和加载方式都按规范定，写代码时再用一次 |
 | `plan` | 通过时是校验后的方案（`EtlPlan` 的 JSON，含 `references`）；不通过时是解析出的原始 JSON，解析不了为 `null` |
 | `problems` | 不通过的原因，一条一行；通过时为 `""` |
 | `message` | 给人看的方案，Markdown：摘要；每张目标表的名称、加载方式、来源、做法、列映射表格、主键、质量规则；需要确认的假设；“依据的资料”列出 `[n]`《文件名》章节。不通过时是问题列表 |
@@ -246,7 +247,7 @@ GET /runs/{id}/manual               这次运行用的版本
 
 ### 两个知识库
 
-文档放在 `demo/knowledge/<知识库目录>/`，Markdown，每篇 1–3 屏，中文，写成企业内部文档的样子（有标题、适用范围、版本和维护部门）。口径里的取值必须和示例库完全一致（`paid`、`测试`、`gold` 等）。
+文档放在 `demo/knowledge/<知识库目录>/`，Markdown，每篇 1–3 屏，中文，写成企业内部文档的样子（有标题、适用范围、版本和维护部门），开头的“要点”一行用一两句话写出这篇最关键的规则（文档按小标题切片，各段离开标题后不好检索，多主题的需求主要靠开头这段命中）。口径里的取值必须和示例库完全一致（`paid`、`测试`、`gold` 等）。
 
 - `retail-metrics/`，知识库名“零售数据口径”，说明“零售业务的指标定义和统计口径：有效订单、销售额、客单价、城市和会员等级的归一、时间口径、客户数和复购、毛利”。文档：`01-有效订单定义.md`、`02-销售额与客单价.md`、`03-城市与会员等级.md`、`04-时间口径.md`、`05-客户数与复购.md`、`06-毛利.md`，内容见设计文档“两个知识库”一节。
 - `dw-standards/`，知识库名“数仓开发规范”，说明“数据平台团队的数仓开发规范：分层和命名、主键和字段类型、数据质量规则、加载策略、PySpark 写法”。文档：`01-分层与命名.md`、`02-主键与字段.md`、`03-数据质量规则.md`、`04-加载策略.md`、`05-PySpark编码规范.md`。PySpark 规范必须和 `aep.etl.codegen` 的静态检查一致，不能建议检查会拒绝的写法。
@@ -261,18 +262,17 @@ GET /runs/{id}/manual               这次运行用的版本
 | --- | --- | --- | --- |
 | `start` | start | 开始 | 输入 `datasource`（数据源，必填）、`request`（需求，textarea，必填）、`tables`（表范围，text）、`language`（select：pyspark、sql，默认 pyspark）、`name`（bundle 名，text） |
 | `profile` | etl_profile | 探查数据 | `datasource: {{start.datasource}}`，`tables: {{start.tables}}` |
-| `glossary` | knowledge | 查业务口径 | `query: {{start.request}}`，`top_k` 6，混合检索；知识库留空 |
+| `glossary` | knowledge | 查业务口径 | `query: {{start.request}}`，`top_k` 12，混合检索；知识库留空 |
 | `plan` | llm | 出方案 | Skill `etl-plan`（内置 Skill 的最新发布版本），`system` 为 `aep.etl.plan.OUTPUT_FORMAT`，输出 text，`max_visits` 10；提示词见下 |
-| `check_plan` | etl_plan_check | 校验方案 | `reply: {{plan.text}}`，`profile: {{profile.tables}}`，`hits: ["{{glossary.hits}}"]`，`language: {{start.language}}`，`max_visits` 10 |
+| `check_plan` | etl_plan_check | 校验方案 | `reply: {{plan.text}}`，`profile: {{profile.tables}}`，`hits: ["{{glossary.hits}}", "{{standards.hits}}"]`，`language: {{start.language}}`，`max_visits` 10 |
 | `review` | human | 确认方案 | 确认模式，`show: {{check_plan.message}}`，选项确认、驳回，驳回必须写意见，`max_visits` 5 |
 | `ingest` | databricks_ingest | 抽取到湖仓 | `datasource: {{start.datasource}}`，`tables: {{check_plan.sources}}` |
-| `standards` | knowledge | 查开发规范 | 固定的 `query: "表命名、主键、字段类型、数据质量规则、加载策略、PySpark 写法"`（规范每次都要查全，不随需求变），`top_k` 8，混合检索；知识库留空 |
 | `codegen` | llm | 写代码 | Skill `etl-codegen`，`system` 为 `aep.etl.codegen.OUTPUT_FORMAT`，输出 text，`max_visits` 10；提示词见下 |
 | `check_code` | etl_code_check | 检查并打包 | `reply: {{codegen.text}}`，`plan: {{check_plan.plan}}`，`source_name: {{profile.source_name}}`，`name: {{start.name}}`，`max_visits` 10 |
 | `dev_run` | databricks_dev_run | dev 运行 | `bundle: {{check_code.bundle}}`，`max_visits` 3 |
 | `end` | end | 结束 | 输出 `report` ← `{{dev_run.report}}`，`plan` ← `{{check_plan.plan}}`，`ingested` ← `{{ingest.summary}}` |
 
-连线：start → profile → glossary → plan → check_plan；check_plan `ok` → review，`retry` → plan；review `approve` → ingest，`reject` → plan；ingest → standards → codegen → check_code；check_code `ok` → dev_run，`retry` → codegen；dev_run `passed` → end，`retry` → codegen，`failed` → end。
+连线：start → profile → glossary → standards → plan → check_plan；check_plan `ok` → review，`retry` → plan；review `approve` → ingest，`reject` → plan；ingest → codegen → check_code；check_code `ok` → dev_run，`retry` → codegen；dev_run `passed` → end，`retry` → codegen，`failed` → end。
 
 `plan` 的提示词：
 
@@ -286,7 +286,10 @@ GET /runs/{id}/manual               这次运行用的版本
 公司数据口径（参考资料）：
 {{glossary.context}}
 
-需求里的指标和口径资料有关时按资料定义，并在 summary、assumptions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要编号。资料和需求冲突时以需求为准，并写进 assumptions。
+数仓开发规范（参考资料）：
+{{standards.context}}
+
+需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式按开发规范。在 summary、assumptions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要编号。资料和需求冲突时以需求为准，并写进 assumptions。
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}

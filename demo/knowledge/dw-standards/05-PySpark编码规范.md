@@ -4,6 +4,7 @@
 - 版本：v2.2（2026-09-25 更新）
 - 维护部门：数据平台组
 - 说明：本规范与平台的代码静态检查一致，检查不通过的代码不能部署。
+- 要点：每张目标表写一个最后 `return` DataFrame 的函数体；源表用 `source("retail.orders")` 读，其他目标表用 `spark.read.table("表名")` 读；不写 `import`，不写表，不拉数据到 driver，不用 `spark.sql` 和 Python UDF。
 
 ## 代码结构
 
@@ -25,7 +26,7 @@
 
 ## 推荐写法
 
-- 字符串清洗：`F.lower(F.trim(c))`、`F.regexp_replace(c, "市$", "")`，空字符串先 `F.nullif`（或 `F.when`）变成空值，再 `F.coalesce` 给默认值。
+- 字符串清洗：`F.lower(F.trim(c))`、`F.regexp_replace(c, "市$", "")`，空字符串先用 `F.nullif(c, F.lit(""))` 变成空值，再 `F.coalesce(..., F.lit("未知"))` 给默认值。`F.nullif`、`F.coalesce` 的参数都是列，常量必须包一层 `F.lit`：直接写 `""` 会被当成列名，运行时报 `UNRESOLVED_COLUMN`。
 - 关联时写清楚条件和方式（`"inner"`、`"left"`），用 `.alias()` 给表起别名；关联后用 `select` 明确列出要的列，避免两张表的同名列（如客户和商品的 `name`）冲突。
 - 空的折扣率：`F.coalesce(F.col("discount_rate"), F.lit(0))`。
 - 金额：计算后 `F.round(x, 2).cast("decimal(18,2)")`。
