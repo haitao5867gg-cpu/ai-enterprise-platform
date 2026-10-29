@@ -280,6 +280,262 @@ test("not found and failed runs have useful states; terminal polling stops", asy
   expect(reads).toBe(completedReads);
 });
 
+test("a failed run says why and offers a retry only when one may help", async ({
+  page,
+}) => {
+  let status = "error";
+  let retried: unknown = null;
+  const failed = {
+    run_id: "retry-run",
+    app: "hello",
+    status: "error",
+    input: { text: "整理客户数据" },
+    messages: [],
+    pending: null,
+    result: null,
+    error: "节点「回答」(draft)：模型服务返回 502",
+    failed: {
+      node: "draft",
+      title: "回答",
+      error_type: "model_error",
+      retryable: true,
+    },
+    actions: { cancel: false, retry: true, rerun: true },
+  };
+  await page.route("**/api/runs/retry-run", (route) =>
+    route.fulfill({
+      json:
+        status === "error"
+          ? failed
+          : {
+              ...failed,
+              status: "running",
+              error: null,
+              failed: null,
+              actions: { cancel: true, retry: false, rerun: true },
+            },
+    }),
+  );
+  await page.route("**/api/runs/retry-run/retry", (route) => {
+    retried = route.request().postDataJSON();
+    status = "running";
+    return route.fulfill({
+      status: 202,
+      json: { run_id: "retry-run", status: "running" },
+    });
+  });
+  await page.goto("/runs/retry-run");
+  const card = page.locator(".failure-card");
+  await expect(card).toContainText(
+    "在「回答」这一步，模型服务出错了。这类问题多半是暂时的，可以从这一步重试。",
+  );
+  // The raw error stays visible for whoever needs the detail.
+  await expect(card).toContainText("模型服务返回 502");
+  await expect(
+    card.getByRole("link", { name: "复制并重新发起" }),
+  ).toHaveAttribute("href", "/runs/new?from=retry-run");
+  await page.getByRole("button", { name: "从「回答」重试" }).click();
+  await expect(page.locator(".failure-card")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "从「回答」重试" }),
+  ).toHaveCount(0);
+  // The pressed button is gone, so focus stays on the page at its title.
+  await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
+  expect(retried).toEqual({});
+
+  await page.route("**/api/runs/stuck-run", (route) =>
+    route.fulfill({
+      json: {
+        ...failed,
+        run_id: "stuck-run",
+        error: "节点「回答」(draft)：超过执行次数上限",
+        failed: {
+          node: "draft",
+          title: "回答",
+          error_type: "max_visits",
+          retryable: false,
+        },
+        actions: { cancel: false, retry: false, rerun: true },
+      },
+    }),
+  );
+  await page.goto("/runs/stuck-run");
+  await expect(page.locator(".failure-card")).toContainText(
+    "在「回答」这一步，流程在同一步来回的次数到了上限，重试多半还是一样。",
+  );
+  await expect(page.getByRole("button", { name: /重试/ })).toHaveCount(0);
+});
+
+test("a waiting run is cancelled after a confirmation, then copied and sent again", async ({
+  page,
+}) => {
+  await page.goto("/runs/new");
+  await page.getByLabel("你想完成什么？").fill("统计上个月的退货率");
+  await page.getByLabel("你的名字").fill("韩梅梅");
+  await page.getByRole("button", { name: "开始运行" }).click();
+  await expect(
+    page.getByRole("heading", { name: "需要你的确认" }),
+  ).toBeVisible();
+  const id = new URL(page.url()).pathname.split("/").at(-1)!;
+  const cancel = page.getByRole("button", { name: "取消运行" });
+  const dialog = page.getByRole("alertdialog", { name: "取消这次运行？" });
+  await cancel.click();
+  await expect(dialog).toContainText("已经写进开发环境的表会保留");
+  // It opens on the safe choice, and closing it goes back to where it was opened.
+  await expect(dialog.getByRole("button", { name: "不取消" })).toBeFocused();
+  await dialog.getByRole("button", { name: "不取消" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(cancel).toBeFocused();
+  await expect(
+    page.getByRole("heading", { name: "需要你的确认" }),
+  ).toBeVisible();
+  await cancel.press("Enter");
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(cancel).toBeFocused();
+  await cancel.click();
+  const cancelled = page.waitForRequest(
+    (r) => r.url().endsWith(`/runs/${id}/cancel`) && r.method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "确定取消" }).click();
+  expect((await cancelled).postDataJSON()).toEqual({ actor: "韩梅梅" });
+  await expect(page.locator(".failure-card")).toContainText(
+    "韩梅梅 取消了这次运行。已经写进开发环境的表会保留。",
+  );
+  await expect(page.locator(".run-info")).toContainText("取消于「确认」");
+  await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "需要你的确认" })).toHaveCount(
+    0,
+  );
+  await expect(cancel).toHaveCount(0);
+
+  await page
+    .locator(".failure-card")
+    .getByRole("link", { name: "复制并重新发起" })
+    .click();
+  await expect(page).toHaveURL(`/runs/new?from=${id}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "复制并重新发起",
+  );
+  await expect(page.locator(".copy-notice")).toContainText(
+    "复制自「统计上个月的退货率」，沿用它的应用版本（v1）。",
+  );
+  await expect(page.getByLabel("你想完成什么？")).toHaveValue(
+    "统计上个月的退货率",
+  );
+  await expect(page.locator("#app")).toBeDisabled();
+  await expect(page.locator("#app")).toHaveValue("hello");
+  await page.getByLabel("你想完成什么？").fill("统计上个月各品类的退货率");
+  const rerun = page.waitForRequest(
+    (r) => r.url().endsWith(`/runs/${id}/rerun`) && r.method() === "POST",
+  );
+  await page.getByRole("button", { name: "重新发起", exact: true }).click();
+  expect((await rerun).postDataJSON()).toEqual({
+    input: { text: "统计上个月各品类的退货率" },
+    requester: "韩梅梅",
+  });
+  await expect(
+    page.getByRole("heading", { name: "需要你的确认" }),
+  ).toBeVisible();
+  expect(new URL(page.url()).pathname).not.toBe(`/runs/${id}`);
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(
+    "统计上个月各品类的退货率",
+  );
+  await page.getByRole("link", { name: "查看原运行" }).click();
+  await expect(page).toHaveURL(`/runs/${id}`);
+  await expect(page.locator(".failure-card")).toContainText("已取消");
+});
+
+test("a copy asks for what the copied run asked for and keeps what the form does not show", async ({
+  page,
+}) => {
+  const source = {
+    run_id: "old-run",
+    app: "hello",
+    app_version: 1,
+    draft: false,
+    status: "done",
+    title: "整理客户数据",
+    messages: [],
+    pending: null,
+    result: null,
+    error: null,
+    input: { text: "整理客户数据", audience: "老板", note: "表单里没有" },
+    // The version it ran with asked for more than the app asks for now.
+    inputs: [
+      {
+        key: "text",
+        label: "你想完成什么？",
+        type: "textarea",
+        required: true,
+      },
+      { key: "audience", label: "给谁看", type: "text", required: true },
+    ],
+    failed: null,
+    actions: { cancel: false, retry: false, rerun: true },
+  };
+  await page.route("**/api/runs/old-run", (route) =>
+    route.fulfill({ json: source }),
+  );
+  await page.route("**/api/runs/old-etl", (route) =>
+    route.fulfill({
+      json: {
+        ...source,
+        run_id: "old-etl",
+        app: "etl",
+        input: {
+          datasource_id: "sample-postgres",
+          request: "做一张订单明细宽表",
+          language: "sql",
+          name: "eval_order_facts",
+          release: false,
+          tables: "sales.orders",
+        },
+        inputs: null,
+      },
+    }),
+  );
+  const sent: unknown[] = [];
+  await page.route("**/api/runs/*/rerun", (route) => {
+    sent.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 201,
+      json: { run_id: "copied-run", status: "running" },
+    });
+  });
+
+  await page.goto("/runs/new?from=old-run");
+  await expect(page.getByLabel("给谁看")).toHaveValue("老板");
+  await page.getByLabel("给谁看").fill("团队");
+  await page.getByRole("button", { name: "重新发起", exact: true }).click();
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toEqual({
+    input: { text: "整理客户数据", audience: "团队", note: "表单里没有" },
+  });
+
+  await page.goto("/runs/new?from=old-etl");
+  await expect(page.getByLabel("你想完成什么？")).toHaveValue(
+    "做一张订单明细宽表",
+  );
+  await expect(page.locator("#datasource")).toHaveValue("sample-postgres");
+  await expect(page.locator("#language")).toHaveValue("sql");
+  await page.getByRole("button", { name: "重新发起", exact: true }).click();
+  await expect.poll(() => sent.length).toBe(2);
+  // The bundle name and the dev-only flag stay; nothing the form shows is lost.
+  expect(sent[1]).toEqual({
+    input: {
+      datasource_id: "sample-postgres",
+      request: "做一张订单明细宽表",
+      language: "sql",
+      name: "eval_order_facts",
+      release: false,
+      tables: "sales.orders",
+    },
+  });
+});
+
 test("polls every two seconds, recovers, honors options and prevents duplicate resumes", async ({
   page,
 }) => {

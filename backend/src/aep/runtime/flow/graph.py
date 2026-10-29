@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 
 from aep.runtime.design import NodeDesign
 from aep.runtime.flow.check import DEFAULT_MAX_VISITS, branches
-from aep.runtime.flow.nodes import ERROR, TYPES, NodeFailure, Outcome, Runtime
+from aep.runtime.flow.nodes import ERROR, INPUT_ERROR, TYPES, NodeFailure, Outcome, Runtime
 
 # The branch key of an edge without a branch.
 NEXT = "next"
@@ -50,10 +50,12 @@ class FlowState(TypedDict, total=False):
 
 
 class FlowError(Exception):
-    """A node failed and the run stops; the message names the node."""
+    """A node failed and the run stops; the message names the node. ``type`` is the kind
+    of failure (``nodes.ERROR_TYPES``, or ``max_visits``), None when unknown."""
 
-    def __init__(self, node: dict[str, Any], message: str) -> None:
+    def __init__(self, node: dict[str, Any], message: str, type: str | None = None) -> None:
         super().__init__(f"节点「{node.get('title', node['id'])}」({node['id']})：{message}")
+        self.type = type
 
 
 def nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -86,7 +88,7 @@ async def execute(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
         try:
             return await spec.run(node, state, rt)
         except NodeFailure as exc:
-            raise FlowError(node, exc.message) from exc
+            raise FlowError(node, exc.message, exc.type) from exc
     on_error = node.get("on_error") or {}
     retry = on_error.get("retry") or {}
     attempts = 1 + int(retry.get("max", 0))
@@ -96,11 +98,13 @@ async def execute(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
             return await spec.run(node, state, rt)
         except NodeFailure as exc:
             failure = exc
+        if failure.type == INPUT_ERROR:
+            break
         if attempt + 1 < attempts:
             await asyncio.sleep(float(retry.get("interval_seconds", 0)))
     then = on_error.get("then", "stop")
     if then == "stop":
-        raise FlowError(node, failure.message)
+        raise FlowError(node, failure.message, failure.type)
     error = {"error_type": failure.type, "error_message": failure.message}
     if then == "default":
         produced = {key: None for key in spec.produces(node)}
@@ -142,7 +146,7 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
     async def run(state: FlowState, config: RunnableConfig) -> dict[str, Any]:
         visits = (state.get("visits") or {}).get(node_id, 0)
         if visits >= limit:
-            raise FlowError(node, f"已经运行了 {visits} 次，达到上限 {limit} 次")
+            raise FlowError(node, f"已经运行了 {visits} 次，达到上限 {limit} 次", "max_visits")
         run_id = ((config or {}).get("configurable") or {}).get("thread_id")
         try:
             outcome = await execute(node, {**state, "run_id": run_id}, rt)

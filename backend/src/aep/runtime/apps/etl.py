@@ -42,7 +42,13 @@ from aep.databricks import DevRun, Release
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.plan import OUTPUT_FORMAT as PLAN_FORMAT
-from aep.etl.profile import MAX_TABLES, describe_for_model, known_values, profile_tables
+from aep.etl.profile import (
+    MAX_TABLES,
+    InputError,
+    describe_for_model,
+    known_values,
+    profile_tables,
+)
 from aep.knowledge.citations import IndexedHit, context
 from aep.knowledge.search import search
 from aep.runtime import human
@@ -381,9 +387,9 @@ def build(ctx: AppContext) -> StateGraph:
         inp = state["input"]
         source = await ctx.datasources.get(str(inp.get("datasource_id", "")))
         if source is None:
-            raise ValueError("请选择一个已登记的数据源（input.datasource_id）")
+            raise InputError("请选择一个已登记的数据源（input.datasource_id）")
         if not str(inp.get("request", "")).strip():
-            raise ValueError("请用自然语言描述需求（input.request）")
+            raise InputError("请用自然语言描述需求（input.request）")
         rows = configured(config, "profile").params["sample_rows"]
         tables = await profile_tables(ctx.tools, source, inp.get("tables"), rows)
         names = "、".join(t["name"] for t in tables)

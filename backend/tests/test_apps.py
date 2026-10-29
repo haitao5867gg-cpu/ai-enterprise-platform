@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import time
 
 import httpx
 import pytest
@@ -370,3 +371,12 @@ async def test_an_option_can_require_a_comment():
     with pytest.raises(CommentRequired):
         await service.resume(record.run_id, "reject", "  ")
     await service.resume(record.run_id, "reject", "数据不对")
+
+
+async def test_a_cancelled_case_run_fails_the_case_at_once(tmp_path):
+    async with Platform([], tmp_path) as p:
+        record = await p.service._store.create("etl", {"request": "做一张订单明细宽表"})
+        await p.service._store.set_status(record.run_id, "cancelled", "不用测了", actor="李雷")
+        # Not the eval's timeout: the case ends as soon as its run is cancelled.
+        run = await asyncio.wait_for(p.catalog._wait(record.run_id, time.monotonic() + 60), 1)
+        assert (run["status"], run["error"]) == ("error", "run 被取消了：不用测了")

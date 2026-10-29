@@ -1,7 +1,9 @@
 """The ETL eval runner: the eval set parses, checks score as documented, and a whole
 case runs through the Runs API (fake model and workspace) without going to prod."""
 
+import asyncio
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -206,3 +208,15 @@ async def test_runs_a_case_through_the_api_up_to_dev_only(tmp_path, monkeypatch)
     assert view.result["release"] == {"status": "skipped", "reason": "这次运行只试跑，不上线"}
     assert view.result["approvals"][0]["actor"] == evals.ACTOR
     assert list(workspace.jobs) == [100]  # the dev job only
+
+
+async def test_a_cancelled_case_run_fails_the_case_at_once():
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = {"run_id": "r1", "status": "cancelled", "error": "不用测了"}
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handle)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        wait = evals.Runner(api)._wait("r1", time.monotonic() + 60)
+        run = await asyncio.wait_for(wait, 1)
+    assert (run["status"], run["error"]) == ("error", "run 被取消了：不用测了")

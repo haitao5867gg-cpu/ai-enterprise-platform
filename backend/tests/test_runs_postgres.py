@@ -117,3 +117,40 @@ async def test_recover_restarts_runs_left_running():
         view = await second.get(record.run_id)
         assert view.record.status == "waiting"
         assert view.messages[-1] == {"role": "assistant", "content": "恢复后的回答"}
+
+
+async def test_status_changes_only_from_the_expected_status():
+    gateway = FakeGateway(replies=["回答"])
+
+    async with platform(gateway) as service:
+        record = await service.create("hello", {"text": "你好"}, requester="李雷")
+        await service.wait_idle()
+        store = service._store
+        assert not await store.set_status(record.run_id, "running", expected=("error",))
+        assert (await store.get(record.run_id)).status == "waiting"
+
+        await service.cancel(record.run_id, "韩梅梅", "不需要了")
+        cancelled = await store.get(record.run_id)
+        assert cancelled.status == "cancelled"
+        assert cancelled.cancelled_by == "韩梅梅"
+        assert cancelled.error == "不需要了"
+        assert not await store.set_status(record.run_id, "running", expected=("waiting",))
+
+        rerun = await service.rerun(record.run_id)
+        await service.wait_idle()
+        assert (await store.get(rerun.run_id)).rerun_of == record.run_id
+
+        await store.set_status(rerun.run_id, "error", "超时", error_type="timeout")
+        failed = await store.get(rerun.run_id)
+        assert (failed.status, failed.error_type) == ("error", "timeout")
+        # Nobody retried it for an hour: that hour counts as waiting, not as work.
+        async with store._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE runs SET updated_at = updated_at - interval '1 hour' WHERE run_id = %s",
+                (UUID(rerun.run_id),),
+            )
+        await service.retry(rerun.run_id)
+        assert (await store.get(rerun.run_id)).wait_seconds >= failed.wait_seconds + 3600
+        await service.wait_idle()
+        retried = await store.get(rerun.run_id)
+        assert (retried.status, retried.error, retried.error_type) == ("waiting", None, None)

@@ -505,6 +505,16 @@ async def test_a_node_stops_the_run_past_its_visit_limit():
         run = await p.resume(run, decision="reject", comment="再来")
         assert run["status"] == "error"
         assert run["error"] == "节点「回答」(draft)：已经运行了 1 次，达到上限 1 次"
+        # It would stop there again: a rerun with another input is the way on.
+        assert run["failed"] == {
+            "node": "draft",
+            "title": "回答",
+            "error_type": "max_visits",
+            "retryable": False,
+        }
+        assert run["actions"] == {"cancel": False, "retry": False, "rerun": True}
+        resp = await p.api.post(f"/runs/{run['run_id']}/retry", json={})
+        assert resp.status_code == 409
 
 
 async def test_input_must_fit_the_start_node():

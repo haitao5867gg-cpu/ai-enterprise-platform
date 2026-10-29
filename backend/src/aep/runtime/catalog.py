@@ -38,6 +38,7 @@ from aep.runtime.flow.check import check_common, check_config
 from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems
 from aep.runtime.flow.store import AppExists
 from aep.runtime.service import RunService, RunView
+from aep.runtime.store import FINISHED
 from aep.runtime.versions import AppVersion, Draft, NoDraft, VersionNotFound
 from aep.skills import Skill
 
@@ -870,7 +871,12 @@ class AppCatalog:
     async def _wait(self, run_id: str, deadline: float) -> dict[str, Any]:
         while True:
             view: RunView = await self._runs.get(run_id)
-            if view.record.status in ("waiting", "done", "error"):
+            if view.record.status == "cancelled":
+                # Someone cancelled the case's run: the case fails now, not at the timeout.
+                reason = view.record.error
+                error = f"run 被取消了：{reason}" if reason else "run 被取消了"
+                return {"status": "error", "error": error, "pending": None, "result": None}
+            if view.record.status == "waiting" or view.record.status in FINISHED:
                 return {
                     "status": view.record.status,
                     "error": view.record.error,

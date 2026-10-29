@@ -17,14 +17,44 @@ run record (in the list and in ``GET /runs/{id}``) has:
   app's first text input that was filled in, in the order of its start node's
   inputs; a code app's ``request``. Null when there is none.
 - ``created_by``: the ``requester`` it was started with, or null.
+- ``status``: ``running``, ``waiting`` (for a person), ``done``, ``error`` or
+  ``cancelled``.
 - ``created_at``, ``updated_at`` (the last status change) and ``finished_at`` (when
-  it ended, ``done`` or ``error``; null before), ISO times.
+  it ended: ``done``, ``error`` or ``cancelled``; null before), ISO times.
 - ``step``: the node the run is at (``node`` id and ``title``), the one it waits at,
   or the last one it reached; null before its first node starts.
 - ``waiting_since``: when the current wait for a person began (null unless
-  waiting), and ``wait_seconds``: the seconds spent in waits already over. The
+  waiting), and ``wait_seconds``: the seconds spent in waits already over (for a
+  decision, or for someone to retry a failure). The
   time the machine worked is the run's whole time less both. Null for runs from
   before waits were counted.
+- ``cancelled_by``: who cancelled it (a cancelled run's ``error`` is the reason
+  given, or null); ``rerun_of``: the run it was copied from, or null.
+
+``GET /runs/{id}`` also has the run's ``input``; ``inputs``: what a copy of the run
+asks for, the start node's inputs (as in docs/api/flow-apps.md) of the configuration
+``rerun`` uses: the run's own, or the current version's for a run from before
+versions (null for a code app); ``failed`` (for a failed run):
+``node`` and ``title`` of the step it failed at (null when unknown),
+``error_type`` (as a flow node's ``error_type`` in docs/api/flow-apps.md, or
+``max_visits``: a node ran as often as it may, ``max_steps``: the run took too many
+steps; null when unknown) and ``retryable`` (the failure may be temporary: a
+timeout, a model, tool, knowledge base, Databricks or sandbox error, or unknown;
+``input_error`` and the others are not);
+and ``actions``: which of ``cancel``, ``retry`` and ``rerun`` it allows now.
+
+``POST /runs/{id}/cancel`` (``actor``, ``reason``: optional) cancels a running or
+waiting run (202; 409 when it is in another status). A run executing in another
+process stops before its next node; work already done outside the platform stays.
+``POST /runs/{id}/retry`` (``actor``: optional) continues a failed run from the
+step that failed (202; 409 when it is not failed, for instance because someone
+retried it already, or when its failure is not ``failed.retryable``; the
+``detail`` says which).
+``POST /runs/{id}/rerun`` (``input``, ``requester``: optional) starts a new run of
+the same app version with the run's input, or ``input`` in its place (send all of
+it, not only what changed) (201, like ``POST /runs``);
+a draft's run copies the configuration it ran with. 404 when the app or its version
+is gone. These three accept an empty body, or none.
 
 A waiting run's ``pending`` is an approval: show ``prompt`` and offer
 ``options`` (shown as ``option_labels`` when given); any option may carry a
@@ -110,14 +140,18 @@ from aep.runtime.service import (
     InvalidDecision,
     InvalidValues,
     NoDraftToRun,
+    NotCancellable,
+    NotFailed,
+    NotRetryable,
     NotWaiting,
     RunNotFound,
     RunService,
     RunView,
     UnknownApp,
     UnknownVersion,
+    retryable,
 )
-from aep.runtime.store import RunRecord, RunStatus
+from aep.runtime.store import FINISHED, RunRecord, RunStatus
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -149,6 +183,20 @@ class Resume(BaseModel):
     values: dict[str, Any] | None = None
 
 
+class Cancel(BaseModel):
+    actor: str | None = Field(default=None, max_length=100)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class Retry(BaseModel):
+    actor: str | None = Field(default=None, max_length=100)
+
+
+class Rerun(BaseModel):
+    input: dict[str, Any] | None = None
+    requester: str | None = Field(default=None, max_length=100)
+
+
 class RunRef(BaseModel):
     run_id: str
     status: RunStatus
@@ -174,6 +222,8 @@ class RunSummary(BaseModel):
     step: Step | None
     waiting_since: str | None
     wait_seconds: float | None
+    cancelled_by: str | None
+    rerun_of: str | None
 
 
 class Message(BaseModel):
@@ -191,7 +241,24 @@ class Pending(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class Failed(BaseModel):
+    node: str | None
+    title: str | None
+    error_type: str | None
+    retryable: bool
+
+
+class Actions(BaseModel):
+    cancel: bool
+    retry: bool
+    rerun: bool
+
+
 class RunDetail(RunSummary):
+    input: dict[str, Any]
+    inputs: list[dict[str, Any]] | None
+    failed: Failed | None
+    actions: Actions
     messages: list[Message]
     pending: Pending | None
     result: dict[str, Any] | None
@@ -255,16 +322,35 @@ def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> d
         "created_by": r.created_by,
         "created_at": r.created_at.isoformat(),
         "updated_at": r.updated_at.isoformat(),
-        "finished_at": r.updated_at.isoformat() if r.status in ("done", "error") else None,
+        "finished_at": r.updated_at.isoformat() if r.status in FINISHED else None,
         "step": r.step,
         "waiting_since": r.waiting_since.isoformat() if r.waiting_since else None,
         "wait_seconds": r.wait_seconds,
+        "cancelled_by": r.cancelled_by,
+        "rerun_of": r.rerun_of,
     }
 
 
-def _detail(v: RunView, service: RunService, app_titles: dict[str, str]) -> RunDetail:
+async def _detail(v: RunView, service: RunService, app_titles: dict[str, str]) -> RunDetail:
+    r = v.record
+    step = r.step or {}
     return RunDetail(
-        **_summary(v.record, service, app_titles),
+        **_summary(r, service, app_titles),
+        input=r.input,
+        inputs=await service.copy_inputs(r),
+        failed=Failed(
+            node=step.get("node"),
+            title=step.get("title"),
+            error_type=r.error_type,
+            retryable=retryable(r),
+        )
+        if r.status == "error"
+        else None,
+        actions=Actions(
+            cancel=r.status in ("running", "waiting"),
+            retry=retryable(r),
+            rerun=await service.can_rerun(r),
+        ),
         messages=[Message(**m) for m in v.messages],
         pending=Pending(**v.pending) if v.pending else None,
         result=v.result,
@@ -319,7 +405,7 @@ async def get_run(run_id: str, service: Service) -> RunDetail:
         view = await service.get(run_id)
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
-    return _detail(view, service, await service.app_titles())
+    return await _detail(view, service, await service.app_titles())
 
 
 @router.get("/{run_id}/flow")
@@ -353,6 +439,49 @@ async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
         raise HTTPException(422, "这个决定需要写明意见") from exc
     except InvalidValues as exc:
         raise _invalid_values("values", exc) from exc
+    return RunRef(run_id=record.run_id, status=record.status)
+
+
+@router.post("/{run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_run(run_id: str, service: Service, body: Cancel | None = None) -> RunRef:
+    body = body or Cancel()
+    try:
+        record = await service.cancel(
+            run_id, (body.actor or "").strip() or None, (body.reason or "").strip() or None
+        )
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    except NotCancellable as exc:
+        raise HTTPException(409, "只有运行中或等待确认的运行可以取消") from exc
+    return RunRef(run_id=record.run_id, status=record.status)
+
+
+@router.post("/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_run(run_id: str, service: Service, body: Retry | None = None) -> RunRef:
+    try:
+        record = await service.retry(run_id)
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    except NotFailed as exc:
+        raise HTTPException(409, "这次运行已经不在失败状态，可能有人已经重试过") from exc
+    except NotRetryable as exc:
+        raise HTTPException(409, "这次运行不能重试，请复制后重新发起") from exc
+    return RunRef(run_id=record.run_id, status=record.status)
+
+
+@router.post("/{run_id}/rerun", status_code=status.HTTP_201_CREATED)
+async def rerun_run(run_id: str, service: Service, body: Rerun | None = None) -> RunRef:
+    body = body or Rerun()
+    try:
+        record = await service.rerun(
+            run_id, body.input, requester=(body.requester or "").strip() or None
+        )
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    except (UnknownApp, UnknownVersion) as exc:
+        raise HTTPException(404, "这次运行用的应用或版本已经不在了") from exc
+    except InvalidValues as exc:
+        raise _invalid_values("input", exc) from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 

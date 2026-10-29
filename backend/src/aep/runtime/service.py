@@ -11,6 +11,17 @@ for its whole life: the version's configuration is kept with the run and handed
 to every execution of its graph (see aep.runtime.appconfig). A draft can be run
 too (its eval, or a person trying it); such a run belongs to no version.
 
+A run that is running or waiting can be cancelled. Its own process stops it at
+once; any process stops it before its next node starts, so a run executing
+elsewhere stops after its current node (work already done outside, like tables
+written in a dev environment or a job still running on Databricks, stays). A
+failed run can be retried from the node that failed when the failure may be
+temporary, and any run can be rerun: a new run of the same app version (a draft's
+runs copy its configuration), with the same or a changed input.
+
+Every status change says which status it expects to find (``RunStore.set_status``),
+so a decision, a cancel and the end of a step cannot overwrite one another.
+
 There are two kinds of apps. A code app's graph is written in code (registered
 in ``aep.runtime.registry``). A flow app's graph is compiled from its
 configuration (``aep.runtime.flow``), so each run compiles the configuration it
@@ -34,6 +45,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from aep import tracing
+from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
 from aep.runtime import appconfig, design
 from aep.runtime.flow import graph as flowgraph
@@ -46,7 +58,7 @@ from aep.runtime.flow.store import (
     SecretStore,
 )
 from aep.runtime.registry import AppBuilder, AppContext
-from aep.runtime.store import RunRecord, RunStore
+from aep.runtime.store import RunRecord, RunStatus, RunStore
 from aep.runtime.versions import AppVersionStore, MemoryAppVersionStore
 from aep.skills import MemorySkillStore, SkillStore
 
@@ -81,6 +93,60 @@ class NoDraftToRun(Exception):
     pass
 
 
+class NotCancellable(Exception):
+    """Only a running or waiting run can be cancelled."""
+
+
+class NotRetryable(Exception):
+    """Only a failed run can be retried, and only when its failure may be temporary."""
+
+
+class NotFailed(NotRetryable):
+    """The run is not failed (any more): someone may have retried it already."""
+
+
+class RunStopped(Exception):
+    """The run was cancelled; raised at a node boundary to stop it there."""
+
+
+# Failures that may go away by themselves: a retry is worth it. The others
+# (``output_format``, ``code_error``, ``step_limit``, ``max_visits``, ``max_steps``)
+# would happen again; such a run is rerun with a changed input instead. A failure of
+# unknown kind may be retried too.
+TEMPORARY = frozenset(
+    {
+        "timeout",
+        "model_error",
+        "tool_error",
+        "knowledge_error",
+        "databricks_error",
+        "sandbox_unavailable",
+    }
+)
+
+
+def retryable(record: RunRecord) -> bool:
+    return record.status == "error" and (
+        record.error_type is None or record.error_type in TEMPORARY
+    )
+
+
+class StepsExceeded(RuntimeError):
+    """A flow app's run took more steps than ``flowgraph.MAX_STEPS``."""
+
+
+def _error_type(exc: Exception) -> str | None:
+    if isinstance(exc, flowgraph.FlowError):
+        return exc.type
+    if isinstance(exc, StepsExceeded):
+        return "max_steps"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, InputError):
+        return flownodes.INPUT_ERROR
+    return None
+
+
 class InvalidValues(Exception):
     """Values do not fit the fields asked for; ``problems`` by field key."""
 
@@ -112,7 +178,12 @@ def _short(text: str) -> str:
 
 
 class StepTracker(AsyncCallbackHandler):
-    """Notes each node of the graph as it starts, as the run's ``step``."""
+    """Notes each node of the graph as it starts, as the run's ``step``, and stops the
+    run there (``RunStopped``) if it was cancelled meanwhile."""
+
+    # An error raised here stops the graph before the node runs; the node is left to
+    # run again if the graph is resumed.
+    raise_error = True
 
     def __init__(self, store: RunStore, run_id: str) -> None:
         self._store = store
@@ -141,7 +212,18 @@ class StepTracker(AsyncCallbackHandler):
             return
         design = metadata.get("design")
         title = design.get("title") if isinstance(design, dict) else None
-        await self._store.set_step(self._run_id, node, title if isinstance(title, str) else node)
+        # The step is noted even when the run stops here: it says where it stopped, as
+        # the flow view does.
+        try:
+            await self._store.set_step(
+                self._run_id, node, title if isinstance(title, str) else node
+            )
+            record = await self._store.get(self._run_id)
+        except Exception:  # noting the step must not stop the run
+            log.exception("could not note the step of run %s", self._run_id)
+            return
+        if record is not None and record.status == "cancelled":
+            raise RunStopped(self._run_id)
 
 
 class RunService:
@@ -178,6 +260,8 @@ class RunService:
         self._ensured: set[str] = set()
         self._flows_ready = False
         self._tasks: set[asyncio.Task] = set()
+        # The task executing each run in this process, to stop it when it is cancelled.
+        self._running: dict[str, asyncio.Task] = {}
 
     @property
     def tools(self) -> Any:
@@ -290,6 +374,7 @@ class RunService:
         config: dict[str, Any] | None = None,
         draft: bool = False,
         requester: str | None = None,
+        rerun_of: str | None = None,
     ) -> RunRecord:
         """Start a run of the app's current version, or of ``app_version``; with ``config``
         (a draft's configuration, for its eval) or ``draft`` (the draft as it is now) the
@@ -315,7 +400,7 @@ class RunService:
             _, problems = flownodes.answers(flowgraph.inputs(config), input)
             if problems:
                 raise InvalidValues(problems)
-        record = await self._store.create(app, input, app_version, config, requester)
+        record = await self._store.create(app, input, app_version, config, requester, rerun_of)
         self._spawn(record, {"input": input}, "start", input)
         return record
 
@@ -402,16 +487,38 @@ class RunService:
         titles = {name: d.title if d else name for name, d in self._designs.items()}
         return titles | {a.app: a.title for a in await self.flows.all(archived=True)}
 
+    def inputs(self, record: RunRecord) -> list[dict[str, Any]] | None:
+        """What the configuration a flow app's run used asks for (its start node's
+        inputs), which may differ from the app's current version; None for a code app."""
+        if record.app in self._graphs:
+            return None
+        try:
+            return flowgraph.inputs(self.flow_config(record.app, record.config))
+        except Exception:  # a configuration the runtime no longer reads
+            return []
+
+    async def copy_inputs(self, record: RunRecord) -> list[dict[str, Any]] | None:
+        """What a copy of the run asks for: the start inputs of the configuration
+        ``rerun`` uses. That is the run's own, except for a run from before versions,
+        which is copied into the current version."""
+        if record.app_version is not None or record.config is not None:
+            return self.inputs(record)
+        if record.app in self._graphs:
+            return None
+        try:
+            await self.ensure_versions(record.app)
+            found = await self.versions.version(record.app, await self.versions.current(record.app))
+            return flowgraph.inputs(self.flow_config(record.app, found and found.config))
+        except Exception:  # a configuration the runtime no longer reads
+            return []
+
     def title(self, record: RunRecord) -> str | None:
         """What the run is about, in one line: a flow app's first text input that was
         filled in (in the start node's order), a code app's ``request``."""
-        if record.app in self._graphs:
+        fields = self.inputs(record)
+        if fields is None:
             keys = ["request"]
         else:
-            try:
-                fields = flowgraph.inputs(self.flow_config(record.app, record.config))
-            except Exception:  # a configuration the runtime no longer reads
-                fields = []
             keys = [f["key"] for f in fields if f.get("type") in ("text", "textarea")]
         for key in keys:
             value = record.input.get(key)
@@ -440,9 +547,71 @@ class RunService:
             if problems:
                 raise InvalidValues(problems)
             answer["values"] = checked
-        await self._store.set_status(run_id, "running")
+        # Only one of two decisions sent at once, or a decision and a cancel, gets here.
+        if not await self._store.set_status(run_id, "running", expected=("waiting",)):
+            raise NotWaiting(run_id)
         self._spawn(view.record, Command(resume=answer), "resume", answer)
         return await self._store.get(run_id)
+
+    async def cancel(self, run_id: str, actor: str | None, reason: str | None) -> RunRecord:
+        """Cancel a running or waiting run; ``reason`` is kept as its ``error``."""
+        record = await self._store.get(run_id)
+        if record is None:
+            raise RunNotFound(run_id)
+        if not await self._store.set_status(
+            run_id, "cancelled", reason, expected=("running", "waiting"), actor=actor
+        ):
+            raise NotCancellable(run_id)
+        task = self._running.get(run_id)
+        if task is not None:
+            task.cancel()
+        return await self._store.get(run_id)
+
+    async def retry(self, run_id: str) -> RunRecord:
+        """Continue a failed run from the node that failed (from its input if it failed
+        before its first step was saved)."""
+        record = await self._store.get(run_id)
+        if record is None:
+            raise RunNotFound(run_id)
+        if record.status != "error":
+            raise NotFailed(run_id)
+        if not retryable(record):
+            raise NotRetryable(run_id)
+        state = await (await self._graph(record)).aget_state(_config(run_id))
+        if not await self._store.set_status(run_id, "running", expected=("error",)):
+            raise NotFailed(run_id)
+        self._spawn(record, None if state.values else {"input": record.input}, "retry")
+        return await self._store.get(run_id)
+
+    async def rerun(
+        self,
+        run_id: str,
+        input: dict[str, Any] | None = None,
+        requester: str | None = None,
+    ) -> RunRecord:
+        """A new run of the same app version as this one, with its input or ``input``.
+        A draft's run copies the configuration it ran with; a run from before versions
+        uses the current version."""
+        source = await self._store.get(run_id)
+        if source is None:
+            raise RunNotFound(run_id)
+        draft = source.app_version is None and source.config is not None
+        return await self.create(
+            source.app,
+            source.input if input is None else input,
+            source.app_version,
+            config=source.config if draft else None,
+            requester=requester,
+            rerun_of=source.run_id,
+        )
+
+    async def can_rerun(self, record: RunRecord) -> bool:
+        if await self.kind(record.app) is None:
+            return False
+        if record.app_version is None:
+            return True
+        await self.ensure_versions(record.app)
+        return await self.versions.version(record.app, record.app_version) is not None
 
     async def recover(self) -> int:
         """Continue runs that were mid-step when the process last stopped."""
@@ -462,7 +631,18 @@ class RunService:
     def _spawn(self, record: RunRecord, payload: Any, step: str, step_input: Any = None) -> None:
         task = asyncio.create_task(self._drive(record, payload, step, step_input))
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._running[record.run_id] = task
+
+        def done(finished: asyncio.Task) -> None:
+            self._tasks.discard(finished)
+            if self._running.get(record.run_id) is finished:
+                del self._running[record.run_id]
+
+        task.add_done_callback(done)
+
+    async def _finish(self, run_id: str, status: RunStatus, **kwargs: Any) -> None:
+        # Only a run still running ends this way: a cancelled one stays cancelled.
+        await self._store.set_status(run_id, status, expected=("running",), **kwargs)
 
     async def _drive(self, record: RunRecord, payload: Any, step: str, step_input: Any) -> None:
         config = _config(record.run_id)
@@ -479,7 +659,7 @@ class RunService:
                 try:
                     await graph.ainvoke(payload, run_config)
                 except GraphRecursionError as exc:
-                    raise RuntimeError(
+                    raise StepsExceeded(
                         f"运行超过 {flowgraph.MAX_STEPS} 步，已经停止；请检查流程里的循环"
                     ) from exc
                 state = await graph.aget_state(config)
@@ -491,8 +671,16 @@ class RunService:
                         "result": (state.values or {}).get("result"),
                     }
                 )
-                await self._store.set_status(record.run_id, status)
+                await self._finish(record.run_id, status)
+            except (RunStopped, asyncio.CancelledError) as exc:
+                # Cancelled (its status says so already), or this process is stopping:
+                # then the run is still running and ``recover`` picks it up again.
+                segment.finish({"status": "stopped"})
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
             except Exception as exc:
                 log.exception("run %s failed", record.run_id)
                 segment.finish({"status": "error"}, error=str(exc))
-                await self._store.set_status(record.run_id, "error", error=str(exc))
+                await self._finish(
+                    record.run_id, "error", error=str(exc), error_type=_error_type(exc)
+                )

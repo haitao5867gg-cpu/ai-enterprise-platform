@@ -22,10 +22,18 @@ import { EmptyState, ErrorNotice, StatusBadge } from "./ui";
 // While a run is running the list refreshes itself this often.
 const REFRESH_MS = 10_000;
 
+const filters: { key: Filter; label: string; statuses: RunStatus[] }[] = [
+  { key: "running", label: statusLabels.running, statuses: ["running"] },
+  { key: "waiting", label: statusLabels.waiting, statuses: ["waiting"] },
+  { key: "done", label: statusLabels.done, statuses: ["done"] },
+  { key: "stopped", label: "失败和取消", statuses: ["error", "cancelled"] },
+];
+type Filter = "all" | "running" | "waiting" | "done" | "stopped";
+
 export function RunList() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [now, setNow] = useState(0);
-  const [filter, setFilter] = useState<RunStatus | "all">("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
@@ -74,7 +82,13 @@ export function RunList() {
   }, []);
 
   const visible =
-    filter === "all" ? runs : runs.filter((run) => run.status === filter);
+    filter === "all"
+      ? runs
+      : runs.filter((run) =>
+          filters
+            .find((item) => item.key === filter)
+            ?.statuses.includes(run.status),
+        );
   const newButton = (
     <Link className="button primary" href="/runs/new">
       <Icon name="plus" />
@@ -122,15 +136,15 @@ export function RunList() {
       <section className="panel runs-panel" aria-label="运行列表">
         <div className="panel-toolbar">
           <div className="filter-tabs" role="group" aria-label="筛选运行状态">
-            {(["all", "running", "waiting", "done", "error"] as const).map(
-              (status) => (
+            {[{ key: "all" as const, label: "全部" }, ...filters].map(
+              (item) => (
                 <button
-                  key={status}
-                  aria-pressed={filter === status}
-                  className={filter === status ? "selected" : ""}
-                  onClick={() => setFilter(status)}
+                  key={item.key}
+                  aria-pressed={filter === item.key}
+                  className={filter === item.key ? "selected" : ""}
+                  onClick={() => setFilter(item.key)}
                 >
-                  {status === "all" ? "全部" : statusLabels[status]}
+                  {item.label}
                 </button>
               ),
             )}

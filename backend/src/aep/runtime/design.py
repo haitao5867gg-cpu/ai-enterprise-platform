@@ -105,10 +105,11 @@ def shape(
 
 
 def _status(task: Any) -> str:
-    if task.error:
-        return "error"
+    # A task retried after a failure keeps that failure's error next to its result.
     if task.result is not None:
         return "done"
+    if task.error:
+        return "error"
     return "waiting" if task.interrupts else "running"
 
 
@@ -144,9 +145,18 @@ async def flow(
             if task.name.startswith("__"):
                 continue
             status = _status(task)
+            error = None if status == "done" else task.error and str(task.error)
+            latest = snapshot is snapshots[0]
             # A task the run is not on any more never finished (the process stopped).
             if status == "running" and run["status"] != "running":
                 status = "error" if run["status"] == "error" else "stopped"
+            # The failed task of a run being retried runs again.
+            if status == "error" and latest and run["status"] == "running":
+                status, error = "running", None
+            # Where a cancelled run was when it stopped (waiting, or stopped there); the
+            # run's own error says why.
+            if run["status"] == "cancelled" and latest and status != "done":
+                status, error = "stopped", None
             steps.append(
                 {
                     "id": task.id,
@@ -155,7 +165,7 @@ async def flow(
                     "started_at": snapshot.created_at,
                     "input": values,
                     "output": task.result,
-                    "error": task.error and str(task.error),
+                    "error": error,
                     "interrupt": task.interrupts[0].value if task.interrupts else None,
                 }
             )

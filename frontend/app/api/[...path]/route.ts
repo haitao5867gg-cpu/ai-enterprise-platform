@@ -21,7 +21,7 @@ async function handle(request: Request, context: Context) {
     [/^datasources\/[a-zA-Z0-9_-]{1,128}\/tools$/, ["GET"]],
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow|manual))?$/, ["GET"]],
-    [/^runs\/[a-zA-Z0-9_-]{1,128}\/resume$/, ["POST"]],
+    [/^runs\/[a-zA-Z0-9_-]{1,128}\/(resume|cancel|retry|rerun)$/, ["POST"]],
     [/^knowledge-bases$/, ["GET", "POST"]],
     [/^knowledge-bases\/options$/, ["GET"]],
     [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],

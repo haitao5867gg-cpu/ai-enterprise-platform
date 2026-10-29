@@ -47,7 +47,11 @@ ERROR_TYPES = (
     "sandbox_unavailable",
     "step_limit",
     "databricks_error",
+    "input_error",
 )
+# The run's input or the node's settings are wrong: trying again gives the same failure,
+# so ``on_error.retry`` does not try it again.
+INPUT_ERROR = "input_error"
 # Variables a node that failed and went on (``on_error.then`` default or branch) has.
 ERROR_FIELDS = ("error_type", "error_message")
 # Branch names the platform gives: no class matched, no rule held, the node failed.
@@ -123,7 +127,7 @@ class Runtime:
             if node == refs.ENV:
                 return self.env.get(name)
             if node == refs.SECRET:
-                raise NodeFailure("tool_error", "密钥只能用在工具参数里")
+                raise NodeFailure(INPUT_ERROR, "密钥只能用在工具参数里")
             return (values.get(node) or {}).get(name)
 
         return get
@@ -150,7 +154,7 @@ class Runtime:
             else None
         )
         if found is None:
-            raise NodeFailure("tool_error", f"没有数据源 {refs.as_text(value) or '（未选择）'}")
+            raise NodeFailure(INPUT_ERROR, f"没有数据源 {refs.as_text(value) or '（未选择）'}")
         return found
 
     async def call(self, source: DataSource, tool: str, args: dict[str, Any]) -> Any:

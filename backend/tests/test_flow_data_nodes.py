@@ -22,6 +22,7 @@ from aep.knowledge.worker import KnowledgeWorker
 from aep.main import create_app
 from aep.runtime.catalog import AppCatalog
 from aep.runtime.flow import data_nodes, files
+from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow.nodes import TYPES, NodeFailure, Runtime
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
@@ -118,14 +119,14 @@ async def test_profile_reads_the_tables_asked_for():
 async def test_profile_refuses_what_it_cannot_read(monkeypatch):
     rt, ds = await node_env()
     monkeypatch.setattr(data_nodes, "MAX_TABLES", 1)
-    for tables, problem in [
-        ("sales.*", "一共 2 张表，一次最多 1 张"),
-        ("orders", "orders 要写成 schema.table 或 schema.*"),
-        ("sales.nope", "探查数据源「示例库」失败"),
+    for tables, problem, kind in [
+        ("sales.*", "一共 2 张表，一次最多 1 张", "input_error"),
+        ("orders", "orders 要写成 schema.table 或 schema.*", "input_error"),
+        ("sales.nope", "探查数据源「示例库」失败", "tool_error"),
     ]:
         with pytest.raises(NodeFailure) as failed:
             await run(profile_node(), state(start={"datasource": ds, "tables": tables}), rt)
-        assert failed.value.type == "tool_error"
+        assert failed.value.type == kind
         assert problem in failed.value.message
     with pytest.raises(NodeFailure, match="没有数据源"):
         await run(profile_node(), state(start={"datasource": "nope", "tables": ""}), rt)
@@ -340,9 +341,29 @@ async def test_ingest_over_the_row_limit_writes_nothing(tmp_path):
     st = state(check_plan={"sources": ["sales.customers", "sales.orders"]})
     with pytest.raises(NodeFailure) as failed:
         await run(ingest_node(ds, max_rows=2), st, rt)
-    assert failed.value.type == "tool_error"
+    assert failed.value.type == "input_error"
     assert "sales.customers 超过 2 行，没有抽取任何表" in failed.value.message
     assert ws.requests == []
+
+
+async def test_an_input_error_is_not_tried_again(tmp_path):
+    """Over the row limit is decided by the data: on_error.retry would read it again."""
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    rt, ds = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    calls: list[str] = []
+    call = rt.call
+
+    async def counted(source, tool, args):
+        calls.append(tool)
+        return await call(source, tool, args)
+
+    rt.call = counted
+    retried = {"on_error": {"retry": {"max": 2, "interval_seconds": 0}, "then": "stop"}}
+    node = ingest_node(ds, max_rows=2) | retried
+    with pytest.raises(flowgraph.FlowError) as failed:
+        await flowgraph.execute(node, state(check_plan={"sources": ["sales.customers"]}), rt)
+    assert failed.value.type == "input_error"
+    assert calls.count("describe_table") == 1
 
 
 async def test_ingest_needs_the_workspace_and_tables(tmp_path):

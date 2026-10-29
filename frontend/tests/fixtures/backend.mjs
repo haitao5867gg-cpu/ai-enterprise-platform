@@ -4,6 +4,26 @@ import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 
 const runs = new Map();
+function createRun(text) {
+  const run = {
+    run_id: randomUUID(),
+    app: "hello",
+    status: "waiting",
+    messages: [
+      { role: "user", content: text },
+      { role: "assistant", content: "来自契约测试后端的消息。" },
+    ],
+    pending: {
+      kind: "approval",
+      prompt: "请确认本次运行。",
+      options: ["approve", "reject"],
+    },
+    result: null,
+    error: null,
+  };
+  runs.set(run.run_id, run);
+  return run;
+}
 
 createServer(async (request, response) => {
   function json(value, status = 200) {
@@ -195,29 +215,32 @@ createServer(async (request, response) => {
       !body.input.text.trim()
     )
       return json({ detail: "Invalid input" }, 422);
-    const run = {
-      run_id: randomUUID(),
-      app: body.app,
-      status: "waiting",
-      messages: [
-        { role: "user", content: body.input.text },
-        { role: "assistant", content: "来自契约测试后端的消息。" },
-      ],
-      pending: {
-        kind: "approval",
-        prompt: "请确认本次运行。",
-        options: ["approve", "reject"],
-      },
-      result: null,
-      error: null,
-    };
-    runs.set(run.run_id, run);
+    const run = createRun(body.input.text);
     return json({ run_id: run.run_id, status: "running" }, 201);
   }
   if (path === "/runs") return json([...runs.values()].reverse());
   const run = runs.get(path?.split("/")[2]);
   if (!run) return json({ detail: "Run not found" }, 404);
   if (request.method === "GET") return json(run);
+  if (path?.endsWith("/cancel")) {
+    if (!["running", "waiting"].includes(run.status))
+      return json({ detail: "只有运行中或等待确认的运行可以取消" }, 409);
+    run.status = "cancelled";
+    run.pending = null;
+    run.cancelled_by = body.actor ?? null;
+    return json({ run_id: run.run_id, status: run.status }, 202);
+  }
+  // Runs here never fail, so none can be retried.
+  if (path?.endsWith("/retry"))
+    return json(
+      { detail: "这次运行已经不在失败状态，可能有人已经重试过" },
+      409,
+    );
+  if (path?.endsWith("/rerun")) {
+    const copy = createRun(body.input?.text ?? run.messages[0].content);
+    copy.rerun_of = run.run_id;
+    return json({ run_id: copy.run_id, status: "running" }, 201);
+  }
   if (path?.endsWith("/resume")) {
     if (run.status !== "waiting")
       return json({ detail: "Already resumed" }, 409);

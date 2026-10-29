@@ -1,7 +1,13 @@
 import type { RunSource } from "./knowledge";
-import type { FormField } from "./apps";
+import type { FormField, Input } from "./apps";
 
-export const runStatuses = ["running", "waiting", "done", "error"] as const;
+export const runStatuses = [
+  "running",
+  "waiting",
+  "done",
+  "error",
+  "cancelled",
+] as const;
 export type RunStatus = (typeof runStatuses)[number];
 export type Decision = string;
 export type ValidationIssue = { loc: (string | number)[]; msg: string };
@@ -36,8 +42,22 @@ export type RunSummary = {
   // (null: the run is from before waits were counted).
   waiting_since?: string | null;
   wait_seconds?: number | null;
+  cancelled_by?: string | null;
+  rerun_of?: string | null;
 };
+export type RunFailure = {
+  node: string | null;
+  title: string | null;
+  error_type: string | null;
+  retryable: boolean;
+};
+export type RunActions = { cancel: boolean; retry: boolean; rerun: boolean };
 export type Run = RunSummary & {
+  input?: Record<string, unknown>;
+  // What the configuration the run used asks for (a flow app's start inputs).
+  inputs?: Input[] | null;
+  failed?: RunFailure | null;
+  actions?: RunActions;
   messages: Message[];
   pending: Approval | null;
   result: unknown;
@@ -51,7 +71,36 @@ export const statusLabels: Record<RunStatus, string> = {
   waiting: "等待确认",
   done: "已完成",
   error: "运行失败",
+  cancelled: "已取消",
 };
+
+// A run in one of these has ended and is not polled any more.
+export const isFinished = (status: RunStatus) =>
+  status === "done" || status === "error" || status === "cancelled";
+
+// What went wrong, for the people who asked for the run.
+const failureReasons: Record<string, string> = {
+  timeout: "等外部服务超时了",
+  model_error: "模型服务出错了",
+  tool_error: "调用工具时出错了",
+  knowledge_error: "检索知识库时出错了",
+  databricks_error: "Databricks 出错了",
+  sandbox_unavailable: "代码沙箱暂时不可用",
+  output_format: "模型几次给出的结果都不符合要求的格式",
+  code_error: "代码节点里的程序报错了",
+  step_limit: "智能体用完了允许的步数，还没有得出结果",
+  max_visits: "流程在同一步来回的次数到了上限",
+  max_steps: "流程走的总步数到了上限",
+  input_error: "运行的输入或节点设置有问题",
+};
+
+export function failureText(failure: RunFailure): string {
+  const where = failure.title ? `在「${failure.title}」这一步，` : "";
+  const reason = failureReasons[failure.error_type ?? ""] ?? "运行出错了";
+  return failure.retryable
+    ? `${where}${reason}。这类问题多半是暂时的，可以从这一步重试。`
+    : `${where}${reason}，重试多半还是一样。可以复制这次运行，把需求写得更具体后重新发起。`;
+}
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -118,7 +167,9 @@ export function stepText(run: RunSummary): string {
       ? `停在「${title}」`
       : run.status === "error"
         ? `失败于「${title}」`
-        : "";
+        : run.status === "cancelled"
+          ? `取消于「${title}」`
+          : "";
 }
 
 export function formatDuration(seconds: number): string {
@@ -216,9 +267,11 @@ export async function requestJson(
   }
   if (!response.ok) {
     const messages: Record<number, string> = {
-      404: path.startsWith("/runs")
-        ? "没有找到这条运行记录，它可能已被移除。"
-        : "没有找到请求的内容，它可能已被移除。",
+      404: /^\/runs\/[^/]+\/rerun$/.test(path)
+        ? "原运行或它用的应用、版本已经不在了，请新建运行。"
+        : path.startsWith("/runs")
+          ? "没有找到这条运行记录，它可能已被移除。"
+          : "没有找到请求的内容，它可能已被移除。",
       409: path.startsWith("/runs")
         ? "运行状态已发生变化，请刷新后查看。"
         : "内容状态已发生变化，请刷新后查看。",
@@ -352,6 +405,42 @@ export type ResumeInput = {
 export const createRun = async (input: CreateRunInput, signal?: AbortSignal) =>
   readReceipt(
     await requestJson("/runs", {
+      method: "POST",
+      body: JSON.stringify(input),
+      signal,
+    }),
+  );
+export const cancelRun = async (
+  id: string,
+  input: { actor?: string; reason?: string },
+  signal?: AbortSignal,
+) =>
+  readReceipt(
+    await requestJson(`/runs/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(input),
+      signal,
+    }),
+  );
+export const retryRun = async (
+  id: string,
+  input: { actor?: string },
+  signal?: AbortSignal,
+) =>
+  readReceipt(
+    await requestJson(`/runs/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: JSON.stringify(input),
+      signal,
+    }),
+  );
+export const rerunRun = async (
+  id: string,
+  input: { input?: Record<string, unknown>; requester?: string },
+  signal?: AbortSignal,
+) =>
+  readReceipt(
+    await requestJson(`/runs/${encodeURIComponent(id)}/rerun`, {
       method: "POST",
       body: JSON.stringify(input),
       signal,

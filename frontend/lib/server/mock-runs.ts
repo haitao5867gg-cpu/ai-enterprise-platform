@@ -3,6 +3,7 @@ import type { Reference, RunSource } from "../knowledge";
 import { searchMockKnowledge } from "./mock-knowledge";
 import { randomUUID } from "node:crypto";
 import {
+  isFinished,
   isRecord,
   type Decision,
   type Run,
@@ -22,7 +23,7 @@ import { mockZip } from "./mock-zip";
 import { addStep, decideStep, mockFlow, type MockSteps } from "./mock-flow";
 import { mockUpload, mockUploads, mockUploadedPlan } from "./mock-uploads";
 import type { UploadedDataset } from "../uploads";
-import { isFlowConfig, type FlowConfig } from "../apps";
+import { isFlowConfig, type AppConfig, type FlowConfig } from "../apps";
 import { defaultValues, inputPayload, validateFields } from "../input-fields";
 import { mockAppSnapshot, mockAppTitle } from "./mock-apps";
 import {
@@ -40,6 +41,8 @@ import { lakehouseConfig } from "./mock-data-nodes";
 type StoredRun = {
   run: Run;
   manual?: AppManual;
+  // The configuration the run uses, kept for a copy of a draft's run.
+  config?: AppConfig;
   readyAt: number;
   decision?: Decision;
   comment?: string;
@@ -66,7 +69,52 @@ type StoredRun = {
     summary: string;
   };
   steps: MockSteps;
+  // Where the run failed and why, for the detail's `failed`.
+  failure?: { node: string; title: string; error_type: string | null };
 };
+// Like the backend: these failures are likely to pass on a second try.
+const temporary = new Set([
+  "timeout",
+  "model_error",
+  "tool_error",
+  "knowledge_error",
+  "databricks_error",
+  "sandbox_unavailable",
+]);
+function retryable(entry: StoredRun) {
+  if (entry.run.status !== "error") return false;
+  const type = entry.failure?.error_type ?? null;
+  return type === null || temporary.has(type);
+}
+function fail(
+  entry: StoredRun,
+  node: { id: string; title: string },
+  error: string,
+  type: string | null,
+) {
+  setStatus(entry.run, "error");
+  entry.run.error = error;
+  entry.failure = { node: node.id, title: node.title, error_type: type };
+}
+// What the detail adds to the run: its input, where it failed, what can be done next.
+function detail(entry: StoredRun): Run {
+  const { run } = entry;
+  const failure = run.status === "error" ? entry.failure : undefined;
+  return {
+    ...withAppTitle(run),
+    // Like the backend: what the run's own configuration asks for.
+    inputs: entry.flow
+      ? (entry.flow.config.graph.nodes.find((node) => node.type === "start")
+          ?.inputs ?? [])
+      : null,
+    failed: failure ? { ...failure, retryable: retryable(entry) } : null,
+    actions: {
+      cancel: run.status === "running" || run.status === "waiting",
+      retry: retryable(entry) && Boolean(entry.flow),
+      rerun: Boolean(run.input) && Boolean(mockAppSnapshot(run.app)),
+    },
+  };
+}
 // Like the backend's run store: a wait for a person is counted while it lasts.
 function setStatus(run: Run, status: RunStatus) {
   const now = new Date();
@@ -81,12 +129,19 @@ function setStatus(run: Run, status: RunStatus) {
     )
       run.wait_seconds +=
         (now.getTime() - Date.parse(run.waiting_since)) / 1000;
+    // A failure waits for someone to retry it.
+    else if (
+      run.status === "error" &&
+      status !== "error" &&
+      run.updated_at &&
+      typeof run.wait_seconds === "number"
+    )
+      run.wait_seconds += (now.getTime() - Date.parse(run.updated_at)) / 1000;
     run.waiting_since = null;
   }
   run.status = status;
   run.updated_at = now.toISOString();
-  run.finished_at =
-    status === "done" || status === "error" ? run.updated_at : null;
+  run.finished_at = isFinished(status) ? run.updated_at : null;
 }
 
 function runTitle(value: unknown): string | null {
@@ -106,6 +161,8 @@ const summaryKeys: (keyof RunSummary)[] = [
   "status",
   "title",
   "created_by",
+  "cancelled_by",
+  "rerun_of",
   "created_at",
   "updated_at",
   "finished_at",
@@ -175,6 +232,7 @@ function seedRetailRun() {
       app_version: 1,
       draft: false,
       status: "done",
+      input,
       title: input.request,
       created_by: "演示用户",
       created_at: "2026-10-29T08:00:00.000Z",
@@ -247,15 +305,23 @@ function advanceFlow(entry: StoredRun): Run {
   while (flow.next) {
     const node = flow.config.graph.nodes.find((item) => item.id === flow.next);
     if (!node) {
-      setStatus(run, "error");
-      run.error = `节点 ${flow.next} 不存在`;
+      fail(
+        entry,
+        { id: flow.next, title: flow.next },
+        `节点 ${flow.next} 不存在`,
+        "invalid_config",
+      );
       break;
     }
     flow.visits[node.id] = (flow.visits[node.id] ?? 0) + 1;
     run.step = { node: node.id, title: node.title };
     if (++flow.count > 200 || flow.visits[node.id] > (node.max_visits ?? 3)) {
-      setStatus(run, "error");
-      run.error = `节点「${node.title}」(${node.id})：超过执行次数上限`;
+      fail(
+        entry,
+        node,
+        `节点「${node.title}」(${node.id})：超过执行次数上限`,
+        flow.count > 200 ? "max_steps" : "max_visits",
+      );
       break;
     }
     if (node.type === "human") {
@@ -329,8 +395,13 @@ function advanceFlow(entry: StoredRun): Run {
         )?.to ?? "";
       if (!flow.next) throw new Error("分支没有连接");
     } catch (error) {
-      setStatus(run, "error");
-      run.error = `节点「${node.title}」(${node.id})：${error instanceof Error ? error.message : "模拟执行失败"}`;
+      // Like a tool or model failure: the node is tried again on a retry.
+      fail(
+        entry,
+        node,
+        `节点「${node.title}」(${node.id})：${error instanceof Error ? error.message : "模拟执行失败"}`,
+        "tool_error",
+      );
       break;
     }
   }
@@ -513,6 +584,180 @@ const mockTools = [
   },
 ];
 
+// Create a run, or a copy of one: `copy` names the run it copies and, for a
+// draft's run, the configuration it ran with.
+function create(
+  body: unknown,
+  copy?: { rerunOf: string; config?: AppConfig },
+): Response {
+  if (!isRecord(body) || !isRecord(body.input)) {
+    return json({ detail: "Provide app and input" }, 422);
+  }
+  if (typeof body.app !== "string") return json({ detail: "应用不存在" }, 404);
+  if (body.draft !== undefined && typeof body.draft !== "boolean")
+    return invalid([{ loc: ["body", "draft"], msg: "draft 必须为布尔值" }]);
+  if (body.draft === true && body.app_version !== undefined)
+    return json({ detail: "草稿运行不能同时指定 app_version" }, 422);
+  if (
+    body.requester !== undefined &&
+    body.requester !== null &&
+    (typeof body.requester !== "string" || body.requester.length > 100)
+  )
+    return invalid([
+      { loc: ["body", "requester"], msg: "名字最多 100 个字符" },
+    ]);
+  const available = mockAppSnapshot(body.app);
+  if (!available) return json({ detail: "应用不存在" }, 404);
+  const found = mockAppSnapshot(
+    body.app,
+    body.app_version as number | undefined,
+    body.draft === true,
+  );
+  // A copy of a draft's run uses the configuration that run had, and no version.
+  const snapshot =
+    found && copy?.config
+      ? { ...found, config: copy.config, version: null }
+      : found;
+  if (!snapshot)
+    return json(
+      { detail: body.draft ? "请先保存应用草稿" : "应用版本不存在" },
+      body.draft ? 409 : 404,
+    );
+  const flow = isFlowConfig(snapshot.config) ? snapshot.config : null;
+  const fields =
+    flow?.graph.nodes.find((node) => node.type === "start")?.inputs ?? [];
+  const input = flow
+    ? inputPayload(fields, { ...defaultValues(fields), ...body.input })
+    : body.input;
+  if (flow) {
+    const issues = validateFields(fields, input, "input");
+    for (const field of fields.filter((item) => item.type === "datasource"))
+      if (
+        input[field.key] &&
+        !allSources().some(
+          (source) => source.datasource_id === input[field.key],
+        )
+      )
+        issues.push({
+          loc: ["body", "input", field.key],
+          msg: "请选择已登记的数据源",
+        });
+    if (issues.length) return invalid(issues);
+  }
+  const isEtl = body.app === "etl";
+  const text = isEtl
+    ? input.request
+    : fields
+        .filter((field) => ["text", "textarea"].includes(field.type))
+        .map((field) => input[field.key])
+        .filter((value) => typeof value === "string")
+        .join("\n");
+  if (
+    isEtl &&
+    (typeof text !== "string" ||
+      !text.trim() ||
+      !allSources().some(
+        (source) => source.datasource_id === input.datasource_id,
+      ) ||
+      (input.language !== undefined &&
+        !["pyspark", "sql"].includes(input.language as string)))
+  )
+    return json({ detail: "Invalid app or input" }, 422);
+  const created = new Date().toISOString();
+  const run: Run = {
+    run_id: randomUUID(),
+    app: body.app,
+    app_title: snapshot.title,
+    app_version: snapshot.version,
+    draft: body.draft === true || Boolean(copy?.config),
+    status: "running",
+    input,
+    rerun_of: copy?.rerunOf ?? null,
+    cancelled_by: null,
+    // Like the backend: the first text input that was filled in.
+    title: isEtl
+      ? runTitle(input.request)
+      : (fields
+          .filter((field) => ["text", "textarea"].includes(field.type))
+          .map((field) => runTitle(input[field.key]))
+          .find(Boolean) ?? null),
+    created_by:
+      typeof body.requester === "string" && body.requester.trim()
+        ? body.requester.trim()
+        : null,
+    created_at: created,
+    updated_at: created,
+    finished_at: null,
+    step: null,
+    waiting_since: null,
+    wait_seconds: 0,
+    messages:
+      typeof text === "string" && text.trim()
+        ? [{ role: "user", content: text.trim() }]
+        : [],
+    pending: null,
+    result: null,
+    error: null,
+    trace_id: isEtl ? randomUUID().replaceAll("-", "") : null,
+  };
+  store.set(run.run_id, {
+    run,
+    config: snapshot.config,
+    manual: buildMockManual(
+      body.app,
+      snapshot.title,
+      snapshot.summary,
+      snapshot.version,
+      snapshot.config,
+    ),
+    readyAt: Date.now() + 600,
+    steps: [],
+    flow: flow
+      ? {
+          config: flow,
+          pool: {
+            env: Object.fromEntries(
+              flow.env.vars.map((item) => [item.key, item.value]),
+            ),
+            secret: Object.fromEntries(
+              snapshot.secrets.map((name) => [name, "******"]),
+            ),
+          },
+          next: flow.graph.nodes.find((node) => node.type === "start")!.id,
+          visits: {},
+          count: 0,
+          input,
+          title: snapshot.title,
+          summary: snapshot.summary,
+        }
+      : undefined,
+    etl: isEtl
+      ? {
+          language: input.language === "sql" ? "sql" : "pyspark",
+          knowledgeBases:
+            !isFlowConfig(snapshot.config) &&
+            Array.isArray(snapshot.config.nodes.plan?.params.knowledge_bases)
+              ? snapshot.config.nodes.plan.params.knowledge_bases
+              : [],
+          knowledgeTopK:
+            !isFlowConfig(snapshot.config) &&
+            typeof snapshot.config.nodes.plan?.params.knowledge_top_k ===
+              "number"
+              ? snapshot.config.nodes.plan.params.knowledge_top_k
+              : 5,
+          stage: "plan",
+          version: 1,
+          approvals: [],
+          upload:
+            typeof input.datasource_id === "string"
+              ? mockUploads.get(input.datasource_id)
+              : undefined,
+        }
+      : undefined,
+  });
+  return json({ run_id: run.run_id, status: run.status }, 201);
+}
+
 export async function mockRuns(request: Request, path: string[]) {
   seedRetailRun();
   if (path[0] === "datasources") {
@@ -540,169 +785,79 @@ export async function mockRuns(request: Request, path: string[]) {
       return json({ detail: "Invalid JSON" }, 422);
     }
   }
-  if (request.method === "POST" && path.length === 1) {
-    if (!isRecord(body) || !isRecord(body.input)) {
-      return json({ detail: "Provide app and input" }, 422);
-    }
-    if (typeof body.app !== "string")
-      return json({ detail: "应用不存在" }, 404);
-    if (body.draft !== undefined && typeof body.draft !== "boolean")
-      return invalid([{ loc: ["body", "draft"], msg: "draft 必须为布尔值" }]);
-    if (body.draft === true && body.app_version !== undefined)
-      return json({ detail: "草稿运行不能同时指定 app_version" }, 422);
-    if (
-      body.requester !== undefined &&
-      body.requester !== null &&
-      (typeof body.requester !== "string" || body.requester.length > 100)
-    )
-      return invalid([
-        { loc: ["body", "requester"], msg: "名字最多 100 个字符" },
-      ]);
-    const available = mockAppSnapshot(body.app);
-    if (!available) return json({ detail: "应用不存在" }, 404);
-    const snapshot = mockAppSnapshot(
-      body.app,
-      body.app_version as number | undefined,
-      body.draft === true,
-    );
-    if (!snapshot)
-      return json(
-        { detail: body.draft ? "请先保存应用草稿" : "应用版本不存在" },
-        body.draft ? 409 : 404,
-      );
-    const flow = isFlowConfig(snapshot.config) ? snapshot.config : null;
-    const fields =
-      flow?.graph.nodes.find((node) => node.type === "start")?.inputs ?? [];
-    const input = flow
-      ? inputPayload(fields, { ...defaultValues(fields), ...body.input })
-      : body.input;
-    if (flow) {
-      const issues = validateFields(fields, input, "input");
-      for (const field of fields.filter((item) => item.type === "datasource"))
-        if (
-          input[field.key] &&
-          !allSources().some(
-            (source) => source.datasource_id === input[field.key],
-          )
-        )
-          issues.push({
-            loc: ["body", "input", field.key],
-            msg: "请选择已登记的数据源",
-          });
-      if (issues.length) return invalid(issues);
-    }
-    const isEtl = body.app === "etl";
-    const text = isEtl
-      ? input.request
-      : fields
-          .filter((field) => ["text", "textarea"].includes(field.type))
-          .map((field) => input[field.key])
-          .filter((value) => typeof value === "string")
-          .join("\n");
-    if (
-      isEtl &&
-      (typeof text !== "string" ||
-        !text.trim() ||
-        !allSources().some(
-          (source) => source.datasource_id === input.datasource_id,
-        ) ||
-        (input.language !== undefined &&
-          !["pyspark", "sql"].includes(input.language as string)))
-    )
-      return json({ detail: "Invalid app or input" }, 422);
-    const created = new Date().toISOString();
-    const run: Run = {
-      run_id: randomUUID(),
-      app: body.app,
-      app_title: snapshot.title,
-      app_version: snapshot.version,
-      draft: body.draft === true,
-      status: "running",
-      // Like the backend: the first text input that was filled in.
-      title: isEtl
-        ? runTitle(input.request)
-        : (fields
-            .filter((field) => ["text", "textarea"].includes(field.type))
-            .map((field) => runTitle(input[field.key]))
-            .find(Boolean) ?? null),
-      created_by:
-        typeof body.requester === "string" && body.requester.trim()
-          ? body.requester.trim()
-          : null,
-      created_at: created,
-      updated_at: created,
-      finished_at: null,
-      step: null,
-      waiting_since: null,
-      wait_seconds: 0,
-      messages:
-        typeof text === "string" && text.trim()
-          ? [{ role: "user", content: text.trim() }]
-          : [],
-      pending: null,
-      result: null,
-      error: null,
-      trace_id: isEtl ? randomUUID().replaceAll("-", "") : null,
-    };
-    store.set(run.run_id, {
-      run,
-      manual: buildMockManual(
-        body.app,
-        snapshot.title,
-        snapshot.summary,
-        snapshot.version,
-        snapshot.config,
-      ),
-      readyAt: Date.now() + 600,
-      steps: [],
-      flow: flow
-        ? {
-            config: flow,
-            pool: {
-              env: Object.fromEntries(
-                flow.env.vars.map((item) => [item.key, item.value]),
-              ),
-              secret: Object.fromEntries(
-                snapshot.secrets.map((name) => [name, "******"]),
-              ),
-            },
-            next: flow.graph.nodes.find((node) => node.type === "start")!.id,
-            visits: {},
-            count: 0,
-            input,
-            title: snapshot.title,
-            summary: snapshot.summary,
-          }
-        : undefined,
-      etl: isEtl
-        ? {
-            language: input.language === "sql" ? "sql" : "pyspark",
-            knowledgeBases:
-              !isFlowConfig(snapshot.config) &&
-              Array.isArray(snapshot.config.nodes.plan?.params.knowledge_bases)
-                ? snapshot.config.nodes.plan.params.knowledge_bases
-                : [],
-            knowledgeTopK:
-              !isFlowConfig(snapshot.config) &&
-              typeof snapshot.config.nodes.plan?.params.knowledge_top_k ===
-                "number"
-                ? snapshot.config.nodes.plan.params.knowledge_top_k
-                : 5,
-            stage: "plan",
-            version: 1,
-            approvals: [],
-            upload:
-              typeof input.datasource_id === "string"
-                ? mockUploads.get(input.datasource_id)
-                : undefined,
-          }
-        : undefined,
-    });
-    return json({ run_id: run.run_id, status: run.status }, 201);
-  }
+  if (request.method === "POST" && path.length === 1) return create(body);
   const entry = store.get(path[1]);
   if (!entry) return json({ detail: "Run not found" }, 404);
   const run = refresh(entry);
+  if (request.method === "POST" && path[2] === "cancel") {
+    if (
+      !isRecord(body) ||
+      (body.actor != null &&
+        (typeof body.actor !== "string" || body.actor.length > 100)) ||
+      (body.reason != null &&
+        (typeof body.reason !== "string" || body.reason.length > 500))
+    )
+      return json({ detail: "Invalid actor or reason" }, 422);
+    if (run.status !== "running" && run.status !== "waiting")
+      return json({ detail: "只有运行中或等待确认的运行可以取消" }, 409);
+    setStatus(run, "cancelled");
+    run.pending = null;
+    run.cancelled_by =
+      typeof body.actor === "string" && body.actor.trim()
+        ? body.actor.trim()
+        : null;
+    run.error =
+      typeof body.reason === "string" && body.reason.trim()
+        ? body.reason.trim()
+        : null;
+    return json({ run_id: run.run_id, status: run.status }, 202);
+  }
+  if (request.method === "POST" && path[2] === "retry") {
+    if (
+      !isRecord(body) ||
+      (body.actor != null && typeof body.actor !== "string")
+    )
+      return json({ detail: "Invalid actor" }, 422);
+    if (run.status !== "error")
+      return json(
+        { detail: "这次运行已经不在失败状态，可能有人已经重试过" },
+        409,
+      );
+    if (!retryable(entry) || !entry.flow)
+      return json({ detail: "这次运行不能重试，请复制后重新发起" }, 409);
+    // The failed node runs again, as if it had not been tried.
+    const { flow } = entry;
+    flow.visits[flow.next] = Math.max(0, (flow.visits[flow.next] ?? 1) - 1);
+    flow.count = Math.max(0, flow.count - 1);
+    entry.failure = undefined;
+    run.error = null;
+    setStatus(run, "running");
+    entry.readyAt = Date.now() + 300;
+    return json({ run_id: run.run_id, status: run.status }, 202);
+  }
+  if (request.method === "POST" && path[2] === "rerun") {
+    if (
+      !isRecord(body) ||
+      (body.input != null && !isRecord(body.input)) ||
+      (body.requester != null && typeof body.requester !== "string")
+    )
+      return json({ detail: "Invalid input or requester" }, 422);
+    if (!mockAppSnapshot(run.app)) return json({ detail: "应用不存在" }, 404);
+    return create(
+      {
+        app: run.app,
+        input: isRecord(body.input) ? body.input : run.input,
+        requester: body.requester ?? undefined,
+        ...(run.draft || run.app_version == null
+          ? {}
+          : { app_version: run.app_version }),
+      },
+      {
+        rerunOf: run.run_id,
+        config: run.draft ? (entry.flow?.config ?? entry.config) : undefined,
+      },
+    );
+  }
   if (request.method === "GET" && path[2] === "manual") {
     if (entry.manual) return json(entry.manual);
     const snapshot = mockAppSnapshot(
@@ -735,8 +890,18 @@ export async function mockRuns(request: Request, path: string[]) {
     });
   }
   if (request.method === "GET" && path[2] === "flow") {
+    // Like the backend: a cancelled run's unfinished step shows where it stopped.
+    const steps =
+      run.status === "cancelled"
+        ? entry.steps.map((step) =>
+            step.status === "done"
+              ? step
+              : { ...step, status: "stopped" as const },
+          )
+        : entry.steps;
+    const stopped = steps.at(-1)?.status === "stopped" ? steps.at(-1) : null;
     if (!entry.flow)
-      return json(mockFlow(run.app, entry.steps, run.status === "done"));
+      return json(mockFlow(run.app, steps, run.status === "done"));
     const view = flowView(
       entry.flow.config,
       entry.flow.title,
@@ -751,11 +916,12 @@ export async function mockRuns(request: Request, path: string[]) {
         knowledge: "",
         skills: "",
       },
-      steps: entry.steps,
-      current: run.status === "waiting" ? entry.flow.next : null,
+      steps,
+      current:
+        run.status === "waiting" ? entry.flow.next : (stopped?.node ?? null),
     });
   }
-  if (request.method === "GET") return json(withAppTitle(run));
+  if (request.method === "GET") return json(detail(entry));
   if (
     !isRecord(body) ||
     typeof body.decision !== "string" ||

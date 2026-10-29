@@ -13,6 +13,11 @@ SAMPLE_ROWS = 5
 MAX_VALUE_CHARS = 80
 
 
+class InputError(ValueError):
+    """The run's input is wrong (no such data source, bad table names): trying again
+    gives the same failure."""
+
+
 async def profile_tables(
     tools: McpTools,
     source: DataSource,
@@ -24,15 +29,18 @@ async def profile_tables(
     url = source.connector_url
     if wanted:
         names = [tuple(name.split(".", 1)) for name in wanted]
+        for name, parts in zip(wanted, names, strict=True):
+            if len(parts) != 2 or not all(parts):
+                raise InputError(f"表 {name} 要写成 schema.table")
     else:
         names = []
         for schema in (await tools.call(url, "list_schemas"))["schemas"]:
             listed = await tools.call(url, "list_tables", {"schema": schema})
             names += [(schema, table) for table in listed["tables"]]
     if not names:
-        raise ValueError(f"数据源 {source.name} 里没有可读的表")
+        raise InputError(f"数据源 {source.name} 里没有可读的表")
     if len(names) > MAX_TABLES:
-        raise ValueError(f"数据源里有 {len(names)} 张表，一次最多 {MAX_TABLES} 张，请指定 tables")
+        raise InputError(f"数据源里有 {len(names)} 张表，一次最多 {MAX_TABLES} 张，请指定 tables")
 
     async def one(schema: str, table: str) -> dict[str, Any]:
         args = {"schema": schema, "table": table}
