@@ -23,7 +23,7 @@
 
 `GET /node-types` 的 `category` 新增 `"data"`（前端显示“数据工程”）。5 种新节点都是 `category: "data"`、`error_handling: true`；流程视图的 `kind`：`etl_profile`、`databricks_ingest`、`databricks_dev_run` 为 `tool`，`etl_plan_check`、`etl_code_check` 为 `code`。
 
-出错类型新增 `databricks_error`：没配置 Databricks 工作区，或 Databricks 接口、集群命令报错。连不上数据源、连接器报错仍是 `tool_error`。
+出错类型新增 `databricks_error`：没配置 Databricks 工作区，或 Databricks 接口、集群命令报错。连不上数据源、连接器报错仍是 `tool_error`。节点设置或运行输入有问题时是 `input_error`（表名写法不对、没有可读的表、展开后超过 `MAX_TABLES`、抽取超过 `max_rows`、`databricks_dev_run` 的 `bundle` 不是检查并打包节点的 bundle、没选数据源），见 flow-apps.md：不按 `on_error.retry` 重试，运行页也不提供重试。
 
 平台没有配置 Databricks（`AEP_DATABRICKS_HOST`、`AEP_DATABRICKS_TOKEN`）时，两个 `databricks_*` 节点照样能保存，运行到它们时以 `databricks_error` 失败，`error_message` 写明缺哪个配置。抽取和结果预览还需要 `AEP_DATABRICKS_CLUSTER_ID` 和 `AEP_DATABRICKS_SOURCE_CATALOG`。
 
@@ -37,7 +37,7 @@
  "sample_rows": 5}                       // 1–20
 ```
 
-- `tables`：要探查哪些表。字符串按逗号、空白、换行拆开；每项是 `schema.table` 或 `schema.*`（这个 schema 下的全部表）。为空或空数组时探查数据源里的全部表。展开后超过 20 张表（`MAX_TABLES`）时失败，`tool_error`，提示指定表。
+- `tables`：要探查哪些表。字符串按逗号、空白、换行拆开；每项是 `schema.table` 或 `schema.*`（这个 schema 下的全部表）。为空或空数组时探查数据源里的全部表。展开后超过 20 张表（`MAX_TABLES`）时失败，`input_error`，提示指定表。
 - 执行同 `aep.etl.profile.profile_tables`。
 
 产出：
@@ -261,16 +261,18 @@ GET /runs/{id}/manual               这次运行用的版本
 | id | 类型 | 标题 | 主要设置 |
 | --- | --- | --- | --- |
 | `start` | start | 开始 | 输入 `datasource`（数据源，必填）、`request`（需求，textarea，必填）、`tables`（表范围，text）、`language`（select：pyspark、sql，默认 pyspark）、`name`（bundle 名，text） |
-| `profile` | etl_profile | 探查数据 | `datasource: {{start.datasource}}`，`tables: {{start.tables}}` |
+| `profile` | etl_profile | 探查数据 | `datasource: {{start.datasource}}`，`tables: {{start.tables}}`，出错重试 2 次 |
 | `glossary` | knowledge | 查业务口径 | `query: {{start.request}}`，`top_k` 12，混合检索；知识库留空 |
-| `plan` | llm | 出方案 | Skill `etl-plan`（内置 Skill 的最新发布版本），`system` 为 `aep.etl.plan.OUTPUT_FORMAT`，输出 text，`max_visits` 10；提示词见下 |
+| `plan` | llm | 出方案 | Skill `etl-plan`（内置 Skill 的最新发布版本），`system` 为 `aep.etl.plan.OUTPUT_FORMAT`，输出 text，`max_visits` 10，出错重试 1 次；提示词见下 |
 | `check_plan` | etl_plan_check | 校验方案 | `reply: {{plan.text}}`，`profile: {{profile.tables}}`，`hits: ["{{glossary.hits}}", "{{standards.hits}}"]`，`language: {{start.language}}`，`max_visits` 10 |
 | `review` | human | 确认方案 | 确认模式，`show: {{check_plan.message}}`，选项确认、驳回，驳回必须写意见，`max_visits` 5 |
-| `ingest` | databricks_ingest | 抽取到湖仓 | `datasource: {{start.datasource}}`，`tables: {{check_plan.sources}}` |
-| `codegen` | llm | 写代码 | Skill `etl-codegen`，`system` 为 `aep.etl.codegen.OUTPUT_FORMAT`，输出 text，`max_visits` 10；提示词见下 |
+| `ingest` | databricks_ingest | 抽取到湖仓 | `datasource: {{start.datasource}}`，`tables: {{check_plan.sources}}`，出错重试 2 次 |
+| `codegen` | llm | 写代码 | Skill `etl-codegen`，`system` 为 `aep.etl.codegen.OUTPUT_FORMAT`，输出 text，`max_visits` 10，出错重试 1 次；提示词见下 |
 | `check_code` | etl_code_check | 检查并打包 | `reply: {{codegen.text}}`，`plan: {{check_plan.plan}}`，`source_name: {{profile.source_name}}`，`name: {{start.name}}`，`max_visits` 10 |
-| `dev_run` | databricks_dev_run | dev 运行 | `bundle: {{check_code.bundle}}`，`max_visits` 3 |
+| `dev_run` | databricks_dev_run | dev 运行 | `bundle: {{check_code.bundle}}`，`max_visits` 3，出错重试 2 次 |
 | `end` | end | 结束 | 输出 `report` ← `{{dev_run.report}}`，`plan` ← `{{check_plan.plan}}`，`ingested` ← `{{ingest.summary}}` |
+
+“出错重试 n 次”是 `on_error: {"retry": {"max": n, "interval_seconds": 5}, "then": "stop"}`（模型节点间隔 2 秒）：连接器或集群一时忙、模型网关超时这类会自己好的错误，先自动再试，仍不行才停下。
 
 连线：start → profile → glossary → standards → plan → check_plan；check_plan `ok` → review，`retry` → plan；review `approve` → ingest，`reject` → plan；ingest → codegen → check_code；check_code `ok` → dev_run，`retry` → codegen；dev_run `passed` → end，`retry` → codegen，`failed` → end。
 

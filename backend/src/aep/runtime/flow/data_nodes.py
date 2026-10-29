@@ -25,6 +25,7 @@ from aep.etl.profile import MAX_TABLES, describe_for_model, known_values, profil
 from aep.knowledge.citations import IndexedHit
 from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
+    INPUT_ERROR,
     CheckEnv,
     NodeFailure,
     NodeType,
@@ -108,14 +109,14 @@ async def _table_names(
     wanted = _split(value)
     if not wanted:
         if not everything:
-            raise NodeFailure("tool_error", "没有指定要处理的表")
+            raise NodeFailure(INPUT_ERROR, "没有指定要处理的表")
         schemas = (await rt.call(source, "list_schemas", {}))["schemas"]
         wanted = [f"{schema}.*" for schema in schemas]
     found: list[tuple[str, str]] = []
     for name in wanted:
         schema, dot, table = name.partition(".")
         if not (schema and dot and table):
-            raise NodeFailure("tool_error", f"表 {name} 要写成 schema.table 或 schema.*")
+            raise NodeFailure(INPUT_ERROR, f"表 {name} 要写成 schema.table 或 schema.*")
         if table == "*":
             listed = await rt.call(source, "list_tables", {"schema": schema})
             found += [(schema, t) for t in listed["tables"]]
@@ -123,10 +124,10 @@ async def _table_names(
             found.append((schema, table))
     found = list(dict.fromkeys(found))
     if not found:
-        raise NodeFailure("tool_error", f"数据源「{source.name}」里没有可读的表")
+        raise NodeFailure(INPUT_ERROR, f"数据源「{source.name}」里没有可读的表")
     if len(found) > MAX_TABLES:
         raise NodeFailure(
-            "tool_error", f"一共 {len(found)} 张表，一次最多 {MAX_TABLES} 张，请指定要哪些表"
+            INPUT_ERROR, f"一共 {len(found)} 张表，一次最多 {MAX_TABLES} 张，请指定要哪些表"
         )
     return found
 
@@ -378,7 +379,7 @@ async def _read_all(rt: Runtime, source: DataSource, schema: str, table: str, mo
         rows += page.get("rows") or []
         if len(rows) > most:
             raise NodeFailure(
-                "tool_error",
+                INPUT_ERROR,
                 f"{schema}.{table} 超过 {most} 行，没有抽取任何表；"
                 "请调大每张表最多行数（max_rows）或缩小表范围",
             )
@@ -550,9 +551,7 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         or not isinstance(bundle.get("name"), str)
         or not isinstance(bundle.get("files"), dict)
     ):
-        raise NodeFailure(
-            "databricks_error", "bundle 要引用检查并打包节点的 bundle（代码通过检查后才有）"
-        )
+        raise NodeFailure(INPUT_ERROR, "bundle 要引用检查并打包节点的 bundle（代码通过检查后才有）")
     attempt = (state.get("visits") or {}).get(node["id"], 0) + 1
     try:
         dev = await databricks.run(

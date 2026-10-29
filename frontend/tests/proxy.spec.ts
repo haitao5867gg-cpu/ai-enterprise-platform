@@ -123,6 +123,38 @@ test("preserves API validation, missing-run and conflict responses", async ({
   });
 });
 
+test("passes cancel, retry and rerun through with their responses", async ({
+  request,
+}) => {
+  const created = await request.post("/api/runs", {
+    data: { app: "hello", input: { text: "取消测试" } },
+  });
+  const { run_id: id } = await created.json();
+  const cancelled = await request.post(`/api/runs/${id}/cancel`, {
+    data: { actor: "李雷" },
+  });
+  expect(cancelled.status()).toBe(202);
+  expect(await cancelled.json()).toEqual({ run_id: id, status: "cancelled" });
+  expect(
+    (await request.post(`/api/runs/${id}/cancel`, { data: {} })).status(),
+  ).toBe(409);
+  const retried = await request.post(`/api/runs/${id}/retry`, { data: {} });
+  expect(retried.status()).toBe(409);
+  expect((await retried.json()).detail).toBe(
+    "这次运行已经不在失败状态，可能有人已经重试过",
+  );
+  const rerun = await request.post(`/api/runs/${id}/rerun`, {
+    data: { input: { text: "再来一次" } },
+  });
+  expect(rerun.status()).toBe(201);
+  const copy = await (
+    await request.get(`/api/runs/${(await rerun.json()).run_id}`)
+  ).json();
+  expect(copy.rerun_of).toBe(id);
+  expect(copy.messages[0]).toEqual({ role: "user", content: "再来一次" });
+  expect((await request.get(`/api/runs/${id}/cancel`)).status()).toBe(405);
+});
+
 test("does not expose arbitrary backend routes or incorrect methods", async ({
   request,
 }) => {

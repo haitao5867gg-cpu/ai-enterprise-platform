@@ -148,6 +148,14 @@ def test_template_follows_the_contract():
         ("end", "end", "结束"),
     ]
     assert all(0 < len(n["note"]) <= 500 for n in nodes.values())
+    retries = {i: n["on_error"]["retry"] for i, n in nodes.items() if "on_error" in n}
+    assert retries == {
+        "profile": {"max": 2, "interval_seconds": 5},
+        "plan": {"max": 1, "interval_seconds": 2},
+        "ingest": {"max": 2, "interval_seconds": 5},
+        "codegen": {"max": 1, "interval_seconds": 2},
+        "dev_run": {"max": 2, "interval_seconds": 5},
+    }
     assert nodes["plan"]["prompt"] == contract_block("`plan` 的提示词")
     assert nodes["codegen"]["prompt"] == contract_block("`codegen` 的提示词")
     assert nodes["plan"]["system"] == etl_plan.OUTPUT_FORMAT

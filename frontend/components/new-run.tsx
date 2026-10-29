@@ -3,12 +3,29 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { createRun, errorMessage, fieldErrors, requestJson } from "../lib/runs";
+import {
+  createRun,
+  errorMessage,
+  fieldErrors,
+  isRecord,
+  readRun,
+  requestJson,
+  rerunRun,
+  runTitle,
+  versionLabel,
+  type Run,
+} from "../lib/runs";
 import { readDataSources, type DataSource, type EtlLanguage } from "../lib/etl";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 import { FileUpload } from "./file-upload";
-import { getApp, listApps, type AppDetail, type AppSummary } from "../lib/apps";
+import {
+  getApp,
+  listApps,
+  type AppDetail,
+  type AppSummary,
+  type Input,
+} from "../lib/apps";
 import {
   initialValues,
   inputPayload,
@@ -18,7 +35,7 @@ import {
 import { InputFields } from "./input-fields";
 import { savedActor, saveActor } from "../lib/actor";
 
-export function NewRun() {
+export function NewRun({ from }: { from?: string } = {}) {
   const router = useRouter();
   const [text, setText] = useState("");
   const [app, setApp] = useState("");
@@ -38,6 +55,13 @@ export function NewRun() {
   const [error, setError] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [source, setSource] = useState<Run | null>(null);
+  const [sourceError, setSourceError] = useState("");
+  const [sourceRevision, setSourceRevision] = useState(0);
+  // The copied run's input, applied once its app's fields have loaded, and the
+  // fields of the configuration it ran with (a flow app's; it may not be current).
+  const sourceInput = useRef<Record<string, unknown> | null>(null);
+  const sourceFields = useRef<Input[] | null>(null);
   const requester = useRef<HTMLInputElement>(null);
   const busy = useRef(false);
   // Filled in after mounting: the server has no storage.
@@ -45,6 +69,34 @@ export function NewRun() {
     if (requester.current && !requester.current.value)
       requester.current.value = savedActor();
   }, []);
+  useEffect(() => {
+    if (!from) return;
+    const controller = new AbortController();
+    requestJson(`/runs/${encodeURIComponent(from)}`, {
+      signal: controller.signal,
+    })
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        const run = readRun(value);
+        const input = isRecord(run.input) ? run.input : {};
+        sourceInput.current = input;
+        sourceFields.current = Array.isArray(run.inputs) ? run.inputs : null;
+        setSource(run);
+        setSourceError("");
+        if (run.app === "etl") {
+          if (typeof input.request === "string") setText(input.request);
+          if (typeof input.datasource_id === "string")
+            setDatasourceId(input.datasource_id);
+          if (input.language === "pyspark" || input.language === "sql")
+            setLanguage(input.language);
+        }
+        setApp(run.app);
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setSourceError(errorMessage(err));
+      });
+    return () => controller.abort();
+  }, [from, sourceRevision]);
   useEffect(() => {
     const controller = new AbortController();
     async function loadSources() {
@@ -78,6 +130,8 @@ export function NewRun() {
         if (controller.signal.aborted) return;
         setApps(items);
         setAppsError("");
+        // A copy keeps the copied run's app.
+        if (from) return;
         const requested =
           new URLSearchParams(window.location.search).get("app") ?? "hello";
         setApp((previous) =>
@@ -92,7 +146,7 @@ export function NewRun() {
         if (!controller.signal.aborted) setAppsError(errorMessage(err));
       });
     return () => controller.abort();
-  }, [appsRevision]);
+  }, [from, appsRevision]);
   useEffect(() => {
     if (!app) return;
     const controller = new AbortController();
@@ -100,7 +154,17 @@ export function NewRun() {
       .then((value) => {
         if (controller.signal.aborted) return;
         setDetail(value);
-        setValues(initialValues(value.inputs ?? []));
+        const copied = sourceInput.current ?? {};
+        setValues(
+          Object.fromEntries(
+            Object.entries(
+              initialValues(sourceFields.current ?? value.inputs ?? []),
+            ).map(([key, initial]) => [
+              key,
+              key in copied && copied[key] !== null ? copied[key] : initial,
+            ]),
+          ),
+        );
         setErrors({});
         setAppsError("");
       })
@@ -109,7 +173,9 @@ export function NewRun() {
       });
     return () => controller.abort();
   }, [app, appsRevision]);
-  const fields = detail?.app === app ? (detail.inputs ?? []) : [];
+  const fields =
+    (source?.app === app ? source.inputs : null) ??
+    (detail?.app === app ? (detail.inputs ?? []) : []);
   const needsSource =
     app === "etl" &&
     (sourcesLoading ||
@@ -118,12 +184,16 @@ export function NewRun() {
   const selectedSource = sources.find(
     (source) => source.datasource_id === datasourceId,
   );
+  // A copy can only be sent once the copied run has loaded and can be run again.
+  const copyBlocked =
+    Boolean(from) && (!source || source.actions?.rerun === false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
       busy.current ||
       uploading ||
       needsSource ||
+      copyBlocked ||
       !detail ||
       detail.app !== app ||
       (app === "etl" && !text.trim())
@@ -141,14 +211,31 @@ export function NewRun() {
     const name = requester.current?.value.trim() ?? "";
     if (name) saveActor(name);
     try {
-      const receipt = await createRun({
-        app,
-        input:
-          app === "etl"
-            ? { datasource_id: datasourceId, request: text.trim(), language }
-            : inputPayload(fields, values),
-        ...(name ? { requester: name } : {}),
-      });
+      // A copy keeps what the form does not show (say, an ETL run's bundle name).
+      const copied = { ...(from ? (sourceInput.current ?? {}) : {}) };
+      // Table names belong to the data source they were picked from.
+      if (app === "etl" && copied.datasource_id !== datasourceId)
+        delete copied.tables;
+      const input =
+        app === "etl"
+          ? {
+              ...copied,
+              datasource_id: datasourceId,
+              request: text.trim(),
+              language,
+            }
+          : {
+              ...Object.fromEntries(
+                Object.entries(copied).filter(
+                  ([key]) => !fields.some((field) => field.key === key),
+                ),
+              ),
+              ...inputPayload(fields, values),
+            };
+      const who = name ? { requester: name } : {};
+      const receipt = from
+        ? await rerunRun(from, { input, ...who })
+        : await createRun({ app, input, ...who });
       router.push(`/runs/${encodeURIComponent(receipt.run_id)}`);
     } catch (err) {
       setError(errorMessage(err));
@@ -159,16 +246,42 @@ export function NewRun() {
   }
   return (
     <>
-      <Link className="back-link" href="/">
+      <Link
+        className="back-link"
+        href={from ? `/runs/${encodeURIComponent(from)}` : "/"}
+      >
         <Icon name="back" size={16} />
-        返回运行记录
+        {from ? "返回原运行" : "返回运行记录"}
       </Link>
       <div className="page-heading">
         <div>
-          <h1>新建运行</h1>
-          <p>告诉应用你想完成什么，接下来的过程在这里展开。</p>
+          <h1>{from ? "复制并重新发起" : "新建运行"}</h1>
+          <p>
+            {from
+              ? "需求已经照原运行填好，改完后重新发起，会是一次新的运行。"
+              : "告诉应用你想完成什么，接下来的过程在这里展开。"}
+          </p>
         </div>
       </div>
+      {from && sourceError && (
+        <ErrorNotice
+          message={sourceError}
+          onRetry={() => setSourceRevision((value) => value + 1)}
+        />
+      )}
+      {source && (
+        <p className="copy-notice" role="status">
+          复制自
+          <Link href={`/runs/${encodeURIComponent(source.run_id)}`}>
+            「{runTitle(source)}」
+          </Link>
+          {source.actions?.rerun === false
+            ? "。这次运行用的应用或版本已经不在了，不能照原样重新发起，请新建运行。"
+            : source.draft
+              ? "，沿用它试运行时的草稿配置。"
+              : `，沿用它的应用版本（${versionLabel(source) || "当前版本"}）。`}
+        </p>
+      )}
       <div className="new-run-grid">
         <form
           className="panel new-run-form"
@@ -191,9 +304,16 @@ export function NewRun() {
                 setErrors({});
                 setError("");
               }}
-              disabled={submitting || uploading}
+              disabled={submitting || uploading || Boolean(from)}
+              aria-describedby={from ? "app-locked" : undefined}
             >
-              {!apps.length && (
+              {from && !source && <option value="">正在读取原运行…</option>}
+              {source && !apps.some((item) => item.app === source.app) && (
+                <option value={source.app}>
+                  {source.app} · {source.app_title ?? source.app}
+                </option>
+              )}
+              {!apps.length && !from && (
                 <option value="">
                   {appsError ? "应用加载失败" : "正在加载应用…"}
                 </option>
@@ -204,6 +324,11 @@ export function NewRun() {
                 </option>
               ))}
             </select>
+            {from && (
+              <p className="field-hint" id="app-locked">
+                复制的运行沿用原来的应用，想换应用请新建运行。
+              </p>
+            )}
             <p className="field-hint">
               {app === "etl"
                 ? "探查数据、确认方案，生成 Databricks Lakeflow 管道代码。"
@@ -401,7 +526,8 @@ export function NewRun() {
                 Boolean(appsError) ||
                 (app === "etl" && !text.trim()) ||
                 (app === "hello" && !String(values.text ?? "").trim()) ||
-                needsSource
+                needsSource ||
+                copyBlocked
               }
             >
               {submitting ? (
@@ -411,7 +537,7 @@ export function NewRun() {
                 </>
               ) : (
                 <>
-                  开始运行
+                  {from ? "重新发起" : "开始运行"}
                   <Icon name="arrow" size={17} />
                 </>
               )}

@@ -342,6 +342,12 @@ Databricks dev 运行的报错（为空时忽略）：{{dev_run.errors}}
 STANDARDS_QUERY = "分层与命名、主键与字段类型、数据质量规则、加载策略、PySpark 编码规范"
 
 
+def _retry(times: int, interval_seconds: int) -> dict[str, Any]:
+    """Failures that may pass by themselves (a connector or the cluster busy, the model
+    gateway timing out) are tried again before the run stops."""
+    return {"retry": {"max": times, "interval_seconds": interval_seconds}, "then": "stop"}
+
+
 def _etl_lakehouse() -> dict[str, Any]:
     """Profile a source, plan by the company's metric definitions, have a person
     confirm, copy the sources into Databricks, write code by the warehouse standards
@@ -384,6 +390,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "datasource": "{{start.datasource}}",
             "tables": "{{start.tables}}",
             "sample_rows": 5,
+            "on_error": _retry(2, 5),
         },
         {
             "id": "glossary",
@@ -424,6 +431,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "prompt": PLAN_PROMPT,
             "output": {"kind": "text"},
             "max_visits": 10,
+            "on_error": _retry(1, 2),
         },
         {
             "id": "check_plan",
@@ -466,6 +474,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "datasource": "{{start.datasource}}",
             "tables": "{{check_plan.sources}}",
             "max_rows": 200000,
+            "on_error": _retry(2, 5),
         },
         {
             "id": "codegen",
@@ -479,6 +488,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "prompt": CODEGEN_PROMPT,
             "output": {"kind": "text"},
             "max_visits": 10,
+            "on_error": _retry(1, 2),
         },
         {
             "id": "check_code",
@@ -504,6 +514,7 @@ def _etl_lakehouse() -> dict[str, Any]:
             "max_runs": 3,
             "preview_rows": 20,
             "max_visits": 3,
+            "on_error": _retry(2, 5),
         },
         {
             "id": "end",

@@ -860,6 +860,10 @@ nav {
   background: #fbeeea;
   color: #b26c5b;
 }
+.status-badge.cancelled {
+  background: #f1f0f4;
+  color: #7d7889;
+}
 .table-action {
   display: grid;
   place-items: center;
@@ -1583,6 +1587,46 @@ textarea::placeholder {
   margin-bottom: 12px;
   font-size: 13px;
 }
+.failure-card .failure-detail {
+  margin: 10px 0 14px;
+  color: #756a82;
+  overflow-wrap: anywhere;
+}
+.copy-notice {
+  margin: -8px 0 20px;
+  font-size: 12px;
+  color: #8d8199;
+}
+.copy-notice a {
+  color: inherit;
+  font-weight: 600;
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.cancel-confirm {
+  margin-bottom: 24px;
+  padding: 20px 23px;
+  border-color: #e8d8d3;
+}
+.cancel-confirm h2 {
+  font-size: 13px;
+}
+.cancel-confirm p {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.8;
+  color: #8d8199;
+}
+.cancel-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
 .result-card > p,
 .failure-card > p {
   font-size: 11px;
@@ -1614,6 +1658,13 @@ textarea::placeholder {
 .failure-card .text-button {
   color: #9c75b2;
   margin-top: 18px;
+}
+/* A cancelled run did not fail: same card, without the warning colors. */
+.failure-card.cancelled-card {
+  border-color: #e7e4ec;
+}
+.failure-card.cancelled-card h2 {
+  color: #6f6880;
 }
 .detail-note {
   display: flex;
@@ -2574,6 +2625,13 @@ textarea::placeholder {
   }
   .detail-heading {
     align-items: flex-start;
+  }
+  /* With several actions, the title keeps the full width and the actions go below. */
+  .detail-heading:has(.detail-actions > :nth-child(2)) {
+    flex-direction: column;
+  }
+  .detail-actions {
+    justify-content: flex-start;
   }
   .detail-heading h1 {
     gap: 9px;

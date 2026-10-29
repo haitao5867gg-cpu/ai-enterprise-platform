@@ -53,7 +53,7 @@
 }
 ```
 
-节点出错并且 `then` 是 `default` 或 `branch` 时，这个节点除了产出（`default` 时是默认值，`branch` 时为空），还有 `error_type` 和 `error_message` 两个变量，后面的节点可以引用。`error_type` 取值：`timeout`、`model_error`（网关或模型报错）、`output_format`（JSON 输出不合格式）、`tool_error`、`knowledge_error`（知识库不存在或检索失败）、`code_error`、`sandbox_unavailable`、`step_limit`（Agent 达到步数上限）。
+节点出错并且 `then` 是 `default` 或 `branch` 时，这个节点除了产出（`default` 时是默认值，`branch` 时为空），还有 `error_type` 和 `error_message` 两个变量，后面的节点可以引用。`error_type` 取值：`timeout`、`model_error`（网关或模型报错）、`output_format`（JSON 输出不合格式）、`tool_error`、`knowledge_error`（知识库不存在或检索失败）、`code_error`、`sandbox_unavailable`、`step_limit`（Agent 达到步数上限）、`databricks_error`、`input_error`（运行输入或节点设置有问题，比如表名写错、超过行数上限、没选数据源；再试结果一样，所以不按 `retry` 重试，运行页也不提供重试）。
 
 ### 变量引用
 
@@ -129,7 +129,7 @@
 
 产出：`result`（工具返回的内容；是 JSON 就解析成对象）。这一期只能调已登记数据源的工具，数据源连接器都是只读的。
 
-`datasource` 写成引用时（通常引用开始节点 `datasource` 类型的输入），保存时只检查引用本身，工具名和参数到运行时才对照那个数据源检查；数据源不存在或没有这个工具，节点以 `tool_error` 失败。agent 的 `tools[].datasource` 同理。
+`datasource` 写成引用时（通常引用开始节点 `datasource` 类型的输入），保存时只检查引用本身，工具名和参数到运行时才对照那个数据源检查；没选数据源或数据源不存在，节点以 `input_error` 失败；数据源没有这个工具或连接器报错，以 `tool_error` 失败。agent 的 `tools[].datasource` 同理。
 
 **agent 智能体**：有步数上限的“模型 → 工具 → 模型”循环。
 

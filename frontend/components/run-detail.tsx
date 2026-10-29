@@ -5,11 +5,15 @@ import { CitationScope, CitedMarkdown, SourceList } from "./citations";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  cancelRun,
   durationText,
   errorMessage,
+  failureText,
   fieldErrors,
   formatTime,
+  isFinished,
   isRecord,
+  retryRun,
   readReceipt,
   readRun,
   requestJson,
@@ -122,6 +126,9 @@ export function RunDetail({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [mutationError, setMutationError] = useState("");
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [acting, setActing] = useState<"cancel" | "retry" | null>(null);
+  const [actionError, setActionError] = useState("");
   const [values, setValues] = useState<FieldValues>({});
   const [valueErrors, setValueErrors] = useState<Record<string, string>>({});
   const [comment, setComment] = useState("");
@@ -133,8 +140,43 @@ export function RunDetail({
   const pollAbort = useRef<AbortController | null>(null);
   const mutationAbort = useRef<AbortController | null>(null);
   const busy = useRef(false);
+  const title = useRef<HTMLHeadingElement>(null);
+  const actionBar = useRef<HTMLDivElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const keepButton = useRef<HTMLButtonElement>(null);
+  const confirmPanel = useRef<HTMLElement>(null);
+  // Set when the control holding focus may go away with the next render.
+  const refocus = useRef(false);
+  const confirmOpen = confirmingCancel && Boolean(run?.actions?.cancel);
 
   useEffect(() => () => mutationAbort.current?.abort(), []);
+
+  // The confirmation opens on its safe choice.
+  useEffect(() => {
+    if (confirmOpen) keepButton.current?.focus();
+  }, [confirmOpen]);
+
+  // A button that went away (the run moved on) leaves focus on the title, not the page.
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) title.current?.focus();
+  });
+
+  function controlsHoldFocus() {
+    const active = document.activeElement;
+    return Boolean(
+      active &&
+      (actionBar.current?.contains(active) ||
+        confirmPanel.current?.contains(active)),
+    );
+  }
+
+  function closeConfirm() {
+    setConfirmingCancel(false);
+    cancelButton.current?.focus();
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -143,6 +185,7 @@ export function RunDetail({
     async function poll() {
       if (controller.signal.aborted) return;
       let terminal = false;
+      let delay = 2_000;
       try {
         const value = readRun(
           await requestJson(`/runs/${encodeURIComponent(id)}`, {
@@ -152,11 +195,16 @@ export function RunDetail({
         if (controller.signal.aborted) return;
         if (value.run_id !== id)
           throw new ApiError("服务返回的运行编号不匹配，请重试。");
+        if (controlsHoldFocus()) refocus.current = true;
         setRun(value);
+        // A confirmation for a cancel that is no longer offered must not come back.
+        if (!value.actions?.cancel) setConfirmingCancel(false);
         setNow(Date.now());
         setError("");
         setRechecking(false);
-        terminal = value.status === "done" || value.status === "error";
+        // A failed run someone may retry is still watched, less often.
+        terminal = isFinished(value.status) && !value.actions?.retry;
+        delay = value.status === "error" ? 10_000 : 2_000;
       } catch (err) {
         if (controller.signal.aborted) return;
         setError(errorMessage(err));
@@ -165,7 +213,7 @@ export function RunDetail({
         if (!controller.signal.aborted) {
           setLoading(false);
           // Schedule after completion: slow requests never overlap or reorder messages.
-          if (!terminal) timer = setTimeout(() => void poll(), 2_000);
+          if (!terminal) timer = setTimeout(() => void poll(), delay);
         }
       }
     }
@@ -245,6 +293,56 @@ export function RunDetail({
     }
   }
 
+  // Cancel the run, or retry it from the step that failed.
+  async function act(kind: "cancel" | "retry") {
+    if (busy.current || !run) return;
+    busy.current = true;
+    const hadFocus = controlsHoldFocus();
+    setActing(kind);
+    setActionError("");
+    // Invalidate any GET sent before the change so it cannot show the old state.
+    pollAbort.current?.abort();
+    const controller = new AbortController();
+    mutationAbort.current = controller;
+    try {
+      const who = actor.trim() ? { actor: actor.trim() } : {};
+      const receipt =
+        kind === "cancel"
+          ? await cancelRun(id, who, controller.signal)
+          : await retryRun(id, who, controller.signal);
+      if (controller.signal.aborted) return;
+      if (receipt.run_id !== id)
+        throw new ApiError("服务返回的运行编号不匹配，请刷新核对。");
+      setConfirmingCancel(false);
+      // Until the run is read again, offer only what fits its new status.
+      setRun((previous) =>
+        previous
+          ? {
+              ...previous,
+              status: receipt.status,
+              pending: null,
+              failed: null,
+              actions: previous.actions && {
+                ...previous.actions,
+                retry: false,
+                cancel: !isFinished(receipt.status),
+              },
+            }
+          : null,
+      );
+    } catch (err) {
+      if (!controller.signal.aborted) setActionError(errorMessage(err));
+    } finally {
+      if (!controller.signal.aborted) {
+        refocus.current = hadFocus;
+        setRechecking(true);
+        setActing(null);
+        busy.current = false;
+        setRevision((value) => value + 1);
+      }
+    }
+  }
+
   const controlsDisabled = submitting !== null || rechecking || Boolean(error);
   const plan =
     run?.status === "waiting" ? getEtlPlan(run.pending?.details) : null;
@@ -275,7 +373,7 @@ export function RunDetail({
       </Link>
       <div className="page-heading detail-heading">
         <div>
-          <h1>
+          <h1 ref={title} tabIndex={-1}>
             <span className="detail-title">
               {run ? runTitle(run) : "运行详情"}
             </span>
@@ -296,11 +394,97 @@ export function RunDetail({
             </p>
           )}
         </div>
-        <Link className="button secondary" href="/runs/new">
-          <Icon name="plus" size={16} />
-          新建运行
-        </Link>
+        <div className="detail-actions" ref={actionBar}>
+          {run?.actions?.cancel && (
+            <button
+              ref={cancelButton}
+              className="button reject"
+              disabled={acting !== null || submitting !== null || rechecking}
+              aria-expanded={confirmingCancel}
+              aria-controls="cancel-confirm"
+              onClick={() => setConfirmingCancel(true)}
+            >
+              <Icon name="close" size={15} />
+              取消运行
+            </button>
+          )}
+          {run?.actions?.retry && (
+            <button
+              className="button primary"
+              disabled={acting !== null || rechecking}
+              onClick={() => void act("retry")}
+            >
+              {acting === "retry" ? (
+                <>
+                  <span className="spinner" />
+                  正在重试…
+                </>
+              ) : (
+                <>
+                  <Icon name="refresh" size={15} />
+                  {run.failed?.title ? `从「${run.failed.title}」重试` : "重试"}
+                </>
+              )}
+            </button>
+          )}
+          {run?.actions?.rerun && (
+            <Link
+              className="button secondary"
+              href={`/runs/new?from=${encodeURIComponent(id)}`}
+            >
+              复制并重新发起
+            </Link>
+          )}
+          <Link className="button secondary" href="/runs/new">
+            <Icon name="plus" size={16} />
+            新建运行
+          </Link>
+        </div>
       </div>
+      {confirmOpen && (
+        <section
+          ref={confirmPanel}
+          id="cancel-confirm"
+          className="panel cancel-confirm"
+          role="alertdialog"
+          aria-labelledby="cancel-title"
+          aria-describedby="cancel-description"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && acting === null) closeConfirm();
+          }}
+        >
+          <h2 id="cancel-title">取消这次运行？</h2>
+          <p id="cancel-description">
+            取消后这次运行不能再继续，只能复制后重新发起。已经写进开发环境的表会保留，正在
+            Databricks 上运行的作业也不会被停下。
+          </p>
+          <div className="cancel-confirm-actions">
+            <button
+              className="button reject"
+              disabled={acting !== null || rechecking}
+              onClick={() => void act("cancel")}
+            >
+              {acting === "cancel" ? (
+                <>
+                  <span className="spinner" />
+                  正在取消…
+                </>
+              ) : (
+                "确定取消"
+              )}
+            </button>
+            <button
+              ref={keepButton}
+              className="button secondary"
+              disabled={acting !== null}
+              onClick={closeConfirm}
+            >
+              不取消
+            </button>
+          </div>
+        </section>
+      )}
+      {actionError && <ErrorNotice message={actionError} />}
       {error && (
         <ErrorNotice
           message={error}
@@ -412,6 +596,11 @@ export function RunDetail({
                         <Icon name="check" size={16} />
                         本次运行已结束
                       </>
+                    ) : run.status === "cancelled" ? (
+                      <>
+                        <Icon name="close" size={16} />
+                        本次运行已取消
+                      </>
                     ) : (
                       <>
                         <Icon name="alert" size={16} />
@@ -458,6 +647,19 @@ export function RunDetail({
                     <dt>提出人</dt>
                     <dd>{run.created_by || "—"}</dd>
                   </div>
+                  {run.rerun_of && (
+                    <div>
+                      <dt>复制自</dt>
+                      <dd>
+                        <Link
+                          className="text-button"
+                          href={`/runs/${encodeURIComponent(run.rerun_of)}`}
+                        >
+                          查看原运行
+                        </Link>
+                      </dd>
+                    </div>
+                  )}
                   {run.created_at && (
                     <div>
                       <dt>提交时间</dt>
@@ -651,19 +853,52 @@ export function RunDetail({
               {run.status === "error" && (
                 <section className="panel failure-card">
                   <h2>运行失败</h2>
-                  <p className="message-content">
-                    {run.error || "应用未提供错误详情，请稍后重新发起运行。"}
+                  {run.failed && <p>{failureText(run.failed)}</p>}
+                  <p className="message-content failure-detail">
+                    {run.error || "应用未提供错误详情。"}
                   </p>
-                  <Link className="text-button" href="/runs/new">
-                    重新发起
-                    <Icon name="arrow" size={14} />
-                  </Link>
+                  {run.actions?.rerun !== false && (
+                    <Link
+                      className="text-button"
+                      href={
+                        run.actions
+                          ? `/runs/new?from=${encodeURIComponent(id)}`
+                          : "/runs/new"
+                      }
+                    >
+                      {run.actions ? "复制并重新发起" : "重新发起"}
+                      <Icon name="arrow" size={14} />
+                    </Link>
+                  )}
                 </section>
               )}
-              <p className="detail-note">
-                <Icon name="refresh" size={14} />
-                运行期间每 2 秒自动更新
-              </p>
+              {run.status === "cancelled" && (
+                <section className="panel failure-card cancelled-card">
+                  <h2>已取消</h2>
+                  <p>
+                    {run.cancelled_by
+                      ? `${run.cancelled_by} 取消了这次运行`
+                      : "这次运行已取消"}
+                    {run.error ? `，原因：${run.error}` : ""}
+                    。已经写进开发环境的表会保留。
+                  </p>
+                  {run.actions?.rerun && (
+                    <Link
+                      className="text-button"
+                      href={`/runs/new?from=${encodeURIComponent(id)}`}
+                    >
+                      复制并重新发起
+                      <Icon name="arrow" size={14} />
+                    </Link>
+                  )}
+                </section>
+              )}
+              {!isFinished(run.status) && (
+                <p className="detail-note">
+                  <Icon name="refresh" size={14} />
+                  运行期间每 2 秒自动更新
+                </p>
+              )}
             </aside>
           </div>
         )

@@ -255,6 +255,10 @@ class Runner:
     async def _wait(self, run_id: str, deadline: float) -> dict[str, Any]:
         while True:
             run = (await self._api.get(f"/runs/{run_id}")).raise_for_status().json()
+            if run["status"] == "cancelled":
+                reason = run.get("error")
+                error = f"run 被取消了：{reason}" if reason else "run 被取消了"
+                return {**run, "status": "error", "error": error}
             if run["status"] in ("waiting", "done", "error"):
                 return run
             if time.monotonic() > deadline:

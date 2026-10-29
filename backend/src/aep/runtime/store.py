@@ -13,7 +13,9 @@ from typing import Any, Literal, Protocol
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-RunStatus = Literal["running", "waiting", "done", "error"]
+RunStatus = Literal["running", "waiting", "done", "error", "cancelled"]
+# A run in one of these has ended; only a new run (a rerun) goes on from there.
+FINISHED: tuple[RunStatus, ...] = ("done", "error", "cancelled")
 
 DEFAULT_TENANT = "default"
 
@@ -41,6 +43,12 @@ class RunRecord:
     # in waits already over. Runs from before this was counted have None.
     waiting_since: datetime | None = None
     wait_seconds: float | None = 0.0
+    # What kind of failure stopped it (aep.runtime.flow.nodes.ERROR_TYPES, or
+    # ``max_visits``/``max_steps``; None when unknown), who cancelled it, and the run
+    # it was copied from.
+    error_type: str | None = None
+    cancelled_by: str | None = None
+    rerun_of: str | None = None
 
 
 class RunStore(Protocol):
@@ -52,13 +60,27 @@ class RunStore(Protocol):
         app_version: int | None = None,
         config: dict[str, Any] | None = None,
         created_by: str | None = None,
+        rerun_of: str | None = None,
     ) -> RunRecord: ...
     async def get(self, run_id: str) -> RunRecord | None: ...
     async def recent(self, limit: int = 50) -> list[RunRecord]: ...
     async def list_by_status(self, status: RunStatus) -> list[RunRecord]: ...
-    async def set_status(self, run_id: str, status: RunStatus, error: str | None = None) -> None:
-        """Also keeps the waiting time: entering ``waiting`` starts a wait, leaving it
-        adds the wait to ``wait_seconds``."""
+    async def set_status(
+        self,
+        run_id: str,
+        status: RunStatus,
+        error: str | None = None,
+        *,
+        expected: tuple[RunStatus, ...] | None = None,
+        error_type: str | None = None,
+        actor: str | None = None,
+    ) -> bool:
+        """Change the status, only from one of ``expected`` if given; False when the run
+        was in another status (someone else changed it first) and nothing changed.
+
+        Also keeps the waiting time: entering ``waiting`` starts a wait, leaving it
+        adds the wait to ``wait_seconds``; so does leaving ``error`` (a retry): the
+        failure waited for someone to retry it. ``actor`` is who cancelled, for ``cancelled``."""
         ...
 
     async def set_step(self, run_id: str, node: str, title: str) -> None: ...
@@ -80,6 +102,7 @@ class MemoryRunStore:
         app_version: int | None = None,
         config: dict[str, Any] | None = None,
         created_by: str | None = None,
+        rerun_of: str | None = None,
     ) -> RunRecord:
         record = RunRecord(
             run_id=str(uuid.uuid4()),
@@ -89,6 +112,7 @@ class MemoryRunStore:
             app_version=app_version,
             config=config,
             created_by=created_by,
+            rerun_of=rerun_of,
         )
         self._runs[record.run_id] = record
         return record
@@ -103,13 +127,27 @@ class MemoryRunStore:
     async def list_by_status(self, status: RunStatus) -> list[RunRecord]:
         return [r for r in self._runs.values() if r.status == status]
 
-    async def set_status(self, run_id: str, status: RunStatus, error: str | None = None) -> None:
+    async def set_status(
+        self,
+        run_id: str,
+        status: RunStatus,
+        error: str | None = None,
+        *,
+        expected: tuple[RunStatus, ...] | None = None,
+        error_type: str | None = None,
+        actor: str | None = None,
+    ) -> bool:
         run, now = self._runs[run_id], datetime.now(UTC)
+        if expected is not None and run.status not in expected:
+            return False
         waited, since = run.wait_seconds, None
         if status == "waiting":
             since = run.waiting_since if run.status == "waiting" and run.waiting_since else now
         elif run.status == "waiting" and run.waiting_since and waited is not None:
             waited += (now - run.waiting_since).total_seconds()
+        elif run.status == "error" and status != "error" and waited is not None:
+            # A failure waits for someone to retry it.
+            waited += (now - run.updated_at).total_seconds()
         self._runs[run_id] = replace(
             run,
             status=status,
@@ -117,7 +155,10 @@ class MemoryRunStore:
             updated_at=now,
             waiting_since=since,
             wait_seconds=waited,
+            error_type=error_type,
+            cancelled_by=actor if status == "cancelled" else run.cancelled_by,
         )
+        return True
 
     async def set_step(self, run_id: str, node: str, title: str) -> None:
         self._runs[run_id] = replace(self._runs[run_id], step={"node": node, "title": title})
@@ -144,11 +185,15 @@ CREATE TABLE IF NOT EXISTS runs (
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS waiting_since timestamptz",
     # No default: runs from before waits were counted keep NULL (unknown).
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS wait_seconds double precision",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_type text",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS cancelled_by text",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS rerun_of uuid",
 ]
 
 COLUMNS = (
     "run_id::text, app, status, input, tenant_id, error, app_version, config, created_at,"
-    " updated_at, created_by, step, waiting_since, wait_seconds"
+    " updated_at, created_by, step, waiting_since, wait_seconds, error_type, cancelled_by,"
+    " rerun_of::text"
 )
 
 
@@ -174,12 +219,13 @@ class PostgresRunStore:
         app_version: int | None = None,
         config: dict[str, Any] | None = None,
         created_by: str | None = None,
+        rerun_of: str | None = None,
     ) -> RunRecord:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
-                "INSERT INTO runs"
-                " (run_id, app, status, input, app_version, config, created_by, wait_seconds)"
-                f" VALUES (%s, %s, 'running', %s, %s, %s, %s, 0) RETURNING {COLUMNS}",
+                "INSERT INTO runs (run_id, app, status, input, app_version, config, created_by,"
+                " wait_seconds, rerun_of)"
+                f" VALUES (%s, %s, 'running', %s, %s, %s, %s, 0, %s) RETURNING {COLUMNS}",
                 (
                     uuid.uuid4(),
                     app,
@@ -187,6 +233,7 @@ class PostgresRunStore:
                     app_version,
                     Jsonb(config) if config is not None else None,
                     created_by,
+                    uuid.UUID(rerun_of) if rerun_of else None,
                 ),
             )
             return _record(await cur.fetchone())
@@ -213,21 +260,47 @@ class PostgresRunStore:
             cur = await conn.execute(f"SELECT {COLUMNS} FROM runs WHERE status = %s", (status,))
             return [_record(row) for row in await cur.fetchall()]
 
-    async def set_status(self, run_id: str, status: RunStatus, error: str | None = None) -> None:
-        # The right-hand sides read the row as it was before this update.
+    async def set_status(
+        self,
+        run_id: str,
+        status: RunStatus,
+        error: str | None = None,
+        *,
+        expected: tuple[RunStatus, ...] | None = None,
+        error_type: str | None = None,
+        actor: str | None = None,
+    ) -> bool:
+        # The right-hand sides and the WHERE clause read the row as it was before this
+        # update, and the row is locked while it changes: of two updates expecting the
+        # same status, only the first one finds it.
         async with self._pool.connection() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 "UPDATE runs SET status = %(status)s, error = %(error)s, updated_at = now(),"
+                " error_type = %(error_type)s,"
+                " cancelled_by = CASE WHEN %(status)s = 'cancelled' THEN %(actor)s"
+                "   ELSE cancelled_by END,"
                 " wait_seconds = wait_seconds + CASE"
                 "   WHEN status = 'waiting' AND %(status)s <> 'waiting'"
-                "   THEN coalesce(extract(epoch FROM now() - waiting_since), 0) ELSE 0 END,"
+                "   THEN coalesce(extract(epoch FROM now() - waiting_since), 0)"
+                "   WHEN status = 'error' AND %(status)s <> 'error'"
+                "   THEN extract(epoch FROM now() - updated_at) ELSE 0 END,"
                 " waiting_since = CASE"
                 "   WHEN %(status)s <> 'waiting' THEN NULL"
                 "   WHEN status = 'waiting' THEN coalesce(waiting_since, now())"
                 "   ELSE now() END"
-                " WHERE run_id = %(run_id)s",
-                {"status": status, "error": error, "run_id": uuid.UUID(run_id)},
+                " WHERE run_id = %(run_id)s"
+                " AND (%(any)s OR status = ANY(%(expected)s))",
+                {
+                    "status": status,
+                    "error": error,
+                    "error_type": error_type,
+                    "actor": actor,
+                    "run_id": uuid.UUID(run_id),
+                    "any": expected is None,
+                    "expected": list(expected or ()),
+                },
             )
+            return cur.rowcount > 0
 
     async def set_step(self, run_id: str, node: str, title: str) -> None:
         async with self._pool.connection() as conn:

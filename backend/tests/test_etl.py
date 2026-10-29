@@ -24,7 +24,7 @@ from aep.main import app
 from aep.runtime import appconfig
 from aep.runtime.apps import etl
 from aep.runtime.registry import AppContext, default_apps
-from aep.runtime.service import RunService
+from aep.runtime.service import RunService, retryable
 from aep.runtime.store import MemoryRunStore
 from aep.tools.mcp import McpTools
 from tests import fake_connector
@@ -362,11 +362,17 @@ async def test_code_that_never_passes_is_reported():
 
 
 async def test_unknown_datasource_fails_clearly():
-    service, _, _ = await make_service([reply(plan())])
+    service, _, ds = await make_service([reply(plan())])
 
     run_id = await start(service, "missing")
 
-    assert "数据源" in (await service.get(run_id)).record.error
+    record = (await service.get(run_id)).record
+    assert "数据源" in record.error
+    # Trying again would fail the same way: a copy with another input is the way on.
+    assert record.error_type == "input_error"
+    assert not retryable(record)
+    bad_name = (await service.get(await start(service, ds, tables=["orders"]))).record
+    assert (bad_name.error, bad_name.error_type) == ("表 orders 要写成 schema.table", "input_error")
 
 
 async def test_files_download_as_zip():
