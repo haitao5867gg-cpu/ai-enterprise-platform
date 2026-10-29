@@ -93,7 +93,7 @@
   2. 写成 JSON Lines，用 Databricks Files API 上传到 Volume `/Volumes/<catalog>/<schema>/<AEP_DATABRICKS_INGEST_VOLUME>/<datasource_id>/<run_id>-<随机 8 位>/<table>.jsonl`（每次抽取一个文件夹，两个运行同时抽同一张表也不会读到对方的文件；Volume 默认名 `aep_landing`；schema 和 Volume 不存在时用 Unity Catalog REST API 创建，Volume 为 MANAGED）。
   3. 在 `AEP_DATABRICKS_CLUSTER_ID` 集群上用命令执行接口建表：所有列先按字符串读，再按下面的类型对照转换，`CREATE OR REPLACE TABLE`；表注释写“由 AEP 从数据源「名称」抽取，运行 run_id，时间”，表属性 `aep.datasource_id`、`aep.run_id`。
   4. 建表后（成功或失败）删掉这次的落地文件和文件夹；删不掉时只在 `warnings` 里写明。
-- 类型对照（按源列 `data_type` 小写匹配）：`tinyint smallint int integer mediumint` → INT；`bigint` → BIGINT；`decimal(p,s) numeric(p,s)` → DECIMAL(p,s)（没有精度时 DECIMAL(38,10)）；`float real double` → DOUBLE；`bool boolean` → BOOLEAN；`date` → DATE；`datetime timestamp*` → TIMESTAMP；其他 → STRING。
+- 类型对照（按源列 `data_type` 小写匹配）：数组（以 `[]` 结尾，如 PostgreSQL 的 `integer[]`）→ STRING（存数组的 JSON 文本）；`tinyint smallint mediumint int integer` → INT，其中 `int unsigned` → BIGINT；`bigint` → BIGINT，`bigint unsigned` → DECIMAL(20,0)；`decimal(p,s) numeric(p,s)` → DECIMAL(p,s)（没有精度时 DECIMAL(38,10)）；`float real double` → DOUBLE；`bool boolean` → BOOLEAN；`date` → DATE；`datetime timestamp*` → TIMESTAMP；其他 → STRING。
 - 新配置 `AEP_DATABRICKS_INGEST_VOLUME`（默认 `aep_landing`）。
 
 产出：

@@ -377,9 +377,12 @@ async def test_ingest_needs_the_workspace_and_tables(tmp_path):
     ("source", "spark"),
     [
         ("bigint", "BIGINT"),
-        ("bigint unsigned", "BIGINT"),
+        ("bigint unsigned", "DECIMAL(20,0)"),
         ("int(11)", "INT"),
+        ("int(10) unsigned", "BIGINT"),
+        ("int unsigned", "BIGINT"),
         ("tinyint(1)", "INT"),
+        ("smallint unsigned", "INT"),
         ("integer", "INT"),
         ("decimal(12,2)", "DECIMAL(12,2)"),
         ("numeric(10)", "DECIMAL(10,0)"),
@@ -393,6 +396,9 @@ async def test_ingest_needs_the_workspace_and_tables(tmp_path):
         ("varchar(64)", "STRING"),
         ("json", "STRING"),
         ("time", "STRING"),
+        ("integer[]", "STRING"),
+        ("numeric(12,2)[]", "STRING"),
+        ("boolean[]", "STRING"),
     ],
 )
 def test_source_types_map_to_spark(source, spark):

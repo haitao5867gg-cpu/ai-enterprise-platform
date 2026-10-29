@@ -142,11 +142,16 @@ DECIMAL = re.compile(r"\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)")
 def spark_type(data_type: str) -> str:
     """The Spark SQL type a source column becomes (docs/api/data-nodes.md)."""
     text = data_type.strip().lower()
+    if text.endswith("]"):  # a PostgreSQL array (integer[]): kept as its JSON text
+        return "STRING"
     word = re.match(r"[a-z]*", text)[0]  # type: ignore[index]
-    if word in ("tinyint", "smallint", "int", "integer", "mediumint"):
+    unsigned = "unsigned" in text.split()
+    if word in ("tinyint", "smallint", "mediumint"):
         return "INT"
+    if word in ("int", "integer"):
+        return "BIGINT" if unsigned else "INT"
     if word == "bigint":
-        return "BIGINT"
+        return "DECIMAL(20,0)" if unsigned else "BIGINT"
     if word in ("decimal", "numeric"):
         size = DECIMAL.search(text)
         if size is None:
