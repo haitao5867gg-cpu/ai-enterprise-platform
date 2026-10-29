@@ -329,10 +329,15 @@ for (const type of ["knowledge", "agent"] as const) {
     });
     await page.reload();
     await nodeButton(page, node.title, node.id).click();
-    await expect(
-      panel(page).getByRole("switch", { name: "重排", exact: true }),
-    ).toBeDisabled();
+    const rerank = panel(page).getByRole("switch", {
+      name: "重排",
+      exact: true,
+    });
     await expect(panel(page)).toContainText("没有可选的重排模型");
+    // An enabled rerank whose model went away can still be turned off, then not back on.
+    await expect(rerank).toBeEnabled();
+    await rerank.uncheck();
+    await expect(rerank).toBeDisabled();
   });
 }
 
