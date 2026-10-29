@@ -148,9 +148,9 @@
 | `run` | `DevRun.as_dict()`（不含 `preview`），另加 `attempt`（这是第几次运行）；`catalog`、`schema` 是结果表写在哪（`job` 模式取 Job 的参数，`pipeline` 模式取平台配置，不知道时为 `null`） |
 | `url` | Databricks 上这次运行的链接，没有时为 `null` |
 | `tables` | `[{"name", "target", "rows", "dropped", "expectations"}]` |
-| `preview` | `[{"table", "target", "columns": ["…"], "rows": [{…}]}]`，值按 JSON 转换（日期为 ISO 字符串，小数为数字） |
+| `preview` | `[{"table", "target", "columns": ["…"], "rows": [{…}]}]`，值按 JSON 转换（日期为 `yyyy-MM-dd`，时间为不带时区的 `yyyy-MM-dd HH:mm:ss`，和源库里的写法一样；小数为数字） |
 | `errors` | 失败时的报错，一条一行，每条最多 1500 字符；通过时为 `""` |
-| `report` | Markdown 报告：成功或失败、运行方式、链接；每张结果表的行数、被丢弃行数、质量规则结果；每张表的预览表格（最多 10 列，超出的列省略并注明） |
+| `report` | Markdown 报告：成功或失败、运行方式、链接；每张结果表的行数、被丢弃行数、质量规则结果；每张表的预览表格（最多 10 列，超出的列省略并注明）。表全名带反引号（如 `` `icsd-ace-dev`.sales.orders ``），在 Markdown 里写成双反引号的行内代码 |
 
 分支：`passed`（通过）、`retry`（失败且 `fixable`，且这是第 `max_runs` 次以前）、`failed`（其他失败）。显示文字：通过、带着报错重写、失败。运行次数在这次运行里累计，不随回到写代码清零。
 

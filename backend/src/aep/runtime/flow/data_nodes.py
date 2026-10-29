@@ -176,6 +176,12 @@ def _cell(value: Any) -> str:
     return text.replace("|", "\\|").replace("\n", " ") if text else " "
 
 
+def _code(text: str) -> str:
+    """``text`` as Markdown inline code; a table name like `` `icsd-ace-dev`.sales.orders ``
+    has backticks of its own, so it gets a double-backtick span."""
+    return f"`` {text} ``" if "`" in text else f"`{text}`"
+
+
 def _table(columns: list[str], rows: list[list[Any]]) -> list[str]:
     lines = ["| " + " | ".join(_cell(c) for c in columns) + " |"]
     lines.append("| " + " | ".join("---" for _ in columns) + " |")
@@ -398,7 +404,7 @@ async def run_ingest(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
         raise NodeFailure("databricks_error", f"抽取到 Databricks 失败：{exc}") from exc
     total = sum(t["rows"] or 0 for t in loaded)
     summary = f"已把 {len(loaded)} 张表共 {total} 行抽取到 Databricks：" + "、".join(
-        f"{t['target']}（{t['rows']} 行）" for t in loaded
+        f"{_code(t['target'])}（{t['rows']} 行）" for t in loaded
     )
     text = "\n".join([summary, *(f"注意：{w}" for w in warnings)])
     return Outcome(
@@ -517,13 +523,13 @@ def dev_report(
                 for e in t["expectations"]
             )
             count = "未知" if t["rows"] is None else t["rows"]
-            rows.append([f"`{t['target']}`", count, t["dropped"], rules or "无"])
+            rows.append([_code(t["target"]), count, t["dropped"], rules or "无"])
         lines += ["", "### 结果表", ""]
         lines += _table(["表", written, "质量规则丢弃", "质量规则"], rows)
     for p in dev.preview:
         columns = p["columns"]
         shown = columns[:PREVIEW_COLUMNS]
-        lines += ["", f"### 数据预览：`{p['target']}`（前 {len(p['rows'])} 行）", ""]
+        lines += ["", f"### 数据预览：{_code(p['target'])}（前 {len(p['rows'])} 行）", ""]
         lines += _table(shown, [[row.get(c) for c in shown] for row in p["rows"]])
         if len(columns) > len(shown):
             lines += ["", f"共 {len(columns)} 列，只显示前 {PREVIEW_COLUMNS} 列。"]

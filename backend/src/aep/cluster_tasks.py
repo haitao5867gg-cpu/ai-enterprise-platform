@@ -31,11 +31,15 @@ def _error(name: str, exc: BaseException) -> str:
 
 def _first_rows(df: Any, n: int) -> tuple[list[str], list[dict[str, Any]]]:
     """``df``'s columns and first ``n`` rows, converted by Spark's own JSON writer
-    (``DataFrame.toJSON`` is missing under Spark Connect, ``to_json`` is not)."""
+    (``DataFrame.toJSON`` is missing under Spark Connect, ``to_json`` is not).
+    Timestamps are written as the source had them, without a zone: an ingested
+    ``2026-05-31 13:53:10`` would otherwise read ``2026-05-31T13:53:10.000Z``."""
     from pyspark.sql import functions as F
 
     columns = list(df.columns)
-    found = df.limit(n).select(F.to_json(F.struct(*[df[c] for c in columns]))).collect()
+    plain = {"timestampFormat": "yyyy-MM-dd HH:mm:ss", "timestampNTZFormat": "yyyy-MM-dd HH:mm:ss"}
+    row = F.to_json(F.struct(*[df[c] for c in columns]), plain)
+    found = df.limit(n).select(row).collect()
     return columns, [{c: json.loads(r[0]).get(c) for c in columns} for r in found]
 
 

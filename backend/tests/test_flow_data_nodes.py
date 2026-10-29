@@ -290,8 +290,8 @@ async def test_ingest_copies_the_tables_into_the_source_catalog(tmp_path, monkey
         },
     ]
     assert out.outputs["summary"] == (
-        "已把 2 张表共 6 行抽取到 Databricks：`icsd-ace-dev`.sales.orders（3 行）、"
-        "`icsd-ace-dev`.sales.customers（3 行）"
+        "已把 2 张表共 6 行抽取到 Databricks：`` `icsd-ace-dev`.sales.orders ``（3 行）、"
+        "`` `icsd-ace-dev`.sales.customers ``（3 行）"
     )
     assert ws.catalog_objects == {
         "schemas:icsd-ace-dev.sales",
@@ -562,8 +562,8 @@ async def test_dev_run_passes_and_previews_the_result_tables(tmp_path):
         "## dev 运行通过",
         f"- 运行方式：部署成 notebook Job，在已有集群 {fake_databricks.CLUSTER_ID} 上运行",
         "- 第 1 次运行",
-        f"| `{target}` | 2 | 1 | positive_quantity 通过 2 / 不通过 1 |",
-        f"### 数据预览：`{target}`（前 1 行）",
+        f"| `` {target} `` | 2 | 1 | positive_quantity 通过 2 / 不通过 1 |",
+        f"### 数据预览：`` {target} ``（前 1 行）",
         "| order_id | city | quantity |",
         "| 10 | 上海 | 2 |",
     ]:
