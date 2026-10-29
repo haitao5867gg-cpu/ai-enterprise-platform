@@ -33,15 +33,15 @@ def datasource_ids(config: dict[str, Any]) -> list[str]:
 
 
 def knowledge_ids(config: dict[str, Any]) -> list[str]:
-    """The knowledge bases named by retrieval nodes, in first-use order."""
-    return list(
-        dict.fromkeys(
-            kb_id
-            for node in flowgraph.nodes(config)
-            if node["type"] == "knowledge"
-            for kb_id in node.get("knowledge_bases") or []
-        )
-    )
+    """All bases named by knowledge and agent nodes, in first-use order."""
+    found: list[str] = []
+    for node in flowgraph.nodes(config):
+        settings = node if node["type"] == "knowledge" else node.get("knowledge") or {}
+        if node["type"] in ("knowledge", "agent"):
+            for kb_id in settings.get("knowledge_bases") or []:
+                if kb_id not in found:
+                    found.append(kb_id)
+    return found
 
 
 def dump(
