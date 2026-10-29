@@ -4,11 +4,16 @@
 `/datasets/<UUID>/mcp`，`GET /healthz` 检查进程存活。
 后端负责上传 CSV / XLSX，连接器只读取该 UUID 目录里的 manifest 与 Parquet。
 
-与 PostgreSQL 连接器相同的五个工具及返回结构：`list_schemas`、`list_tables`、
-`describe_table`、`sample_rows`（1～100 行）、`table_stats`。统计最多读取
+与 PostgreSQL 连接器相同的六个工具及返回结构：`list_schemas`、`list_tables`、
+`describe_table`、`sample_rows`（1～100 行）、`read_rows`、`table_stats`。统计最多读取
 `AEP_FILES_STATS_SAMPLE_SIZE` 行（默认 1000，最大 10000）；非空不同值数量为
 1～20 时返回 `top_values`，按频次降序、值升序排列，按完整值计数后截至 80 字符并标记
 `truncated`。不提供任意 SQL 工具。
+
+`read_rows(schema, table, offset=0, limit=1000)` 按主键（无主键按全部列）排序，
+返回 `schema`、`table`、`columns`、`rows`、`next_offset`。`offset` 必须为非负整数，
+`limit` 必须为 1～5000 的整数，拒绝布尔、字符串和浮点数；多读一行判断是否还有下一页，
+最后一页 `next_offset=null`。值的 JSON 编码和 `sample_rows` 相同。
 
 每次查询使用 DuckDB `read_only=True` 连接。DuckDB 不支持只读内存数据库，所以先在
 系统临时目录创建空目录库，再以只读模式打开；这里不存放上传数据。查询禁用外部访问、
@@ -30,7 +35,7 @@ uv run aep-files
 uv run aep-files-smoke --url http://localhost:8003/datasets/<UUID>/mcp
 ```
 
-从仓库根目录对真实 Compose 栈验证上传登记、五个工具与只读挂载：
+从仓库根目录对真实 Compose 栈验证上传登记、六个工具与只读挂载：
 
 ```bash
 docker compose up --build -d --wait

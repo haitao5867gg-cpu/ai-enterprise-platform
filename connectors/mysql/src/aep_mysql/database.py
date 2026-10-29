@@ -286,6 +286,43 @@ class Database:
         ]
         return {"schema": schema, "table": table, "rows": rows}
 
+    async def read_rows(
+        self, schema: str, table: str, offset: int = 0, limit: int = 1000
+    ) -> dict[str, Any]:
+        if type(offset) is not int or offset < 0:
+            raise ConnectorError("offset must be a non-negative integer")
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise ConnectorError("limit must be an integer between 1 and 5000")
+        async with self.connect() as conn:
+            await self._table(conn, schema, table)
+            columns = await self._columns(conn, schema, table)
+            primary_key = await self._query(
+                conn,
+                """
+                SELECT COLUMN_NAME AS name FROM information_schema.KEY_COLUMN_USAGE
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND CONSTRAINT_NAME = 'PRIMARY'
+                ORDER BY ORDINAL_POSITION
+                """,
+                (schema, table),
+            )
+            qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
+            projection = ", ".join(quote_identifier(c["name"]) for c in columns)
+            ordering = ", ".join(quote_identifier(c["name"]) for c in primary_key or columns)
+            # As in _sample, include invisible columns and escape literal percent
+            # signs in identifiers before the driver binds the pagination values.
+            select = f"SELECT {projection} FROM {qualified} ORDER BY {ordering}".replace("%", "%%")
+            page = await self._query(conn, f"{select} LIMIT %s OFFSET %s", (limit + 1, offset))
+        return {
+            "schema": schema,
+            "table": table,
+            "columns": [c["name"] for c in columns],
+            "rows": [
+                {c["name"]: _json_value(row[c["name"]], c["data_type"]) for c in columns}
+                for row in page[:limit]
+            ],
+            "next_offset": offset + limit if len(page) > limit else None,
+        }
+
     async def table_stats(self, schema: str, table: str) -> dict[str, Any]:
         async with self.connect() as conn:
             relation = await self._table(conn, schema, table)

@@ -228,6 +228,54 @@ class Database:
             ).fetchall()
         return {"schema": schema, "table": table, "rows": [row["row"] for row in rows]}
 
+    async def read_rows(
+        self, schema: str, table: str, offset: int = 0, limit: int = 1000
+    ) -> dict[str, Any]:
+        if type(offset) is not int or offset < 0:
+            raise ConnectorError("offset must be a non-negative integer")
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise ConnectorError("limit must be an integer between 1 and 5000")
+        async with self.connect() as conn:
+            relation = await self._table(conn, schema, table)
+            columns = await self._columns(conn, relation["oid"])
+            primary_key = await (
+                await conn.execute(
+                    """
+                    SELECT a.attname AS name FROM pg_catalog.pg_constraint AS k
+                    CROSS JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS key(attnum, position)
+                    JOIN pg_catalog.pg_attribute AS a
+                      ON a.attrelid = k.conrelid AND a.attnum = key.attnum
+                    WHERE k.conrelid = %s AND k.contype = 'p' ORDER BY key.position
+                    """,
+                    (relation["oid"],),
+                )
+            ).fetchall()
+            for column in columns:
+                validate_identifier(column["name"])
+            # to_jsonb is the same conversion as sample_rows and also lets the
+            # keyless fallback order types such as json without native ordering.
+            ordering = sql.SQL(", ").join(
+                sql.Identifier("t", c["name"])
+                if primary_key
+                else sql.SQL("to_jsonb({})").format(sql.Identifier("t", c["name"]))
+                for c in primary_key or columns
+            )
+            select = sql.SQL("SELECT to_jsonb(t.*) AS row FROM {} AS t{}").format(
+                sql.Identifier(schema, table),
+                sql.SQL(" ORDER BY {}").format(ordering) if columns else sql.SQL(""),
+            )
+            # psycopg parses %-placeholders even inside quoted identifiers.
+            # Escape those literal signs before adding the bound pagination.
+            query = select.as_string(conn).replace("%", "%%") + " LIMIT %s OFFSET %s"
+            page = await (await conn.execute(query, (limit + 1, offset))).fetchall()
+        return {
+            "schema": schema,
+            "table": table,
+            "columns": [c["name"] for c in columns],
+            "rows": [row["row"] for row in page[:limit]],
+            "next_offset": offset + limit if len(page) > limit else None,
+        }
+
     async def table_stats(self, schema: str, table: str) -> dict[str, Any]:
         async with self.connect() as conn:
             relation = await self._table(conn, schema, table)

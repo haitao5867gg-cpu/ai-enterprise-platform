@@ -29,7 +29,7 @@ uv run --frozen --project connectors/postgres aep-postgres-smoke
 测试用管理员账号仅用于临时测试表的创建和清理，连接器始终使用 `source_reader`。
 测试过程中的写入只用于这个本地示例库。不要将测试指向客户或生产数据库。
 
-`aep-postgres-smoke` 通过真实 HTTP 连接完成 MCP 握手、发现并调用全部五个工具，
+`aep-postgres-smoke` 通过真实 HTTP 连接完成 MCP 握手、发现全部六个工具并调用探查工具，
 核对三张表、订单主外键、100 行采样、5,000 行估计以及非零空值率，同时验证 `limit=101` 被拒绝。
 成功后打印一条 `status: ok` 的 JSON 摘要。可用 `--url http://127.0.0.1:8001/mcp` 指定地址。
 也可以在 MCP Inspector 中选择 **Streamable HTTP** 并连接上述 `/mcp` 地址。
@@ -47,9 +47,10 @@ uv run --frozen --project connectors/postgres aep-postgres-smoke
 | `list_tables` | `schema` | `schema`、`tables`：有 SELECT 权限的普通表和分区表名称 |
 | `describe_table` | `schema`, `table` | `columns`：名称、PostgreSQL 类型、`nullable`、`primary_key`；`foreign_keys`：名称、源列、目标 schema/表/列 |
 | `sample_rows` | `schema`, `table`, `limit=10` | `rows`：最多 100 行 JSON；日期时间为字符串，numeric 为 JSON 数值 |
+| `read_rows` | `schema`, `table`, `offset=0`, `limit=1000` | `schema`、`table`、`columns`、`rows`、`next_offset`；按主键（无主键按全部列）排序分页，最后一页 `next_offset=null` |
 | `table_stats` | `schema`, `table` | `estimated_row_count`、`sample_limit`、`sample_row_count`、每列的 `null_fraction` / `distinct_count`；样本里不同值不超过 20 个的列另有 `top_values`（取值和次数，按次数降序；超过 80 字符的取值只返回前 80 个字符并带 `truncated: true`，次数仍按完整取值统计） |
 
-`limit` 必须是 1–100 的整数，布尔值、字符串、浮点数和越界值都会被拒绝。
+`sample_rows.limit` 必须是 1–100 的整数，布尔值、字符串、浮点数和越界值都会被拒绝。
 主键通过各列的 `primary_key` 标识；复合外键的源列和目标列按约束顺序一一对应。
 
 `estimated_row_count` 使用 PostgreSQL `pg_class.reltuples`，可能陈旧；未有估计时为 `null`。
@@ -57,6 +58,10 @@ uv run --frozen --project connectors/postgres aep-postgres-smoke
 样本不保证顺序或随机性，不代表全表精确分布。不同值数量不包含 SQL NULL，空字符串算一个值；
 空表的空值率为 `null`、不同值数量为 0。JSON 列也支持不同值统计。
 不暴露系统表、视图、物化视图、外部表或任意 SQL 执行入口。
+
+`read_rows.limit` 为 1–5000 的整数，默认 1000；`offset` 为非负整数，默认 0。
+同样拒绝布尔、字符串、浮点和越界值。通过多读一行判断是否还有下一页，值的 JSON 编码与
+`sample_rows` 完全一致；`columns` 保持表的列顺序。
 
 ## 只读保护
 

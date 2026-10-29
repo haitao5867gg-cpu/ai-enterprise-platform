@@ -231,7 +231,7 @@ services:
       # Sample sources, registered through the existing startup mechanism.
       AEP_DEFAULT_DATASOURCES: >-
         [{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"},
-         {"name": "MySQL 示例库", "kind": "mysql", "connector_url": "http://connector-mysql:8002/mcp", "description": "本地 MySQL 示例源库：客户、商品、订单（含脏数据）"}]
+         {"name": "MySQL 示例库", "kind": "mysql", "connector_url": "http://connector-mysql:8002/mcp", "description": "本地 MySQL 示例源库：sales（客户、商品、订单）和 retail（零售订单，演示用），都含脏数据"}]
       # Eval sets, for the eval a draft app version must pass before it is published.
       AEP_EVALS_DIR: /evals
       AEP_EVAL_DATASOURCE: ${AEP_EVAL_DATASOURCE:-示例库}
