@@ -17,6 +17,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  getBezierPath,
   getSmoothStepPath,
   useUpdateNodeInternals,
   type Edge,
@@ -34,17 +35,19 @@ import {
   typeLabels,
 } from "../lib/flow-edit";
 import {
+  CARD_HEADING_HEIGHT,
   CARD_WIDTH,
   cardHeight,
+  freePosition,
   initialPositions,
   layoutNodes,
   type Point,
 } from "../lib/flow-layout";
 import type { Pending } from "./flow-add-node";
 
-export type AddPosition = { point: Point; menu: Point; pending: Pending };
+export type AddPosition = { point?: Point; menu: Point; pending: Pending };
 export type CanvasActions = {
-  center: () => Point;
+  positionFor: (node: FlowNode, preferred?: Point) => Point;
   positionOf: (id: string) => Point;
   deleteSelection: () => boolean;
 };
@@ -52,8 +55,7 @@ type CanvasNode = Node<{ node: FlowNode; invalid: boolean }, "flow">;
 type CanvasEdge = Edge<
   {
     text: string;
-    name: string;
-    select: () => void;
+    loop?: { top: number; bottom: number };
     remove: () => void;
     disabled: boolean;
   },
@@ -77,9 +79,9 @@ function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
       {node.type !== "start" && (
         <Handle
           type="target"
-          position={Position.Top}
+          position={Position.Left}
           id="in"
-          style={{ left: 18 }}
+          style={{ top: CARD_HEADING_HEIGHT / 2 }}
           isConnectable={isConnectable}
           data-testid={`canvas-in-${node.id}`}
           aria-label={`${node.title}的入口`}
@@ -113,7 +115,19 @@ function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
 }
 
 function BranchEdge(props: EdgeProps<CanvasEdge>) {
-  const [path, x, y] = getSmoothStepPath(props);
+  const loop = props.data?.loop;
+  const midpointY = (props.sourceY + props.targetY) / 2;
+  const [path, x, y] = loop
+    ? getSmoothStepPath({
+        ...props,
+        offset: 40,
+        borderRadius: 12,
+        centerY:
+          midpointY - loop.top < loop.bottom - midpointY
+            ? loop.top
+            : loop.bottom,
+      })
+    : getBezierPath(props);
   return (
     <>
       <BaseEdge
@@ -122,36 +136,31 @@ function BranchEdge(props: EdgeProps<CanvasEdge>) {
         style={props.style}
         interactionWidth={24}
       />
-      <EdgeLabelRenderer>
-        <div
-          className={`canvas-edge-label nodrag nopan${props.selected ? " selected" : ""}`}
-          style={{
-            transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
-          }}
-        >
-          <button
-            type="button"
-            className="canvas-edge-name"
-            aria-label={`选中连线 ${props.data?.name}`}
-            onClick={() => props.data?.select()}
+      {(props.data?.text || props.selected) && (
+        <EdgeLabelRenderer>
+          <div
+            className={`canvas-edge-label nodrag nopan${props.selected ? " selected" : ""}`}
+            style={{
+              transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+            }}
           >
-            {props.data?.text}
-          </button>
-          {props.selected && (
-            <button
-              type="button"
-              disabled={props.data?.disabled}
-              aria-label="删除选中连线"
-              onClick={(event) => {
-                event.stopPropagation();
-                props.data?.remove();
-              }}
-            >
-              ×
-            </button>
-          )}
-        </div>
-      </EdgeLabelRenderer>
+            {props.data?.text && <span>{props.data.text}</span>}
+            {props.selected && (
+              <button
+                type="button"
+                disabled={props.data?.disabled}
+                aria-label="删除选中连线"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  props.data?.remove();
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        </EdgeLabelRenderer>
+      )}
     </>
   );
 }
@@ -236,7 +245,20 @@ export function FlowCanvas({
     setSelectedEdge("");
   }
   useImperativeHandle(ref, () => ({
-    center,
+    positionFor: (node, preferred) => {
+      const midpoint = center();
+      return freePosition(
+        preferred ?? {
+          x: midpoint.x - CARD_WIDTH / 2,
+          y: midpoint.y - cardHeight(node) / 2,
+        },
+        cardHeight(node),
+        config.graph.nodes.map((other) => ({
+          ...positionOf(other.id),
+          height: cardHeight(other),
+        })),
+      );
+    },
     positionOf,
     deleteSelection: () => {
       if (disabled) return false;
@@ -266,6 +288,25 @@ export function FlowCanvas({
   const edges: CanvasEdge[] = config.graph.edges.map((edge) => {
     const branch = edge.branch ?? "";
     const id = edgeId(edge.from, branch);
+    const source = positionOf(edge.from);
+    const target = positionOf(edge.to);
+    // Return edges take the nearer route above or below cards in their corridor.
+    const corridor =
+      target.x <= source.x
+        ? config.graph.nodes
+            .map((node) => ({ ...positionOf(node.id), height: cardHeight(node) }))
+            .filter(
+              (point) =>
+                point.x <= source.x + CARD_WIDTH + 40 &&
+                point.x + CARD_WIDTH >= target.x - 40,
+            )
+        : [];
+    const loop = corridor.length
+      ? {
+          top: Math.min(...corridor.map((point) => point.y)) - 40,
+          bottom: Math.max(...corridor.map((point) => point.y + point.height)) + 40,
+        }
+      : undefined;
     return {
       id,
       type: "flow",
@@ -283,9 +324,8 @@ export function FlowCanvas({
       },
       markerEnd: { type: MarkerType.ArrowClosed, color: "#9385ab" },
       data: {
-        text: branchLabel(byId.get(edge.from), branch),
-        name: `${byId.get(edge.from)?.title ?? edge.from} → ${byId.get(edge.to)?.title ?? edge.to}，${branchLabel(byId.get(edge.from), branch)}`,
-        select: () => setSelectedEdge(id),
+        text: branch ? branchLabel(byId.get(edge.from), branch) : "",
+        loop,
         disabled,
         remove: () => clearEdge(edge.from, branch),
       },
@@ -299,7 +339,7 @@ export function FlowCanvas({
           className="button secondary"
           disabled={disabled || !canAdd || !instance}
           onClick={() =>
-            openAdd({ point: center(), menu: { x: 16, y: 16 }, pending: null })
+            openAdd({ menu: { x: 16, y: 16 }, pending: null })
           }
         >
           添加节点
@@ -457,11 +497,12 @@ export function FlowCanvas({
             const cursor =
               "changedTouches" in event ? event.changedTouches[0] : event;
             const rect = stage.current!.getBoundingClientRect();
+            const point = instance.screenToFlowPosition({
+              x: cursor.clientX,
+              y: cursor.clientY,
+            });
             openAdd({
-              point: instance.screenToFlowPosition({
-                x: cursor.clientX,
-                y: cursor.clientY,
-              }),
+              point: { x: point.x, y: point.y - CARD_HEADING_HEIGHT / 2 },
               menu: {
                 x: Math.max(
                   8,

@@ -426,7 +426,7 @@ export function FlowEditor({
   function add(type: NodeType, preset?: NodeType["presets"][number]) {
     const created = newNode(config, type, preset);
     if (canvasMode)
-      created.ui = addPosition?.point ?? canvasRef.current?.center();
+      created.ui = canvasRef.current?.positionFor(created, addPosition?.point);
     let updated = insertNode(config, created, pending?.from ?? node?.id);
     if (pending)
       updated = setNext(updated, pending.from, pending.branch, created.id);
