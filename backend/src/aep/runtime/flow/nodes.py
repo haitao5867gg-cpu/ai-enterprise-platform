@@ -747,6 +747,9 @@ def questions(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     for i, f in enumerate(value):
         key = f.get("key") if isinstance(f, dict) else None
         key = key if isinstance(key, str) and ID.match(key) else None
+        # A default and ``required`` are put right, not held against the question.
+        if isinstance(f, dict):
+            f = {k: v for k, v in f.items() if k != "default"} | {"required": True}
         found = question_problems(f)
         if i >= MAX_QUESTIONS:
             problem = f"最多 {MAX_QUESTIONS} 题，从第 {MAX_QUESTIONS + 1} 题起不问"
@@ -755,12 +758,13 @@ def questions(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         elif any(q["key"] == key for q in asked):
             problem = f"标识 {key} 重复"
         else:
-            kept = {
-                k: v
-                for k, v in f.items()
-                if k != "default" and not (k in ("suggested", "why", "affects") and v is None)
-            }
-            asked.append({**kept, "required": True})
+            asked.append(
+                {
+                    k: v
+                    for k, v in f.items()
+                    if not (k in ("suggested", "why", "affects") and v is None)
+                }
+            )
             continue
         dropped.append({"index": i, "key": key, "problem": problem})
     return asked, dropped

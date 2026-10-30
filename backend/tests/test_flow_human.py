@@ -521,12 +521,18 @@ async def test_questions_written_in_the_node_and_what_a_reference_may_give():
         assert run["pending"]["details"]["dropped_fields"] == []
 
 
-async def test_more_than_twenty_questions_are_cut():
-    many = [{**Q2, "key": f"q{i}", "label": f"第 {i} 题"} for i in range(1, 23)]
+async def test_questions_given_by_a_reference_lose_defaults_and_past_twenty_are_cut():
+    # A default (refused when written in the node) is taken off, not held against it.
+    many = [
+        {**Q2, "key": f"q{i}", "label": f"第 {i} 题", "default": False, "required": False}
+        for i in range(1, 23)
+    ]
     async with Platform([reply(questions=many)]) as p:
         await p.new_app("plan", reviewed())
         run = await p.run("plan", {"question": "统计客单价"})
-        assert [f["key"] for f in run["pending"]["fields"]] == [f"q{i}" for i in range(1, 21)]
+        fields = run["pending"]["fields"]
+        assert [f["key"] for f in fields] == [f"q{i}" for i in range(1, 21)]
+        assert fields[0] == {**Q2, "key": "q1", "label": "第 1 题", "required": True}
         assert run["pending"]["details"]["dropped_fields"] == [
             {"index": 20, "key": "q21", "problem": "最多 20 题，从第 21 题起不问"},
             {"index": 21, "key": "q22", "problem": "最多 20 题，从第 21 题起不问"},
