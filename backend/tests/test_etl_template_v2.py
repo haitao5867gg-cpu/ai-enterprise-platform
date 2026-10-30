@@ -4,10 +4,14 @@ delivered, the code or the plan sent back after the dev run, stopped, and a fail
 run that cannot be passed."""
 
 import copy
+import io
+import zipfile
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from aep.api import runs
 from aep.runtime.flow import builtin
 from tests.test_etl import PYSPARK_BODY, plan, reply
 from tests.test_flow_data_nodes import (
@@ -23,6 +27,16 @@ from tests.test_flow_data_nodes import (
 GOOD_CODE = reply({"targets": {"order_facts": PYSPARK_BODY}})
 INGESTED = loaded(("customers", 3), ("orders", 3))
 FIXABLE = {"errors": ["order_facts: AnalysisException: 列 qty 不存在"]}
+# What the cluster works out for the plan's answer: the most items by city.
+WORKED = {
+    "period": None,
+    "rows": [{"city": "上海", "quantity": 5}, {"city": "北京", "quantity": 2}],
+    "totals": {"quantity": None},
+    "mins": {},
+    "groups": 2,
+    "row_count": 2,
+    "types": {"city": "string", "quantity": "int"},
+}
 
 
 def v2_plan(**changes) -> str:
@@ -124,9 +138,18 @@ def steps(view: dict) -> list[str]:
     return [m["node"] for m in view["messages"]]
 
 
+def zipped(resp: httpx.Response) -> list[str]:
+    """The paths in a downloaded zip of the bundle order_facts."""
+    assert resp.status_code == 200, resp.text
+    assert 'filename="order_facts.zip"' in resp.headers["content-disposition"]
+    return sorted(zipfile.ZipFile(io.BytesIO(resp.content)).namelist())
+
+
 async def test_confirmed_twice_then_delivered(make):
     lake = await make(
-        [v2_plan(), v2_plan(summary="只看 2026 年。"), GOOD_CODE], [PASSED], [INGESTED, PREVIEW]
+        [v2_plan(), v2_plan(summary="只看 2026 年。"), GOOD_CODE],
+        [PASSED],
+        [INGESTED, PREVIEW | {"answer": WORKED}],
     )
     run_id, view = await lake.start()
     pending = view["pending"]
@@ -138,6 +161,8 @@ async def test_confirmed_twice_then_delivered(make):
     assert details["data"]["brief"]["goal"] == "按城市统计有效订单的订单数和商品数量"
     assert details["data"]["returned"] is None and details["data"]["previous"] is None
     assert details["data"]["answer"]["target"] == "order_facts"
+    early = await lake.api.get(f"/runs/{run_id}/files.zip")
+    assert (early.status_code, early.json()["detail"]) == (404, "这次运行没有可下载的代码")
     assert "## 业务说明" in details["show"]
 
     # A changed answer turns 确认 into 按我的意见修改方案: the plan is written again.
@@ -163,8 +188,30 @@ async def test_confirmed_twice_then_delivered(make):
     assert pending["changed_branch"] is None and pending["fields"] is None
     data = pending["details"]["data"]
     assert pending["details"]["view"] == "etl_dev_review"
-    assert data["status"] == "passed" and data["answer"] is None
+    assert data["status"] == "passed"
     assert data["quality"]["text"] == "1 条质量规则全部通过，丢弃 1 行"
+    # The preview is sorted by the primary key and the answer worked out on the cluster.
+    spec = sent_spec(lake.ws.commands[1]["command"], "preview")
+    assert spec["order"] == {"order_facts": ["order_id"]}
+    assert spec["answer"] == {
+        "target": "order_facts",
+        "filter": None,
+        "group_by": ["city"],
+        "measures": [{"name": "quantity", "agg": "none"}],
+        "order_by": [{"column": "quantity", "desc": True}],
+        "top_n": 10,
+        "table": ["icsd-ace-dev", "trac_b_test", "order_facts"],
+    }
+    answer = data["answer"]
+    assert answer["status"] == "ok" and answer["error"] is None
+    assert answer["target"] == "`icsd-ace-dev`.trac_b_test.order_facts"
+    assert [c["format"] for c in answer["columns"]] == [None, "integer"]
+    assert answer["conclusion"] == "上海的商品数量最高：5。"
+    assert answer["quality"] == data["quality"] and answer["url"] == data["url"]
+    assert (answer["groups"], answer["truncated"], answer["period"]) == (2, False, None)
+    assert "### 答案\n\n上海的商品数量最高：5。" in pending["details"]["show"]
+    # The code waiting for review downloads from the last code check.
+    assert zipped(await lake.api.get(f"/runs/{run_id}/files.zip")) == data["files"]
     assert data["confirmed"]["decision"] == "approve" and data["confirmed"]["round"] == 2
     assert "src/pipeline.py" in data["files"]
     assert "## dev 运行通过" in pending["details"]["show"]
@@ -177,8 +224,9 @@ async def test_confirmed_twice_then_delivered(make):
         "report", "plan", "ingested", "brief", "answer", "code",
         "quality", "dev_url", "confirmed", "reviewed",
     }  # fmt: skip
-    assert result["answer"] is None and result["dev_url"] == data["url"]
+    assert result["answer"] == answer and result["dev_url"] == data["url"]
     assert sorted(result["code"]["files"]) == data["files"]
+    assert zipped(await lake.api.get(f"/runs/{run_id}/files.zip")) == data["files"]
     assert (result["confirmed"]["actor"], result["reviewed"]["decision"]) == ("韩梅梅", "approve")
     assert [m["content"] for m in view["messages"] if m["node"] in ("review", "data_review")] == [
         "点了「确认方案，开始做」，改了答案或写了意见，按「按我的意见修改方案」处理；"
@@ -300,3 +348,38 @@ async def test_a_failed_dev_run_cannot_be_passed(make):
 
     view = await lake.submit(run_id, "stop", comment="没有写表权限，先停下")
     assert (view["outcome"], view["result"]["reason"]) == ("stopped", "没有写表权限，先停下")
+
+
+class Shown:
+    """A run service that shows one run's result and steps."""
+
+    def __init__(self, result, nodes, steps) -> None:
+        self.result, self.nodes, self.steps = result, nodes, steps
+
+    async def get(self, run_id):
+        return SimpleNamespace(result=self.result)
+
+    async def flow(self, run_id):
+        return {"nodes": self.nodes, "steps": self.steps}
+
+
+async def test_code_to_download_skips_values_of_another_shape():
+    bundle = {"name": "b2", "files": {"src/pipeline.py": "x"}}
+    nodes = [{"id": "check", "type": "etl_code_check"}, {"id": "other", "type": "llm"}]
+    steps = [
+        {"node": "check", "output": {"vars": {"check": {"bundle": bundle}}}},
+        {"node": "check", "output": {"vars": {"check": {"bundle": None}}}},
+        {"node": "other", "output": {"vars": {"other": {"bundle": {"files": {"a": "b"}}}}}},
+        {"node": "check", "output": "not a state update"},
+    ]
+    files = {"README.md": "r"}
+    # result.files first (the code app etl names its bundle in result.bundle).
+    found = await runs._run_files("r", Shown({"files": files, "bundle": "etl_b"}, nodes, steps))
+    assert found == (files, "etl_b")
+    # result.code.files next, named after the bundle.
+    code = {"name": "b1", "files": files}
+    assert await runs._run_files("r", Shown({"code": code}, nodes, steps)) == (files, "b1")
+    # Then the last code check step with a bundle; wrong shapes are skipped.
+    odd = {"files": {"a": 1}, "code": {"files": "text"}}
+    assert await runs._run_files("r", Shown(odd, nodes, steps)) == (bundle["files"], "b2")
+    assert await runs._run_files("r", Shown("answer text", nodes, steps[1:])) is None

@@ -5,10 +5,11 @@ what is sent to the cluster and how its outcome is read.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
-from aep import cluster_harness
+from aep import cluster_harness, cluster_tasks
 from aep.etl import codegen
 from aep.etl.plan import EtlPlan
 from tests import fake_databricks
@@ -217,3 +218,72 @@ async def test_the_source_catalog_is_required(tmp_path):
     assert (dev.status, dev.fixable) == ("failed", False)
     assert "AEP_DATABRICKS_SOURCE_CATALOG" in dev.errors[0]
     assert workspace.commands == []
+
+
+def shared(program) -> str:
+    """The part of a cluster program that reads rows and works out answers."""
+    text = Path(program.__file__).read_text()
+    start = text.index("# --- Reading rows and working out answers.")
+    return text[start : text.index("# --- End of the part both programs carry.")]
+
+
+def test_both_cluster_programs_carry_the_same_helpers_word_for_word():
+    assert shared(cluster_harness) == shared(cluster_tasks)
+    for name in ("def _json_rows(", "def _first_rows(", "def _answer("):
+        assert name in shared(cluster_harness)
+
+
+DESIGN = {
+    "target": "order_facts",
+    "filter": None,
+    "group_by": ["city"],
+    "measures": [{"name": "quantity", "agg": "sum"}],
+    "order_by": [{"column": "quantity", "desc": True}],
+    "top_n": 10,
+}
+WORKED = {
+    "period": None,
+    "rows": [{"city": "上海", "quantity": 7}],
+    "totals": {"quantity": 7},
+    "mins": {"quantity": 7},
+    "groups": 1,
+    "row_count": 2,
+    "types": {"city": "string", "quantity": "bigint"},
+}
+
+
+async def test_the_answer_and_the_sorted_preview_are_worked_out_in_the_harness(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    found = {"table": "order_facts", "columns": ["city", "order_id"], "rows": [], "sorted_by": []}
+    workspace.cluster_outputs = [PASSED | {"preview": [found], "answer": WORKED}]
+    order = {"order_facts": ["order_id", "line_no"]}
+
+    dev = await on_cluster(workspace).run(bundle(), 5, order, DESIGN)
+
+    assert dev.status == "passed" and dev.answer == WORKED
+    spec = sent_spec(workspace.commands[0]["command"])
+    assert (spec["preview"], spec["order"]) == (5, order)
+    assert spec["answer"] == DESIGN | {"table": "order_facts"}
+    assert dev.preview == [found | {"target": "order_facts"}]
+    # The key has a column the table lacks: nothing sorted, and the run says so.
+    assert "order_facts 的主键列 line_no 不在结果表里，预览没有排序" in dev.warnings
+
+
+async def test_without_a_plan_the_harness_is_sent_what_it_was_before(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.cluster_outputs = [PASSED, PASSED, FAILED]
+
+    dev = await on_cluster(workspace).run(bundle(), 5)
+    spec = sent_spec(workspace.commands[0]["command"])
+    assert spec["preview"] == 5 and "order" not in spec and "answer" not in spec
+    assert dev.answer is None
+
+    # An answer the harness did not bring back is an error; a failed run has none.
+    dev = await on_cluster(workspace).run(bundle(), 0, None, DESIGN)
+    spec = sent_spec(workspace.commands[1]["command"])
+    assert (
+        "preview" not in spec and "order" not in spec and spec["answer"]["table"] == "order_facts"
+    )
+    assert dev.answer == {"error": "集群上的试跑没有带回答案"}
+    dev = await on_cluster(workspace).run(bundle(), 5, None, DESIGN)
+    assert dev.status == "failed" and dev.answer is None

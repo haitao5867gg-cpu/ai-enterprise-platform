@@ -258,3 +258,28 @@ def test_classic_compute_under_a_cluster_policy():
 
 async def _no_sleep(seconds: float) -> None:
     return None
+
+
+DESIGN = {
+    "target": "order_facts",
+    "filter": None,
+    "group_by": ["city"],
+    "measures": [{"name": "quantity", "agg": "sum"}],
+    "order_by": [{"column": "quantity", "desc": True}],
+    "top_n": 10,
+}
+
+
+async def test_without_a_cluster_the_answer_says_the_tables_cannot_be_read(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path, runs=[True, True])
+    order = {"order_facts": ["order_id"]}
+
+    dev = await workspace.target().run(bundle(), 5, order, DESIGN)
+    assert dev.status == "passed"
+    assert dev.answer == {"error": "没有配置集群（AEP_DATABRICKS_CLUSTER_ID），读不了结果表"}
+    assert "没有配置集群（AEP_DATABRICKS_CLUSTER_ID），不预览结果数据" in dev.warnings
+    assert "answer" not in dev.as_dict()
+
+    # No preview asked for: only the answer says so.
+    dev = await workspace.target().run(bundle(), 0, order, DESIGN)
+    assert dev.answer is not None and not [w for w in dev.warnings if "预览" in w]

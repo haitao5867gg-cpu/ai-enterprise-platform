@@ -1276,6 +1276,20 @@ def uncited(plan: EtlPlanV2) -> list[str]:
     return [item_id for item_id, text in texts if not CITATION.search(text)]
 
 
+def answer_names(plan: EtlPlanV2) -> dict[str, str]:
+    """What the brief calls the result table's columns: the first metric, else the first
+    dimension, naming each column."""
+    names: dict[str, str] = {}
+    if plan.brief is not None:
+        for d in reversed(plan.brief.dimensions):
+            if d.column is not None:
+                names[d.column] = d.name
+        for m in reversed(plan.brief.metrics):
+            if m.column is not None:
+                names[m.column] = m.name
+    return names
+
+
 def answer_output(plan: EtlPlanV2) -> dict[str, Any] | None:
     """The answer design with its columns and sentence (docs/api/data-nodes.md)."""
     if plan.answer is None:
@@ -1284,18 +1298,13 @@ def answer_output(plan: EtlPlanV2) -> dict[str, Any] | None:
     sources = {c.name: c.source for c in table.columns}
     labels = {c.name: _label_or_name(c) for c in table.columns}
     units: dict[str, str | None] = {}
-    names = dict(labels)
     if plan.brief is not None:
-        for d in reversed(plan.brief.dimensions):
-            if d.column is not None:
-                names[d.column] = d.name
         for m in reversed(plan.brief.metrics):
             if m.column is not None:
-                names[m.column] = m.name
                 units[m.column] = None if _blank(m.unit) else m.unit
     return plan.answer.model_dump() | {
         "columns": answer.columns(plan.answer, sources, labels, units),
-        "text": answer.text(plan.answer, names),
+        "text": answer.text(plan.answer, labels | answer_names(plan)),
     }
 
 
