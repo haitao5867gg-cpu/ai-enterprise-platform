@@ -16,6 +16,7 @@ import {
   type Run,
 } from "../lib/runs";
 import { readDataSources, type DataSource, type EtlLanguage } from "../lib/etl";
+import { isToolService, kindLabel } from "../lib/datasources";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 import { FileUpload } from "./file-upload";
@@ -176,12 +177,14 @@ export function NewRun({ from }: { from?: string } = {}) {
   const fields =
     (source?.app === app ? source.inputs : null) ??
     (detail?.app === app ? (detail.inputs ?? []) : []);
+  // ETL reads data: tool services are left out of its picker.
+  const etlSources = sources.filter((source) => !isToolService(source));
   const needsSource =
     app === "etl" &&
     (sourcesLoading ||
       Boolean(sourcesError) ||
-      !sources.some((source) => source.datasource_id === datasourceId));
-  const selectedSource = sources.find(
+      !etlSources.some((source) => source.datasource_id === datasourceId));
+  const selectedSource = etlSources.find(
     (source) => source.datasource_id === datasourceId,
   );
   // A copy can only be sent once the copied run has loaded and can be run again.
@@ -375,12 +378,12 @@ export function NewRun({ from }: { from?: string } = {}) {
                 <option value="">
                   {sourcesLoading ? "正在加载数据源…" : "请选择数据源"}
                 </option>
-                {sources.map((source) => (
+                {etlSources.map((source) => (
                   <option
                     key={source.datasource_id}
                     value={source.datasource_id}
                   >
-                    {source.name} · {source.kind}
+                    {source.name} · {kindLabel(source.kind)}
                   </option>
                 ))}
               </select>
@@ -414,9 +417,11 @@ export function NewRun({ from }: { from?: string } = {}) {
                   onRetry={() => setSourcesRevision((value) => value + 1)}
                 />
               )}
-              {!sourcesLoading && !sourcesError && sources.length === 0 && (
+              {!sourcesLoading && !sourcesError && etlSources.length === 0 && (
                 <p className="field-hint" role="status">
-                  暂无可用数据源，请先登记数据源后刷新。
+                  暂无可用数据源，请先在
+                  <Link href="/datasources">数据源与工具</Link>
+                  里登记后刷新。
                 </p>
               )}
               {!sourcesLoading && !sourcesError && (

@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from aep import llm
 from aep.databricks import DatabricksError, DevTarget, Landing, full_name
-from aep.datasources import DataSource
+from aep.datasources import DATABASE_KINDS, DataSource
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.profile import MAX_TABLES, describe_for_model, known_values, profile_tables
@@ -51,6 +51,16 @@ INGEST_TOOLS = ["list_tables", "describe_table", "read_rows"]
 
 
 # Shared settings
+
+
+def _etl_source(source: DataSource) -> DataSource:
+    """The source a run chose, if ETL can read it: a tool service cannot."""
+    if source.kind not in DATABASE_KINDS:
+        raise NodeFailure(
+            INPUT_ERROR,
+            f"「{source.name}」是工具服务，不能用来探查或抽取数据，请选数据库或上传文件的数据源",
+        )
+    return source
 
 
 def _int(node: dict[str, Any], key: str, p: Problems, label: str, low: int, high: int) -> None:
@@ -201,7 +211,7 @@ def _table(columns: list[str], rows: list[list[Any]]) -> list[str]:
 
 async def check_profile(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     await _check_source(
-        node.get("datasource"), ("datasource",), p, env, PROFILE_TOOLS, ("datasource",)
+        node.get("datasource"), ("datasource",), p, env, PROFILE_TOOLS, ("datasource",), etl=True
     )
     _check_tables(node, p, required=False)
     _int(node, "sample_rows", p, "样本行数", 1, 20)
@@ -209,7 +219,7 @@ async def check_profile(node: dict[str, Any], p: Problems, env: CheckEnv) -> Non
 
 async def run_profile(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     get = rt.lookup(state)
-    source = await rt.source(refs.resolve(node["datasource"], get))
+    source = _etl_source(await rt.source(refs.resolve(node["datasource"], get)))
     names = await _table_names(rt, source, refs.resolve(node.get("tables"), get), True)
     if rt.tools is None:
         raise NodeFailure("tool_error", "平台没有配置工具调用")
@@ -376,7 +386,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
 
 async def check_ingest(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     await _check_source(
-        node.get("datasource"), ("datasource",), p, env, INGEST_TOOLS, ("datasource",)
+        node.get("datasource"), ("datasource",), p, env, INGEST_TOOLS, ("datasource",), etl=True
     )
     _check_tables(node, p, required=True)
     _int(node, "max_rows", p, "每张表最多行数", 1, MAX_ROWS)
@@ -404,7 +414,7 @@ async def _read_all(rt: Runtime, source: DataSource, schema: str, table: str, mo
 async def run_ingest(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     databricks = _databricks(rt, "AEP_DATABRICKS_CLUSTER_ID", "AEP_DATABRICKS_SOURCE_CATALOG")
     get = rt.lookup(state)
-    source = await rt.source(refs.resolve(node["datasource"], get))
+    source = _etl_source(await rt.source(refs.resolve(node["datasource"], get)))
     names = await _table_names(rt, source, refs.resolve(node.get("tables"), get), False)
     most = node.get("max_rows", 200000)
     # Every table is read before anything is written, so a table over the limit

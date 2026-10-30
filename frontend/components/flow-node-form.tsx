@@ -20,8 +20,14 @@ import type {
   ToolNode,
   ValueType,
 } from "../lib/apps";
+import {
+  cachedTools,
+  isToolService,
+  kindLabel,
+  toolDescription,
+} from "../lib/datasources";
 import { issuesUnder, variablesFor, type Variable } from "../lib/flow-edit";
-import { errorMessage, requestJson } from "../lib/runs";
+import { errorMessage } from "../lib/runs";
 import { SkillPicker } from "./app-settings";
 import {
   CheckField,
@@ -48,7 +54,11 @@ type Tool = {
     >;
     required?: string[];
   };
+  read_only?: boolean;
 };
+// Phase 1 supports read-only tools only; a tool that does not say so is marked.
+const toolLabel = (tool: Tool) =>
+  tool.read_only === false ? `${tool.name}（未声明只读）` : tool.name;
 
 const valueTypes: { value: ValueType; label: string }[] = [
   { value: "string", label: "文字" },
@@ -84,7 +94,6 @@ const text = (value: unknown) =>
       ? ""
       : JSON.stringify(value);
 
-const toolCache = new Map<string, Promise<Tool[]>>();
 function useTools(datasource: string) {
   const literal = Boolean(datasource) && !datasource.includes("{{");
   const [state, setState] = useState<{
@@ -95,15 +104,7 @@ function useTools(datasource: string) {
   useEffect(() => {
     if (!literal) return;
     let live = true;
-    let request = toolCache.get(datasource);
-    if (!request) {
-      request = requestJson(
-        `/datasources/${encodeURIComponent(datasource)}/tools`,
-      ).then((value) => (Array.isArray(value) ? (value as Tool[]) : []));
-      toolCache.set(datasource, request);
-      request.catch(() => toolCache.delete(datasource));
-    }
-    request
+    cachedTools(datasource)
       .then((tools) => live && setState({ id: datasource, tools }))
       .catch(
         (err) => live && setState({ id: datasource, error: errorMessage(err) }),
@@ -116,13 +117,20 @@ function useTools(datasource: string) {
   return { tools: state.tools, error: state.error, loading: false };
 }
 
-function datasourceChoices(config: FlowConfig, options: Options) {
+// `etlOnly`: the data nodes read data, so tool services are left out.
+function datasourceChoices(
+  config: FlowConfig,
+  options: Options,
+  etlOnly = false,
+) {
   const start = config.graph.nodes.find((node) => node.type === "start");
   return [
-    ...options.datasources.map((item) => ({
-      value: item.datasource_id,
-      label: `${item.name} · ${item.kind}`,
-    })),
+    ...options.datasources
+      .filter((item) => !etlOnly || !isToolService(item))
+      .map((item) => ({
+        value: item.datasource_id,
+        label: `${item.name} · ${kindLabel(item.kind)}`,
+      })),
     ...(start?.type === "start" ? start.inputs : [])
       .filter((input) => input.type === "datasource")
       .map((input) => ({
@@ -138,14 +146,19 @@ function DatasourceField({
   config,
   options,
   issues,
+  etlOnly = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   config: FlowConfig;
   options: Options;
   issues: Issues;
+  etlOnly?: boolean;
 }) {
-  const choices = datasourceChoices(config, options);
+  const choices = datasourceChoices(config, options, etlOnly);
+  const registered = options.datasources.find(
+    (item) => item.datasource_id === value,
+  );
   return (
     <SelectField
       label="数据源"
@@ -159,7 +172,11 @@ function DatasourceField({
           ? [
               {
                 value,
-                label: value.includes("{{") ? value : `${value}（未登记）`,
+                label: value.includes("{{")
+                  ? value
+                  : registered
+                    ? `${registered.name} · 工具服务（这里不能用）`
+                    : `${value}（未登记）`,
               },
             ]
           : []),
@@ -424,10 +441,22 @@ function ToolFields({
           value={node.tool}
           issues={issuesUnder(issues, "tool")}
           onChange={(name) => change({ ...node, tool: name, args: {} })}
-          help={tool?.description ?? undefined}
+          help={
+            tool
+              ? toolDescription(
+                  { name: tool.name, description: tool.description ?? "" },
+                  options.datasources.find(
+                    (item) => item.datasource_id === node.datasource,
+                  )?.kind ?? "",
+                ) || undefined
+              : undefined
+          }
           choices={[
             { value: "", label: "请选择工具" },
-            ...tools.map((item) => ({ value: item.name, label: item.name })),
+            ...tools.map((item) => ({
+              value: item.name,
+              label: toolLabel(item),
+            })),
             ...(node.tool && !tool
               ? [{ value: node.tool, label: `${node.tool}（数据源上没有）` }]
               : []),
@@ -609,7 +638,7 @@ function AgentToolPicker({
             {tools.map((tool) => (
               <CheckField
                 key={tool.name}
-                label={tool.name}
+                label={toolLabel(tool)}
                 checked={value.includes(tool.name)}
                 onChange={(on) =>
                   onChange(
@@ -996,6 +1025,7 @@ export function NodeSettings({
             options={options}
             value={node.datasource}
             issues={issues}
+            etlOnly
             onChange={(datasource) => change({ ...node, datasource })}
           />
           <RefField

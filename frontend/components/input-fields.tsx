@@ -1,7 +1,30 @@
 "use client";
 
 import type { Input } from "../lib/apps";
+import { isToolService, kindLabel } from "../lib/datasources";
 import type { FieldValues } from "../lib/input-fields";
+
+type Source = { datasource_id: string; name: string; kind: string };
+// Tool services come last, in their own group: a start input may feed a tool node, but an
+// ETL step that gets one fails with a Chinese input error.
+function DatasourceOptions({ sources }: { sources: Source[] }) {
+  const databases = sources.filter((source) => !isToolService(source));
+  const services = sources.filter(isToolService);
+  const options = (items: Source[], kind: boolean) =>
+    items.map((source) => (
+      <option key={source.datasource_id} value={source.datasource_id}>
+        {kind ? `${source.name} · ${kindLabel(source.kind)}` : source.name}
+      </option>
+    ));
+  return services.length ? (
+    <>
+      <optgroup label="数据源">{options(databases, true)}</optgroup>
+      <optgroup label="工具服务">{options(services, false)}</optgroup>
+    </>
+  ) : (
+    options(databases, true)
+  );
+}
 
 export function InputFields({
   fields,
@@ -18,7 +41,7 @@ export function InputFields({
   errors?: Record<string, string>;
   disabled?: boolean;
   prefix?: string;
-  datasources?: { datasource_id: string; name: string; kind: string }[];
+  datasources?: Source[];
 }) {
   return (
     <div className="input-fields">
@@ -60,20 +83,15 @@ export function InputFields({
                 onChange={(e) => change(e.target.value)}
               >
                 <option value="">请选择{field.label}</option>
-                {field.type === "datasource"
-                  ? datasources.map((source) => (
-                      <option
-                        key={source.datasource_id}
-                        value={source.datasource_id}
-                      >
-                        {source.name} · {source.kind}
-                      </option>
-                    ))
-                  : field.choices?.map((choice) => (
-                      <option key={choice.value} value={choice.value}>
-                        {choice.label}
-                      </option>
-                    ))}
+                {field.type === "datasource" ? (
+                  <DatasourceOptions sources={datasources} />
+                ) : (
+                  field.choices?.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))
+                )}
               </select>
             ) : (
               <input

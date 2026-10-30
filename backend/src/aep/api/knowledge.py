@@ -2,7 +2,6 @@
 
 import asyncio
 import shutil
-from collections.abc import Callable, Coroutine
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -12,9 +11,7 @@ from urllib.parse import quote
 
 import openai
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
-from fastapi.routing import APIRoute
 from pydantic import (
     BaseModel,
     Field,
@@ -26,6 +23,7 @@ from pydantic import (
 )
 
 from aep.api.apps import Catalog
+from aep.api.validation import NoNulls, chinese_errors
 from aep.config import Settings, get_settings
 from aep.knowledge.rerank import RerankError
 from aep.knowledge.retrieval import Retrieval, defaults
@@ -49,26 +47,7 @@ from aep.knowledge.uploads import (
     validate_files,
 )
 
-
-class _KnowledgeRoute(APIRoute):
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
-
-        async def handle(request: Request) -> Response:
-            try:
-                return await handler(request)
-            except RequestValidationError as exc:
-                error = exc.errors()[0]
-                field = ".".join(str(part) for part in error["loc"][1:]) or "请求"
-                detail = f"参数「{field}」的格式、长度或范围不正确"
-                if error["type"] == "value_error" and (cause := error.get("ctx", {}).get("error")):
-                    detail = str(cause)
-                raise HTTPException(422, detail) from exc
-
-        return handle
-
-
-router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"], route_class=_KnowledgeRoute)
+router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"], route_class=chinese_errors())
 
 
 def get_store(request: Request) -> KnowledgeStore:
@@ -80,16 +59,7 @@ Config = Annotated[Settings, Depends(get_settings)]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 
 
-class _Input(BaseModel):
-    @model_validator(mode="before")
-    @classmethod
-    def no_nulls(cls, value: Any) -> Any:
-        if isinstance(value, dict) and any(v is None for v in value.values()):
-            raise ValueError("请求字段不能为 null")
-        return value
-
-
-class Chunking(_Input):
+class Chunking(NoNulls):
     size: int = Field(800, ge=200, le=2000)
     overlap: int = Field(100, ge=0)
 
@@ -100,14 +70,14 @@ class Chunking(_Input):
         return self
 
 
-class CreateBase(_Input):
+class CreateBase(NoNulls):
     name: Name
     description: str = Field("", max_length=500)
     embedding_model: str | None = None
     chunking: Chunking = Field(default_factory=Chunking)
 
 
-class UpdateBase(_Input):
+class UpdateBase(NoNulls):
     name: Name | None = None
     description: str | None = Field(None, max_length=500)
     embedding_model: str | None = None
@@ -154,7 +124,7 @@ class ChunkPage(BaseModel):
     items: list[ChunkOut]
 
 
-class SearchBody(_Input):
+class SearchBody(NoNulls):
     query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
     top_k: int = Field(5, ge=1, le=20)
     min_score: float = Field(0.3, ge=0, le=1)

@@ -33,12 +33,25 @@ COMPANY_API_KEY=<密钥>
 也可以直接用 API：
 
 ```bash
-ds=$(curl -s localhost:8000/datasources | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["datasource_id"])')
+ds=$(curl -s localhost:8000/datasources | python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["kind"] != "mcp"))')
 curl -s localhost:8000/runs -H 'content-type: application/json' \
   -d "{\"app\":\"etl\",\"input\":{\"datasource_id\":\"$ds\",\"request\":\"做一张订单明细宽表\"}}"
 ```
 
-确认用 `POST /runs/{id}/resume`，下载用 `GET /runs/{id}/files.zip`；`input.models` 可以为 `plan` 和 `codegen` 分别指定模型。
+确认用 `POST /runs/{id}/resume`，下载用 `GET /runs/{id}/files.zip`；`input.models` 可以为 `plan` 和 `codegen` 分别指定模型。列表里可能有工具服务（`kind` 为 `mcp`），ETL 不接受它，所以上面跳过了它。
+
+#### 登记连接器
+
+页面上的「数据源与工具」可以登记新的连接器（数据源或只提供工具的工具服务），也可以改名称和说明。登记前先测试连接，通过了才能保存；平台只保存连接器地址，数据库账号密码配在连接器上。连接器的主机要在 `AEP_CONNECTOR_HOSTS` 里（默认是本地编排的三个连接器，写法见 `.env.example`）。用 API：
+
+```bash
+curl -s localhost:8000/datasources/test -H 'content-type: application/json' \
+  -d '{"kind":"postgres","connector_url":"http://connector-postgres:8001/mcp"}'
+curl -s localhost:8000/datasources -H 'content-type: application/json' \
+  -d '{"name":"线上订单库","kind":"postgres","connector_url":"http://connector-postgres:8001/mcp","description":"订单和客户，只读副本"}'
+```
+
+测试结果里 `ok` 为 `true` 才能登记；没通过时 `problems` 说明原因（地址不允许、连不上、缺少 ETL 需要的工具等）。接口和规则见 [docs/api/datasources.md](docs/api/datasources.md)。
 
 #### 用上传的文件试跑
 

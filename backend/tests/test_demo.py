@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from aep import demo
+from aep import demo, health
 from aep.databricks import DatabricksError
 from aep.etl import codegen
 from aep.etl import plan as etl_plan
@@ -446,3 +446,18 @@ async def test_demo_stops_when_something_required_is_missing(platform):
         lines: list[str] = []
         assert not await demo.Demo(api, out=lines.append).run()
     assert "连不上平台接口 http://localhost:8000" in lines[-1] and "make up" in lines[-1]
+
+
+async def test_the_demo_finds_its_source_after_a_rename(platform):
+    await platform.sources.update(
+        platform.ds, name="零售演示库", connector_url=health.DEMO_CONNECTOR_URL
+    )
+    # A tool service on the same connector, sorting first, is not the demo's source.
+    await platform.sources.create("A 查询工具", "mcp", health.DEMO_CONNECTOR_URL)
+
+    items = {i["key"]: i for i in (await platform.api.get("/health/demo")).json()}
+    assert items["datasource"]["ok"]
+    assert items["datasource"]["detail"] == "数据源「零售演示库」能读到 retail 库"
+    config = await platform.demo().config({"options": {"skills": []}}, "company", {})
+    start = next(n for n in config["graph"]["nodes"] if n["type"] == "start")
+    assert next(f for f in start["inputs"] if f["key"] == "datasource")["default"] == platform.ds

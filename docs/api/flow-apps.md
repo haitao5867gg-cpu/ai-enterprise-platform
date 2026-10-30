@@ -130,9 +130,9 @@
  "args": {"sql": "select count(*) from orders where id = '{{ask_order.order_id}}'"}}
 ```
 
-产出：`result`（工具返回的内容；是 JSON 就解析成对象）。这一期只能调已登记数据源的工具，数据源连接器都是只读的。
+产出：`result`（工具返回的内容；是 JSON 就解析成对象）。这一期只能调已登记的数据源和工具服务的工具，而且只支持只读工具：数据源连接器都是只读的，工具服务由登记的人确认。
 
-`datasource` 写成引用时（通常引用开始节点 `datasource` 类型的输入），保存时只检查引用本身，工具名和参数到运行时才对照那个数据源检查；没选数据源或数据源不存在，节点以 `input_error` 失败；数据源没有这个工具或连接器报错，以 `tool_error` 失败。agent 的 `tools[].datasource` 同理。
+`datasource` 写成引用时（通常引用开始节点 `datasource` 类型的输入），保存时只检查引用本身，工具名和参数到运行时才对照那个数据源检查；没选数据源或数据源不存在，节点以 `input_error` 失败；数据源没有这个工具或连接器报错，以 `tool_error` 失败。agent 的 `tools[].datasource` 同理。工具服务（`kind` 为 `mcp`）只能用在 `tool` 和 `agent` 节点，见 [datasources.md](datasources.md)。
 
 **agent 智能体**：有步数上限的“模型 → 工具 → 模型”循环。
 

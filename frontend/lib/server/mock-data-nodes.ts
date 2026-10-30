@@ -6,6 +6,17 @@ import type {
   EtlPlanCheckOutput,
   TablePreview,
 } from "../data-nodes";
+import { allMockSources, mockToolService } from "./mock-datasources";
+
+// A node that fails the way the backend reports it, with its error type (input_error
+// and the like); anything else a simulated node throws counts as a tool error.
+export class MockNodeFailure extends Error {
+  readonly type: string;
+  constructor(type: string, message: string) {
+    super(message);
+    this.type = type;
+  }
+}
 
 export const dataDefaults: FlowNode[] = [
   {
@@ -361,11 +372,24 @@ export function simulateDataNode(
   node: FlowNode,
   rendered: Record<string, unknown>,
 ) {
+  if (node.type === "etl_profile" || node.type === "databricks_ingest") {
+    // Like the backend: a tool service picked at run time cannot be read from.
+    const service = mockToolService(rendered.datasource);
+    if (service)
+      throw new MockNodeFailure(
+        "input_error",
+        `「${service.name}」是工具服务，不能用来探查或抽取数据，请选数据库或上传文件的数据源`,
+      );
+  }
+  const sourceName =
+    allMockSources().find(
+      (source) => source.datasource_id === rendered.datasource,
+    )?.name ?? "示例库";
   if (node.type === "etl_profile")
     return {
       outputs: {
         source_id: String(rendered.datasource),
-        source_name: "示例库",
+        source_name: sourceName,
         tables: ["retail.customers", "retail.orders"].map((name) => ({
           name,
           columns: [{ name: "id", data_type: "bigint" }],
@@ -373,7 +397,7 @@ export function simulateDataNode(
         })),
         names: ["retail.customers", "retail.orders"],
         description: "retail.customers：客户；retail.orders：订单。",
-        summary: "已探查 示例库 的 2 张表：retail.customers、retail.orders",
+        summary: `已探查 ${sourceName} 的 2 张表：retail.customers、retail.orders`,
       },
       branch: null,
     };

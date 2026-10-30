@@ -242,7 +242,8 @@ class Runner:
         self._timeout = timeout
 
     async def _datasource_id(self) -> str:
-        sources = (await self._api.get("/datasources")).raise_for_status().json()
+        listed = (await self._api.get("/datasources")).raise_for_status().json()
+        sources = [s for s in listed if s["kind"] != "mcp"]  # tool services are not for ETL
         if not sources:
             raise RuntimeError("平台里没有登记数据源")
         if self._datasource is None:

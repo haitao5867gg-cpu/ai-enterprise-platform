@@ -149,7 +149,7 @@ async def test_limits_and_names(api, tmp_path, monkeypatch):
     too_many = [("files", (f"{i}.csv", b"id\n1")) for i in range(21)]
     assert "20" in (await upload(api, too_many)).json()["detail"]
     assert (await upload(api, [], name="empty")).status_code == 422
-    for name in [" ", "x" * 101]:
+    for name in [" ", "x" * 101, "x\x00"]:
         assert (await upload(api, [("files", ("a.csv", b"id\n1"))], name)).status_code == 422
 
 

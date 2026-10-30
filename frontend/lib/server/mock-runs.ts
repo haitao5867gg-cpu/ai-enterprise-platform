@@ -14,7 +14,6 @@ import {
 } from "../runs";
 import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
 import {
-  mockDataSources,
   mockDeployed,
   mockEtlPlan,
   mockEtlResult,
@@ -24,6 +23,7 @@ import {
 import { mockZip } from "./mock-zip";
 import { addStep, decideStep, mockFlow, type MockSteps } from "./mock-flow";
 import { mockUpload, mockUploads, mockUploadedPlan } from "./mock-uploads";
+import { mockDatasources, mockToolService } from "./mock-datasources";
 import type { UploadedDataset } from "../uploads";
 import {
   isFlowConfig,
@@ -44,7 +44,11 @@ import {
 import { invalid } from "./mock-assets";
 import type { AppManual } from "../app-manual";
 import { buildMockManual } from "./mock-manual";
-import { dataNodeSaid, lakehouseConfig } from "./mock-data-nodes";
+import {
+  MockNodeFailure,
+  dataNodeSaid,
+  lakehouseConfig,
+} from "./mock-data-nodes";
 
 type StoredRun = {
   run: Run;
@@ -64,6 +68,7 @@ type StoredRun = {
     stage: "plan" | "release";
     version: number;
     approvals: MockApproval[];
+    source: string;
     upload?: UploadedDataset;
   };
   flow?: {
@@ -541,7 +546,7 @@ function advanceFlow(entry: StoredRun): Run {
         entry,
         node,
         `节点「${node.title}」(${node.id})：${error instanceof Error ? error.message : "模拟执行失败"}`,
-        "tool_error",
+        error instanceof MockNodeFailure ? error.type : "tool_error",
       );
       break;
     }
@@ -565,6 +570,18 @@ function refresh(entry: StoredRun): Run {
   }
   if (entry.etl) {
     const etl = entry.etl;
+    // Like the backend's 探查数据 step: ETL reads data sources, not tool services.
+    const service = mockToolService(etl.source);
+    if (service && etl.stage === "plan" && !entry.decision) {
+      run.step = { node: "profile", title: "探查数据" };
+      fail(
+        entry,
+        { id: "profile", title: "探查数据" },
+        `「${service.name}」是工具服务，ETL 要选数据库或上传文件的数据源`,
+        "input_error",
+      );
+      return run;
+    }
     if (etl.stage === "plan" && entry.decision !== "approve") {
       const plan = etl.upload
         ? mockUploadedPlan(etl.upload, etl.language, entry.comment)
@@ -585,7 +602,9 @@ function refresh(entry: StoredRun): Run {
       const input = { input: { request: run.messages[0].content } };
       if (!entry.decision)
         addStep(entry.steps, "profile", input, {
-          source_name: etl.upload?.datasource.name ?? "示例库",
+          source_name:
+            allSources().find((item) => item.datasource_id === etl.source)
+              ?.name ?? etl.source,
           profile: etl.upload
             ? etl.upload.tables.map((table) => ({
                 name: `${etl.upload!.schema}.${table.table}`,
@@ -677,48 +696,6 @@ function json(value: unknown, status = 200) {
     headers: { "Cache-Control": "no-store" },
   });
 }
-
-const table = {
-  schema: { type: "string", description: "模式名，例如 public" },
-  table: { type: "string", description: "表名" },
-};
-const mockTools = [
-  {
-    name: "list_schemas",
-    description: "列出模式",
-    input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "list_tables",
-    description: "列出某个模式下的表",
-    input_schema: {
-      type: "object",
-      properties: { schema: table.schema },
-      required: ["schema"],
-    },
-  },
-  {
-    name: "describe_table",
-    description: "查看表结构",
-    input_schema: {
-      type: "object",
-      properties: table,
-      required: ["schema", "table"],
-    },
-  },
-  {
-    name: "sample_rows",
-    description: "读取几行样本",
-    input_schema: {
-      type: "object",
-      properties: {
-        ...table,
-        limit: { type: "integer", description: "最多几行" },
-      },
-      required: ["schema", "table"],
-    },
-  },
-];
 
 // Create a run, or a copy of one: `copy` names the run it copies and, for a
 // draft's run, the configuration it ran with.
@@ -896,6 +873,7 @@ function create(
           stage: "plan",
           version: 1,
           approvals: [],
+          source: String(input.datasource_id),
           upload:
             typeof input.datasource_id === "string"
               ? mockUploads.get(input.datasource_id)
@@ -908,20 +886,10 @@ function create(
 
 export async function mockRuns(request: Request, path: string[]) {
   seedRetailRun();
-  if (path[0] === "datasources") {
-    if (path[1] === "files") return mockUpload(request);
-    if (path[2] === "tools") {
-      const known = [
-        ...mockDataSources,
-        ...[...mockUploads.values()].map((item) => item.datasource),
-      ].some((item) => item.datasource_id === path[1]);
-      return known ? json(mockTools) : json({ detail: "数据源不存在" }, 404);
-    }
-    return json([
-      ...mockDataSources,
-      ...[...mockUploads.values()].map((item) => item.datasource),
-    ]);
-  }
+  if (path[0] === "datasources")
+    return path[1] === "files"
+      ? mockUpload(request)
+      : mockDatasources(request, path);
   if (request.method === "GET" && path.length === 1) {
     return json([...store.values()].reverse().map(refresh).map(summary));
   }

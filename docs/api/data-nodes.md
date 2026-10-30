@@ -37,6 +37,7 @@
  "sample_rows": 5}                       // 1–20
 ```
 
+- `datasource`：不接受工具服务（`mcp`，见 [datasources.md](datasources.md)）：写死的 id 保存时报错，运行时选到的以 `input_error` 失败。
 - `tables`：要探查哪些表。字符串按逗号、空白、换行拆开；每项是 `schema.table` 或 `schema.*`（这个 schema 下的全部表）。为空或空数组时探查数据源里的全部表。展开后超过 20 张表（`MAX_TABLES`）时失败，`input_error`，提示指定表。
 - 执行同 `aep.etl.profile.profile_tables`。
 
@@ -88,6 +89,7 @@
  "max_rows": 200000}                   // 每张表最多几行，1–1000000；超过时失败
 ```
 
+- `datasource`：不接受工具服务（`mcp`）：写死的 id 保存时报错，运行时选到的以 `input_error` 失败。
 - 目标：`<AEP_DATABRICKS_SOURCE_CATALOG>.<schema>.<table>`，名字和源表一样，所以生成的代码（按 `source_catalog` 读源表）直接读到。schema 不存在时创建；表已存在时**整表覆盖**。
 - 步骤（每张表）：
   1. `describe_table` 拿列和类型，再用连接器的 `read_rows` 分页读出全部行（每页 5000）。行数超过 `max_rows` 时失败，不写任何东西。

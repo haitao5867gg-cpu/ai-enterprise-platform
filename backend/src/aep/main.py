@@ -17,6 +17,7 @@ from aep import __version__, llm, tracing
 from aep.api import apps, assets, datasources, flows, knowledge, runs, skills
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
+from aep.connector_check import ConnectorCheck
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.health import check_llm_gateway, check_postgres, check_redis, demo_checks
@@ -161,6 +162,8 @@ def create_app() -> FastAPI:
         await llm_client.close()
 
     app = FastAPI(title="AI Enterprise Platform", version=__version__, lifespan=lifespan)
+    # Connector tests and each data source's health (kept for a minute in this process).
+    app.state.connector_check = ConnectorCheck()
     app.include_router(runs.router)
     app.include_router(datasources.router)
     app.include_router(assets.router)

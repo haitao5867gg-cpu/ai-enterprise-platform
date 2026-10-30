@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { getManual, type AppManual, type ManualNode } from "../lib/app-manual";
+import { kindLabel } from "../lib/datasources";
 import { errorMessage } from "../lib/runs";
 
 export function useManual(path: string, revision = "") {
@@ -180,7 +181,9 @@ export function AppManualPanel({
                     <li key={source.datasource_id ?? i}>
                       <strong>{source.name}</strong>
                       {source.kind && (
-                        <span className="app-tag">{source.kind}</span>
+                        <span className="app-tag">
+                          {kindLabel(source.kind)}
+                        </span>
                       )}
                       <UsedBy nodes={source.nodes} />
                     </li>

@@ -85,15 +85,86 @@ createServer(async (request, response) => {
     );
     return json({ name: form.get("name"), files }, 201);
   }
-  if (path === "/datasources")
-    return json([
-      {
-        datasource_id: "fixture-postgres",
-        name: "契约示例库",
-        kind: "postgres",
-        description: "合成测试数据源",
-      },
-    ]);
+  if (path?.startsWith("/datasources")) {
+    const url = new URL(path, "http://fixture");
+    // The DataSource of docs/api/datasources.md, the same in the list and on its own.
+    const record = {
+      datasource_id: "fixture-postgres",
+      name: "契约示例库",
+      kind: "postgres",
+      connector_url: "http://connector-postgres:8001/mcp",
+      description: "合成测试数据源",
+      created_at: "2026-10-28T02:00:00Z",
+    };
+    if (url.pathname === "/datasources" && request.method === "GET")
+      return json([record]);
+    let payload = null;
+    if (["POST", "PATCH"].includes(request.method)) {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      payload = JSON.parse(raw);
+    }
+    const tools = [
+      "list_schemas",
+      "list_tables",
+      "describe_table",
+      "table_stats",
+      "sample_rows",
+      "read_rows",
+    ].map((name) => ({
+      name,
+      description: `${name} 契约工具`,
+      input_schema: { type: "object", properties: {} },
+      read_only: true,
+    }));
+    const refused = {
+      code: "refused",
+      message:
+        "连接被拒绝：这个地址和端口上没有服务。请检查端口，或确认连接器已经启动。",
+    };
+    const rejected = payload?.connector_url?.includes("refused");
+    if (url.pathname === "/datasources/test")
+      return json({
+        ok: !rejected,
+        latency_ms: rejected ? null : 12,
+        tools: rejected
+          ? []
+          : tools.map(({ name, description, read_only }) => ({
+              name,
+              description,
+              read_only,
+            })),
+        missing_tools: [],
+        problems: rejected ? [refused] : [],
+        received: payload,
+      });
+    if (url.pathname === "/datasources")
+      return rejected
+        ? json({ detail: `测试连接没有通过。${refused.message}` }, 422)
+        : json(
+            { ...record, ...payload, datasource_id: "fixture-created" },
+            201,
+          );
+    const [, , id, part, extra] = url.pathname.split("/");
+    if (id !== "fixture-postgres" || extra !== undefined)
+      return json({ detail: "没有找到这个数据源或工具服务" }, 404);
+    if (part === undefined)
+      return json(
+        request.method === "PATCH" ? { ...record, ...payload } : record,
+      );
+    if (part === "health")
+      return json({
+        ok: true,
+        latency_ms: 12,
+        tool_count: 6,
+        error: null,
+        message: null,
+        checked_at: "2026-10-28T02:00:00Z",
+        fresh: url.searchParams.get("fresh") === "true",
+      });
+    if (part === "usage") return json({ apps: [] });
+    if (part === "tools") return json(tools);
+  }
   if (path === "/runs/zip-fixture/files.zip") {
     response.writeHead(200, {
       "Content-Type": "application/zip",

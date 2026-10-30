@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from aep import llm
 from aep.config import Settings
 from aep.databricks import DevTarget
-from aep.datasources import DataSource, DataSourceStore
+from aep.datasources import DATABASE_KINDS, DataSource, DataSourceStore
 from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
@@ -933,9 +933,11 @@ async def _check_source(
     env: CheckEnv,
     tools: list[str] | None = None,
     tools_loc: Loc = (),
+    etl: bool = False,
 ) -> None:
     """A data source setting: its id, or one reference (``{{start.datasource}}``); with a
-    literal id, the tools named must be on its connector (when it answers)."""
+    literal id, the tools named must be on its connector (when it answers), and for
+    ``etl`` it must be a data source, not a tool service."""
     if not isinstance(value, str) or not value.strip():
         p.add(loc, "要选择数据源")
         return
@@ -944,6 +946,9 @@ async def _check_source(
     source = await env.datasources.get(value)
     if source is None:
         p.add(loc, f"没有数据源 {value}")
+        return
+    if etl and source.kind not in DATABASE_KINDS:
+        p.add(loc, f"「{source.name}」是工具服务，这里要选数据库或上传文件的数据源")
         return
     if not tools or env.tools is None:
         return

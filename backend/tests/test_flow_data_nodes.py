@@ -1103,3 +1103,44 @@ def test_exports_name_the_data_sources_of_data_nodes():
     assert files.datasource_ids(config) == []
     config["graph"]["nodes"][6]["datasource"] = "ds_2"
     assert files.datasource_ids(config) == ["ds_2"]
+
+
+async def test_data_nodes_refuse_a_tool_service(lake):
+    tickets = await lake.sources.create("工单系统", "mcp", "http://tools.connector.test/mcp")
+    config = lakehouse(lake.ds, lake.kb_id)
+    nodes = {n["id"]: n for n in config["graph"]["nodes"]}
+    nodes["profile"]["datasource"] = tickets.datasource_id
+    nodes["ingest"]["datasource"] = tickets.datasource_id
+    saved = await lake.api.put("/apps/retail-etl/draft", json={"config": config})
+    assert saved.status_code == 422
+    problems = {tuple(p["loc"][4:]): p["msg"] for p in saved.json()["detail"]}
+    picked = "「工单系统」是工具服务，这里要选数据库或上传文件的数据源"
+    assert problems == {("profile", "datasource"): picked, ("ingest", "datasource"): picked}
+
+    # Chosen when the run starts: the node fails as the input's fault, without retrying.
+    made = await lake.api.post(
+        "/runs",
+        json={
+            "app": "retail-etl",
+            "input": {"request": POLICY, "datasource": tickets.datasource_id},
+        },
+    )
+    assert made.status_code == 201, made.text
+    view = await lake.view(made.json()["run_id"])
+    assert view["status"] == "error" and view["failed"]["error_type"] == "input_error"
+    assert (
+        "「工单系统」是工具服务，不能用来探查或抽取数据，请选数据库或上传文件的数据源"
+        in view["error"]
+    )
+
+
+async def test_ingest_refuses_a_tool_service_chosen_at_run_time(tmp_path):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    tickets = await rt.datasources.create("工单系统", "mcp", "http://tools.connector.test/mcp")
+    node = ingest_node("{{start.datasource}}")
+    st = state(start={"datasource": tickets.datasource_id}, check_plan={"sources": ["a.b"]})
+    with pytest.raises(NodeFailure) as failed:
+        await run(node, st, rt)
+    assert failed.value.type == "input_error"
+    assert failed.value.message.startswith("「工单系统」是工具服务")

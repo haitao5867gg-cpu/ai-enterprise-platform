@@ -5,8 +5,7 @@ import type { AppManual, ManualNode } from "../app-manual";
 import { kindLabels } from "../flow";
 import { nodeKind, typeLabels } from "../flow-edit";
 import { mockFlow } from "./mock-flow";
-import { mockDataSources } from "./mock-etl";
-import { mockUploads } from "./mock-uploads";
+import { allMockSources } from "./mock-datasources";
 import { mockKnowledgeManual } from "./mock-knowledge";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
 
@@ -141,10 +140,9 @@ export function buildMockManual(
       )?.[1];
       const start = flow?.graph.nodes.find((node) => node.type === "start");
       const input = start?.inputs.find((input) => input.key === inputKey);
-      const source = [
-        ...mockDataSources,
-        ...[...mockUploads.values()].map((item) => item.datasource),
-      ].find((source) => source.datasource_id === id);
+      const source = allMockSources().find(
+        (source) => source.datasource_id === id,
+      );
       const name = runtime
         ? `运行时选择（开始节点的「${input?.label ?? "数据源"}」）`
         : (source?.name ?? id);

@@ -162,16 +162,84 @@ test("does not expose arbitrary backend routes or incorrect methods", async ({
   expect((await request.get("/api/runs/id/resume")).status()).toBe(405);
   expect((await request.post("/api/readyz", { data: {} })).status()).toBe(405);
   expect((await request.post("/api/runs/id", { data: {} })).status()).toBe(405);
-  expect((await request.post("/api/datasources", { data: {} })).status()).toBe(
+  expect((await request.put("/api/datasources", { data: {} })).status()).toBe(
     405,
   );
+  expect((await request.delete("/api/datasources/x")).status()).toBe(405);
+  expect((await request.get("/api/datasources/test")).status()).toBe(405);
+  expect(
+    (await request.post("/api/datasources/x/health", { data: {} })).status(),
+  ).toBe(405);
+  expect(
+    (await request.patch("/api/datasources/x/tools", { data: {} })).status(),
+  ).toBe(405);
   expect(
     (await request.post("/api/runs/id/files.zip", { data: {} })).status(),
   ).toBe(405);
-  expect((await request.get("/api/datasources/id")).status()).toBe(404);
+  expect((await request.get("/api/datasources/a/b/c")).status()).toBe(404);
   expect((await request.get("/api/runs/id/files.zip/extra")).status()).toBe(
     404,
   );
+});
+
+test("forwards the data source endpoints, their bodies, query strings and Chinese errors", async ({
+  request,
+}) => {
+  const record = {
+    datasource_id: "fixture-postgres",
+    name: "契约示例库",
+    kind: "postgres",
+    connector_url: "http://connector-postgres:8001/mcp",
+    description: "合成测试数据源",
+    created_at: "2026-10-28T02:00:00Z",
+  };
+  const body = {
+    kind: "postgres",
+    connector_url: "http://connector-postgres:8001/mcp",
+  };
+  const tested = await request.post("/api/datasources/test", { data: body });
+  expect(tested.status()).toBe(200);
+  expect(await tested.json()).toMatchObject({
+    ok: true,
+    latency_ms: 12,
+    missing_tools: [],
+    problems: [],
+    received: body,
+  });
+  const created = await request.post("/api/datasources", {
+    data: { ...body, name: "转发登记", description: "" },
+  });
+  expect(created.status()).toBe(201);
+  expect(await created.json()).toMatchObject({
+    datasource_id: "fixture-created",
+    name: "转发登记",
+  });
+  const refused = await request.post("/api/datasources", {
+    data: { ...body, name: "拒绝", connector_url: "http://refused:1/mcp" },
+  });
+  expect(refused.status()).toBe(422);
+  expect((await refused.json()).detail).toBe(
+    "测试连接没有通过。连接被拒绝：这个地址和端口上没有服务。请检查端口，或确认连接器已经启动。",
+  );
+  const path = "/api/datasources/fixture-postgres";
+  expect(await (await request.get(path)).json()).toEqual(record);
+  const patched = await request.patch(path, { data: { name: "新名字" } });
+  expect(await patched.json()).toEqual({ ...record, name: "新名字" });
+  expect(
+    await (await request.get(`${path}/health?fresh=true`)).json(),
+  ).toMatchObject({ ok: true, tool_count: 6, fresh: true });
+  expect(await (await request.get(`${path}/health`)).json()).toMatchObject({
+    fresh: false,
+  });
+  expect(await (await request.get(`${path}/usage`)).json()).toEqual({
+    apps: [],
+  });
+  const tools = await (await request.get(`${path}/tools`)).json();
+  expect(tools).toHaveLength(6);
+  expect(tools[0]).toMatchObject({ name: "list_schemas", read_only: true });
+  const missing = await request.get("/api/datasources/unknown");
+  expect(missing.status()).toBe(404);
+  expect((await missing.json()).detail).toBe("没有找到这个数据源或工具服务");
 });
 
 test("forwards data sources and preserves ZIP bytes, download headers and errors", async ({
@@ -184,7 +252,9 @@ test("forwards data sources and preserves ZIP bytes, download headers and errors
       datasource_id: "fixture-postgres",
       name: "契约示例库",
       kind: "postgres",
+      connector_url: "http://connector-postgres:8001/mcp",
       description: "合成测试数据源",
+      created_at: "2026-10-28T02:00:00Z",
     },
   ]);
   expect(sources.headers()["cache-control"]).toBe("no-store");
@@ -209,6 +279,8 @@ test("network and timeout errors are bounded and hide internal connection detail
   const unavailable = await request.get("/api/runs/unavailable-run");
   expect(unavailable.status()).toBe(502);
   expect(await unavailable.text()).not.toContain("127.0.0.1");
+  // Pages may show this detail on its own, so it is Chinese.
+  expect(await unavailable.json()).toEqual({ detail: "后端服务暂不可用。" });
   const timeout = await request.get("/api/runs/timeout-run");
   expect(timeout.status()).toBe(504);
 });

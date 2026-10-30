@@ -367,7 +367,8 @@ export async function requestJson(
     throw new ApiError(
       detail &&
       ((creating && response.status === 409) ||
-        path.startsWith("/knowledge-bases"))
+        path.startsWith("/knowledge-bases") ||
+        path.startsWith("/datasources"))
         ? detail
         : detail
           ? `${message} ${detail}`

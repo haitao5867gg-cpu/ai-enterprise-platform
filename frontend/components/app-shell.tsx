@@ -91,6 +91,13 @@ export function AppShell({
             知识库
           </Link>
           <Link
+            href="/datasources"
+            className={`nav-link ${pathname.startsWith("/datasources") ? "active" : ""}`}
+          >
+            <Icon name="plug" />
+            数据源与工具
+          </Link>
+          <Link
             href="/runs/new"
             className={`nav-link ${pathname === "/runs/new" ? "active" : ""}`}
           >
@@ -114,7 +121,9 @@ export function AppShell({
                     ? "知识库"
                     : pathname.startsWith("/skills")
                       ? "Skill"
-                      : "运行详情"}
+                      : pathname.startsWith("/datasources")
+                        ? "数据源与工具"
+                        : "运行详情"}
           </span>
           <BackendHealth />
         </header>

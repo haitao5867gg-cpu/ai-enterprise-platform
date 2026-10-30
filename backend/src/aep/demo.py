@@ -32,7 +32,7 @@ from typing import Any
 
 import httpx
 
-from aep.health import DEMO_DATASOURCE, DEMO_SCHEMA
+from aep.health import DEMO_DATASOURCE, DEMO_SCHEMA, find_demo_source
 
 APP = "retail-etl"
 APP_TITLE = "零售数据 ETL"
@@ -322,7 +322,8 @@ class Demo:
         if template is None:
             raise DemoError(f"平台没有模板 {TEMPLATE}，版本太旧：先 make up 重新构建")
         sources = await self._json("GET", "/datasources")
-        source = next((d for d in sources if d["name"] == DEMO_DATASOURCE), None)
+        # The demo runs outside the platform, so it looks for the local stack's connector.
+        source = find_demo_source(sources, lambda d: (d["name"], d["kind"], d["connector_url"]))
         if source is None:
             raise DemoError(f"没有登记数据源「{DEMO_DATASOURCE}」")
         published = {s["name"]: s["published_version"] for s in detail["options"]["skills"]}

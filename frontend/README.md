@@ -24,7 +24,7 @@ AEP_MOCK_RUNS=false AEP_API_INTERNAL_URL=http://localhost:8000 npm run dev
 
 ## 请求与状态处理
 
-- 浏览器只访问同源 `/api/runs`、`/api/runs/{id}`、`/api/runs/{id}/resume`、`/api/runs/{id}/files.zip`、`/api/runs/{id}/flow`、`/api/datasources`、`/api/readyz`，以及契约定义的 `/api/apps`、`/api/skills` 路径。Next.js route handler 在服务端读取 `AEP_API_INTERNAL_URL` 并转发；地址不会进入浏览器包。转发仅允许这些路径及相应 HTTP 方法，不提供任意后端代理。数据源列表和 ZIP 下载只接受 GET；ZIP 直接转发二进制流，保留 `Content-Type` 与 `Content-Disposition`。
+- 浏览器只访问同源 `/api/runs`、`/api/runs/{id}`、`/api/runs/{id}/resume`、`/api/runs/{id}/files.zip`、`/api/runs/{id}/flow`、数据源与工具的 `/api/datasources…` 路径、`/api/readyz`，以及契约定义的 `/api/apps`、`/api/skills` 路径。Next.js route handler 在服务端读取 `AEP_API_INTERNAL_URL` 并转发；地址不会进入浏览器包。转发仅允许这些路径及相应 HTTP 方法，不提供任意后端代理。数据源与工具接口按方法逐条放行：`/api/datasources` 接受 GET、POST，`/api/datasources/test` 和 `/api/datasources/files` 只接受 POST，`/api/datasources/{id}` 接受 GET、PATCH，`/api/datasources/{id}/tools`、`/health`、`/usage` 只接受 GET，不提供删除。ZIP 下载只接受 GET；ZIP 直接转发二进制流，保留 `Content-Type` 与 `Content-Disposition`。
 - 详情轮询间隔为上次请求完成后的 2 秒，避免慢请求重叠。`running`、`waiting` 持续轮询，`done`、`error` 和 `404` 停止；离开页面取消请求。临时读取失败保留上次消息并显示错误，继续自动重试，也可手动重试。
 - 确认按钮遵守 `pending.options`，只有 `waiting` 且存在审批内容时显示操作。提交中锁定两个按钮并取消旧轮询，提交后立即重新读取状态。提交失败或冲突后也重新核对，避免在过期状态下重复提交。
 - 消息以 API 原始顺序、安全的纯文本呈现。错误、空列表、创建失败、详情不存在、运行失败和未知格式均有明确反馈；创建失败保留输入，不自动重复发送写请求。
@@ -78,6 +78,8 @@ AEP_ISSUE_84_SCREENSHOTS=/tmp/issue-84-screenshots npm test -- --project=workben
 ```
 
 CI 自动把这些截图写入被忽略的 `docs/screenshots/issue-84/`，与现有截图一起上传为 `chat-workbench-screenshots` 产物；截图不提交到仓库。
+
+`tests/datasources.spec.ts` 覆盖数据源与工具页：数据源和工具服务两组列表、连通状态（检查中、正常、各类失败和重新检查）、工具数和使用应用数；登记时先测试连接才能保存，数据库地址、带账号或密钥参数的地址、平台内部服务、云元数据地址和不在允许列表里的主机都被拒绝，超时、连接被拒绝、不是 MCP 服务和网络不通只显示分类；数据库类型缺 ETL 工具时不能保存，工具服务不要求 ETL 工具但至少要有一个工具；详情页的工具参数、「只读（连接器自报）」和「未声明只读」标记以及使用情况；改名称和说明不用重新测试，改地址要重新测试，重名提示在名称上；上传文件登记；ETL 和数据工程节点的数据源选择里没有工具服务；手机布局和键盘操作。生产转发测试覆盖新增接口的方法白名单、请求体、查询参数和中文错误。
 
 CI 的 frontend job 执行类型检查、ESLint、构建和以上测试，再启动真实 Compose 后端执行下文的两条浏览器联调路径，上传截图并清理测试容器。可用以下命令生成开发 mock 的页面截图（使用合成需求）：
 
