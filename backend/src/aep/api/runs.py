@@ -583,22 +583,62 @@ async def rerun_run(run_id: str, service: Service, body: Rerun | None = None) ->
     return RunRef(run_id=record.run_id, status=record.status)
 
 
+def _files(value: Any) -> dict[str, str] | None:
+    """``value`` when it is a non-empty object of path → text."""
+    if not isinstance(value, dict) or not value:
+        return None
+    if all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        return value
+    return None
+
+
+def _named(bundle: Any) -> str | None:
+    name = bundle.get("name") if isinstance(bundle, dict) else None
+    return name if isinstance(name, str) and name else None
+
+
+async def _run_files(run_id: str, service: RunService) -> tuple[dict[str, str], str | None] | None:
+    """The code a run has to download and the bundle's name: ``result.files``, then
+    ``result.code.files``, then the bundle of the run's last code check step."""
+    view = await service.get(run_id)
+    result = view.result if isinstance(view.result, dict) else {}
+    files = _files(result.get("files"))
+    if files is not None:
+        bundle = result.get("bundle")
+        return files, bundle if isinstance(bundle, str) and bundle else None
+    code = result.get("code")
+    files = _files(code.get("files")) if isinstance(code, dict) else None
+    if files is not None:
+        return files, _named(code)
+    flow = await service.flow(run_id)
+    checks = {n["id"] for n in flow["nodes"] if n.get("type") == "etl_code_check"}
+    for step in reversed(flow["steps"]):
+        if step["node"] not in checks or not isinstance(step["output"], dict):
+            continue
+        written = step["output"].get("vars")
+        mine = written.get(step["node"]) if isinstance(written, dict) else None
+        bundle = mine.get("bundle") if isinstance(mine, dict) else None
+        files = _files(bundle.get("files")) if isinstance(bundle, dict) else None
+        if files is not None:
+            return files, _named(bundle)
+    return None
+
+
 @router.get("/{run_id}/files.zip")
 async def download_files(run_id: str, service: Service) -> Response:
-    """The files a finished run produced (e.g. an ETL bundle), as a zip archive."""
+    """The code a run produced (an ETL bundle), as a zip archive."""
     try:
-        view = await service.get(run_id)
+        found = await _run_files(run_id, service)
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
-    files = (view.result or {}).get("files")
-    if not files:
-        raise HTTPException(404, "this run has no files")
+    if found is None:
+        raise HTTPException(404, "这次运行没有可下载的代码")
+    files, bundle = found
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for path, content in sorted(files.items()):
             archive.writestr(path, content)
-    name = str((view.result or {}).get("bundle") or run_id)
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", bundle or run_id)
     return Response(
         buffer.getvalue(),
         media_type="application/zip",

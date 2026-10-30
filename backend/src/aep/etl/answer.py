@@ -2,10 +2,13 @@
 
 The model designs which result table, groups, measures, order and chart the card shows.
 Whether a measure adds up across groups (``agg``) is decided here from the result
-table's ``source`` expressions and is never taken from the model. Computing the numbers,
-the conclusion and the query the card shows comes later ("答案怎么算").
+table's ``source`` expressions and is never taken from the model. The numbers are
+worked out on the cluster (``aep.cluster_harness``, ``aep.cluster_tasks``) from the
+design sent as data (``cluster_design``); the column formats, the conclusion and the
+query the card shows are written here (``result``), never by a model ("答案怎么算").
 """
 
+import json
 import re
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Literal
@@ -373,3 +376,234 @@ def text(design: AnswerDesign, names: Mapping[str, str]) -> str:
         f"{head}各「{groups}」组合按{name(order.column)}{way}排的前 {design.top_n} 组，"
         f"附合计{chart}。"
     )
+
+
+# The answer worked out on the cluster (docs/api/data-nodes.md, "答案怎么算").
+
+INTEGER_TYPES = ("tinyint", "smallint", "int", "bigint")
+TIME_LITERALS = {"date": "DATE", "timestamp": "TIMESTAMP", "timestamp_ntz": "TIMESTAMP_NTZ"}
+# Types whose period is written exactly (besides the integer types).
+EXACT_LITERALS = ("string", "date")
+
+
+def cluster_design(card: Mapping[str, Any]) -> dict[str, Any]:
+    """What the cluster needs of ``card`` (the plan check's ``answer``) to work it out."""
+    first = card["filter"][0] if card.get("filter") else None
+    measures = []
+    for c in card["columns"]:
+        if c["role"] != "metric":
+            continue
+        measure = {"name": c["name"], "agg": c["agg"]}
+        if c["agg"] == "ratio":
+            measure |= {"numerator": c["numerator"], "denominator": c["denominator"]}
+        measures.append(measure)
+    return {
+        "target": card["target"],
+        "filter": first["column"] if first else None,
+        "group_by": list(card["group_by"]),
+        "measures": measures,
+        "order_by": [{"column": o["column"], "desc": o["desc"]} for o in card["order_by"]],
+        "top_n": card["top_n"],
+    }
+
+
+def column_format(kind: str | None) -> str | None:
+    """``integer`` or ``decimal`` for a number column of the Spark type ``kind``."""
+    if kind in INTEGER_TYPES:
+        return "integer"
+    if kind in ("float", "double") or (kind or "").startswith("decimal"):
+        return "decimal"
+    return None
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def shown(value: Any, fmt: str | None = None) -> str:
+    """A value as the card writes it: a number by its column's format, never by whether
+    the value has a decimal point (the browser cannot tell 1234567.0 from 1234567)."""
+    if value is None:
+        return "—"
+    if _number(value) and fmt == "integer":
+        return f"{value:,}" if isinstance(value, int) else f"{value:,.0f}"
+    if _number(value) and fmt == "decimal":
+        return f"{value:,.2f}"
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _joined(head: str, tail: str) -> str:
+    """``head`` then ``tail``, a space apart where a letter or digit meets Chinese."""
+    space = head and tail and head[-1].isascii() and head[-1].isalnum() and not tail[0].isascii()
+    return f"{head} {tail}" if space else head + tail
+
+
+def _metric_name(column: Mapping[str, Any], names: Mapping[str, str]) -> str:
+    if names.get(column["name"]):
+        return names[column["name"]]
+    return BRACKET.sub("", column["label"]).strip() or column["label"]
+
+
+def conclusion(answer: Mapping[str, Any], card: Mapping[str, Any], names: Mapping[str, str]) -> str:
+    """The sentence the card leads with; ``answer`` is worked out, ``names`` are what the
+    brief calls the columns."""
+    period = answer["period"] or ""
+    columns = {c["name"]: c for c in answer["columns"]}
+    order = card["order_by"][0]
+    group_by = card["group_by"]
+
+    def amount(column: str, value: Any) -> str:
+        unit = columns[column].get("unit")
+        text = shown(value, columns[column].get("format"))
+        return f"{text} {unit}" if unit and value is not None else text
+
+    def lead(text: str) -> str:
+        return f"{period}，{text}" if period else text
+
+    if answer["groups"] == 0:
+        return _joined(period, "没有符合条件的数据。")
+    if not group_by:
+        metric = columns[order["column"]]
+        value = answer["rows"][0].get(order["column"])
+        return lead(f"{_metric_name(metric, names)}合计：{amount(order['column'], value)}。")
+    if order["column"] in group_by:
+        column = columns[order["column"]]
+        return _joined(
+            period,
+            f"共 {answer['groups']} 组，按{names.get(column['name']) or column['label']}排序。",
+        )
+    row = answer["rows"][0]
+    metric = columns[order["column"]]
+    value = row.get(metric["name"])
+    who = " · ".join(shown(row.get(c)) for c in group_by)
+    said = _joined(who, f"的{_metric_name(metric, names)}{'最高' if order['desc'] else '最低'}")
+    said += f"：{amount(metric['name'], value)}"
+    total = answer["totals"].get(metric["name"])
+    least = answer["mins"].get(metric["name"])
+    if (
+        metric["agg"] == "sum"
+        and _number(value)
+        and _number(least)
+        and least >= 0
+        and _number(total)
+        and total > 0
+    ):
+        said += f"，占合计 {value / total * 100:.1f}%"
+    return lead(said + "。")
+
+
+def _name(*parts: str) -> str:
+    return ".".join("`" + part.replace("`", "``") + "`" for part in parts)
+
+
+def _literal(text: str, kind: str | None) -> str:
+    """The period as a Spark SQL literal of its column's type ``kind``."""
+    if column_format(kind):
+        return text
+    quoted = "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    typed = TIME_LITERALS.get(kind or "")
+    return f"{typed} {quoted}" if typed else quoted
+
+
+def query(
+    card: Mapping[str, Any], table: Sequence[str], period: str | None, kind: str | None
+) -> str:
+    """The query that gives the same answer, for a person to copy (it is never run);
+    ``period`` is the latest value of the filter column (of type ``kind``), when known."""
+    q = _name
+    where = _name(*table)
+    select = [q(c) for c in card["group_by"]]
+    for c in card["columns"]:
+        if c["role"] != "metric":
+            continue
+        name = q(c["name"])
+        if c["agg"] == "sum":
+            select.append(f"sum({name}) AS {name}")
+        elif c["agg"] == "ratio":
+            numerator, denominator = q(c["numerator"]), q(c["denominator"])
+            select.append(f"sum({numerator}) / nullif(sum({denominator}), 0) AS {name}")
+        else:
+            select.append(f"CASE WHEN count(*) = 1 THEN first({name}) END AS {name}")
+    lines = ["SELECT " + ", ".join(select), f"FROM {where}"]
+    if card.get("filter"):
+        column = q(card["filter"][0]["column"])
+        # Only a period that is the exact value becomes a literal: a time is written to
+        # the second, and a decimal or float has been through JSON's floats.
+        value = (
+            _literal(period, kind)
+            if period is not None and (kind in EXACT_LITERALS or kind in INTEGER_TYPES)
+            else (f"(SELECT max({column}) FROM {where})")
+        )
+        lines.append(f"WHERE {column} = {value}")
+    if card["group_by"]:
+        lines.append("GROUP BY " + ", ".join(q(c) for c in card["group_by"]))
+    else:
+        # Without groups an aggregate over no rows still gives a row of nulls; the answer
+        # has no rows then.
+        lines.append("HAVING count(*) > 0")
+    ordering = [
+        f"{q(o['column'])} {'DESC' if o['desc'] else 'ASC'} NULLS LAST" for o in card["order_by"]
+    ]
+    ordering += [f"{q(c)} ASC NULLS FIRST" for c in card["group_by"]]
+    lines += ["ORDER BY " + ", ".join(ordering), f"LIMIT {card['top_n']}"]
+    return "\n".join(lines)
+
+
+def result(
+    card: Mapping[str, Any],
+    worked: Mapping[str, Any] | None,
+    *,
+    table: Sequence[str],
+    target: str,
+    quality: Any,
+    url: str | None,
+    names: Mapping[str, str],
+) -> dict[str, Any]:
+    """The ``answer`` output of a dev run: ``card`` is the plan check's answer, ``worked``
+    what the cluster worked out (or ``{"error": ...}``), ``table`` the result table's
+    name in parts and ``target`` as shown, ``names`` what the brief calls the columns."""
+    worked = worked or {"error": "集群没有带回答案"}
+    first = card["filter"][0]["column"] if card.get("filter") else None
+    types = worked.get("types") or {}
+    columns = []
+    for c in card["columns"]:
+        if worked.get("error") is not None or c["role"] != "metric":
+            fmt = None
+        else:
+            fmt = "decimal" if c["agg"] == "ratio" else column_format(types.get(c["name"]))
+        columns.append(dict(c) | {"format": fmt})
+    out: dict[str, Any] = {
+        "status": "error",
+        "target": target,
+        "period": None,
+        "columns": columns,
+        "rows": [],
+        "totals": {},
+        "mins": {},
+        "groups": None,
+        "row_count": None,
+        "truncated": None,
+        "conclusion": "",
+        "chart": card["chart"],
+        "quality": quality,
+        "sql": query(card, table, None, None),
+        "url": url,
+        "error": worked.get("error"),
+    }
+    if worked.get("error") is not None:
+        return out
+    raw = worked.get("period")
+    period = None if raw is None else raw if isinstance(raw, str) else json.dumps(raw)
+    out |= {
+        "status": "ok",
+        "period": period,
+        "rows": list(worked["rows"]),
+        "totals": dict(worked["totals"]),
+        "mins": dict(worked["mins"]),
+        "groups": worked["groups"],
+        "row_count": worked["row_count"],
+        "truncated": worked["groups"] > card["top_n"],
+        "sql": query(card, table, period, types.get(first) if first else None),
+    }
+    out["conclusion"] = conclusion(out, card, names)
+    return out

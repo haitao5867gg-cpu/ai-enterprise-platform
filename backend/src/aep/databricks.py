@@ -24,8 +24,8 @@ refreshes it.
 Flow apps' data-engineering nodes also use the workspace: ``ingest`` copies rows
 read from a data source into tables of ``AEP_DATABRICKS_SOURCE_CATALOG`` (landed as
 JSON Lines in a volume through the Files API, then loaded on the existing
-cluster), and ``preview`` reads the first rows of result tables there
-(``aep.cluster_tasks``).
+cluster), and ``preview`` reads the first rows of result tables there and works out
+the answer a plan designs (``aep.cluster_tasks``).
 
 Off unless ``AEP_DATABRICKS_HOST`` and ``AEP_DATABRICKS_TOKEN`` are set.
 """
@@ -96,7 +96,10 @@ class DevRun:
     stages are ``deploy`` (files and job) and ``run`` (``job_id``, ``run_id``) on
     ``cluster_id``; in ``cluster`` mode there is only the ``run`` stage.
     ``catalog`` and ``schema`` say where the tables were written (when known), and
-    ``preview`` holds the first rows of each table when they were asked for.
+    ``preview`` holds the first rows of each table when they were asked for (with
+    ``sorted_by`` when sorted by primary keys). ``answer`` is what the cluster worked out
+    for an answer design (``aep.etl.answer.cluster_design``) once the run passed, or
+    ``{"error": ...}``; it is not part of ``as_dict``.
     """
 
     status: Literal["passed", "failed"]
@@ -116,9 +119,10 @@ class DevRun:
     catalog: str | None = None
     schema: str | None = None
     preview: list[dict[str, Any]] = field(default_factory=list)
+    answer: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {k: v for k, v in asdict(self).items() if k != "answer"}
 
 
 @dataclass
@@ -392,38 +396,74 @@ class DevTarget:
         events = await self._get(f"/api/2.0/pipelines/{pipeline_id}/events", max_results=EVENT_PAGE)
         return updates[0].get("update_id"), events.get("events") or []
 
-    async def run(self, bundle: Bundle, preview_rows: int = 0) -> DevRun:
+    async def run(
+        self,
+        bundle: Bundle,
+        preview_rows: int = 0,
+        order: dict[str, list[str]] | None = None,
+        answer: dict[str, Any] | None = None,
+    ) -> DevRun:
         """Deploys and runs ``bundle`` on the dev target; when it passes and
-        ``preview_rows`` is set, ``preview`` has that many rows of each table."""
+        ``preview_rows`` is set, ``preview`` has that many rows of each table, sorted by
+        each table's primary key in ``order`` (table name to key) when given. With an
+        ``answer`` design, a run that passes has ``answer`` worked out on the cluster."""
         # The preview is read under the lock too: a later run of the same bundle
         # would otherwise rewrite the tables before this one has read them.
         async with self._dev_locks[bundle.name]:
-            dev = await self._run_dev(bundle, preview_rows)
-            if dev.status == "passed" and preview_rows and dev.mode != "cluster":
-                await self._preview_run(dev, preview_rows)
+            dev = await self._run_dev(bundle, preview_rows, order, answer)
+            wanted = preview_rows or answer
+            if dev.status == "passed" and wanted and dev.mode != "cluster":
+                await self._preview_run(dev, preview_rows, order, answer)
+        if order is not None:
+            dev.warnings += _unsorted(dev.preview, order)
         return dev
 
-    async def _preview_run(self, dev: DevRun, rows: int) -> None:
-        """The first rows of the tables a job or pipeline wrote, read on the cluster."""
-        if not self._settings.databricks_cluster_id:
-            dev.warnings.append("没有配置集群（AEP_DATABRICKS_CLUSTER_ID），不预览结果数据")
+    async def _preview_run(
+        self,
+        dev: DevRun,
+        rows: int,
+        order: dict[str, list[str]] | None,
+        answer: dict[str, Any] | None,
+    ) -> None:
+        """The first rows of the tables a job or pipeline wrote, and the answer, read on
+        the cluster. Whatever keeps the tables from being read leaves the answer an error
+        saying why; the preview only says so in ``warnings``."""
+        if not (self._settings.databricks_cluster_id and dev.catalog and dev.schema):
+            reason = (
+                "不知道结果表写在哪个 catalog 和 schema"
+                if self._settings.databricks_cluster_id
+                else "没有配置集群（AEP_DATABRICKS_CLUSTER_ID）"
+            )
+            if rows:
+                dev.warnings.append(f"{reason}，不预览结果数据")
+            if answer:
+                dev.answer = {"error": f"{reason}，读不了结果表"}
             return
-        if not (dev.catalog and dev.schema):
-            dev.warnings.append("不知道结果表写在哪个 catalog 和 schema，不预览结果数据")
-            return
-        targets = [(dev.catalog, dev.schema, t.name) for t in dev.tables if t.status != "FAILED"]
+        where = (dev.catalog, dev.schema)
+        targets = [(*where, t.name) for t in dev.tables if t.status != "FAILED"] if rows else []
+        design = None if answer is None else answer | {"table": [*where, answer["target"]]}
         try:
-            found, warnings = await self.preview(targets, rows)
+            found, warnings, worked = await self.preview(targets, rows, order, design)
         except DatabricksError as exc:
-            dev.warnings.append(f"读取结果数据预览失败：{exc}")
+            if rows:
+                dev.warnings.append(f"读取结果数据预览失败：{exc}")
+            if answer:
+                dev.answer = {"error": f"读取结果表失败：{exc}"}
             return
         dev.warnings += warnings
         dev.preview = found
+        dev.answer = worked
 
-    async def _run_dev(self, bundle: Bundle, preview_rows: int = 0) -> DevRun:
+    async def _run_dev(
+        self,
+        bundle: Bundle,
+        preview_rows: int = 0,
+        order: dict[str, list[str]] | None = None,
+        answer: dict[str, Any] | None = None,
+    ) -> DevRun:
         mode = self._settings.databricks_deploy_mode
         if mode == "cluster":
-            return await self._run_on_cluster(bundle, preview_rows)
+            return await self._run_on_cluster(bundle, preview_rows, order, answer)
         if mode == "job":
             return await self._run_job(bundle)
         with tempfile.TemporaryDirectory(prefix="aep-bundle-") as scratch:
@@ -489,9 +529,19 @@ class DevTarget:
 
     # --- cluster mode -------------------------------------------------------
 
-    def _harness_spec(self, bundle: Bundle, preview_rows: int = 0) -> dict[str, Any]:
+    def _harness_spec(
+        self,
+        bundle: Bundle,
+        preview_rows: int = 0,
+        order: dict[str, list[str]] | None = None,
+        answer: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         source_catalog = self._settings.databricks_source_catalog
-        extra = {"preview": preview_rows} if preview_rows else {}
+        extra: dict[str, Any] = {"preview": preview_rows} if preview_rows else {}
+        if preview_rows and order is not None:
+            extra["order"] = order
+        if answer:
+            extra["answer"] = answer | {"table": answer["target"]}
         if PIPELINE_PY in bundle.files:
             return {
                 "language": "pyspark",
@@ -564,7 +614,13 @@ class DevTarget:
             raise DatabricksError(f"集群上的程序出错：{str(cause)[:2000]}")
         return str(results.get("data") or "")
 
-    async def _run_on_cluster(self, bundle: Bundle, preview_rows: int = 0) -> DevRun:
+    async def _run_on_cluster(
+        self,
+        bundle: Bundle,
+        preview_rows: int = 0,
+        order: dict[str, list[str]] | None = None,
+        answer: dict[str, Any] | None = None,
+    ) -> DevRun:
         cluster_id = self._settings.databricks_cluster_id
         dev = DevRun(
             "failed",
@@ -580,7 +636,7 @@ class DevTarget:
             ]
             return dev
         try:
-            spec = self._harness_spec(bundle, preview_rows)
+            spec = self._harness_spec(bundle, preview_rows, order, answer)
         except CodeError as exc:
             dev.errors = [str(exc)]
             return dev
@@ -603,6 +659,8 @@ class DevTarget:
             dev.errors = ["集群上的试跑没有输出结果"]
             return dev
         _apply(dev, outcome)
+        if answer and dev.status == "passed":
+            dev.answer = outcome.get("answer") or {"error": "集群上的试跑没有带回答案"}
         return dev
 
     # --- job mode -----------------------------------------------------------
@@ -907,24 +965,37 @@ class DevTarget:
         return loaded, warnings
 
     async def preview(
-        self, tables: list[tuple[str, str, str]], rows: int
-    ) -> tuple[list[dict[str, Any]], list[str]]:
+        self,
+        tables: list[tuple[str, str, str]],
+        rows: int,
+        order: dict[str, list[str]] | None = None,
+        answer: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
         """The first ``rows`` rows of each table (catalog, schema, table), read on the
-        cluster: ``{"table", "target", "columns", "rows"}`` each, and warnings."""
+        cluster: ``{"table", "target", "columns", "rows"}`` each (and ``sorted_by`` when
+        ``order`` gives table names' primary keys), warnings, and the answer worked out
+        for an ``answer`` design whose ``table`` is catalog, schema, table."""
         self._needs("预览结果数据", "AEP_DATABRICKS_CLUSTER_ID")
-        spec = {"tables": [list(t) for t in tables], "rows": rows}
+        spec: dict[str, Any] = {"tables": [list(t) for t in tables], "rows": rows}
+        if order is not None:
+            spec["order"] = order
+        if answer:
+            spec["answer"] = answer
         outcome, warnings = await self._task("preview", spec)
         warnings += [f"读取结果数据失败：{e}" for e in outcome.get("errors", [])]
-        found = [
-            {
+        found = []
+        for t in outcome.get("tables", []):
+            table = {
                 "table": t["target"][-1],
                 "target": full_name(*t["target"]),
                 "columns": t["columns"],
                 "rows": t["rows"],
             }
-            for t in outcome.get("tables", [])
-        ]
-        return found, warnings
+            found.append(table | ({"sorted_by": t["sorted_by"]} if "sorted_by" in t else {}))
+        worked = None
+        if answer:
+            worked = outcome.get("answer") or {"error": "集群上的程序没有带回答案"}
+        return found, warnings, worked
 
     # --- release to prod ----------------------------------------------------
 
@@ -1029,6 +1100,17 @@ def _outcome(text: str) -> dict[str, Any] | None:
     except ValueError:
         return None
     return outcome if isinstance(outcome, dict) else None
+
+
+def _unsorted(preview: list[dict[str, Any]], order: dict[str, list[str]]) -> list[str]:
+    """Warnings for tables whose primary key has a column the table lacks."""
+    out = []
+    for p in preview:
+        keys = order.get(p["table"]) or []
+        if keys and p.get("sorted_by") == []:
+            missing = "、".join(k for k in keys if k not in p["columns"])
+            out.append(f"{p['table']} 的主键列 {missing} 不在结果表里，预览没有排序")
+    return out
 
 
 def _apply(dev: DevRun, outcome: dict[str, Any]) -> None:

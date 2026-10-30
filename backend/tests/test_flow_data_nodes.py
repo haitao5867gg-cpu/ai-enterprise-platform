@@ -1055,10 +1055,10 @@ async def test_a_later_run_of_the_bundle_waits_for_the_preview(tmp_path, monkeyp
         steps.append("run")
         return await run_job(bundle)
 
-    async def logged_preview(tables, rows):
+    async def logged_preview(tables, rows, order, answer):
         steps.append("preview")
         await asyncio.sleep(0)  # the other run would start here without the lock
-        found = await preview(tables, rows)
+        found = await preview(tables, rows, order, answer)
         steps.append("previewed")
         return found
 
@@ -1734,9 +1734,10 @@ async def test_dev_run_says_whether_it_passed_and_sums_up_the_quality_rules(tmp_
         "dropped": 1,
         "text": "1 条质量规则全部通过，丢弃 1 行",
     }
-    # Worked out on the cluster in a later step; until then there is none.
+    # A version 1 plan designs no answer; its primary keys still sort the preview.
     assert out.outputs["answer"] is None
-    assert "sorted_by" not in out.outputs["preview"][0]
+    spec = sent_spec(ws.commands[0]["command"], "preview")
+    assert spec["order"] == {"order_facts": ["order_id"]} and "answer" not in spec
 
     # Without a plan the handling is unknown, so failing rows count.
     out = await run(dev_node(), dev_state(), rt)
@@ -1808,3 +1809,130 @@ async def test_dev_run_counts_its_runs_by_round(tmp_path):
     assert third.messages[0]["content"] == (
         "dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）"
     )
+
+
+def answered_plan(**design) -> dict:
+    """A version 2 plan whose answer is the most items by city."""
+    value = plan()
+    target = value["targets"][0]
+    target["columns"][2]["source"] = "sum(o.quantity)"
+    for column, label in zip(target["columns"], ["订单号", "城市", "数量（件）"], strict=True):
+        column["label"] = label
+    value["brief"] = {
+        "goal": "按城市统计商品数量",
+        "metrics": [
+            {
+                "id": "m1",
+                "name": "商品数量",
+                "unit": "件",
+                "definition": "数量之和",
+                "column": "quantity",
+            }
+        ],
+    }
+    value["answer"] = {"target": "order_facts", "group_by": ["city"], "measures": ["quantity"]}
+    value["answer"] |= design
+    return value
+
+
+ANSWERED = {
+    "tables": PREVIEW["tables"],
+    "answer": {
+        "period": None,
+        "rows": [{"city": "上海", "quantity": 30}, {"city": "北京", "quantity": 10}],
+        "totals": {"quantity": 50},
+        "mins": {"quantity": 10},
+        "groups": 3,
+        "row_count": 4,
+        "types": {"city": "string", "quantity": "bigint"},
+    },
+}
+
+
+async def test_dev_run_works_out_the_answer_on_the_cluster(tmp_path):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    ws.job_outputs = [PASSED]
+    sorted_preview = [t | {"sorted_by": ["order_id"]} for t in PREVIEW["tables"]]
+    ws.cluster_outputs = [ANSWERED | {"tables": sorted_preview}]
+    rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    node = dev_node(plan="{{check_plan.plan}}", preview_rows=5)
+
+    out = await run(node, planned_state(value=answered_plan(top_n=2)), rt)
+
+    assert out.branch == "passed"
+    where = [CATALOG, "trac_b_test"]
+    assert sent_spec(ws.commands[0]["command"], "preview") == {
+        "tables": [[*where, "order_facts"]],
+        "rows": 5,
+        "order": {"order_facts": ["order_id"]},
+        "answer": {
+            "target": "order_facts",
+            "filter": None,
+            "group_by": ["city"],
+            "measures": [{"name": "quantity", "agg": "sum"}],
+            "order_by": [{"column": "quantity", "desc": True}],
+            "top_n": 2,
+            "table": [*where, "order_facts"],
+        },
+    }
+    assert out.outputs["preview"][0]["sorted_by"] == ["order_id"]
+    answer = out.outputs["answer"]
+    target = "`icsd-ace-dev`.trac_b_test.order_facts"
+    assert (answer["status"], answer["target"], answer["error"]) == ("ok", target, None)
+    assert answer["conclusion"] == "上海的商品数量最高：30 件，占合计 60.0%。"
+    assert [c["format"] for c in answer["columns"]] == [None, "integer"]
+    assert (answer["groups"], answer["truncated"]) == (3, True)
+    assert answer["quality"] == out.outputs["quality"] and answer["url"] == out.outputs["url"]
+    assert answer["sql"].startswith(
+        "SELECT `city`, sum(`quantity`) AS `quantity`\nFROM `icsd-ace-dev`"
+    )
+    report = out.outputs["report"]
+    section = "\n".join(
+        [
+            "### 答案",
+            "",
+            "上海的商品数量最高：30 件，占合计 60.0%。",
+            "",
+            "| 城市 | 数量（件） |",
+            "| --- | --- |",
+            "| 上海 | 30 |",
+            "| 北京 | 10 |",
+            "| 合计 | 50 |",
+            "",
+            "共 3 组，显示前 2",
+        ]
+    )
+    assert section in report
+    assert report.index("### 结果表") < report.index("### 答案") < report.index("### 数据预览")
+
+
+async def test_an_answer_that_could_not_be_read_says_why(tmp_path):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    ws.job_outputs = [PASSED, PASSED, PASSED]
+    ws.cluster_outputs = ["Py4JJavaError: 集群连不上", {"tables": [], "errors": []}]
+    rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    node = dev_node(plan="{{check_plan.plan}}", preview_rows=0)
+
+    # Reading the tables failed: the answer says why, the run still passes.
+    out = await run(node, planned_state(value=answered_plan()), rt)
+    assert out.branch == "passed"
+    answer = out.outputs["answer"]
+    assert answer["status"] == "error" and answer["error"].startswith("读取结果表失败：")
+    assert answer["rows"] == [] and answer["conclusion"] == ""
+    assert f"答案没算出来：{answer['error']}" in out.outputs["report"]
+    # Without a preview the answer is still worked out, on no tables.
+    spec = sent_spec(ws.commands[0]["command"], "preview")
+    assert (spec["tables"], spec["rows"], spec["answer"]["top_n"]) == ([], 0, 10)
+    # The cluster said nothing about the answer.
+    out = await run(node, planned_state(value=answered_plan()), rt)
+    assert out.outputs["answer"]["error"] == "集群上的程序没有带回答案"
+
+
+async def test_a_failed_dev_run_has_no_answer(tmp_path):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    ws.job_outputs = [{"errors": ["order_facts: AnalysisException: 列不存在"]}]
+    rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    node = dev_node(plan="{{check_plan.plan}}", max_runs=1)
+    out = await run(node, planned_state(value=answered_plan()), rt)
+    assert out.branch == "failed" and out.outputs["answer"] is None
+    assert ws.commands == [] and "### 答案" not in out.outputs["report"]

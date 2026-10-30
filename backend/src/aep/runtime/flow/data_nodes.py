@@ -20,6 +20,8 @@ from aep import llm
 from aep.databricks import DatabricksError, DevTarget, Landing, full_name
 from aep.datasources import DATABASE_KINDS, DataSource
 from aep.etl import codegen
+from aep.etl.answer import cluster_design, shown, with_defaults
+from aep.etl.answer import result as answer_result
 from aep.etl.plan import (
     BASIS_NAMES,
     IDENTIFIER,
@@ -28,6 +30,7 @@ from aep.etl.plan import (
     EtlPlanV2,
     PlanError,
     Target,
+    answer_names,
     answer_output,
     bare,
     uncited,
@@ -746,9 +749,14 @@ HOW = {
 
 
 def dev_report(
-    dev: Any, attempt: int, branch: str, tables: list[dict[str, Any]], errors: list[str]
+    dev: Any,
+    attempt: int,
+    branch: str,
+    tables: list[dict[str, Any]],
+    errors: list[str],
+    found: dict[str, Any] | None = None,
 ) -> str:
-    """The dev run as a person reads it (Markdown)."""
+    """The dev run as a person reads it (Markdown); ``found`` is the answer, if any."""
     head = {
         "passed": "## dev 运行通过",
         "retry": "## dev 运行失败，带着报错回去重写代码",
@@ -771,6 +779,8 @@ def dev_report(
             rows.append([_code(t["target"]), count, t["dropped"], rules or "无"])
         lines += ["", "### 结果表", ""]
         lines += _table(["表", written, "质量规则丢弃", "质量规则"], rows)
+    if found is not None:
+        lines += _answer_lines(found)
     for p in dev.preview:
         columns = p["columns"]
         shown = columns[:PREVIEW_COLUMNS]
@@ -818,14 +828,44 @@ def dev_quality(tables: list[dict[str, Any]], plan: EtlPlan | None) -> dict[str,
     return {"rules": rules, "failed_rules": failed, "dropped": dropped, "text": text}
 
 
-def _dev_plan(node: dict[str, Any], get: refs.Lookup) -> tuple[EtlPlan | None, str | None]:
-    """The plan the node's ``plan`` names, or a warning when it is not one."""
+def _dev_plan(node: dict[str, Any], get: refs.Lookup) -> tuple[EtlPlanV2 | None, str | None]:
+    """The plan the node's ``plan`` names (either version), or a warning when it is not
+    one."""
     if not node.get("plan"):
         return None, None
     try:
-        return EtlPlan.model_validate(refs.resolve(node["plan"], get)), None
+        plan = EtlPlanV2.model_validate(refs.resolve(node["plan"], get))
     except ValidationError:
         return None, "方案取到的不是校验通过的方案，这次不按方案处理预览和答案"
+    if plan.answer is not None:
+        plan.answer = with_defaults(plan.answer)
+    return plan, None
+
+
+def _answer_lines(found: dict[str, Any]) -> list[str]:
+    """The report's answer: the conclusion and every row, then the period's total."""
+    lines = ["", "### 答案", ""]
+    if found["status"] != "ok":
+        return [*lines, f"答案没算出来：{found['error']}"]
+    lines.append(found["conclusion"])
+    if not found["rows"]:
+        return lines
+    columns = found["columns"]
+    cells = [[shown(row.get(c["name"]), c["format"]) for c in columns] for row in found["rows"]]
+    if any(c["role"] == "dimension" for c in columns):
+        total = "{} 合计".format(found["period"]) if found["period"] else "合计"
+        cells.append(
+            [
+                (total if i == 0 else "")
+                if c["role"] == "dimension"
+                else shown(found["totals"].get(c["name"]), c["format"])
+                for i, c in enumerate(columns)
+            ]
+        )
+    lines += ["", *_table([c["label"] for c in columns], cells)]
+    if found["truncated"]:
+        lines += ["", f"共 {found['groups']} 组，显示前 {len(found['rows'])}"]
+    return lines
 
 
 def dev_said(
@@ -865,6 +905,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     ):
         raise NodeFailure(INPUT_ERROR, "bundle 要引用检查并打包节点的 bundle（代码通过检查后才有）")
     plan, warning = _dev_plan(node, get)
+    order = {t.name: list(t.primary_key) for t in plan.targets} if plan else None
+    card = answer_output(plan) if plan else None
     # Runs in this round: going back to rewrite the code with the errors and coming back
     # is the same round; ``passed`` and ``failed`` end it. Runs from before rounds were
     # kept count every visit.
@@ -872,7 +914,10 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     attempt = mine.get("attempts", (state.get("visits") or {}).get(node["id"], 0)) + 1
     try:
         dev = await databricks.run(
-            codegen.Bundle(bundle["name"], bundle["files"]), node.get("preview_rows", 20)
+            codegen.Bundle(bundle["name"], bundle["files"]),
+            node.get("preview_rows", 20),
+            order,
+            cluster_design(card) if card else None,
         )
     except DatabricksError as exc:
         raise NodeFailure("databricks_error", str(exc)) from exc
@@ -897,7 +942,20 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         for t in dev.tables
     ]
     errors = [] if passed else [e[:ERROR_CHARS] for e in dev.errors[:MAX_ERRORS]]
-    report = dev_report(dev, attempt, branch, tables, errors)
+    quality = dev_quality(tables, plan)
+    found = None
+    if passed and plan and card:
+        parts = [*where, card["target"]] if where else [card["target"]]
+        found = answer_result(
+            card,
+            dev.answer,
+            table=parts,
+            target=full_name(*parts),
+            quality=quality,
+            url=dev.url,
+            names=answer_names(plan),
+        )
+    report = dev_report(dev, attempt, branch, tables, errors, found)
     run = {k: v for k, v in dev.as_dict().items() if k != "preview"} | {"attempt": attempt}
     outputs = {
         "status": dev.status,
@@ -906,9 +964,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         "url": dev.url,
         "tables": tables,
         "preview": dev.preview,
-        "quality": dev_quality(tables, plan),
-        # Worked out on the cluster from the plan's answer design (a later step).
-        "answer": None,
+        "quality": quality,
+        "answer": found,
         "errors": "\n".join(errors),
         "report": report,
     }
