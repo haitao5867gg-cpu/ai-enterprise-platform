@@ -900,6 +900,8 @@ async def test_code_check_packages_code_that_passes(tmp_path):
     assert {"databricks.yml", codegen.PIPELINE_PY, codegen.JOB_NOTEBOOK} <= set(bundle["files"])
     assert "示例库" in bundle["files"]["databricks.yml"]
     assert out.outputs["code"] == {"order_facts": PYSPARK_BODY}
+    # Only the paths, for a review step's data: the code stays out of what it shows.
+    assert out.outputs["files"] == sorted(bundle["files"])
     assert out.outputs["summary"].startswith("已生成 Databricks bundle order_facts：README.md、")
     assert out.messages[0]["content"] == (
         f"代码检查通过，打包成 bundle order_facts（{len(bundle['files'])} 个文件）"
@@ -922,6 +924,7 @@ async def test_code_check_sends_problems_back():
     first = await run(code_node(), code_state(reply({"targets": bad})), rt)
     assert first.branch == "retry" and first.private == {"failures": 1}
     assert first.outputs["bundle"] is None and first.outputs["code"] == bad
+    assert first.outputs["files"] == []
     assert first.outputs["problems"] == "order_facts: 不允许使用 .sql"
     assert first.outputs["summary"].startswith("代码没有通过检查，带着问题让模型重写")
     assert first.messages[0]["content"] == "代码有 1 处没通过检查，让模型重写（第 2/3 次）"
@@ -1471,9 +1474,9 @@ async def test_data_node_settings_are_checked(lake):
     nodes = {n["id"]: n for n in config["graph"]["nodes"]}
     nodes["profile"] |= {"tables": "orders", "sample_rows": 50}
     nodes["check_plan"] |= {"profile": "探查结果", "hits": ["x"]}
-    nodes["ingest"] |= {"tables": "", "max_rows": 0}
+    nodes["ingest"] |= {"tables": "", "max_rows": 0, "reuse": "yes"}
     nodes["check_code"]["plan"] = "{{check_plan.plan}} 和别的"
-    nodes["dev_run"] |= {"max_runs": 4, "preview_rows": 101}
+    nodes["dev_run"] |= {"max_runs": 4, "preview_rows": 101, "plan": ["{{check_plan.plan}}"]}
     saved = await lake.api.put("/apps/retail-etl/draft", json={"config": config})
     assert saved.status_code == 422
     problems = {tuple(p["loc"][4:]): p["msg"] for p in saved.json()["detail"]}
@@ -1484,9 +1487,11 @@ async def test_data_node_settings_are_checked(lake):
         ("check_plan", "hits", 0): "每项必须恰好是一个变量，如 {{glossary.hits}}",
         ("ingest", "tables"): "要指定表",
         ("ingest", "max_rows"): "每张表最多行数要在 1–1000000 之间",
+        ("ingest", "reuse"): "reuse 必须是 true 或 false",
         ("check_code", "plan"): "方案必须恰好是一个变量，如 {{check_plan.plan}}",
         ("dev_run", "max_runs"): "最多运行次数要在 1–3 之间",
         ("dev_run", "preview_rows"): "预览行数要在 0–100 之间",
+        ("dev_run", "plan"): "方案必须恰好是一个变量，如 {{check_plan.plan}}",
     }
 
 
@@ -1646,3 +1651,158 @@ async def test_ingest_refuses_a_tool_service_chosen_at_run_time(tmp_path):
         await run(node, st, rt)
     assert failed.value.type == "input_error"
     assert failed.value.message.startswith("「工单系统」是工具服务")
+
+
+# What the data nodes give a review step (second batch)
+
+
+async def test_ingest_reuses_the_tables_this_run_extracted(tmp_path):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    both = loaded(("orders", 3), ("customers", 3))
+    ws.cluster_outputs = [loaded(("orders", 3)), both, both]
+    rt, ds = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    node = ingest_node(ds, reuse=True)
+    first = await run(node, state(check_plan={"sources": ["sales.orders"]}), rt)
+    assert first.outputs["reused"] is False
+    kept = {"datasource": ds, "catalog": CATALOG, "tables": first.outputs["tables"]}
+    assert first.private == kept
+
+    def later(sources, private: dict) -> dict:
+        return state(check_plan={"sources": sources}) | {"private": {"ingest": private}}
+
+    sent = len(ws.requests)
+    said = "要的 1 张表这次运行已经抽取过，沿用（共 3 行）"
+    again = await run(node, later("sales.orders", kept), rt)
+    assert again.outputs == {
+        "catalog": CATALOG,
+        "tables": first.outputs["tables"],
+        "summary": said,
+        "reused": True,
+    }
+    assert again.messages == [{"role": "assistant", "content": said}]
+    # What was kept stays as it was.
+    assert again.private is None
+    assert len(ws.requests) == sent
+
+    # One table more: every table wanted is extracted again, together.
+    more = await run(node, later(["sales.orders", "sales.customers"], kept), rt)
+    assert more.outputs["reused"] is False
+    assert len(sent_spec(ws.commands[-1]["command"], "ingest")["tables"]) == 2
+    kept = more.private
+    assert [t["source"] for t in kept["tables"]] == ["sales.orders", "sales.customers"]
+    # ``schema.*`` is still listed, and is the same tables now.
+    sent = len(ws.requests)
+    every = await run(node, later("sales.*", kept), rt)
+    assert every.outputs["reused"] is True
+    assert [t["source"] for t in every.outputs["tables"]] == ["sales.customers", "sales.orders"]
+    assert every.outputs["summary"] == "要的 2 张表这次运行已经抽取过，沿用（共 6 行）"
+    assert len(ws.requests) == sent
+
+    # Another data source with the same tables, or ``reuse`` not set: extracted again.
+    other = await rt.datasources.create("另一个库", "postgres", fake_connector.URL)
+    moved = await run(ingest_node(other.datasource_id, reuse=True), later("sales.orders", kept), rt)
+    assert moved.outputs["reused"] is False
+    assert moved.private["datasource"] == other.datasource_id
+    ws.cluster_outputs = [loaded(("orders", 3))]
+    plain = await run(ingest_node(ds), later("sales.orders", kept), rt)
+    assert plain.outputs["reused"] is False and plain.private is None
+
+
+def planned_state(visits: int = 0, attempts: int | None = None, value=None) -> dict:
+    st = state(check_code={"bundle": job_bundle()}, check_plan={"plan": value or plan()})
+    st["visits"] = {"dev_run": visits}
+    if attempts is not None:
+        st["private"] = {"dev_run": {"attempts": attempts}}
+    return st
+
+
+async def test_dev_run_says_whether_it_passed_and_sums_up_the_quality_rules(tmp_path):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    ws.job_outputs = [PASSED, PASSED, PASSED]
+    ws.cluster_outputs = [PREVIEW, PREVIEW, PREVIEW]
+    rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    planned = dev_node(plan="{{check_plan.plan}}")
+
+    # The plan drops the rows positive_quantity fails: those are in ``dropped``.
+    out = await run(planned, planned_state(), rt)
+    assert out.outputs["ok"] is True
+    assert out.outputs["quality"] == {
+        "rules": 1,
+        "failed_rules": 0,
+        "dropped": 1,
+        "text": "1 条质量规则全部通过，丢弃 1 行",
+    }
+    # Worked out on the cluster in a later step; until then there is none.
+    assert out.outputs["answer"] is None
+    assert "sorted_by" not in out.outputs["preview"][0]
+
+    # Without a plan the handling is unknown, so failing rows count.
+    out = await run(dev_node(), dev_state(), rt)
+    assert out.outputs["quality"]["failed_rules"] == 1
+    assert out.outputs["quality"]["text"] == "1 条质量规则里 1 条有不通过的行，丢弃 1 行"
+
+    # A plan that is not one: the node goes on, and says so.
+    out = await run(planned, planned_state(value="不是方案"), rt)
+    assert out.outputs["ok"] is True and out.outputs["quality"]["failed_rules"] == 1
+    warning = "方案取到的不是校验通过的方案，这次不按方案处理预览和答案"
+    assert warning in out.outputs["run"]["warnings"]
+    assert f"- {warning}" in out.outputs["report"]
+
+
+def test_quality_in_short():
+    def table(name: str, dropped: int, *rules: tuple[str, int]) -> dict:
+        found = [{"name": r, "passed": 5, "failed": n} for r, n in rules]
+        return {"name": name, "dropped": dropped, "expectations": found}
+
+    checked = EtlPlan.model_validate(
+        plan(
+            targets=[
+                plan()["targets"][0]
+                | {
+                    "quality_rules": [
+                        {"name": "warned", "condition": "a > 0", "on_violation": "warn"},
+                        {"name": "dropped", "condition": "b > 0", "on_violation": "drop"},
+                        {"name": "failed", "condition": "c > 0", "on_violation": "fail"},
+                    ]
+                }
+            ]
+        )
+    )
+    tables = [
+        table("order_facts", 4, ("warned", 1), ("dropped", 4), ("failed", 2), ("unknown", 3)),
+        table("other", 0, ("warned", 1), ("ok", 0)),
+    ]
+    assert data_nodes.dev_quality(tables, checked) == {
+        "rules": 6,
+        "failed_rules": 4,
+        "dropped": 4,
+        "text": "6 条质量规则里 4 条有不通过的行，丢弃 4 行",
+    }
+    assert data_nodes.dev_quality([table("t", 0)], checked)["text"] == "没有质量规则"
+    assert data_nodes.dev_quality([table("t", 0, ("ok", 0))], None)["text"] == (
+        "1 条质量规则全部通过"
+    )
+    assert data_nodes.dev_quality([], checked) is None
+
+
+async def test_dev_run_counts_its_runs_by_round(tmp_path):
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    error = {"errors": ["order_facts: AnalysisException: 列不存在"]}
+    ws.job_outputs = [error, PASSED, error]
+    ws.cluster_outputs = [PREVIEW]
+    rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    node = dev_node(plan="{{check_plan.plan}}")
+
+    first = await run(node, planned_state(), rt)
+    assert (first.branch, first.private) == ("retry", {"attempts": 1})
+    assert first.outputs["ok"] is False and first.outputs["quality"] is None
+    # Back from rewriting the code: the same round.
+    second = await run(node, planned_state(visits=1, attempts=1), rt)
+    assert second.branch == "passed" and second.outputs["run"]["attempt"] == 2
+    assert second.private == {"attempts": 0}
+    # Sent back to change the code after a review: a new round, counted from 1.
+    third = await run(node, planned_state(visits=2, attempts=0), rt)
+    assert third.branch == "retry" and third.outputs["run"]["attempt"] == 1
+    assert third.messages[0]["content"] == (
+        "dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）"
+    )
