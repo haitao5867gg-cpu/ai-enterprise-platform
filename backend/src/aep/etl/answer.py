@@ -382,6 +382,8 @@ def text(design: AnswerDesign, names: Mapping[str, str]) -> str:
 
 INTEGER_TYPES = ("tinyint", "smallint", "int", "bigint")
 TIME_LITERALS = {"date": "DATE", "timestamp": "TIMESTAMP", "timestamp_ntz": "TIMESTAMP_NTZ"}
+# Types whose period is written exactly (besides the integer types).
+EXACT_LITERALS = ("string", "date")
 
 
 def cluster_design(card: Mapping[str, Any]) -> dict[str, Any]:
@@ -525,16 +527,20 @@ def query(
     lines = ["SELECT " + ", ".join(select), f"FROM {where}"]
     if card.get("filter"):
         column = q(card["filter"][0]["column"])
-        # ``period`` writes a time only to the second, so a time column keeps the subquery:
-        # a literal would miss a latest value with fractions of a second.
+        # Only a period that is the exact value becomes a literal: a time is written to
+        # the second, and a decimal or float has been through JSON's floats.
         value = (
             _literal(period, kind)
-            if period is not None and kind not in ("timestamp", "timestamp_ntz")
+            if period is not None and (kind in EXACT_LITERALS or kind in INTEGER_TYPES)
             else (f"(SELECT max({column}) FROM {where})")
         )
         lines.append(f"WHERE {column} = {value}")
     if card["group_by"]:
         lines.append("GROUP BY " + ", ".join(q(c) for c in card["group_by"]))
+    else:
+        # Without groups an aggregate over no rows still gives a row of nulls; the answer
+        # has no rows then.
+        lines.append("HAVING count(*) > 0")
     ordering = [
         f"{q(o['column'])} {'DESC' if o['desc'] else 'ASC'} NULLS LAST" for o in card["order_by"]
     ]

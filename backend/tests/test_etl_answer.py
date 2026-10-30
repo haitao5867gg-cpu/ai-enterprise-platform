@@ -630,7 +630,6 @@ def test_an_answer_that_could_not_be_worked_out():
         ("2026-10", "string", "'2026-10'"),
         ("it's a \\ test", "string", "'it\\'s a \\\\ test'"),
         ("202610", "int", "202610"),
-        ("2026.5", "decimal(6,1)", "2026.5"),
         ("2026-10-31", "date", "DATE '2026-10-31'"),
     ],
 )
@@ -638,10 +637,19 @@ def test_the_query_writes_the_period_as_a_literal_of_its_type(period, kind, lite
     assert f"WHERE `stat_month` = {literal}\n" in query(card(), TABLE, period, kind)
 
 
-@pytest.mark.parametrize("kind", ["timestamp", "timestamp_ntz"])
-def test_a_time_period_keeps_the_subquery_since_it_is_written_to_the_second(kind):
-    # The latest value may be 23:59:59.123456; a literal of the period would miss it.
-    got = query(card(), TABLE, "2026-10-31 23:59:59", kind)
+@pytest.mark.parametrize(
+    ("period", "kind"),
+    [
+        # Written to the second: the latest value may be 23:59:59.123456.
+        ("2026-10-31 23:59:59", "timestamp"),
+        ("2026-10-31 23:59:59", "timestamp_ntz"),
+        # Through JSON's floats: 9007199254740992.01 comes back as 9007199254740992.0.
+        ("9007199254740992.0", "decimal(20,2)"),
+        ("2026.5", "double"),
+    ],
+)
+def test_a_period_that_may_not_be_exact_keeps_the_subquery(period, kind):
+    got = query(card(), TABLE, period, kind)
     where = "`icsd-ace-dev`.`trac_b_test`.`ads_sales_city_member_m`"
     assert f"WHERE `stat_month` = (SELECT max(`stat_month`) FROM {where})\n" in got
 
@@ -651,6 +659,8 @@ def test_the_query_quotes_every_name():
     got = query(made, ["a`b", "s", "t"], None, None)
     assert got.startswith("SELECT sum(`sales_amount`) AS `sales_amount`")
     assert "FROM `a``b`.`s`.`t`\n" in got and "WHERE" not in got and "GROUP BY" not in got
-    assert got.endswith("ORDER BY `sales_amount` DESC NULLS LAST\nLIMIT 10")
+    # No groups: no rows in, no answer rows out, as on the cluster.
+    assert got.endswith("HAVING count(*) > 0\nORDER BY `sales_amount` DESC NULLS LAST\nLIMIT 10")
+    assert "HAVING" not in query(card(), TABLE, "2026-10", "string")
     cluster = query(card(), ["ads_sales_city_member_m"], "2026-10", "string")
     assert "FROM `ads_sales_city_member_m`\n" in cluster
