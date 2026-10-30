@@ -377,6 +377,22 @@ async def test_unknown_datasource_fails_clearly():
     assert (bad_name.error, bad_name.error_type) == ("表 orders 要写成 schema.table", "input_error")
 
 
+async def test_a_tool_service_is_not_an_etl_source():
+    sources = MemoryDataSourceStore()
+    tickets = await sources.create("工单系统", "mcp", "http://tools.connector.test/mcp")
+    service = RunService(
+        MemoryRunStore(),
+        InMemorySaver(),
+        default_apps(),
+        AppContext(FakeGateway().client, SETTINGS, datasources=sources),
+    )
+
+    record = (await service.get(await start(service, tickets.datasource_id))).record
+
+    assert record.error == "「工单系统」是工具服务，ETL 要选数据库或上传文件的数据源"
+    assert record.error_type == "input_error"
+
+
 async def test_files_download_as_zip():
     service, _, ds = await make_service(
         [reply(plan()), reply({"targets": {"order_facts": PYSPARK_BODY}})]

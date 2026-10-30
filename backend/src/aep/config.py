@@ -2,8 +2,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from aep.connector_urls import parse_rule
 
 
 class Settings(BaseSettings):
@@ -32,6 +34,18 @@ class Settings(BaseSettings):
     # Data sources registered at startup when no source of that name exists yet,
     # as JSON: [{"name": ..., "kind": ..., "connector_url": ..., "description": ...}].
     default_datasources: list[dict[str, str]] = []
+    # Where connectors may be registered (POST /datasources, /datasources/test and a
+    # PATCH that changes the address; docs/api/datasources.md), as JSON: "host:port",
+    # "host:*", "host" (port 80/443), "[v6]:port" or "*.suffix:port|*". The files
+    # connector and the AEP_DEFAULT_DATASOURCES hosts are always allowed.
+    connector_hosts: list[str] = [
+        "connector-postgres:8001",
+        "connector-mysql:8002",
+        "connector-files:8003",
+    ]
+    # Testing a connector, its health and listing its tools; stays under the web
+    # proxy's 10 seconds (frontend/app/api/[...path]/route.ts).
+    connector_check_seconds: float = Field(5.0, gt=0, le=8)
     # Shared with the read-only files connector; each upload gets a UUID directory.
     uploads_dir: Path = Path("/data/uploads")
     files_connector_url: str = "http://connector-files:8003"
@@ -104,6 +118,16 @@ class Settings(BaseSettings):
     langfuse_public_key: str = Field("", validation_alias="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: str = Field("", validation_alias="LANGFUSE_SECRET_KEY")
     langfuse_host: str = Field("http://localhost:3100", validation_alias="LANGFUSE_HOST")
+
+    @field_validator("connector_hosts")
+    @classmethod
+    def valid_connector_hosts(cls, value: list[str]) -> list[str]:
+        for item in value:
+            try:
+                parse_rule(item)
+            except ValueError:
+                raise ValueError(f"AEP_CONNECTOR_HOSTS 里的「{item}」写法不对") from None
+        return value
 
     @property
     def databricks_deploy_mode(self) -> Literal["pipeline", "job", "cluster"]:

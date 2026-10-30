@@ -16,9 +16,12 @@ async function handle(request: Request, context: Context) {
   const { path } = await context.params;
   const endpoint = path.join("/");
   const routes: [RegExp, string[]][] = [
-    [/^(readyz|datasources)$/, ["GET"]],
-    [/^datasources\/files$/, ["POST"]],
-    [/^datasources\/[a-zA-Z0-9_-]{1,128}\/tools$/, ["GET"]],
+    [/^readyz$/, ["GET"]],
+    // `files` and `test` come before the id rule: the first match wins.
+    [/^datasources$/, ["GET", "POST"]],
+    [/^datasources\/(files|test)$/, ["POST"]],
+    [/^datasources\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH"]],
+    [/^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage)$/, ["GET"]],
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow|manual))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/(resume|cancel|retry|rerun)$/, ["POST"]],
@@ -163,8 +166,9 @@ async function handle(request: Request, context: Context) {
     // Stream upstream bytes unchanged, including ZIP archives and error responses.
     return new Response(response.body, { status: response.status, headers });
   } catch (error) {
+    // Pages may show a 502 detail on its own (lib/runs.ts requestJson), so it is Chinese.
     return jsonError(
-      "Internal API is unavailable",
+      "后端服务暂不可用。",
       error instanceof Error && error.name === "TimeoutError" ? 504 : 502,
     );
   }

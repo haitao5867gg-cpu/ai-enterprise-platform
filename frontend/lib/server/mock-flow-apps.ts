@@ -41,8 +41,7 @@ import {
 import type { Flow, NodeKind } from "../flow";
 import { isRecord } from "../runs";
 import { mockSkillVersionExists } from "./mock-skills";
-import { mockDataSources } from "./mock-etl";
-import { mockUploads } from "./mock-uploads";
+import { allMockSources } from "./mock-datasources";
 import type { ValidationIssue } from "./mock-assets";
 
 export const mockModels = [
@@ -785,10 +784,7 @@ export function validateFlow(config: unknown): ValidationIssue[] {
   }
   return issues;
 }
-export const allSources = () => [
-  ...mockDataSources,
-  ...[...mockUploads.values()].map((item) => item.datasource),
-];
+export const allSources = () => allMockSources();
 export function missingReferences(
   config: FlowConfig,
   setSecrets: string[] = [],

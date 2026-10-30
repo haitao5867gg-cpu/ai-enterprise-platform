@@ -12,6 +12,7 @@ import type {
   Setting,
 } from "../apps";
 import type { SkillUsage } from "../skills";
+import type { DatasourceUsage, UsageVia } from "../datasources";
 import { isRecord } from "../runs";
 import { APP_ID_PATTERN, isFlowConfig, type FlowConfig } from "../apps";
 import {
@@ -28,7 +29,8 @@ import {
   validateFlow,
 } from "./mock-flow-apps";
 import { mockFlow } from "./mock-flow";
-import { lakehouseConfig } from "./mock-data-nodes";
+import { MockNodeFailure, lakehouseConfig } from "./mock-data-nodes";
+import { mockToolService } from "./mock-datasources";
 import { buildMockManual } from "./mock-manual";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
 import { createMockEvalRun } from "./mock-runs";
@@ -299,7 +301,11 @@ function detail(entry: StoredApp): AppDetail {
       models,
       default_model: "mock",
       skills: mockSkillOptions(),
-      datasources: allSources(),
+      datasources: allSources().map(({ datasource_id, name, kind }) => ({
+        datasource_id,
+        name,
+        kind,
+      })),
       knowledge_bases: knowledgeOptions(),
       rerank_models: mockKnowledgeOptions.rerank_models,
     },
@@ -328,6 +334,63 @@ export function mockSkillUsage(name: string): SkillUsage[] {
           : [],
       );
     });
+}
+const WHOLE_REF = /^\s*\{\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}\}\s*$/;
+const UUID =
+  /^\{?([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})\}?$/i;
+// UUIDs match whatever their case or braces; other ids as written.
+function canonId(value: string) {
+  const parts = value.trim().match(UUID);
+  return parts ? parts.slice(1).join("-").toLowerCase() : value.trim();
+}
+// Like the backend (docs/api/datasources.md): the current version of each flow app that
+// is not archived, once per app; a literal id wins over a start node's default.
+export function mockDatasourceUsage(id: string): DatasourceUsage["apps"] {
+  const wanted = canonId(id);
+  return [...store.values()]
+    .filter((entry) => !entry.archived)
+    .flatMap((entry) => {
+      const config = current(entry).config;
+      if (!isFlowConfig(config)) return [];
+      const start = config.graph.nodes.find((node) => node.type === "start");
+      const inputs = start?.type === "start" ? start.inputs : [];
+      const consts = new Map(
+        config.env.vars.map((item) => [item.key, item.value]),
+      );
+      const found = new Map<string, UsageVia>();
+      const add = (value: unknown, via: UsageVia) => {
+        if (typeof value !== "string" || !value.trim()) return;
+        const key = canonId(value);
+        if (found.get(key) !== "literal") found.set(key, via);
+      };
+      for (const input of inputs)
+        if (input.type === "datasource") add(input.default, "default_input");
+      for (const node of config.graph.nodes) {
+        const values =
+          node.type === "tool" ||
+          node.type === "etl_profile" ||
+          node.type === "databricks_ingest"
+            ? [node.datasource]
+            : node.type === "agent"
+              ? node.tools.map((item) => item.datasource)
+              : [];
+        for (const value of values) {
+          const ref = value.match(WHOLE_REF);
+          if (ref?.[1] === "env") add(consts.get(ref[2]), "literal");
+          else if (ref && ref[1] === start?.id)
+            add(
+              inputs.find((input) => input.key === ref[2])?.default,
+              "default_input",
+            );
+          else if (!value.includes("{{")) add(value, "literal");
+        }
+      }
+      const via = found.get(wanted);
+      return via
+        ? [{ app: entry.app, title: entry.title, version: entry.current, via }]
+        : [];
+    })
+    .sort((a, b) => (a.app < b.app ? -1 : a.app > b.app ? 1 : 0));
 }
 // Like the backend, runs show their app's title as it is now, archived apps included.
 export function mockAppTitle(app: string): string | undefined {
@@ -364,6 +427,16 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
           : node.type === "agent"
             ? node.knowledge
             : null;
+      // Like the backend: a data node set to a tool service is refused on save.
+      const service =
+        node.type === "etl_profile" || node.type === "databricks_ingest"
+          ? mockToolService(node.datasource)
+          : undefined;
+      if (service)
+        issues.push({
+          loc: ["body", "config", "graph", "nodes", node.id, "datasource"],
+          msg: `「${service.name}」是工具服务，这里要选数据库或上传文件的数据源`,
+        });
       if (knowledge?.knowledge_bases.some((id) => !knowledgeExists(id)))
         issues.push({
           loc: [
@@ -768,7 +841,12 @@ export async function mockApps(
         outputs: null,
         branch: null,
         error: {
-          type: node.type === "knowledge" ? "knowledge_error" : "model_error",
+          type:
+            error instanceof MockNodeFailure
+              ? error.type
+              : node.type === "knowledge"
+                ? "knowledge_error"
+                : "model_error",
           message: error instanceof Error ? error.message : "节点出错",
         },
         rendered: {},
@@ -816,9 +894,13 @@ export async function mockApps(
                 ),
               )
               .map(({ kb_id, name }) => ({ kb_id, name })),
-            datasources: allSources().filter((source) =>
-              sourceIds.includes(source.datasource_id),
-            ),
+            datasources: allSources()
+              .filter((source) => sourceIds.includes(source.datasource_id))
+              .map(({ datasource_id, name, kind }) => ({
+                datasource_id,
+                name,
+                kind,
+              })),
             secrets: config.env.secrets,
           },
         },

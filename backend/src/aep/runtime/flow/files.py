@@ -5,11 +5,13 @@ values) and what it needs from the platform it goes to (``requires``), so it can
 be kept in the assets repository next to skills and eval sets.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
+from aep.datasources import canon_id
 from aep.runtime.flow import graph as flowgraph
+from aep.runtime.flow import refs
 
 FORMAT = "aep-app/1"
 MAX_BYTES = 1024 * 1024
@@ -31,6 +33,53 @@ def datasource_ids(config: dict[str, Any]) -> list[str]:
         for value in values:
             if isinstance(value, str) and value and "{{" not in value and value not in found:
                 found.append(value)
+    return found
+
+
+def _obj(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _items(value: Any) -> list[dict[str, Any]]:
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+def datasource_uses(config: dict[str, Any]) -> dict[str, Literal["literal", "default_input"]]:
+    """The data sources the app uses, by id (``canon_id``), and how: ``literal`` when a
+    setting names it (directly or as a constant, ``{{env.x}}``), ``default_input`` when
+    a start input has it as default and is a datasource input or wholly referenced by
+    such a setting (docs/api/datasources.md, 使用情况). Reads unchecked configurations
+    without failing."""
+    config = _obj(config)
+    nodes = _items(_obj(config.get("graph")).get("nodes"))
+    start = next((n for n in nodes if n.get("type") == "start"), {})
+    consts = {v.get("key"): v.get("value") for v in _items(_obj(config.get("env")).get("vars"))}
+    settings: list[Any] = []
+    for node in nodes:
+        if node.get("type") in DATASOURCE_NODES:
+            settings.append(node.get("datasource"))
+        elif node.get("type") == "agent":
+            settings += [entry.get("datasource") for entry in _items(node.get("tools"))]
+    found: dict[str, Literal["literal", "default_input"]] = {}
+    referenced: set[str] = set()
+    for value in settings:
+        if not isinstance(value, str):
+            continue
+        ref = refs.whole(value)
+        if ref is None:
+            if value.strip() and "{{" not in value:
+                found[canon_id(value)] = "literal"
+        elif ref[0] == refs.ENV:
+            const = consts.get(ref[1])
+            if isinstance(const, str) and const.strip():
+                found[canon_id(const)] = "literal"
+        elif ref[0] == start.get("id"):
+            referenced.add(ref[1])
+    for f in _items(start.get("inputs")):
+        default = f.get("default")
+        if f.get("type") == "datasource" or f.get("key") in referenced:
+            if isinstance(default, str) and default.strip():
+                found.setdefault(canon_id(default), "default_input")
     return found
 
 

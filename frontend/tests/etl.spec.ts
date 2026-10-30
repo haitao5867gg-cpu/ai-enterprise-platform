@@ -44,7 +44,7 @@ test("ETL: source → request → plan → reject → approve → release → re
   await expect(
     page
       .getByLabel("数据源", { exact: true })
-      .getByRole("option", { name: "示例库 · postgres" }),
+      .getByRole("option", { name: "示例库 · PostgreSQL" }),
   ).toBeAttached();
   await page
     .getByLabel("数据源", { exact: true })
@@ -313,7 +313,7 @@ test("data source loading, failure, retry and empty state block ETL creation", a
   state = "empty";
   await page.getByRole("button", { name: "重试" }).click();
   await expect(
-    page.getByText("暂无可用数据源，请先登记数据源后刷新。"),
+    page.getByText("暂无可用数据源，请先在数据源与工具里登记后刷新。"),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "开始运行" })).toBeDisabled();
   state = "valid";

@@ -39,6 +39,7 @@ from langgraph.graph import END, START, StateGraph
 from aep import llm, tracing
 from aep.assets import AssetRepoError, AssetStatus
 from aep.databricks import DevRun, Release
+from aep.datasources import DATABASE_KINDS
 from aep.etl import codegen
 from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
 from aep.etl.plan import OUTPUT_FORMAT as PLAN_FORMAT
@@ -388,6 +389,8 @@ def build(ctx: AppContext) -> StateGraph:
         source = await ctx.datasources.get(str(inp.get("datasource_id", "")))
         if source is None:
             raise InputError("请选择一个已登记的数据源（input.datasource_id）")
+        if source.kind not in DATABASE_KINDS:
+            raise InputError(f"「{source.name}」是工具服务，ETL 要选数据库或上传文件的数据源")
         if not str(inp.get("request", "")).strip():
             raise InputError("请用自然语言描述需求（input.request）")
         rows = configured(config, "profile").params["sample_rows"]

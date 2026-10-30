@@ -220,3 +220,20 @@ async def test_a_cancelled_case_run_fails_the_case_at_once():
         wait = evals.Runner(api)._wait("r1", time.monotonic() + 60)
         run = await asyncio.wait_for(wait, 1)
     assert (run["status"], run["error"]) == ("error", "run 被取消了：不用测了")
+
+
+async def test_the_runner_never_picks_a_tool_service():
+    listed = [
+        {"datasource_id": "t-1", "name": "工单系统", "kind": "mcp"},
+        {"datasource_id": "d-1", "name": "示例库", "kind": "postgres"},
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=listed)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    ) as api:
+        assert await evals.Runner(api)._datasource_id() == "d-1"
+        with pytest.raises(RuntimeError, match="找不到数据源"):
+            await evals.Runner(api, datasource="工单系统")._datasource_id()

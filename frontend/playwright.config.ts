@@ -30,6 +30,7 @@ export default defineConfig({
         "knowledge.spec.ts",
         "retrieval.spec.ts",
         "data-nodes.spec.ts",
+        "datasources.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

@@ -195,6 +195,18 @@ jobs:
             python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["kind"] == "mysql" and d["name"] == "MySQL 示例库"))')
           curl -sf "http://localhost:8000/datasources/$id/tools" |
             python3 -c 'import json,sys; names = {t["name"] for t in json.load(sys.stdin)}; print(sorted(names)); assert names == {"list_schemas", "list_tables", "describe_table", "sample_rows", "read_rows", "table_stats"}'
+      - name: A connector is tested before it is registered; the platform's own services are refused
+        run: |
+          curl -sf http://localhost:8000/datasources/test -H 'content-type: application/json' \
+            -d '{"kind":"postgres","connector_url":"http://connector-postgres:8001/mcp"}' |
+            python3 -c 'import json,sys; r = json.load(sys.stdin); print(r); assert r["ok"] and len(r["tools"]) == 6 and all(t["read_only"] for t in r["tools"]), r'
+          curl -sf http://localhost:8000/datasources/test -H 'content-type: application/json' \
+            -d '{"kind":"mcp","connector_url":"http://sandbox-relay:8004/mcp"}' |
+            python3 -c 'import json,sys; r = json.load(sys.stdin); print(r); assert not r["ok"] and r["problems"][0]["code"] == "internal_host", r'
+          id=$(curl -sf http://localhost:8000/datasources |
+            python3 -c 'import json,sys; print(next(d["datasource_id"] for d in json.load(sys.stdin) if d["name"] == "示例库"))')
+          curl -sf "http://localhost:8000/datasources/$id/health" |
+            python3 -c 'import json,sys; h = json.load(sys.stdin); print(h); assert h["ok"] and h["tool_count"] == 6, h'
 
       - name: Upload a CSV, verify registration and call all six files connector tools
         run: scripts/smoke-files.sh

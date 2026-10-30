@@ -26,7 +26,8 @@ from openai import AsyncOpenAI
 
 from aep import evals
 from aep.config import Settings
-from aep.datasources import DataSourceStore
+from aep.connector_urls import same_url
+from aep.datasources import DATABASE_KINDS, DataSourceStore
 from aep.knowledge.rerank import rerank_options
 from aep.runtime import appconfig, design, manual
 from aep.runtime.appconfig import ConfigError
@@ -348,6 +349,30 @@ class AppCatalog:
                     use = {"app": app, "node": node, "version": number}
                     use["skill_version"] = ref["version"]
                     found.setdefault(ref["name"], []).append(use)
+        return found
+
+    async def datasource_usage(self) -> dict[str, list[dict[str, Any]]]:
+        """Per data source id (``canon_id``), the flow apps whose current version names it,
+        as ``{"app", "title", "version", "via"}`` sorted by app. Like ``used_by``: archived
+        apps, drafts and older versions do not count, nor code apps (their source is
+        chosen per run). An app whose configuration cannot be read is left out."""
+        await self._runs.ensure_flows()
+        found: dict[str, list[dict[str, Any]]] = {}
+        for flow in await self._runs.flows.all():
+            try:
+                number = await self._runs.versions.current(flow.app)
+                current = await self._runs.versions.version(flow.app, number)
+                if current is None:
+                    continue
+                uses = flowfiles.datasource_uses(self._runs.flow_config(flow.app, current.config))
+            except Exception:  # noqa: BLE001 - one broken app must not hide the others
+                log.warning("could not read the data sources of app %s", flow.app, exc_info=True)
+                continue
+            for datasource_id, via in uses.items():
+                use = {"app": flow.app, "title": flow.title, "version": number, "via": via}
+                found.setdefault(datasource_id, []).append(use)
+        for uses_of_one in found.values():
+            uses_of_one.sort(key=lambda use: use["app"])
         return found
 
     async def knowledge_users(self, kb_id: str) -> list[str]:
@@ -777,7 +802,10 @@ class AppCatalog:
             await asyncio.gather(*self._evals.values(), return_exceptions=True)
 
     async def _datasource_id(self) -> str:
-        sources = await self._datasources.all()
+        """The source eval cases run on: AEP_EVAL_DATASOURCE (a name or id; a default
+        source renamed since is found by its connector address), else the first data
+        source. Tool services are never one."""
+        sources = [s for s in await self._datasources.all() if s.kind in DATABASE_KINDS]
         if not sources:
             raise RuntimeError("平台里没有登记数据源，评测跑不了")
         wanted = self._settings.eval_datasource
@@ -786,6 +814,12 @@ class AppCatalog:
         for s in sources:
             if wanted in (s.name, s.datasource_id):
                 return s.datasource_id
+        for item in self._settings.default_datasources:
+            if item.get("name") == wanted:
+                url = item.get("connector_url", "")
+                for s in sources:
+                    if same_url(s.connector_url, url):
+                        return s.datasource_id
         raise RuntimeError(f"找不到评测用的数据源 {wanted}（AEP_EVAL_DATASOURCE）")
 
     async def _evaluate(

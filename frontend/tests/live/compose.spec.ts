@@ -147,6 +147,6 @@ test("Compose: upload CSV selects a persistent file source and validation names 
   await expect(
     page
       .getByLabel("数据源", { exact: true })
-      .getByRole("option", { name: `${name} · file` }),
+      .getByRole("option", { name: `${name} · 上传文件` }),
   ).toBeAttached();
 });

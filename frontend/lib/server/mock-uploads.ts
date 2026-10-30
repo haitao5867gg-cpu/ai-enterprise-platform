@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import readXlsxFile from "read-excel-file/node";
 import type { EtlLanguage, EtlPlan } from "../etl";
 import type { UploadedDataset, UploadedTable } from "../uploads";
+import {
+  allMockSources,
+  duplicateName,
+  registerMockSource,
+} from "./mock-datasources";
 
 const globalStore = globalThis as typeof globalThis & {
   aepMockUploads?: Map<string, UploadedDataset>;
@@ -91,14 +96,8 @@ export async function mockUpload(request: Request) {
       throw new Error("数据集名称必须为 1～100 个字符");
     if (!files.length || files.length > 20)
       throw new Error("请选择 1～20 个 CSV 或 XLSX 文件");
-    if (
-      [...mockUploads.values()].some((item) => item.datasource.name === name) ||
-      name === "示例库"
-    )
-      return Response.json(
-        { detail: `已存在名为「${name}」的数据源` },
-        { status: 409 },
-      );
+    if (allMockSources().some((item) => item.name === name))
+      return Response.json({ detail: duplicateName(name) }, { status: 409 });
     const tables: UploadedTable[] = [],
       taken = new Set<string>();
     for (const file of files) {
@@ -137,12 +136,14 @@ export async function mockUpload(request: Request) {
       dataset_id: id,
       schema: `upload_${id.slice(0, 8)}`,
       tables,
-      datasource: {
+      datasource: registerMockSource({
         datasource_id: id,
         kind: "file",
         name,
+        connector_url: `http://connector-files:8003/datasets/${id}/mcp`,
         description: `上传文件：${tables.map((table) => table.table).join("、")}`,
-      },
+        created_at: new Date().toISOString(),
+      }),
     };
     mockUploads.set(id, result);
     return Response.json(result, { status: 201 });

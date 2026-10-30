@@ -1,6 +1,7 @@
 """Liveness and readiness checks for the platform's backing services, and the ETL
 demo's checks (``GET /health/demo``)."""
 
+from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -9,6 +10,7 @@ import psycopg
 import redis.asyncio as redis
 
 from aep.config import Settings
+from aep.connector_urls import same_url
 from aep.databricks import DatabricksError, DevTarget
 from aep.datasources import DataSourceStore
 from aep.tools.mcp import McpTools
@@ -53,8 +55,39 @@ async def check_llm_gateway(settings: Settings) -> str | None:
 # The ETL demo (``make demo``, docs/api/data-nodes.md): what has to be in place before
 # the demo app can run from the request to the dev run.
 DEMO_DATASOURCE = "MySQL 示例库"
+# Its connector in the local stack (docker-compose.yml, AEP_DEFAULT_DATASOURCES): the
+# source is still the demo's after a rename on the page.
+DEMO_CONNECTOR_URL = "http://connector-mysql:8002/mcp"
 DEMO_SCHEMA = "retail"
 CONNECTOR_SECONDS = 15.0
+
+
+def demo_connector_url(settings: Settings) -> str:
+    """The demo source's connector: its AEP_DEFAULT_DATASOURCES entry's, else the local
+    stack's."""
+    for item in settings.default_datasources:
+        if item.get("name") == DEMO_DATASOURCE and item.get("connector_url"):
+            return item["connector_url"]
+    return DEMO_CONNECTOR_URL
+
+
+def find_demo_source[S](
+    sources: Iterable[S],
+    fields: Callable[[S], tuple[str, str, str]],
+    url: str = DEMO_CONNECTOR_URL,
+) -> S | None:
+    """The demo's source among registered ones, ``fields`` giving each one's name, kind
+    and connector address: the one named DEMO_DATASOURCE, else one on the demo's
+    connector (renamed on the page). Never a tool service."""
+    candidates: list[tuple[S, str, str]] = []
+    for source in sources:
+        name, kind, at = fields(source)
+        if kind != "mcp":
+            candidates.append((source, name, at))
+    for source, name, _ in candidates:
+        if name == DEMO_DATASOURCE:
+            return source
+    return next((source for source, _, at in candidates if same_url(at, url)), None)
 
 
 def _item(
@@ -92,7 +125,7 @@ async def demo_checks(
             )
         )
     items.append(_demo_embedding(settings, models))
-    items.append(await _demo_source(sources, tools))
+    items.append(await _demo_source(sources, tools, demo_connector_url(settings)))
 
     s = settings
     if not (s.databricks_host and s.databricks_token):
@@ -142,8 +175,9 @@ def _demo_embedding(settings: Settings, models: list[str] | None) -> dict[str, A
     return _item("embedding", False, detail, value=alias)
 
 
-async def _demo_source(sources: DataSourceStore, tools: McpTools) -> dict[str, Any]:
-    found = next((d for d in await sources.all() if d.name == DEMO_DATASOURCE), None)
+async def _demo_source(sources: DataSourceStore, tools: McpTools, url: str) -> dict[str, Any]:
+    registered = await sources.all()
+    found = find_demo_source(registered, lambda d: (d.name, d.kind, d.connector_url), url)
     if found is None:
         return _item(
             "datasource",
@@ -153,15 +187,15 @@ async def _demo_source(sources: DataSourceStore, tools: McpTools) -> dict[str, A
     try:
         listed = await tools.call(found.connector_url, "list_schemas", {}, CONNECTOR_SECONDS)
     except Exception as exc:  # noqa: BLE001 - any failure means "cannot read it"
-        return _item("datasource", False, f"读不了数据源「{DEMO_DATASOURCE}」：{exc}")
+        return _item("datasource", False, f"读不了数据源「{found.name}」：{exc}")
     if DEMO_SCHEMA not in (listed or {}).get("schemas", []):
         return _item(
             "datasource",
             False,
-            f"数据源「{DEMO_DATASOURCE}」里没有 {DEMO_SCHEMA} 库：先导入 "
+            f"数据源「{found.name}」里没有 {DEMO_SCHEMA} 库：先导入 "
             "connectors/mysql/seed/003-retail.sql（make demo 会做）",
         )
-    return _item("datasource", True, f"数据源「{DEMO_DATASOURCE}」能读到 {DEMO_SCHEMA} 库")
+    return _item("datasource", True, f"数据源「{found.name}」能读到 {DEMO_SCHEMA} 库")
 
 
 async def _demo_cluster(s: Settings, databricks: DevTarget | None) -> dict[str, Any]:
