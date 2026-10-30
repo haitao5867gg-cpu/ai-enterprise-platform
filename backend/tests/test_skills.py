@@ -33,12 +33,27 @@ def content(body: str = "先读需求，再看数据。", **changes) -> SkillCon
 
 def test_builtin_skills_are_version_one():
     skills = builtin_skills()
-    assert set(skills) == {"etl-plan", "etl-codegen"}
+    assert set(skills) == {"etl-plan", "etl-codegen", "etl-plan-brief"}
     for skill in skills.values():
         assert skill.version == 1
         assert skill.note == "平台内置"
         assert skill.description
     assert skills["etl-plan"].body.startswith(PLAN_RULES)
+    # How to write a version 2 plan (docs/api/data-nodes.md, 内置 Skill etl-plan-brief).
+    brief = skills["etl-plan-brief"].body
+    assert brief.startswith(PLAN_RULES)
+    for text in ("brief", "rules", "basis", "questions", "count(order_id)", "2026-10"):
+        assert text in brief
+
+
+async def test_builtins_are_registered_only_under_new_names():
+    store = MemorySkillStore(builtins=False)
+    await store.create("etl-plan", content("我们公司的方案规范"))
+    await store.publish("etl-plan", "公司规范", None)
+    assert await store.register_builtins() == 2
+    assert (await store.version("etl-plan", 1)).body == "我们公司的方案规范"
+    assert (await store.version("etl-plan-brief", 1)).note == "平台内置"
+    assert await store.register_builtins() == 0
 
 
 def test_a_model_node_prompt_is_its_skills_then_the_output_format():
@@ -115,7 +130,7 @@ async def api():
 
 async def test_skills_api(api):
     listed = (await api.get("/skills")).json()
-    assert [s["name"] for s in listed] == ["etl-codegen", "etl-plan"]
+    assert [s["name"] for s in listed] == ["etl-codegen", "etl-plan", "etl-plan-brief"]
     plan = listed[1]
     assert plan["published_version"] == 1
     assert plan["has_draft"] is False

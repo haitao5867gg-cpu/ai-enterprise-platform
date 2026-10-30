@@ -148,6 +148,7 @@
 - 第 1 版的全部检查（表、列、取值、主键、质量规则等）。
 - 结构不对：类型不对或缺了上面说的必填字段，`problems` 写明位置，如 `brief.metrics[1].name 不能为空`。
 - 业务文字里有代码。业务文字指：模型写的 `brief` 的 `goal`、`grain`，指标和维度的 `name`、`definition`、`unit`，筛选和时间范围的 `text`（不查 `column` 和 `examples`：一个是列名，一个是数据里的取值；平台生成的 `brief` 不查）；`rules` 的 `text`；`questions` 的 `text`、`why` 和选项的 `label`；模型写的列 `label`。先去掉 `[n]`，再按这几条找：反引号；`col(`；`F.` 加函数名和括号；`CASE WHEN`（不分大小写）；常见函数名紧跟半角括号，如 `lower(`、`upper(`、`trim(`、`coalesce(`、`cast(`、`nvl(`、`ifnull(`、`concat(`、`substr(`、`regexp_replace(`、`date_format(`、`date_trunc(`、`to_date(`、`sum(`、`count(`、`avg(`（不分大小写；前面不能紧挨着半角英文字母、数字或下划线，汉字、全角字符和标点不算，所以“按count(订单)”照样算代码）。全角括号和 `GMV(含税)` 这类缩写不算。
+- 目标表列的 `source` 或质量规则的 `condition` 写成了 PySpark（字符串字面值以外出现 `F.` 加函数名和括号、`col(`、`lit(`、`.alias(`、`.cast(`、`.otherwise(`）：这两处要写 Spark SQL 表达式，答案的可加性和生成代码都按 SQL 读。每张目标表一条，写明是哪几列、哪几条质量规则。
 - `brief` 的 `column` 不是结果表的列。
 - id 重复。
 - 题的选项超过 6 个、选项 `value` 重复或不是 1–64 个字符的文字、`text` 为空（去掉编号和前缀后只剩空白）、`text` 或选项的 `label` 超过 50 个字符、选项的 `label` 为空、`suggested` 没写或不在选项里。
@@ -165,7 +166,7 @@
 - 写法不合格的 id 按类别改成还没被任何 id 用过的最小编号（`m1`、`d1`、`f1`、`r1`、`q1` 这样），`affects` 里的旧 id 跟着改成新的；改完以后，`affects` 里不存在的 id 去掉。
 - 题的选项 `value` 和 `suggested` 是数字或 true、false 时转成文字（`2026` → `"2026"`）；`why` 超过 500 个字符时截断；`affects` 去掉重复的，超过 20 个时只留前 20 个。
 - 选项少于 2 个的题改成规则，`text` 写成“{题目}——按「{选项名称}」处理”（没有选项时只写题目），`basis` 为 `assumption`。第 6 题起的题（按 `answered` 处理之后）同样改成规则，按建议的选项写；`suggested` 没写或不在选项里时只写题目（这些题不再经过对题的检查）。题改成规则时，规则的 `id` 同样取还没被任何 id 用过的最小 `r` 编号。
-- 维度的 `examples` 只留数据里真有的：去掉首尾空格、不分大小写后，等于这一列的 `source` 用到的源列在探查里出现过的取值，或者等于 `source` 里的字符串字面值（如 `'未知'`）。其余去掉；最多留 5 个；模型没给时不补。
+- 维度的 `examples` 只留数据里真有的：去掉首尾空格、不分大小写后，等于这一列的 `source` 用到的源列在探查里列出的取值，或者等于 `source` 里的字符串字面值（如 `'未知'`）。其余去掉，`cleaned` 里写“去掉了探查里没见过的 …”。只有用到的源列取值都被探查列全了（一个没截断、个数等于去重数，如城市、状态）才这样查；用到时间、金额这类取值没列全的列，或者维度没写 `column`、探查里找不到用到的列时，平台判断不了，例子原样保留。最多留 5 个；模型没给时不补。
 - 模型没写 `answer`、但有 `brief` 时由平台生成，只用写了 `column`、而且是结果表里有的列：`target` 是结果表（`targets` 里最后一张）；`time_range.column` 有值就按它 `pick: latest`；维度列去掉时间列后取前 3 个做 `group_by`；指标列取前 8 个做 `measures`；按第一个指标从高到低，`top_n` 10，`group_by` 不为空时画 `bar`。这样生成的设计一定合上面的规则。连指标都没有时 `answer` 为 null，不让模型重写。
 
 `answered`：引用的值应是人工节点确认模式的 `record`。取到 null（第一次跑时就是）、不是对象、或者没有 `answers` 列表时都不管（节点不失败，也不记）；`answers` 里不是对象、或者 `label`、`value_label` 不是文字的项跳过。
@@ -174,7 +175,7 @@
 - 只比题目，不比 id：模型每次重写都可能重新编号，同一个 `q1` 下一版可能是另一道题。
 - 这样人答过的题，不管是哪一轮答的，模型再问也不会再让人答一遍。
 
-数据取值的放行口子（`trust_assumptions`，第 1 版看 `assumptions` 的文字）：第 2 版看 `rules` 的文字、`questions` 的 `text`、`why` 和选项的 `label`。上一次是 `retry` 时，方案拿一个探查里没见过的取值做比较、而这些文字里提到了这个值，就放行。
+数据取值的放行口子（`trust_assumptions`，第 1 版看 `assumptions` 的文字）：第 2 版看 `rules` 的文字、`questions` 的 `text`、`why` 和选项的 `label`。上一次是 `retry` 时，方案拿一个探查里没见过的取值做比较、而这些文字里提到了这个值，就放行。两版都一样：和空字符串 `''` 比较是判空（如 `trim(city) = ''`），不算拿取值做比较，不查。
 
 第 2 版通过时：
 - `plan` 是第 1 版 `EtlPlan` 的超集：`summary` 一定有值，`assumptions` 为 `[]`，另有整理后的 `brief`、`rules`、`questions` 和补齐了默认值的 `answer`（没有时为 null）；`plan.targets[].columns[]` 保留补齐后的 `label`。第 2 版用 `aep.etl.plan` 里另加的模型输出，`EtlPlan` 不动；`etl_code_check` 照旧用 `EtlPlan` 读它，多出的键不管。

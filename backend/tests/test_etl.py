@@ -524,6 +524,19 @@ def test_a_value_the_data_lacks_goes_back_until_explained(complete, where):
     validate_plan(fine, tables, known, trust_assumptions=False)
 
 
+def test_a_blank_check_is_no_made_up_value():
+    tables = ["sales.orders", "sales.customers"]
+    known = {"status": KnownValues(frozenset({"paid"}), complete=True)}
+    blank = plan()
+    blank["targets"][0]["columns"].append(
+        {
+            "name": "status",
+            "source": "CASE WHEN trim(o.status) = '' OR o.status IN ('  ') THEN 'unknown' END",
+        }
+    )
+    validate_plan(blank, tables, known, trust_assumptions=False)
+
+
 def test_values_a_target_computes_are_its_own():
     tables = ["sales.orders", "sales.customers"]
     known = {"status": KnownValues(frozenset({"paid"}), complete=True)}

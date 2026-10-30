@@ -21,7 +21,7 @@ from aep.knowledge.store import MemoryKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
 from aep.main import create_app
 from aep.runtime.catalog import AppCatalog
-from aep.runtime.flow import data_nodes, files
+from aep.runtime.flow import data_nodes, files, nodes
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow.nodes import TYPES, NodeFailure, Runtime
 from aep.runtime.registry import AppContext, default_apps
@@ -247,6 +247,429 @@ async def test_plan_check_needs_the_profile():
     st = state(plan={"text": reply(plan())}, profile={"tables": None}, glossary={"hits": []})
     with pytest.raises(NodeFailure, match="探查结果要引用探查数据节点的 tables"):
         await run(check_node(), st, rt)
+
+
+async def test_plan_check_version_one_leaves_the_new_outputs_empty():
+    rt, ds = await node_env()
+    tables = await profiled(rt, ds)
+    o = (await run(check_node(), v2_state(tables, plan()), rt)).outputs
+    assert o["references"] == o["plan"]["references"] == []
+    assert o["summary"] == "1 张目标表"
+    assert (o["brief"], o["questions"], o["answer"], o["uncited"], o["cleaned"]) == (
+        None,
+        [],
+        None,
+        [],
+        [],
+    )
+    assert "## 业务说明" not in o["message"]
+
+    cited = plan(summary="订单明细 [1]。", assumptions=["只算 paid"])
+    o = (await run(check_node(), v2_state(tables, cited), rt)).outputs
+    assert [r["index"] for r in o["references"]] == [1]
+    assert o["summary"] == "1 张目标表、1 条假设待确认"
+
+    # A version 2 reply under format 1 is read as version 1: the new keys are ignored.
+    out = await run(check_node(), v2_state(tables, brief_reply()), rt)
+    assert out.branch == "ok" and out.private == {"failures": 0}
+    assert set(out.outputs["plan"]) == set(EtlPlan.model_fields)
+    assert out.outputs["brief"] is None and out.outputs["questions"] == []
+
+    failed = await run(check_node(), v2_state(tables, "不是 JSON"), rt)
+    assert failed.branch == "retry"
+    assert {k: failed.outputs[k] for k in NEW_OUTPUTS} == EMPTY
+
+
+# etl_plan_check, format 2 (方案第 2 版)
+
+NEW_OUTPUTS = ("references", "summary", "brief", "questions", "answer", "uncited", "cleaned")
+EMPTY = {
+    "references": [],
+    "summary": "",
+    "brief": None,
+    "questions": [],
+    "answer": None,
+    "uncited": [],
+    "cleaned": [],
+}
+
+
+def brief_reply(**changes) -> dict:
+    """A version 2 plan over the fake shop: a detail table and city totals."""
+    detail = plan()["targets"][0]
+    for column, label in zip(detail["columns"], ["订单号", "城市", "数量"], strict=True):
+        column["label"] = label
+    totals = {
+        "name": "city_totals",
+        "description": "每个城市的订单数和商品数量",
+        "sources": ["order_facts"],
+        "logic": "按城市汇总",
+        "columns": [
+            {"name": "city", "source": "city", "label": "城市"},
+            {"name": "order_count", "source": "count(order_id)", "label": "订单数（单）"},
+            {"name": "quantity_sum", "source": "sum(quantity)", "label": "商品数量"},
+            {"name": "avg_quantity", "source": "quantity_sum / order_count", "label": "平均数量"},
+        ],
+        "primary_key": ["city"],
+    }
+    base = plan(
+        summary="按城市统计订单数和商品数量。",
+        targets=[detail, totals],
+        brief={
+            "goal": "按城市统计有效订单的订单数和商品数量",
+            "grain": "每个城市一行",
+            "metrics": [
+                {
+                    "id": "m1",
+                    "name": "订单数",
+                    "unit": "单",
+                    "definition": "有效订单的个数 [1]",
+                    "column": "order_count",
+                },
+                {
+                    "id": "m2",
+                    "name": "商品数量",
+                    "definition": "数量之和",
+                    "column": "quantity_sum",
+                },
+                {
+                    "id": "m3",
+                    "name": "平均数量",
+                    "definition": "商品数量除以订单数",
+                    "column": "avg_quantity",
+                },
+            ],
+            "dimensions": [
+                {
+                    "id": "d1",
+                    "name": "城市",
+                    "definition": "客户档案里的城市，去掉首尾空格",
+                    "column": "city",
+                    "examples": ["上海", "北京", "广州"],
+                }
+            ],
+            "filters": [{"id": "f1", "text": "只算数量为正的订单"}],
+            "time_range": None,
+        },
+        rules=[{"id": "r1", "text": "城市去掉首尾空格", "basis": "data"}],
+        questions=[
+            {
+                "id": "q1",
+                "text": "统计哪段时间？",
+                "why": "需求没说时间范围",
+                "options": [
+                    {"value": "all", "label": "全部日期"},
+                    {"value": "y2026", "label": "只看 2026 年"},
+                ],
+                "suggested": "all",
+                "affects": ["m1", "m2"],
+            },
+            {
+                "id": "q2",
+                "text": "城市空值怎么算？",
+                "options": [
+                    {"value": "unknown", "label": "算作未知"},
+                    {"value": "drop", "label": "不算"},
+                ],
+                "suggested": "unknown",
+            },
+        ],
+    )
+    base.update(changes)
+    return base
+
+
+def v2_state(tables: list[dict], value: dict | str, **extra) -> dict:
+    text = value if isinstance(value, str) else reply(value)
+    return state(plan={"text": text}, profile={"tables": tables}, glossary={"hits": [HIT]}, **extra)
+
+
+def asks(text: str, *labels: str, qid: str = "q1") -> dict:
+    options = [{"value": f"v{i}", "label": label} for i, label in enumerate(labels)]
+    return {"id": qid, "text": text, "options": options, "suggested": "v0"}
+
+
+async def test_plan_check_format_2_writes_up_the_brief_questions_and_answer():
+    rt, ds = await node_env()
+    tables = await profiled(rt, ds)
+    st = v2_state(tables, brief_reply(), start={"language": "sql"})
+    out = await run(check_node(format=2), st, rt)
+    assert out.branch == "ok"
+    assert out.private == {"failures": 0, "answered": {}}
+    o = out.outputs
+    assert o["ok"] is True and o["problems"] == ""
+    # A superset of version 1: the code check reads it as EtlPlan.
+    assert EtlPlan.model_validate(o["plan"]).targets[1].name == "city_totals"
+    assert o["plan"]["language"] == "sql" and o["plan"]["assumptions"] == []
+    assert o["brief"] == o["plan"]["brief"] and o["brief"]["goal"].startswith("按城市统计")
+    assert o["brief"]["dimensions"][0]["examples"] == ["上海", "北京"]
+    assert o["questions"] == [
+        {
+            "key": "q1",
+            "label": "统计哪段时间？",
+            "type": "select",
+            "required": True,
+            "choices": [
+                {"value": "all", "label": "全部日期"},
+                {"value": "y2026", "label": "只看 2026 年"},
+            ],
+            "suggested": "all",
+            "why": "需求没说时间范围",
+            "affects": ["m1", "m2"],
+        },
+        {
+            "key": "q2",
+            "label": "城市空值怎么算？",
+            "type": "select",
+            "required": True,
+            "choices": [
+                {"value": "unknown", "label": "算作未知"},
+                {"value": "drop", "label": "不算"},
+            ],
+            "suggested": "unknown",
+        },
+    ]
+    answer = o["answer"]
+    assert answer["target"] == "city_totals" and answer["filter"] == []
+    assert answer["group_by"] == ["city"] and answer["top_n"] == 10
+    assert [(c["name"], c.get("agg")) for c in answer["columns"]] == [
+        ("city", None),
+        ("order_count", "sum"),
+        ("quantity_sum", "sum"),
+        ("avg_quantity", "ratio"),
+    ]
+    assert answer["text"] == "各「城市」组合按订单数从高到低排的前 10 组，附合计和柱状图。"
+    assert o["plan"]["answer"] == {k: v for k, v in answer.items() if k not in ("columns", "text")}
+    assert o["uncited"] == ["m2", "m3", "d1", "f1"]
+    assert o["cleaned"] == [
+        "维度“城市”的例子去掉了探查里没见过的 广州",
+        "模型没写答案设计，平台按业务说明生成了一份",
+    ]
+    # [1] is cited only in the brief.
+    assert (
+        [r["index"] for r in o["references"]]
+        == [1]
+        == [r["index"] for r in o["plan"]["references"]]
+    )
+    assert o["summary"] == "2 张目标表、3 个指标、2 个问题待回答"
+    message = o["message"]
+    for text in [
+        "## 业务说明",
+        "**目标**：按城市统计有效订单的订单数和商品数量",
+        "**粒度**：每个城市一行",
+        "| m1 | 订单数 | 单 | 有效订单的个数 [1] | `order_count` |",
+        "| d1 | 城市 | 客户档案里的城市，去掉首尾空格 | `city` | 上海、北京 |",
+        "### 筛选\n\n- 只算数量为正的订单",
+        "1. **统计哪段时间？**（建议：全部日期）\n   - 选项：全部日期、只看 2026 年\n"
+        "   - 为什么问：需求没说时间范围\n2. **城市空值怎么算？**（建议：算作未知）",
+        "### 已按口径处理的规则\n\n- 城市去掉首尾空格（数据）",
+        "### 最后给你的答案\n\n各「城市」组合",
+        "## 技术方案\n\n**方案**：按城市统计订单数和商品数量。\n\n代码语言：SQL",
+        "### 目标表 1：`order_facts`",
+        "### 目标表 2：`city_totals`",
+        "### 依据的资料",
+    ]:
+        assert text in message
+    assert "### 时间范围" not in message and "需要确认的假设" not in message
+    assert message.index("## 业务说明") < message.index("## 技术方案")
+    assert out.messages == [
+        {"role": "assistant", "content": "方案整理好了：2 张目标表、3 个指标、2 个问题待回答"}
+    ]
+
+    out = await run(check_node(format=2), v2_state(tables, brief_reply(questions=[])), rt)
+    assert out.outputs["questions"] == []
+    assert out.messages[0]["content"] == "方案整理好了：2 张目标表、3 个指标，没有要回答的问题"
+
+
+async def test_plan_check_format_2_sends_problems_back_with_empty_new_outputs():
+    rt, ds = await node_env()
+    tables = await profiled(rt, ds)
+    bad = brief_reply(rules=[{"id": "r1", "text": "按sum(数量)算", "basis": "data"}])
+    bad["brief"]["metrics"][0]["column"] = "nope"
+    record = {"actor": "韩梅梅", "answers": [{"label": "统计哪段时间？", "value_label": "全部"}]}
+    st = v2_state(tables, bad, review={"record": record})
+    out = await run(check_node(format=2, answered="{{review.record}}"), st, rt)
+    assert out.branch == "retry"
+    assert out.outputs["ok"] is False and out.outputs["plan"] == bad
+    assert out.outputs["problems"].splitlines() == [
+        "rules[0].text 里有代码（sum(）：业务说明给人看，用文字写，表达式写在目标表的列里",
+        "brief.metrics[0].column nope 不是结果表 city_totals 的列",
+    ]
+    assert {k: out.outputs[k] for k in NEW_OUTPUTS} == EMPTY
+    assert out.messages[0]["content"] == "方案有 2 处没通过校验，让模型重写（第 2/3 次）"
+    # The answers people gave are kept through a rewrite.
+    assert out.private == {
+        "failures": 1,
+        "answered": {
+            "统计哪段时间": {"label": "统计哪段时间？", "value_label": "全部", "actor": "韩梅梅"}
+        },
+    }
+
+
+async def test_answered_questions_are_remembered_across_rounds():
+    rt, ds = await node_env()
+    tables = await profiled(rt, ds)
+    node = check_node(format=2, answered="{{review.record}}")
+
+    async def check_round(reply_plan: dict, record, private: dict | None):
+        st = v2_state(tables, reply_plan, review={"record": record})
+        st["private"] = {"check_plan": private} if private else {}
+        return await run(node, st, rt)
+
+    # Round 1: nobody answered yet.
+    first = await check_round(brief_reply(), None, None)
+    assert [q["key"] for q in first.outputs["questions"]] == ["q1", "q2"]
+    assert first.private == {"failures": 0, "answered": {}}
+
+    # Round 2: the rewrite numbers the questions anew; q1 is now the answered city one.
+    record = {
+        "actor": "韩梅梅",
+        "answers": [
+            {
+                "key": "q1",
+                "label": "统计哪段时间？",
+                "value": "y2026",
+                "value_label": "只看 2026 年",
+            },
+            {
+                "key": "q2",
+                "label": "城市空值怎么算？",
+                "value": "unknown",
+                "value_label": "算作未知",
+            },
+        ],
+    }
+    rewritten = brief_reply(
+        questions=[
+            asks("城市空值怎么算？", "算作未知", "不算"),
+            asks("退款算不算？", "不算", "算", qid="q2"),
+        ]
+    )
+    second = await check_round(rewritten, record, first.private)
+    assert [q["label"] for q in second.outputs["questions"]] == ["退款算不算？"]
+    assert second.outputs["plan"]["rules"][-1] == {
+        "id": "r2",
+        "text": "韩梅梅已确认：城市空值怎么算？——算作未知",
+        "basis": "confirmed",
+    }
+    assert set(second.private["answered"]) == {"统计哪段时间", "城市空值怎么算"}
+
+    # Round 3: the record holds only the latest answers; earlier ones are remembered.
+    record = {"actor": "李雷", "answers": [{"label": "退款算不算？", "value_label": "不算"}]}
+    again = brief_reply(
+        questions=[
+            asks("运费算不算？", "不算", "算"),
+            asks("统计哪段时间？", "全部日期", "只看 2026 年", qid="q2"),
+            asks("退款算不算？", "不算", "算", qid="q3"),
+        ]
+    )
+    third = await check_round(again, record, second.private)
+    assert [q["key"] for q in third.outputs["questions"]] == ["q1"]
+    assert [r["text"] for r in third.outputs["plan"]["rules"][1:]] == [
+        "韩梅梅已确认：统计哪段时间？——只看 2026 年",
+        "李雷已确认：退款算不算？——不算",
+    ]
+
+    # A newer answer to the same question replaces the older.
+    record = {"actor": "王五", "answers": [{"label": "统计哪段时间？", "value_label": "全部日期"}]}
+    fourth = await check_round(again, record, third.private)
+    assert fourth.outputs["plan"]["rules"][1]["text"] == "王五已确认：统计哪段时间？——全部日期"
+    assert len(fourth.private["answered"]) == 3
+
+    # What is not a record, or not an answer in it, is left alone.
+    for bad in [
+        "文字",
+        {"actor": "x"},
+        {"actor": "x", "answers": "全部"},
+        {
+            "actor": " ",
+            "answers": [
+                1,
+                {"label": 3, "value_label": "x"},
+                {"label": "运费算不算？", "value_label": None},
+                {"label": "？", "value_label": "x"},
+            ],
+        },
+    ]:
+        out = await check_round(again, bad, fourth.private)
+        assert out.branch == "ok"
+        assert out.private == {"failures": 0, "answered": fourth.private["answered"]}
+    blank = {"actor": " ", "answers": [{"label": "运费算不算？", "value_label": "不算"}]}
+    out = await check_round(again, blank, None)
+    assert out.outputs["plan"]["rules"][-1]["text"] == "已确认：运费算不算？——不算"
+
+    # Format 1 never reads them.
+    st = v2_state(tables, brief_reply(), review={"record": record})
+    out = await run(check_node(answered="{{review.record}}"), st, rt)
+    assert out.private == {"failures": 0} and out.outputs["questions"] == []
+
+
+def assert_human_question(q: dict) -> None:
+    """What a human node takes as a question in approval mode (flow-apps.md, 确认模式的题
+    fields): every question the plan check gives passes it as it is."""
+    assert set(q) <= {"key", "label", "type", "required", "choices", "suggested", "why", "affects"}
+    assert None not in q.values()
+    assert nodes.ID.match(q["key"])
+    assert isinstance(q["label"], str) and q["label"].strip() and len(q["label"]) <= 50
+    assert q["type"] == "select" and q["required"] is True
+    assert 2 <= len(q["choices"]) <= 6
+    values = [c["value"] for c in q["choices"]]
+    assert len(set(values)) == len(values)
+    for c in q["choices"]:
+        assert isinstance(c["value"], str) and c["value"].strip() and len(c["value"]) <= 64
+        assert isinstance(c["label"], str) and c["label"].strip() and len(c["label"]) <= 50
+    assert q["suggested"] in values
+    assert "why" not in q or (isinstance(q["why"], str) and len(q["why"]) <= 500)
+    if "affects" in q:
+        assert len(q["affects"]) <= 20
+        assert all(isinstance(a, str) and len(a) <= 64 for a in q["affects"])
+
+
+async def test_every_question_given_passes_the_human_node_checks():
+    rt, ds = await node_env()
+    tables = await profiled(rt, ds)
+    messy = brief_reply(
+        questions=[
+            {
+                "id": "Q-1",
+                "text": "1. 问题：统计哪段时间？[7]",
+                "why": "长" * 700,
+                "options": [
+                    {"value": 2026, "label": "opt: 只看 2026 年 [7]"},
+                    {"value": True, "label": "opt: 全部日期"},
+                ],
+                "suggested": 2026,
+                "affects": ["m1", "m1", "M-9", 3] + [f"m{i}" for i in range(30)],
+            },
+            {"text": "② 城市空值怎么算？", "options": [{"value": 1.5, "label": "- 算作未知"}]},
+            {
+                "id": "q3",
+                "text": "退款算不算？",
+                "why": "",
+                "options": [{"value": "no", "label": "不算"}, {"value": "yes", "label": "算"}],
+                "suggested": "no",
+                "affects": [],
+            },
+            *(asks(f"第 {i} 个问题？", "甲", "乙", qid=f"q{i}") for i in range(4, 9)),
+        ]
+    )
+    out = await run(check_node(format=2), v2_state(tables, messy), rt)
+    assert out.branch == "ok", out.outputs["problems"]
+    questions = out.outputs["questions"]
+    assert [q["key"] for q in questions] == ["q1", "q3", "q4", "q5", "q6"]
+    assert questions[0]["label"] == "统计哪段时间？"
+    assert questions[0]["choices"] == [
+        {"value": "2026", "label": "只看 2026 年 "},
+        {"value": "true", "label": "全部日期"},
+    ]
+    assert len(questions[0]["why"]) == 500 and questions[0]["affects"] == ["m1", "m2", "m3"]
+    assert "why" not in questions[1] and "affects" not in questions[1]
+    for q in questions:
+        assert_human_question(q)
+        assert nodes.field_problem(q, q["suggested"]) is None
+    p = nodes.Problems(())
+    nodes.check_fields({"fields": questions}, "fields", p, ("select",))
+    assert p.found == []
 
 
 # databricks_ingest
@@ -1067,6 +1490,71 @@ async def test_data_node_settings_are_checked(lake):
     }
 
 
+async def test_plan_check_format_and_answered_are_checked(lake):
+    async def saved(**settings) -> dict:
+        config = lakehouse(lake.ds, lake.kb_id)
+        config["graph"]["nodes"][4] |= settings
+        resp = await lake.api.put("/apps/retail-etl/draft", json={"config": config})
+        if resp.status_code == 200:
+            return {}
+        assert resp.status_code == 422, resp.text
+        return {tuple(p["loc"][4:]): p["msg"] for p in resp.json()["detail"]}
+
+    for version in (3, 0, "2", True, 2.0):
+        assert await saved(format=version) == {
+            ("check_plan", "format"): "方案版本 format 只能是 1 或 2"
+        }
+    for settings in ({}, {"format": 1}):
+        assert await saved(answered="{{review.decision}}", **settings) == {
+            ("check_plan", "answered"): "只有方案版本 format 为 2 时才能写已答的题"
+        }
+    for value in ("{{review.decision}} 和别的", ["{{review.decision}}"], 3):
+        assert await saved(format=2, answered=value) == {
+            ("check_plan", "answered"): "已答的题必须恰好是一个变量，如 {{review.record}}"
+        }
+    for settings in (
+        {"format": 2},
+        {"format": 1},
+        {"format": None},
+        {"format": 2, "answered": ""},
+        {"format": 2, "answered": None},
+        # A whole reference; the human node's record comes with its extension.
+        {"format": 2, "answered": "{{review.decision}}"},
+    ):
+        assert await saved(**settings) == {}, settings
+    assert await saved(format=2, answered="{{review.record}}") == {
+        ("check_plan", "answered"): "节点 review 没有产出 record"
+    }
+
+
+async def test_plan_check_format_2_through_a_run(tmp_path):
+    platform = Lakehouse(tmp_path, [reply(brief_reply(summary="按城市统计订单。"))])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=platform.app), base_url="http://test"
+    ) as api:
+        await platform.setup(api)
+        config = lakehouse(platform.ds, platform.kb_id)
+        config["graph"]["nodes"][4]["format"] = 2
+        saved = await api.put("/apps/retail-etl/draft", json={"config": config})
+        assert saved.status_code == 200, saved.text
+        published = await api.post("/apps/retail-etl/draft/publish", json={"note": "第 2 版"})
+        assert published.status_code == 200, published.text
+        made = await api.post(
+            "/runs", json={"app": "retail-etl", "input": {"request": POLICY}, "requester": "李雷"}
+        )
+        assert made.status_code == 201, made.text
+        view = await platform.view(made.json()["run_id"])
+        assert view["status"] == "waiting", view["error"]
+        shown = view["pending"]["details"]["show"]
+        assert "## 业务说明" in shown and "## 技术方案" in shown
+        assert [m["content"] for m in view["messages"] if m["node"] == "check_plan"] == [
+            "方案整理好了：2 张目标表、3 个指标、2 个问题待回答"
+        ]
+        # [1] is cited only in the brief, and counts.
+        assert {s["index"] for s in view["sources"] if s["cited"]} == {1}
+    await platform.service.wait_idle()
+
+
 async def test_nodes_that_write_databricks_cannot_be_tried_alone(lake):
     for node in ("ingest", "dev_run"):
         resp = await lake.api.post(f"/apps/retail-etl/nodes/{node}/test", json={"values": {}})
@@ -1091,6 +1579,19 @@ async def test_node_types_list_the_data_group():
         "databricks_dev_run",
     ]
     assert all(types[k]["error_handling"] for k in data)
+    plan_check = types["etl_plan_check"]
+    added = ["references", "summary", "brief", "questions", "answer", "uncited", "cleaned"]
+    keys = ["ok", "plan", "problems", "message", "sources", "targets", *added]
+    assert [o["key"] for o in plan_check["outputs"]] == keys
+    assert TYPES["etl_plan_check"].produces({}) == keys
+    # New nodes stay version 1.
+    assert plan_check["defaults"] == {
+        "reply": "",
+        "profile": "",
+        "hits": [],
+        "language": "",
+        "max_attempts": 3,
+    }
     assert types["databricks_dev_run"]["defaults"] == {
         "bundle": "",
         "max_runs": 3,

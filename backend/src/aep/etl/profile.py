@@ -89,6 +89,26 @@ def known_values(tables: list[dict[str, Any]]) -> dict[str, KnownValues]:
     return known
 
 
+def seen_values(tables: list[dict[str, Any]]) -> dict[str, dict[str, frozenset[str] | None]]:
+    """Per table (schema.table) and column name, the values the profile listed, trimmed and
+    lower-cased, when it listed them all (none cut short, as many as the distinct count);
+    None for a column whose values were not all listed, such as a time or an amount."""
+    seen: dict[str, dict[str, frozenset[str] | None]] = {}
+    for t in tables:
+        columns: dict[str, frozenset[str] | None] = {}
+        for s in t.get("column_stats") or []:
+            listed = s.get("top_values")
+            whole = (
+                listed is not None
+                and not any(v.get("truncated") for v in listed)
+                and len(listed) == (s.get("distinct_count") or 0)
+            )
+            values = frozenset(str(v["value"]).strip().lower() for v in listed or [])
+            columns[s["name"].lower()] = values if whole else None
+        seen[t["name"]] = columns
+    return seen
+
+
 def _short(value: Any) -> Any:
     if isinstance(value, str) and len(value) > MAX_VALUE_CHARS:
         return value[:MAX_VALUE_CHARS] + "…"

@@ -1,0 +1,151 @@
+{
+  "summary": "先在明细层把有效订单、有效明细行、线上渠道标识、品类归一和销售额/成本/毛利口径落地成一张订单明细表，再按统计月和品类汇总出销售额、成本、毛利和毛利率，满足按品类按月看销售额和毛利率、只看线上渠道的需求。",
+  "language": "pyspark",
+  "brief": {
+    "goal": "统计每个品类每个月的销售额和毛利率，只统计线上渠道（线上商城和小程序）的有效订单。",
+    "grain": "每个统计月 × 品类一行",
+    "metrics": [
+      {
+        "id": "m1",
+        "name": "销售额",
+        "unit": "元",
+        "definition": "线上渠道有效订单中数量大于 0 的明细行，按数量×成交单价×(1−折扣率，折扣率为空按 0) 计算的明细行销售额之和，金额保留两位小数，不含运费 [8]。",
+        "column": "sales_amount"
+      },
+      {
+        "id": "m2",
+        "name": "毛利",
+        "unit": "元",
+        "definition": "销售额减去明细行成本之和，明细行成本为数量×商品档案成本价；先按统计月和品类汇总销售额与成本，再相减 [1][2]。",
+        "column": "gross_profit"
+      },
+      {
+        "id": "m3",
+        "name": "毛利率",
+        "unit": null,
+        "definition": "汇总后的毛利合计除以汇总后的销售额合计，保留四位小数（0.2345 表示 23.45%），销售额为 0 时为空 [1][2]。",
+        "column": "gross_margin"
+      }
+    ],
+    "dimensions": [
+      {
+        "id": "d1",
+        "name": "统计月",
+        "definition": "取下单时间所属月份，格式化为 yyyy-MM，以下单时间为准，不做时区转换 [9]。",
+        "column": "stat_month",
+        "examples": ["2025-11"]
+      },
+      {
+        "id": "d2",
+        "name": "品类",
+        "definition": "取商品档案的品类，去首尾空格，品类为空的商品归为「未分类」并单独列出 [5]。",
+        "column": "category",
+        "examples": ["家电", "数码", "个护", "食品", "家居"]
+      }
+    ],
+    "filters": [
+      {"id": "f1", "text": "只统计线上渠道，即线上商城和小程序两种渠道，门店渠道不算 [6]。"},
+      {"id": "f2", "text": "只统计有效订单，即已支付、已发货、已完成的订单；取消和退款订单不计 [10]。"},
+      {"id": "f3", "text": "排除名称以“测试账号”开头的客户下的订单 [10]。"},
+      {"id": "f4", "text": "排除数量小于等于 0 的明细行，这类明细不计入销售额、成本和毛利 [7]。"}
+    ],
+    "time_range": {
+      "text": "按下单时间统计，不限起止时间，结果按月展示为 yyyy-MM [9]。",
+      "column": "stat_month"
+    }
+  },
+  "targets": [
+    {
+      "name": "dwd_retail_order_detail",
+      "description": "清洗后的订单明细表，一行一条有效订单的有效明细行，已落地渠道、品类归一、销售额、成本和毛利口径，供汇总层使用。",
+      "sources": ["retail.order_items", "retail.orders", "retail.products", "retail.customers"],
+      "logic": "以订单明细为主表，按订单 ID 关联订单、按商品 ID 关联商品、按客户 ID 关联客户；订单状态去首尾空格并转小写后只保留 paid、shipped、completed 三种有效订单，排除取消和退款订单；排除客户名称以“测试账号”开头的订单；排除数量小于等于 0 的明细行；品类取商品档案品类去首尾空格，空值归为「未分类」；销售额按数量×成交单价×(1−折扣率，空按 0) 计算并四舍五入保留两位小数，成本按数量×商品档案成本价保留两位小数，毛利为两者相减；统计月由下单时间格式化为 yyyy-MM；渠道和下单时间原样保留，供汇总和增量加载使用。",
+      "columns": [
+        {"name": "order_id", "label": "订单 ID", "source": "i.order_id", "description": "订单 ID，来源订单明细主键，口径见《主键与字段》"},
+        {"name": "line_no", "label": "明细行号", "source": "i.line_no", "description": "订单内明细行号，与订单 ID 组成明细表来源主键，口径见《主键与字段》"},
+        {"name": "customer_id", "label": "客户 ID", "source": "o.customer_id", "description": "下单客户 ID，来源订单表"},
+        {"name": "product_id", "label": "商品 ID", "source": "i.product_id", "description": "商品 ID，来源订单明细，用于关联商品档案成本价"},
+        {"name": "category", "label": "品类", "source": "COALESCE(NULLIF(TRIM(p.category), ''), '未分类')", "description": "商品档案品类，去首尾空格，空值归为「未分类」，口径见《毛利》品类"},
+        {"name": "channel", "label": "渠道", "source": "o.channel", "description": "订单渠道，取值为 online、store、mini_program，口径见《城市与会员等级》渠道"},
+        {"name": "ordered_at", "label": "下单时间", "source": "o.ordered_at", "description": "下单时间，北京时间，不做时区转换，作为增量加载键，口径见《时间口径》统计时间"},
+        {"name": "stat_month", "label": "统计月", "source": "DATE_FORMAT(o.ordered_at, 'yyyy-MM')", "description": "下单时间所属统计月，格式 yyyy-MM，口径见《时间口径》统计时间"},
+        {"name": "quantity", "label": "数量", "source": "i.quantity", "description": "明细行购买数量，件，只保留大于 0 的行，口径见《有效订单定义》有效明细行"},
+        {"name": "unit_price", "label": "成交单价（元）", "source": "i.unit_price", "description": "明细行成交单价，元，不用商品档案标价，口径见《销售额与客单价》"},
+        {"name": "discount_rate", "label": "折扣率", "source": "i.discount_rate", "description": "明细行折扣率，为空表示未打折，口径见《销售额与客单价》"},
+        {"name": "sales_amount", "label": "销售额（元）", "source": "CAST(ROUND(i.quantity * i.unit_price * (1 - COALESCE(i.discount_rate, 0)), 2) AS DECIMAL(18,2))", "description": "明细行销售额，元，不含运费，口径见《销售额与客单价》"},
+        {"name": "cost_amount", "label": "成本（元）", "source": "CAST(ROUND(i.quantity * p.cost_price, 2) AS DECIMAL(18,2))", "description": "明细行成本，元，数量×商品档案成本价，口径见《毛利》定义"},
+        {"name": "gross_profit", "label": "毛利（元）", "source": "CAST(ROUND(i.quantity * i.unit_price * (1 - COALESCE(i.discount_rate, 0)), 2) - ROUND(i.quantity * p.cost_price, 2) AS DECIMAL(18,2))", "description": "明细行毛利，元，销售额减成本，口径见《毛利》定义"}
+      ],
+      "primary_key": ["order_id", "line_no"],
+      "load": {"mode": "incremental", "key": "ordered_at"},
+      "quality_rules": [
+        {"name": "order_line_key_not_null", "condition": "order_id IS NOT NULL AND line_no IS NOT NULL", "on_violation": "drop"},
+        {"name": "quantity_positive", "condition": "quantity > 0", "on_violation": "drop"},
+        {"name": "sales_amount_non_negative", "condition": "sales_amount >= 0", "on_violation": "warn"},
+        {"name": "category_not_null", "condition": "category IS NOT NULL", "on_violation": "warn"},
+        {"name": "channel_not_null", "condition": "channel IS NOT NULL", "on_violation": "warn"}
+      ]
+    },
+    {
+      "name": "dws_retail_sales_category_month",
+      "description": "按统计月和品类汇总的线上渠道销售额与毛利率表，一行一个统计月与品类的组合。",
+      "sources": ["dwd_retail_order_detail"],
+      "logic": "读明细表，只保留渠道为 online 和 mini_program 的明细行（线上渠道），按统计月和品类分组，销售额、成本、毛利分别求和并转为 decimal(18,2)，毛利率用毛利合计除以销售额合计并转为 decimal(10,4)，销售额为 0 时毛利率为空；金额和比率为空或为负的情况按质量规则记录。",
+      "columns": [
+        {"name": "stat_month", "label": "统计月", "source": "stat_month", "description": "统计月，格式 yyyy-MM，以下单时间计算，口径见《时间口径》统计时间"},
+        {"name": "category", "label": "品类", "source": "category", "description": "商品档案品类，空值归为「未分类」，口径见《毛利》品类"},
+        {"name": "sales_amount", "label": "销售额（元）", "source": "CAST(SUM(sales_amount) AS DECIMAL(18,2))", "description": "线上渠道有效明细行销售额合计，元，不含运费，口径见《销售额与客单价》"},
+        {"name": "cost_amount", "label": "成本（元）", "source": "CAST(SUM(cost_amount) AS DECIMAL(18,2))", "description": "线上渠道有效明细行成本合计，元，口径见《毛利》定义"},
+        {"name": "gross_profit", "label": "毛利（元）", "source": "CAST(SUM(gross_profit) AS DECIMAL(18,2))", "description": "线上渠道毛利合计，元，销售额合计减成本合计，口径见《毛利》定义"},
+        {"name": "gross_margin", "label": "毛利率", "source": "CAST(CASE WHEN SUM(sales_amount) = 0 THEN NULL ELSE SUM(gross_profit) / SUM(sales_amount) END AS DECIMAL(10,4))", "description": "毛利率，先汇总毛利和销售额再相除，保留四位小数，销售额为 0 时为空，口径见《毛利》定义"}
+      ],
+      "primary_key": ["stat_month", "category"],
+      "load": {"mode": "full", "key": null},
+      "quality_rules": [
+        {"name": "stat_month_not_null", "condition": "stat_month IS NOT NULL", "on_violation": "drop"},
+        {"name": "category_not_null", "condition": "category IS NOT NULL", "on_violation": "drop"},
+        {"name": "sales_amount_non_negative", "condition": "sales_amount >= 0", "on_violation": "warn"},
+        {"name": "cost_amount_non_negative", "condition": "cost_amount >= 0", "on_violation": "warn"}
+      ]
+    }
+  ],
+  "rules": [
+    {"id": "r1", "text": "需求里的“线上渠道”按线上商城和小程序两种渠道计算，门店渠道不计入 [6]。", "basis": "knowledge"},
+    {"id": "r2", "text": "有效订单为已支付、已发货、已完成三种状态，比较前先去首尾空格并转小写，取消和退款订单不计入 [10]。", "basis": "knowledge"},
+    {"id": "r3", "text": "名称以“测试账号”开头的客户属于测试账号，其订单在明细层排除 [10]。", "basis": "knowledge"},
+    {"id": "r4", "text": "数量小于等于 0 的明细行是录入错误，不计入销售额、成本和毛利 [7]。", "basis": "knowledge"},
+    {"id": "r5", "text": "销售额按明细行数量×成交单价×(1−折扣率) 计算，折扣率为空按 0，不使用商品标价，不含运费 [8]。", "basis": "knowledge"},
+    {"id": "r6", "text": "明细行成本为数量×商品档案成本价，毛利为销售额减成本，成本价取商品档案而不是标价 [1][2]。", "basis": "knowledge"},
+    {"id": "r7", "text": "毛利率先汇总毛利和销售额再相除，保留四位小数，销售额为 0 时给空值 [2][13]。", "basis": "knowledge"},
+    {"id": "r8", "text": "品类为空的商品归为「未分类」，在结果表中单独列出一行 [5]。", "basis": "knowledge"},
+    {"id": "r9", "text": "统计时间一律以下单时间为准，源库时间已是北京时间，不做时区转换 [9]。", "basis": "knowledge"},
+    {"id": "r10", "text": "金额列用 decimal(18,2)、比率列用 decimal(10,4)、数量用 int，除法分母为 0 时给空值 [13][14]。", "basis": "knowledge"},
+    {"id": "r11", "text": "明细表按下单时间增量加载，汇总表每次全量重算，管道可重复运行且结果不变 [22][23]。", "basis": "knowledge"},
+    {"id": "r12", "text": "品类归一、渠道判定和销售额、毛利口径只在明细层落地一次，汇总层只做汇总不再重复清洗 [30]。", "basis": "knowledge"},
+    {"id": "r13", "text": "需求没有限定统计的起止时间，方案按全部历史数据按月输出。", "basis": "assumption"}
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "text": "统计的时间范围如何限制？",
+      "why": "需求只说每月，没有说统计多久，范围不同会影响每月各品类的销售额和毛利率。",
+      "options": [
+        {"value": "all", "label": "不限时间，全部历史"},
+        {"value": "last_12m", "label": "最近 12 个月"},
+        {"value": "last_6m", "label": "最近 6 个月"},
+        {"value": "last_3m", "label": "最近 3 个月"}
+      ],
+      "suggested": "all",
+      "affects": ["m1", "m2", "m3", "d1"]
+    }
+  ],
+  "answer": {
+    "target": "dws_retail_sales_category_month",
+    "filter": [{"column": "stat_month", "pick": "latest"}],
+    "group_by": ["category"],
+    "measures": ["sales_amount", "gross_profit", "gross_margin"],
+    "order_by": [{"column": "sales_amount", "desc": true}],
+    "top_n": 10,
+    "chart": {"type": "bar", "label": ["category"], "value": "sales_amount"}
+  }
+}
