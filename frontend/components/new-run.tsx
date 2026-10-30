@@ -44,6 +44,7 @@ export function NewRun({ from }: { from?: string } = {}) {
   const [detail, setDetail] = useState<AppDetail | null>(null);
   const [values, setValues] = useState<FieldValues>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [appsRevision, setAppsRevision] = useState(0);
   const [appsError, setAppsError] = useState("");
   const [sources, setSources] = useState<DataSource[]>([]);
@@ -177,6 +178,13 @@ export function NewRun({ from }: { from?: string } = {}) {
   const fields =
     (source?.app === app ? source.inputs : null) ??
     (detail?.app === app ? (detail.inputs ?? []) : []);
+  // Inputs the app folds away: they have defaults or may stay empty.
+  const advanced = fields.filter((field) => field.advanced === true);
+  const basic = fields.filter((field) => field.advanced !== true);
+  const showErrors = (found: Record<string, string>) => {
+    setErrors(found);
+    if (advanced.some((field) => found[field.key])) setAdvancedOpen(true);
+  };
   // ETL reads data: tool services are left out of its picker.
   const etlSources = sources.filter((source) => !isToolService(source));
   const needsSource =
@@ -203,10 +211,9 @@ export function NewRun({ from }: { from?: string } = {}) {
     )
       return;
     const issues = app === "etl" ? [] : validateFields(fields, values, "input");
-    const nextErrors = Object.fromEntries(
-      issues.map((issue) => [issue.loc[2], issue.msg]),
+    showErrors(
+      Object.fromEntries(issues.map((issue) => [issue.loc[2], issue.msg])),
     );
-    setErrors(nextErrors);
     if (issues.length) return;
     busy.current = true;
     setSubmitting(true);
@@ -242,7 +249,7 @@ export function NewRun({ from }: { from?: string } = {}) {
       router.push(`/runs/${encodeURIComponent(receipt.run_id)}`);
     } catch (err) {
       setError(errorMessage(err));
-      setErrors(fieldErrors(err, "input"));
+      showErrors(fieldErrors(err, "input"));
       busy.current = false;
       setSubmitting(false);
     }
@@ -306,6 +313,7 @@ export function NewRun({ from }: { from?: string } = {}) {
                 setDetail(null);
                 setErrors({});
                 setError("");
+                setAdvancedOpen(false);
               }}
               disabled={submitting || uploading || Boolean(from)}
               aria-describedby={from ? "app-locked" : undefined}
@@ -332,11 +340,10 @@ export function NewRun({ from }: { from?: string } = {}) {
                 复制的运行沿用原来的应用，想换应用请新建运行。
               </p>
             )}
-            <p className="field-hint">
-              {app === "etl"
-                ? "探查数据、确认方案，生成 Databricks Lakeflow 管道代码。"
-                : "接收需求、请求人工确认，并返回运行结果。"}
-            </p>
+            {/* What the app says it does, as its builder wrote it. */}
+            {(detail?.app === app ? detail.summary : "") && (
+              <p className="field-hint">{detail!.summary}</p>
+            )}
           </div>
           {appsError && (
             <ErrorNotice
@@ -440,7 +447,7 @@ export function NewRun({ from }: { from?: string } = {}) {
           {app !== "etl" && (
             <div className="form-section">
               <InputFields
-                fields={fields}
+                fields={basic}
                 values={values}
                 onChange={(next) => {
                   setValues(next);
@@ -450,6 +457,33 @@ export function NewRun({ from }: { from?: string } = {}) {
                 disabled={submitting || uploading}
                 datasources={sources}
               />
+              {advanced.length > 0 && (
+                <details
+                  className="advanced-inputs"
+                  open={advancedOpen}
+                  onToggle={(event) =>
+                    setAdvancedOpen(event.currentTarget.open)
+                  }
+                >
+                  <summary>
+                    高级选项
+                    <span className="muted">
+                      {advanced.length} 项，不改就按默认
+                    </span>
+                  </summary>
+                  <InputFields
+                    fields={advanced}
+                    values={values}
+                    onChange={(next) => {
+                      setValues(next);
+                      setErrors({});
+                    }}
+                    errors={errors}
+                    disabled={submitting || uploading}
+                    datasources={sources}
+                  />
+                </details>
+              )}
               {fields.some((field) => field.type === "datasource") &&
                 sourcesError && (
                   <ErrorNotice
@@ -530,7 +564,6 @@ export function NewRun({ from }: { from?: string } = {}) {
                 detail.app !== app ||
                 Boolean(appsError) ||
                 (app === "etl" && !text.trim()) ||
-                (app === "hello" && !String(values.text ?? "").trim()) ||
                 needsSource ||
                 copyBlocked
               }
@@ -566,7 +599,7 @@ export function NewRun({ from }: { from?: string } = {}) {
             </li>
             <li>
               <strong>确认方向</strong>
-              <span>需要时确认继续，或驳回并给出意见</span>
+              <span>需要时确认继续，或写下修改意见</span>
             </li>
             <li>
               <strong>获得结果</strong>

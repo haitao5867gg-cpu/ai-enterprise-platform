@@ -87,7 +87,7 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
   ).toBeVisible();
-  await page.getByLabel("驳回意见").fill("请先补充空值与重复数据的处理规则。");
+  await page.getByLabel("修改意见").fill("请先补充空值与重复数据的处理规则。");
   const resumed = page.waitForRequest(
     (r) => r.url().endsWith("/resume") && r.method() === "POST",
   );
@@ -613,6 +613,7 @@ test("polls every two seconds, recovers, honors options and prevents duplicate r
     await held;
     await route.fulfill({ status: 409, json: { detail: "Already resumed" } });
   });
+  await page.getByLabel("你的名字").fill("李雷");
   await page.getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.getByRole("button", { name: "提交中…" })).toBeDisabled();
   await expect.poll(() => posts).toBe(1);
@@ -635,7 +636,7 @@ test("mobile layout fits and approval can be reached using the keyboard", async 
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
   ).toBeVisible();
-  await page.getByLabel("驳回意见").focus();
+  await page.getByLabel("修改意见").focus();
   await page.keyboard.press("Tab");
   await expect(
     page.getByRole("button", { name: "确认", exact: true }),

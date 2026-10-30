@@ -220,7 +220,7 @@ test("hello publishes without evaluation and tolerates unavailable browser stora
   await expect(
     page.getByText("此应用没有评测集，保存草稿后可直接发布。"),
   ).toBeVisible();
-  await page.getByLabel("审批人").fill("李四");
+  await page.getByLabel("你的名字").fill("李四");
   await page.getByLabel("发布说明（必填）").fill("免评测发布");
   await expect(page.getByRole("button", { name: "发布新版本" })).toBeEnabled();
   await page.getByRole("button", { name: "发布新版本" }).click();

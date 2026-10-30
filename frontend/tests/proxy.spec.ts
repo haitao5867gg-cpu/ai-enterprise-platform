@@ -55,8 +55,9 @@ for (const decision of ["approve", "reject"] as const) {
     await expect(
       page.getByRole("heading", { name: "需要你的确认" }),
     ).toBeVisible();
+    await page.getByLabel("你的名字").fill("李雷");
     if (decision === "reject")
-      await page.getByLabel("驳回意见").fill("请调整输入");
+      await page.getByLabel("修改意见").fill("请调整输入");
     await page
       .getByRole("button", {
         name: decision === "approve" ? "确认" : "驳回",

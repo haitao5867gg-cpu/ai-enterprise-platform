@@ -125,7 +125,7 @@ function NodeDetail({
                   </p>
                   {askedPrompt(step.interrupt) && (
                     <p className="flow-asked">
-                      向人提问：{askedPrompt(step.interrupt)}
+                      等待处理：{askedPrompt(step.interrupt)}
                     </p>
                   )}
                   {step.error && <p className="flow-error">{step.error}</p>}

@@ -348,13 +348,60 @@ async def _model_and_skills(node: dict[str, Any], p: Problems, env: CheckEnv) ->
 
 
 def check_fields(
-    node: dict[str, Any], key: str, p: Problems, types: tuple[str, ...] = FIELD_TYPES
+    node: dict[str, Any],
+    key: str,
+    p: Problems,
+    types: tuple[str, ...] = FIELD_TYPES,
+    *,
+    start: bool = False,
 ) -> None:
     """Input fields (a start node's inputs, a human node's form)."""
     for f in _keyed(_list(node, key, p, "字段", 1, 20), key, p, "字段"):
         loc = (key, node[key].index(f))
-        for where, message in _field_problems(f, types):
+        found = _field_problems(f, types)
+        if start:
+            found += _display_problems(f)
+        else:
+            found += [
+                ((k,), "只有开始节点的输入可以设") for k in ("advanced", "examples") if k in f
+            ]
+        for where, message in found:
             p.add((*loc, *where), message)
+
+
+MAX_EXAMPLES = 5
+MAX_EXAMPLE = 2000
+
+
+def _display_problems(f: dict[str, Any]) -> list[tuple[Loc, str]]:
+    """What is wrong with how the new-run page is to show a start input (flow-apps.md,
+    ``advanced`` and ``examples``)."""
+    found: list[tuple[Loc, str]] = []
+    advanced = f.get("advanced", False)
+    if not isinstance(advanced, bool):
+        found.append((("advanced",), "advanced 必须是 true 或 false"))
+    elif advanced and f.get("required") is True and _blank(f.get("default")):
+        found.append((("advanced",), "必填且没有默认值的输入不能收进高级选项"))
+    examples = f.get("examples", [])
+    if not isinstance(examples, list):
+        found.append((("examples",), "例子必须是列表"))
+    elif examples and f.get("type") not in ("text", "textarea"):
+        found.append((("examples",), "只有文字类型可以写例子"))
+    elif len(examples) > MAX_EXAMPLES:
+        found.append((("examples",), f"例子最多 {MAX_EXAMPLES} 条"))
+    else:
+        m = f.get("max_length")
+        longest = m if isinstance(m, int) and not isinstance(m, bool) else MAX_EXAMPLE
+        for i, e in enumerate(examples):
+            if not isinstance(e, str) or not e.strip():
+                found.append((("examples", i), "例子不能为空"))
+            elif len(e) > min(longest, MAX_EXAMPLE):
+                found.append((("examples", i), f"例子最多 {min(longest, MAX_EXAMPLE)} 个字符"))
+    return found
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
 
 
 def _field_problems(
@@ -440,7 +487,7 @@ def _keys(items: Any) -> list[str]:
 
 
 async def check_start(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
-    check_fields(node, "inputs", p)
+    check_fields(node, "inputs", p, start=True)
 
 
 async def run_start(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:

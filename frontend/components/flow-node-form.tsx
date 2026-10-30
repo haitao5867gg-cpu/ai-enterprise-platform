@@ -296,6 +296,7 @@ function InputList<T extends Input>({
   issues,
   prefix,
   allowDatasource,
+  start = false,
 }: {
   label: string;
   inputs: T[];
@@ -303,6 +304,8 @@ function InputList<T extends Input>({
   issues: Issues;
   prefix: string;
   allowDatasource: boolean;
+  // A start node's inputs also say how the new-run page shows them.
+  start?: boolean;
 }) {
   return (
     <ListEditor
@@ -341,8 +344,11 @@ function InputList<T extends Input>({
               const next = { ...input, type: type as InputType };
               if (type !== "select") delete next.choices;
               else next.choices ??= [{ value: "a", label: "选项 A" }];
-              if (type !== "text" && type !== "textarea")
+              // Examples only fit text: dropped here, not left to fail the save unseen.
+              if (type !== "text" && type !== "textarea") {
                 delete next.max_length;
+                delete next.examples;
+              }
               update(next);
             }}
           />
@@ -351,6 +357,18 @@ function InputList<T extends Input>({
             checked={Boolean(input.required)}
             onChange={(required) => update({ ...input, required })}
           />
+          {start && (
+            <CheckField
+              label="收进高级选项"
+              checked={input.advanced === true}
+              onChange={(advanced) => {
+                const next: T = { ...input };
+                if (advanced) next.advanced = true;
+                else delete next.advanced;
+                update(next);
+              }}
+            />
+          )}
           {(input.type === "text" || input.type === "textarea") && (
             <NumberField
               label="最多字数"
@@ -358,6 +376,23 @@ function InputList<T extends Input>({
               max={20000}
               value={input.max_length}
               onChange={(max_length) => update({ ...input, max_length })}
+            />
+          )}
+          {start && (input.type === "text" || input.type === "textarea") && (
+            <ListEditor
+              label="例子"
+              items={input.examples ?? []}
+              max={5}
+              make={() => ""}
+              onChange={(examples) => {
+                const next: T = { ...input };
+                if (examples.length) next.examples = examples;
+                else delete next.examples;
+                update(next);
+              }}
+              render={(example, _j, set) => (
+                <TextField label="例子" value={example} onChange={set} />
+              )}
             />
           )}
           {input.type === "select" && (
@@ -1313,6 +1348,7 @@ export function NodeSettings({
           prefix="inputs"
           issues={issues}
           allowDatasource
+          start
           onChange={(inputs) => change({ ...node, inputs })}
         />
       );

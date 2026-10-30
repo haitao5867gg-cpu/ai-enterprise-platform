@@ -324,7 +324,7 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
       }}
     >
       <p className="muted">
-        用已保存的草稿运行一次，运行记录会标注“草稿试运行”。
+        用已保存的草稿运行一次，运行记录会标注“试运行（未发布版本）”。
       </p>
       <InputFields
         fields={fields}

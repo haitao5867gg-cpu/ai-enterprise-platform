@@ -120,18 +120,25 @@ test("ETL: source → request → plan → reject → approve → release → re
   await page.setViewportSize({ width: 1360, height: 960 });
   await capture(page, "etl-plan");
   const comment = "补充金额非负校验，并保留更新时间。";
-  await page.getByLabel("驳回意见").fill(comment);
+  await page.getByLabel("修改意见").fill(comment);
   const rejected = page.waitForRequest(
     (r) => r.url().endsWith("/resume") && r.method() === "POST",
   );
+  // A step is decided under a name: none yet, so the page asks first.
+  await page.getByRole("button", { name: "驳回", exact: true }).click();
+  await expect(page.locator("#approval-actor-error")).toHaveText(
+    "先填你的名字再提交，记录里会写是谁处理的。",
+  );
+  await page.getByLabel("你的名字").fill("李四");
   await page.getByRole("button", { name: "驳回", exact: true }).click();
   expect((await rejected).postDataJSON()).toEqual({
     decision: "reject",
     comment,
+    actor: "李四",
   });
   await expect(plan).toContainText(`已根据意见调整：${comment}`);
   await expect(orders).toContainText(`调整要求：${comment}`);
-  await expect(page.getByLabel("驳回意见")).toHaveValue("");
+  await expect(page.getByLabel("修改意见")).toHaveValue("");
   await page.reload();
   await expect(plan).toContainText(comment);
   await page.getByRole("button", { name: "确认", exact: true }).click();
@@ -153,16 +160,16 @@ test("ETL: source → request → plan → reject → approve → release → re
   const timeline = trail.getByRole("list", { name: "审批记录" });
   await expect(timeline.getByRole("listitem")).toHaveCount(2);
   await expect(timeline.getByRole("listitem").first()).toContainText(
-    `方案确认驳回未署名`,
+    `方案确认驳回李四`,
   );
   await expect(trail).toContainText("本地 mock 不提交资产仓库");
   await capture(page, "etl-release");
 
   // Rejecting the release needs a reason; the approver's name is remembered.
-  await page.getByLabel("审批人").fill("张三");
+  await page.getByLabel("你的名字").fill("张三");
   const rejectRelease = page.getByRole("button", { name: "驳回", exact: true });
   await expect(rejectRelease).toBeDisabled();
-  await page.getByLabel("驳回意见").fill("城市统一成大写");
+  await page.getByLabel("修改意见").fill("城市统一成大写");
   const turnedDown = page.waitForRequest(
     (r) => r.url().endsWith("/resume") && r.method() === "POST",
   );
@@ -181,7 +188,7 @@ test("ETL: source → request → plan → reject → approve → release → re
   );
   await expect(generated.locator(".code-content")).toContainText("第 2 版");
   await page.reload();
-  await expect(page.getByLabel("审批人")).toHaveValue("张三");
+  await expect(page.getByLabel("你的名字")).toHaveValue("张三");
   const approved = page.waitForRequest(
     (r) => r.url().endsWith("/resume") && r.method() === "POST",
   );
@@ -257,6 +264,7 @@ test("ETL can generate SQL and switch back to hello", async ({ page }) => {
   await expect(page.getByRole("region", { name: "ETL 方案" })).toContainText(
     "SQL",
   );
+  await page.getByLabel("你的名字").fill("李四");
   await page.getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.locator(".language-sql")).toContainText(
     "CREATE OR REFRESH MATERIALIZED VIEW",
@@ -271,9 +279,11 @@ test("ETL can generate SQL and switch back to hello", async ({ page }) => {
     (r) => r.url().endsWith("/api/runs") && r.method() === "POST",
   );
   await page.getByRole("button", { name: "开始运行" }).click();
+  // The name given at the step is remembered for the next run.
   expect((await hello).postDataJSON()).toEqual({
     app: "hello",
     input: { text: "仍然可以使用 hello" },
+    requester: "李四",
   });
 });
 
@@ -373,6 +383,7 @@ for (const [name, details] of [
     await expect(
       page.getByRole("link", { name: "在 Langfuse 中查看" }),
     ).toHaveCount(0);
+    await page.getByLabel("你的名字").fill("李四");
     await page.getByRole("button", { name: "确认", exact: true }).click();
     await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
   });

@@ -98,6 +98,68 @@ async def test_problems_are_located_by_node_and_setting():
     ]
 
 
+async def test_start_inputs_can_be_folded_and_given_examples():
+    config = flow(end("{{start.question}}"), edges=[{"from": "start", "to": "end"}])
+    inputs = node(config, "start")["inputs"]
+    inputs[0]["examples"] = ["退货要几天到账？", "能开发票吗？"]
+    inputs += [
+        {"key": "scope", "label": "范围", "type": "text", "advanced": True},
+        {
+            "key": "lang",
+            "label": "语言",
+            "type": "text",
+            "required": True,
+            "default": "zh",
+            "advanced": True,
+        },
+    ]
+    await check_config(config, ENV)
+
+    nodes = ("config", "graph", "nodes")
+    at = (*nodes, "start", "inputs")
+    bad = copy.deepcopy(config)
+    bad_inputs = node(bad, "start")["inputs"]
+    bad_inputs[0]["advanced"] = True
+    bad_inputs[0]["examples"] = ["好", "  ", "x" * 2001]
+    bad_inputs[1] |= {"advanced": "yes", "max_length": 3, "examples": ["四个字呢"]}
+    bad_inputs[2] |= {"default": " ", "examples": "不是列表"}
+    bad_inputs.append({"key": "n", "label": "数量", "type": "number", "examples": ["1"]})
+    bad_inputs.append(
+        {"key": "many", "label": "多", "type": "textarea", "examples": list("一二三四五六")}
+    )
+    assert await problems(bad) == {
+        (*at, 0, "advanced"): "必填且没有默认值的输入不能收进高级选项",
+        (*at, 0, "examples", 1): "例子不能为空",
+        (*at, 0, "examples", 2): "例子最多 2000 个字符",
+        (*at, 1, "advanced"): "advanced 必须是 true 或 false",
+        (*at, 1, "examples", 0): "例子最多 3 个字符",
+        (*at, 2, "advanced"): "必填且没有默认值的输入不能收进高级选项",
+        (*at, 2, "examples"): "例子必须是列表",
+        (*at, 3, "examples"): "只有文字类型可以写例子",
+        (*at, 4, "examples"): "例子最多 5 条",
+    }
+
+    # Only a start node's inputs: a form's fields cannot have them.
+    form = flow(
+        {
+            "id": "ask",
+            "type": "human",
+            "title": "补充",
+            "mode": "form",
+            "prompt": "请补充",
+            "fields": [
+                {"key": "a", "label": "甲", "type": "text", "advanced": False, "examples": []}
+            ],
+        },
+        end("{{ask.a}}"),
+        edges=[{"from": "start", "to": "ask"}, {"from": "ask", "to": "end"}],
+    )
+    assert await problems(form) == {
+        (*nodes, "ask", "fields", 0, "advanced"): "只有开始节点的输入可以设",
+        (*nodes, "ask", "fields", 0, "examples"): "只有开始节点的输入可以设",
+    }
+
+
 async def _all(config: dict) -> list:
     with pytest.raises(ConfigError) as caught:
         await check_config(config, ENV)

@@ -115,28 +115,47 @@ const sharedOutputs = [
   { key: "reviewed", from: ["{{data_review.record}}"] },
 ];
 
+export const REQUEST_EXAMPLES = [
+  "按城市和会员等级统计上个月的销售",
+  "统计每个品类每月的销售额和毛利率，只看线上渠道。",
+  "统计每月新客户数和复购率，按城市拆开。",
+];
+
 export function etlV2Config(): FlowConfig {
   const base = lakehouseConfig(true);
   const nodes: FlowNode[] = base.graph.nodes.map((node) =>
-    node.id === "review"
-      ? reviewNode
-      : node.id === "dev_run"
-        ? { ...node, title: "开发环境试算", max_visits: 9 }
-        : node.id === "end"
-          ? {
-              id: "end",
-              type: "end",
-              title: "交付",
-              outputs: [
-                ...sharedOutputs,
-                { key: "ingested", from: ["{{ingest.summary}}"] },
-                { key: "answer", from: ["{{dev_run.answer}}"] },
-                { key: "code", from: ["{{check_code.bundle}}"] },
-                { key: "quality", from: ["{{dev_run.quality}}"] },
-                { key: "dev_url", from: ["{{dev_run.url}}"] },
-              ],
-            }
-          : node,
+    node.type === "start"
+      ? {
+          ...node,
+          // As in template v2 after make demo: the optional inputs are folded away, and
+          // the need has sentences to start from.
+          inputs: node.inputs.map((input) =>
+            input.key === "request"
+              ? { ...input, examples: REQUEST_EXAMPLES }
+              : input.key === "datasource"
+                ? input
+                : { ...input, advanced: true },
+          ),
+        }
+      : node.id === "review"
+        ? reviewNode
+        : node.id === "dev_run"
+          ? { ...node, title: "开发环境试算", max_visits: 9 }
+          : node.id === "end"
+            ? {
+                id: "end",
+                type: "end",
+                title: "交付",
+                outputs: [
+                  ...sharedOutputs,
+                  { key: "ingested", from: ["{{ingest.summary}}"] },
+                  { key: "answer", from: ["{{dev_run.answer}}"] },
+                  { key: "code", from: ["{{check_code.bundle}}"] },
+                  { key: "quality", from: ["{{dev_run.quality}}"] },
+                  { key: "dev_url", from: ["{{dev_run.url}}"] },
+                ],
+              }
+            : node,
   );
   nodes.push(dataReviewNode, {
     id: "stopped",
