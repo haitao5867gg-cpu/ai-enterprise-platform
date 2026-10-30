@@ -251,18 +251,26 @@ def _sum_like(expr: str) -> bool:
 
 
 def _normal(expr: str) -> str:
-    """``expr`` as compared for sameness: spaces, backticks and case count only inside
-    string literals ('web shop' is not 'webshop')."""
+    """``expr`` as compared for sameness: spaces and case count only where they are part
+    of a name or a value. A string literal keeps its exact text ('web shop' is not
+    'webshop'); a backticked name drops its backticks and case but keeps its spaces
+    (`net sales` is not netsales, `line_amount` is line_amount)."""
     out, quote = [], ""
     for ch in expr:
-        if quote:
+        if quote == "`":
+            if ch == "`":
+                quote = ""
+            else:
+                out.append(ch.lower())
+        elif quote:
             out.append(ch)
             if ch == quote:
                 quote = ""
-        elif ch in "'\"":
+        elif ch in "'\"`":
             quote = ch
-            out.append(ch)
-        elif ch != "`" and not ch.isspace():
+            if ch != "`":
+                out.append(ch)
+        elif not ch.isspace():
             out.append(ch.lower())
     return "".join(out)
 

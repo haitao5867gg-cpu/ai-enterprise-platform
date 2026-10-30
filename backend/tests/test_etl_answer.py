@@ -154,6 +154,18 @@ def test_string_literals_keep_their_exact_text_when_sides_are_compared():
         assert additivity("web_share", sources) == ("none", None, None), other
 
 
+def test_a_backticked_name_keeps_its_spaces_when_sides_are_compared():
+    sources = SOURCES | {"net_amount": "sum(`net sales`)"}
+    for same in ("sum(`Net Sales`)", "SUM( `net sales` )"):
+        sources["net_share"] = f"{same} / count(order_id)"
+        assert additivity("net_share", sources) == ("ratio", "net_amount", "order_count"), same
+    sources["net_share"] = "sum(netsales) / count(order_id)"
+    assert additivity("net_share", sources) == ("none", None, None)
+    # Backticks around a plain name change nothing.
+    sources["line_share"] = "sum(line_amount) / count(`order_id`)"
+    assert additivity("line_share", sources) == ("ratio", "sales_amount", "order_count")
+
+
 def test_quotes_and_nested_parentheses_do_not_confuse_the_reading():
     sources = {"m": "sum(CASE WHEN note = 'a/b, c)' THEN x END)"}
     assert additivity("m", sources) == ("sum", None, None)
