@@ -276,6 +276,36 @@ test("approval questions: each one picked, a changed answer turns the decision, 
   );
 });
 
+test("answers are cleared when the run moves on to another round elsewhere", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/runs/new?app=plan-questions");
+  await page.getByLabel("需求").fill("按城市统计客单价");
+  await page.getByRole("button", { name: "开始运行" }).click();
+  const first = page.getByRole("group", { name: "1. 统计哪段时间？" });
+  await first.getByLabel("只看 2026 年").check();
+  const id = new URL(page.url()).pathname.split("/").pop() ?? "";
+  // Someone else decides the same step in another browser.
+  const decided = await request.post(
+    `/api/runs/${encodeURIComponent(id)}/resume`,
+    {
+      data: {
+        decision: "revise",
+        values: { q1: "y2026", q2: true },
+        seen: "sha256:mock-review-1",
+      },
+    },
+  );
+  expect(decided.status()).toBe(202);
+  await expect(page.locator(".human-show")).toContainText(
+    "【第 1 轮 · 确认方案 · 按我的意见修改方案】",
+  );
+  // The second round's questions start unanswered, not with this page's old picks.
+  await expect(first.getByLabel("只看 2026 年")).not.toBeChecked();
+  await expect(page.locator(".turn-hint")).toHaveCount(0);
+});
+
 test("copy a hello version, rename and archive; historical runs remain readable", async ({
   page,
   request,

@@ -127,6 +127,7 @@ export function RunDetail({
   const [actionError, setActionError] = useState("");
   const [values, setValues] = useState<FieldValues>({});
   const [valueErrors, setValueErrors] = useState<Record<string, string>>({});
+  const [answersFor, setAnswersFor] = useState("");
   const [comment, setComment] = useState("");
   // On the server there is no storage and "" comes back; the field only renders after loading.
   const [actor, setActor] = useState(savedActor);
@@ -406,6 +407,21 @@ export function RunDetail({
       : null;
   const questions =
     run?.pending?.kind === "approval" ? (run.pending.fields ?? []) : [];
+  // Answers belong to one step and round: when the run moves on (say, someone decided in
+  // another browser) they are cleared, while a refresh of the same step keeps them.
+  const pendingStep =
+    run?.status === "waiting" && run.pending
+      ? [
+          run.pending.kind,
+          String(humanDetails?.node ?? run.step?.node ?? ""),
+          String(humanDetails?.round ?? ""),
+        ].join(":")
+      : "";
+  if (pendingStep !== answersFor) {
+    setAnswersFor(pendingStep);
+    setValues({});
+    setValueErrors({});
+  }
   // Questions the step was given but could not ask (badly written, past the 20th).
   const dropped =
     run?.status === "waiting" && Array.isArray(humanDetails?.dropped_fields)
