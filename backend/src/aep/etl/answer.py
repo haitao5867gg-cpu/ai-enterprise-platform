@@ -251,7 +251,20 @@ def _sum_like(expr: str) -> bool:
 
 
 def _normal(expr: str) -> str:
-    return re.sub(r"[\s`]", "", expr).lower()
+    """``expr`` as compared for sameness: spaces, backticks and case count only inside
+    string literals ('web shop' is not 'webshop')."""
+    out, quote = [], ""
+    for ch in expr:
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+            out.append(ch)
+        elif ch != "`" and not ch.isspace():
+            out.append(ch.lower())
+    return "".join(out)
 
 
 def _sum_column(name: str, side: str, sources: Mapping[str, str], denominator: bool) -> str | None:

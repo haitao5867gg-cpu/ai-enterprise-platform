@@ -143,6 +143,17 @@ def test_a_side_matches_a_source_as_written():
     assert additivity("avg_order_value", sources) == ("ratio", "sales_amount", "order_count")
 
 
+def test_string_literals_keep_their_exact_text_when_sides_are_compared():
+    web = "sum(CASE WHEN channel = 'web shop' THEN amount ELSE 0 END)"
+    sources = SOURCES | {"web_amount": web}
+    # Case and spaces outside the literal do not count.
+    sources["web_share"] = "SUM(case when channel='web shop' then amount else 0 end) / order_count"
+    assert additivity("web_share", sources) == ("ratio", "web_amount", "order_count")
+    for other in ("'webshop'", "'Web Shop'"):
+        sources["web_share"] = web.replace("'web shop'", other) + " / order_count"
+        assert additivity("web_share", sources) == ("none", None, None), other
+
+
 def test_quotes_and_nested_parentheses_do_not_confuse_the_reading():
     sources = {"m": "sum(CASE WHEN note = 'a/b, c)' THEN x END)"}
     assert additivity("m", sources) == ("sum", None, None)
