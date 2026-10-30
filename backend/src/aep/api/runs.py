@@ -22,7 +22,13 @@ run record (in the list and in ``GET /runs/{id}``) has:
 - ``created_at``, ``updated_at`` (the last status change) and ``finished_at`` (when
   it ended: ``done``, ``error`` or ``cancelled``; null before), ISO times.
 - ``step``: the node the run is at (``node`` id and ``title``), the one it waits at,
-  or the last one it reached; null before its first node starts.
+  or the last one it reached; null before its first node starts. While the run is
+  ``waiting`` this is the human node it waits at, so there is no separate field for it.
+- ``outcome``: what a finished flow run came to: the ``outcome`` of the end node it
+  ended at (``delivered``, ``stopped`` or another word the app chose; see
+  docs/api/flow-apps.md, "end"). Null unless the run is ``done`` at an end node that
+  has one, so null for code apps and for runs from before it existed. The run's
+  ``status`` stays ``done`` either way.
 - ``waiting_since``: when the current wait for a person began (null unless
   waiting), and ``wait_seconds``: the seconds spent in waits already over (for a
   decision, or for someone to retry a failure). The
@@ -71,8 +77,23 @@ A waiting run's ``pending`` is an approval: show ``prompt`` and offer
 ``options`` (shown as ``option_labels`` when given); any option may carry a
 comment, and those in ``comment_required`` must (the resume is refused with 422
 without one). A flow app's human node may ask for a ``form`` instead: fill in
-``fields`` and resume with ``decision`` ``submit`` and ``values``. Apps can attach ``details``
+``fields`` and resume with ``decision`` ``submit`` and ``values``. A flow app's
+approval may also carry ``fields``: questions, every one of which must be answered
+in ``values`` (each always ``required``, with no ``default``, and with ``suggested``,
+``why`` and ``affects`` when given); and ``changed_branch``: the option a decision
+turns into when an answer differs from its ``suggested``, or a comment or a note is
+given (null when the node sets none, and in runs from before it existed). Options whose
+``requires`` did not hold when the node paused are left out of ``options``,
+``option_labels`` and ``comment_required``. Apps can attach ``details``
 for a richer view, tagged by ``details.type``:
+
+- ``flow_human`` (flow apps): ``node`` and ``show``; a node that sets ``view`` or
+  ``data``, or an approval that sets ``fields`` (however many questions it gets when
+  it pauses; a setting that is null counts as not set, and a form's ``fields`` are the
+  form itself, not a setting of this kind), also has ``view``, ``data`` (its values,
+  references replaced), ``round`` (1 the first time this node waits in the run, 2 the
+  second, and so on), ``seen`` (``sha256:`` and the hex digest of what is shown) and
+  ``dropped_fields`` (questions that did not pass the checks when the node paused).
 
 - ``etl_plan`` (app ``etl``): ``details.plan`` is the proposed ETL plan, as
   ``aep.etl.plan.EtlPlan``: ``summary``, ``language``, and ``targets`` with
@@ -88,7 +109,23 @@ for a richer view, tagged by ``details.type``:
   the code back to be rewritten with the comment.
 
 ``POST /runs/{id}/resume`` takes ``decision``, an optional ``comment`` and an
-optional ``actor`` (who decided; until sign-in exists the client provides it).
+optional ``actor`` (who decided, up to 100 characters; until sign-in exists the
+client provides it). For a flow app's human node it also takes ``values`` (a form's
+answers, or the answers to an approval's questions), ``notes`` (up to 50
+``{item, text}``: a remark on one thing the page shows, where ``item`` is
+``kind:id`` and the id must be found in ``details.data``; approvals only) and
+``seen`` (the ``details.seen`` the page showed). In this order: 409 when the run is
+not waiting; 409 ``内容已经更新，请刷新后再处理`` when ``seen`` is given and the
+pending has a ``details.seen`` that differs (nothing is compared when either is
+missing); 422 ``这一步现在不能选「…」`` when ``decision`` is not in ``options``; 422
+with ``loc`` ``["body", "values", key]`` or ``["body", "notes", i, "item" | "text"]``
+for a bad answer or note, or ``["body", "notes"]`` for more than 50 notes or
+non-empty notes on a form (null and ``[]`` count as none). A decision not in ``comment_required``
+then turns into ``changed_branch`` when an answer differs from its suggestion, or a
+comment or a note is given; a decision in ``comment_required`` needs a comment, a
+note or a changed answer (422 ``这个决定需要写明意见``). docs/api/flow-apps.md
+("人工节点在工作台上的样子") has the full rules and the node's outputs. The ``etl``
+app's approvals have no questions and no data to note on.
 
 A finished ``etl`` run's ``result`` has ``bundle``, ``language``, ``plan``,
 ``files`` (path → content), ``checks`` (``passed``, ``problems``: the static
@@ -114,7 +151,18 @@ while the run waits for the release approval.
 ``release_failed`` once the release decision is noted on it; with ``repo``,
 ``path``, ``version``, ``pr_number``, ``pr_url``, ``branch`` and ``commit``, and
 ``errors`` if noting a decision on the PR failed. ``GET /assets`` lists them.
-``GET /runs/{id}/files.zip`` downloads the files.
+``GET /runs/{id}/files.zip`` downloads a run's code as a zip, from the first of these
+that holds an object of path → text: ``result.files`` (any app, the ``etl`` app's
+included); ``result.code.files`` (a flow end node output ``code`` holding an
+``etl_code_check`` bundle); otherwise, whatever the run's status (done, waiting,
+failed or cancelled), the ``bundle`` output of the last ``etl_code_check`` step (in
+``steps`` order, as ``GET /runs/{id}/flow`` lists them) that has one. A step's
+``output`` is the state update its node wrote, so that bundle is
+``output["vars"][<node id>]["bundle"]``; a step is an ``etl_code_check`` step when
+its node's ``type`` in ``nodes`` is ``etl_code_check``. Values of
+another shape are skipped, never a 500. The zip is named after the bundle
+(``result.bundle`` when it is text, as for ``etl``, else the bundle's ``name``), or
+the run id; 404 ``这次运行没有可下载的代码`` when there is none.
 
 ``GET /runs/{id}/flow`` shows how the run's app is built and what this run did,
 for explaining it (see ``aep.runtime.design``). ``design`` is the app as a whole

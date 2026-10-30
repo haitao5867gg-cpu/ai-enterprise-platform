@@ -58,7 +58,7 @@
 | DELETE | `/skills/{name}/draft` | | 204；没有草稿 404 |
 | POST | `/skills/{name}/publish` | `{"note", "actor"?}` | `SkillDetail`；没有草稿 409；`note` 不能为空 |
 
-平台内置的 Skill（`etl-plan`、`etl-codegen`）在第一次启动时登记为版本 1，`created_by` 为 null，`note` 为"平台内置"。
+平台内置的 Skill（`etl-plan`、`etl-codegen`、`etl-plan-brief`）在启动时登记为版本 1，`created_by` 为 null，`note` 为"平台内置"。只登记名字还不存在的，已经有的不覆盖；所以改了内置内容要换一个新名字发布（模板改用新名字），`etl-plan-brief` 就是这样来的，见 data-nodes.md。
 
 ## 应用
 
@@ -154,5 +154,5 @@
 - `POST /runs` 新增可选字段 `app_version`（整数），不传则用当前版本。
 - `GET /runs/{id}` 和 `GET /runs` 的每条记录新增 `app_version`。
 - `GET /runs/{id}/flow` 的模型节点新增 `skills: [{"name", "version"}]`，`design` 的 `prompt` 字段改为"这次实际用的提示词"。
-- 等待确认的 `pending` 新增 `comment_required`：需要写意见的选项（如 ETL 上线审批的 `reject`）；不带意见 resume 会返回 422。
+- 等待确认的 `pending` 新增 `comment_required`：需要写意见的选项（如 ETL 上线审批的 `reject`）；不带意见 resume 会返回 422。编排应用的人工节点另外认挂在条目上的意见和改了建议答案，见 flow-apps.md。
 - 草稿评测起的运行 `app_version` 为 null。
