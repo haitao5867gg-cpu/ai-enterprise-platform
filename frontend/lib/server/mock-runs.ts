@@ -14,6 +14,7 @@ import {
   type RunSummary,
 } from "../runs";
 import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
+import { isFileMap } from "../etl-v2";
 import {
   mockDeployed,
   mockEtlPlan,
@@ -50,6 +51,14 @@ import {
   dataNodeSaid,
   lakehouseConfig,
 } from "./mock-data-nodes";
+import {
+  ETL_V2_APP,
+  advanceEtlV2,
+  decideEtlV2,
+  moveEtlV2,
+  startEtlV2,
+  type EtlV2State,
+} from "./mock-etl-v2";
 
 type StoredRun = {
   run: Run;
@@ -83,6 +92,8 @@ type StoredRun = {
     summary: string;
   };
   steps: MockSteps;
+  // A run of the ETL template's second version (mock-etl-v2.ts).
+  v2?: EtlV2State;
   // Where the run failed and why, for the detail's `failed`.
   failure?: { node: string; title: string; error_type: string | null };
 };
@@ -289,6 +300,7 @@ const summaryKeys: (keyof RunSummary)[] = [
   "created_by",
   "cancelled_by",
   "rerun_of",
+  "outcome",
   "created_at",
   "updated_at",
   "finished_at",
@@ -555,9 +567,43 @@ function advanceFlow(entry: StoredRun): Run {
   return run;
 }
 
+// Like the backend: the code a run has to download is the result's files, the result's
+// code, or the bundle of the run's last code check step; values of another shape are skipped.
+function runFiles(
+  entry: StoredRun,
+): { files: Record<string, string>; name: string } | null {
+  const { run } = entry;
+  const result = getEtlResult(run.result);
+  if (result) return { files: result.files, name: result.bundle };
+  const named = (bundle: Record<string, unknown>) =>
+    typeof bundle.name === "string" && bundle.name ? bundle.name : run.run_id;
+  if (
+    isRecord(run.result) &&
+    isRecord(run.result.code) &&
+    isFileMap(run.result.code.files)
+  )
+    return { files: run.result.code.files, name: named(run.result.code) };
+  const checks = new Set(
+    entry.flow?.config.graph.nodes
+      .filter((node) => node.type === "etl_code_check")
+      .map((node) => node.id),
+  );
+  for (const step of [...entry.steps].reverse()) {
+    if (!checks.has(step.node) || !isRecord(step.output)) continue;
+    const mine = isRecord(step.output.vars)
+      ? step.output.vars[step.node]
+      : step.output;
+    const bundle = isRecord(mine) ? mine.bundle : null;
+    if (isRecord(bundle) && isFileMap(bundle.files))
+      return { files: bundle.files, name: named(bundle) };
+  }
+  return null;
+}
+
 function refresh(entry: StoredRun): Run {
   const { run } = entry;
   if (run.status !== "running" || Date.now() < entry.readyAt) return run;
+  if (entry.v2) return advanceEtlV2(entry, { setStatus, stamp });
   if (entry.flow) return advanceFlow(entry);
   if (entry.evaluation) {
     setStatus(run, "done");
@@ -881,6 +927,7 @@ function create(
               : undefined,
         }
       : undefined,
+    v2: body.app === ETL_V2_APP ? startEtlV2(input) : undefined,
   });
   return json({ run_id: run.run_id, status: run.status }, 201);
 }
@@ -995,13 +1042,13 @@ export async function mockRuns(request: Request, path: string[]) {
       : json({ detail: "应用说明书不存在" }, 404);
   }
   if (request.method === "GET" && path[2] === "files.zip") {
-    const result = getEtlResult(run.result);
-    if (!result || Object.keys(result.files).length === 0)
-      return json({ detail: "This run has no files" }, 404);
-    return new Response(mockZip(result.files), {
+    const found = runFiles(entry);
+    if (!found || Object.keys(found.files).length === 0)
+      return json({ detail: "这次运行没有可下载的代码" }, 404);
+    return new Response(mockZip(found.files), {
       headers: {
         "Content-Type": "application/zip",
-        "Content-Disposition": `attachment; filename="${result.bundle}.zip"`,
+        "Content-Disposition": `attachment; filename="${found.name}.zip"`,
         "Cache-Control": "no-store",
       },
     });
@@ -1066,6 +1113,29 @@ export async function mockRuns(request: Request, path: string[]) {
   if (asked.length) {
     const issues = validateFields(asked, answers, "values");
     if (issues.length) return invalid(issues);
+  }
+  if (entry.v2) {
+    const decided = decideEtlV2(entry, body);
+    if ("status" in decided) return json(decided.body, decided.status);
+    moveEtlV2(entry, decided);
+    const label = (key: string) => run.pending?.option_labels?.[key] ?? key;
+    run.messages.push(
+      stamp(
+        { id: run.step?.node ?? "", title: run.step?.title ?? "" },
+        {
+          role: "user",
+          content:
+            decided.decision !== body.decision
+              ? `点了「${label(body.decision)}」，改了答案或写了意见，按「${label(decided.decision)}」处理`
+              : approvalSaid(label(decided.decision), body.comment),
+        },
+        typeof body.actor === "string" ? body.actor : null,
+      ),
+    );
+    run.pending = null;
+    setStatus(run, "running");
+    entry.readyAt = Date.now() + 300;
+    return json({ run_id: run.run_id, status: run.status }, 202);
   }
   const remark = typeof body.comment === "string" && body.comment.trim() !== "";
   const differs = answersChanged(asked, answers);

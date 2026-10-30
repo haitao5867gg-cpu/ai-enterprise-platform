@@ -1,4 +1,5 @@
 import "server-only";
+import { ETL_V2_APP, etlV2Config } from "./mock-etl-v2";
 import {
   knowledgeExists,
   knowledgeOptions,
@@ -223,6 +224,17 @@ const store = (globalStore.aepMockApps ??= new Map([
       title: "订单信息填写",
       summary: "人工填写订单号后返回结果。",
       versions: [{ ...initial("hello").versions[0], config: formConfig() }],
+    },
+  ],
+  [
+    ETL_V2_APP,
+    {
+      ...initial("hello"),
+      app: ETL_V2_APP,
+      title: "零售数据 ETL（第 2 版）",
+      summary:
+        "探查数据源、按口径知识库出方案，确认方案后抽取到 Databricks，在开发环境试算并算出答案，审核通过后交付。",
+      versions: [{ ...initial("hello").versions[0], config: etlV2Config() }],
     },
   ],
   [

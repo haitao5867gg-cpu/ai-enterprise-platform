@@ -31,6 +31,8 @@ export default defineConfig({
         "retrieval.spec.ts",
         "data-nodes.spec.ts",
         "datasources.spec.ts",
+        "etl-review.spec.ts",
+        "etl-result.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {
