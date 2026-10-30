@@ -579,6 +579,8 @@ async def check_ingest(node: dict[str, Any], p: Problems, env: CheckEnv) -> None
     )
     _check_tables(node, p, required=True)
     _int(node, "max_rows", p, "每张表最多行数", 1, MAX_ROWS)
+    if node.get("reuse") is not None and not isinstance(node["reuse"], bool):
+        p.add(("reuse",), "reuse 必须是 true 或 false")
 
 
 async def _read_all(rt: Runtime, source: DataSource, schema: str, table: str, most: int) -> Landing:
@@ -605,6 +607,13 @@ async def run_ingest(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
     get = rt.lookup(state)
     source = _etl_source(await rt.source(refs.resolve(node["datasource"], get)))
     names = await _table_names(rt, source, refs.resolve(node.get("tables"), get), False)
+    reuse = node.get("reuse") is True
+    if reuse and (kept := _kept(_mine(state, node), source.datasource_id, names)) is not None:
+        catalog, loaded = kept
+        total = sum(t["rows"] or 0 for t in loaded)
+        summary = f"要的 {len(loaded)} 张表这次运行已经抽取过，沿用（共 {total} 行）"
+        outputs = {"catalog": catalog, "tables": loaded, "summary": summary, "reused": True}
+        return Outcome(outputs, messages=[{"role": "assistant", "content": summary}])
     most = node.get("max_rows", 200000)
     # Every table is read before anything is written, so a table over the limit
     # leaves Databricks as it was.
@@ -620,14 +629,29 @@ async def run_ingest(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
         f"{_code(t['target'])}（{t['rows']} 行）" for t in loaded
     )
     text = "\n".join([summary, *(f"注意：{w}" for w in warnings)])
+    catalog = databricks.settings.databricks_source_catalog
     return Outcome(
-        {
-            "catalog": databricks.settings.databricks_source_catalog,
-            "tables": loaded,
-            "summary": summary,
-        },
+        {"catalog": catalog, "tables": loaded, "summary": summary, "reused": False},
         messages=[{"role": "assistant", "content": text}],
+        # What a later visit of the same run may reuse (``reuse``).
+        private={"datasource": source.datasource_id, "catalog": catalog, "tables": loaded}
+        if reuse
+        else None,
     )
+
+
+def _kept(
+    mine: dict[str, Any], datasource_id: str, names: list[tuple[str, str]]
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """The catalog and records of the tables wanted, when this node's last extraction in
+    the run was from the same data source and took every one of them."""
+    if mine.get("datasource") != datasource_id:
+        return None
+    records = {t.get("source"): t for t in mine.get("tables") or [] if isinstance(t, dict)}
+    wanted = [f"{schema}.{table}" for schema, table in names]
+    if not all(name in records for name in wanted):
+        return None
+    return mine.get("catalog"), [records[name] for name in wanted]
 
 
 # etl_code_check
@@ -691,6 +715,7 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         "code": code,
         "problems": "\n".join(problems),
         "bundle": bundle,
+        "files": sorted(bundle["files"]) if bundle is not None else [],
         "summary": summary,
     }
     return Outcome(
@@ -708,6 +733,9 @@ async def check_dev_run(node: dict[str, Any], p: Problems, env: CheckEnv) -> Non
     _whole(node, "bundle", p, "bundle", "{{check_code.bundle}}")
     _int(node, "max_runs", p, "最多运行次数", 1, 3)
     _int(node, "preview_rows", p, "预览行数", 0, 100)
+    plan = node.get("plan")
+    if plan is not None and plan != "" and (not isinstance(plan, str) or refs.whole(plan) is None):
+        p.add(("plan",), "方案必须恰好是一个变量，如 {{check_plan.plan}}")
 
 
 HOW = {
@@ -759,6 +787,47 @@ def dev_report(
     return "\n".join(lines)
 
 
+def dev_quality(tables: list[dict[str, Any]], plan: EtlPlan | None) -> dict[str, Any] | None:
+    """All result tables' quality rules in short (docs/api/data-nodes.md, ``quality``): a
+    rule with failing rows counts as failed unless the plan says it drops them, whose
+    rows are in ``dropped``. None when there are no table results."""
+    if not tables:
+        return None
+    handling = {
+        (t.name, r.name): r.on_violation
+        for t in (plan.targets if plan else [])
+        for r in t.quality_rules
+    }
+    rules = failed = dropped = 0
+    for t in tables:
+        dropped += t["dropped"] or 0
+        for e in t["expectations"]:
+            rules += 1
+            if (e.get("failed") or 0) > 0 and handling.get((t["name"], e.get("name"))) != "drop":
+                failed += 1
+    if not rules:
+        text = "没有质量规则"
+    else:
+        text = (
+            f"{rules} 条质量规则全部通过"
+            if not failed
+            else f"{rules} 条质量规则里 {failed} 条有不通过的行"
+        )
+        if dropped:
+            text += f"，丢弃 {dropped} 行"
+    return {"rules": rules, "failed_rules": failed, "dropped": dropped, "text": text}
+
+
+def _dev_plan(node: dict[str, Any], get: refs.Lookup) -> tuple[EtlPlan | None, str | None]:
+    """The plan the node's ``plan`` names, or a warning when it is not one."""
+    if not node.get("plan"):
+        return None, None
+    try:
+        return EtlPlan.model_validate(refs.resolve(node["plan"], get)), None
+    except ValidationError:
+        return None, "方案取到的不是校验通过的方案，这次不按方案处理预览和答案"
+
+
 def dev_said(
     dev: Any,
     attempt: int,
@@ -787,20 +856,28 @@ def dev_said(
 
 async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     databricks = _databricks(rt)
-    bundle = refs.resolve(node["bundle"], rt.lookup(state))
+    get = rt.lookup(state)
+    bundle = refs.resolve(node["bundle"], get)
     if (
         not isinstance(bundle, dict)
         or not isinstance(bundle.get("name"), str)
         or not isinstance(bundle.get("files"), dict)
     ):
         raise NodeFailure(INPUT_ERROR, "bundle 要引用检查并打包节点的 bundle（代码通过检查后才有）")
-    attempt = (state.get("visits") or {}).get(node["id"], 0) + 1
+    plan, warning = _dev_plan(node, get)
+    # Runs in this round: going back to rewrite the code with the errors and coming back
+    # is the same round; ``passed`` and ``failed`` end it. Runs from before rounds were
+    # kept count every visit.
+    mine = _mine(state, node)
+    attempt = mine.get("attempts", (state.get("visits") or {}).get(node["id"], 0)) + 1
     try:
         dev = await databricks.run(
             codegen.Bundle(bundle["name"], bundle["files"]), node.get("preview_rows", 20)
         )
     except DatabricksError as exc:
         raise NodeFailure("databricks_error", str(exc)) from exc
+    if warning:
+        dev.warnings.append(warning)
     passed = dev.status == "passed"
     if passed:
         branch = "passed"
@@ -824,15 +901,24 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     run = {k: v for k, v in dev.as_dict().items() if k != "preview"} | {"attempt": attempt}
     outputs = {
         "status": dev.status,
+        "ok": passed,
         "run": run,
         "url": dev.url,
         "tables": tables,
         "preview": dev.preview,
+        "quality": dev_quality(tables, plan),
+        # Worked out on the cluster from the plan's answer design (a later step).
+        "answer": None,
         "errors": "\n".join(errors),
         "report": report,
     }
     said = dev_said(dev, attempt, branch, tables, errors, node.get("max_runs", 3))
-    return Outcome(outputs, branch, messages=[{"role": "assistant", "content": said}])
+    return Outcome(
+        outputs,
+        branch,
+        messages=[{"role": "assistant", "content": said}],
+        private={"attempts": attempt if branch == "retry" else 0},
+    )
 
 
 def _fixed(*names: str) -> Any:
@@ -919,11 +1005,12 @@ TYPES: dict[str, NodeType] = {
             check_ingest,
             run_ingest,
             _none,
-            _fixed("catalog", "tables", "summary"),
+            _fixed("catalog", "tables", "summary", "reused"),
             outputs=(
                 ("catalog", "写入的 catalog"),
                 ("tables", "每张表的来源、目标、行数和列数"),
                 ("summary", "一句话总结"),
+                ("reused", "是不是沿用了这次运行上次抽取的表"),
             ),
             defaults={"datasource": "", "tables": "", "max_rows": 200000},
             error_handling=True,
@@ -937,12 +1024,13 @@ TYPES: dict[str, NodeType] = {
             check_code_check,
             run_code_check,
             _fixed("ok", "retry"),
-            _fixed("ok", "code", "problems", "bundle", "summary"),
+            _fixed("ok", "code", "problems", "bundle", "files", "summary"),
             outputs=(
                 ("ok", "是否通过"),
                 ("code", "每张目标表的代码"),
                 ("problems", "没通过的原因"),
                 ("bundle", "Databricks bundle 文件"),
+                ("files", "bundle 里的文件路径"),
                 ("summary", "一句话总结"),
             ),
             defaults={
@@ -964,13 +1052,27 @@ TYPES: dict[str, NodeType] = {
             check_dev_run,
             run_dev_run,
             _fixed("passed", "retry", "failed"),
-            _fixed("status", "run", "url", "tables", "preview", "errors", "report"),
+            _fixed(
+                "status",
+                "ok",
+                "run",
+                "url",
+                "tables",
+                "preview",
+                "quality",
+                "answer",
+                "errors",
+                "report",
+            ),
             outputs=(
                 ("status", "passed 或 failed"),
+                ("ok", "是否通过"),
                 ("run", "这次运行的详情"),
                 ("url", "Databricks 上这次运行的链接"),
                 ("tables", "每张结果表的行数和质量规则结果"),
                 ("preview", "每张结果表的前几行"),
+                ("quality", "所有结果表的质量小结"),
+                ("answer", "按方案的答案设计算出的答案"),
                 ("errors", "失败时的报错"),
                 ("report", "运行报告（Markdown）"),
             ),
