@@ -1,0 +1,182 @@
+{
+  "summary": "以有效订单为基础，先建一张订单级客户明细（含归一后的城市、会员等级和统计月、新客标记），再汇总成客户月表和城市月表，输出每月各城市的新客户数、下单客户数、复购客户数和复购率。",
+  "language": "pyspark",
+  "brief": {
+    "goal": "统计每个统计月、每个城市的新客户数、下单客户数、复购客户数和复购率，用于观察各城市新客获取和客户复购情况。",
+    "grain": "每个统计月 × 城市一行",
+    "metrics": [
+      {
+        "id": "m1",
+        "name": "新客户数",
+        "unit": "人",
+        "definition": "注册时间落在统计月内、且当月至少有一笔有效订单的客户数，按客户去重，一个客户一个月只计一次 [1]",
+        "column": "new_customer_count"
+      },
+      {
+        "id": "m2",
+        "name": "下单客户数",
+        "unit": "人",
+        "definition": "统计月内至少有一笔有效订单的客户数，按客户去重；取消、退款订单不计 [2]",
+        "column": "customer_count"
+      },
+      {
+        "id": "m3",
+        "name": "复购客户数",
+        "unit": "人",
+        "definition": "统计月内有效订单不少于 2 笔的客户数 [5][11]",
+        "column": "repurchase_customer_count"
+      },
+      {
+        "id": "m4",
+        "name": "复购率",
+        "unit": null,
+        "definition": "复购客户数除以下单客户数，保留四位小数，分母为 0 时给空值 [5][11]",
+        "column": "repurchase_rate"
+      }
+    ],
+    "dimensions": [
+      {
+        "id": "d1",
+        "name": "统计月",
+        "definition": "按下单时间所属自然月，写成 yyyy-MM 的文字 [9][10]",
+        "column": "stat_month",
+        "examples": ["2025-11", "2025-12", "2026-01"]
+      },
+      {
+        "id": "d2",
+        "name": "城市",
+        "definition": "取下单客户档案里的注册城市，去首尾空格、去末尾「市」字，空值归为「未知」并单独保留 [3][8]",
+        "column": "city",
+        "examples": ["上海", "北京", "杭州", "深圳", "未知"]
+      }
+    ],
+    "filters": [
+      {
+        "id": "f1",
+        "text": "只统计有效订单，即状态归一（去空格转小写）后为 paid、shipped、completed 的订单，cancelled、refunded 不计 [2]"
+      }
+    ],
+    "time_range": {
+      "text": "不限历史时间，按订单下单时间所属自然月统计 [4][9]",
+      "column": "stat_month"
+    }
+  },
+  "targets": [
+    {
+      "name": "dwd_retail_order_detail",
+      "description": "有效订单明细表，一行一笔有效订单，带上客户档案归一后的城市、会员等级，以及统计月、注册时间和新客标记",
+      "sources": ["retail.orders", "retail.customers"],
+      "logic": "读订单表按 customer_id 关联客户档案。订单状态先 lower(trim()) 归一，只保留 paid、shipped、completed 三种有效状态，cancelled、refunded 过滤掉；城市去首尾空格、去末尾「市」字，空值归「未知」，不过滤；会员等级去空格转小写，空值归 normal；按 ordered_at 生成统计月，注册月与统计月相同时新客标记为 1。客户名称在样本里全部形如「测试账号N」，暂不按名称过滤，见规则。",
+      "columns": [
+        {"name": "order_id", "label": "订单ID", "source": "o.order_id", "description": "订单唯一标识，主键，口径见《客户数与复购》"},
+        {"name": "customer_id", "label": "客户ID", "source": "o.customer_id", "description": "下单客户标识，用于按客户去重计数，口径见《客户数与复购》"},
+        {"name": "city", "label": "城市", "source": "coalesce(nullif(regexp_replace(trim(c.city), '市$', ''), ''), '未知')", "description": "下单客户的注册城市，已去首尾空格、去末尾「市」字，空值归「未知」，口径见《城市与会员等级》"},
+        {"name": "member_level", "label": "会员等级", "source": "coalesce(nullif(lower(trim(c.member_level)), ''), 'normal')", "description": "客户会员等级代码，已去空格转小写，空值按 normal，口径见《城市与会员等级》"},
+        {"name": "ordered_at", "label": "下单时间", "source": "o.ordered_at", "description": "订单下单时间，北京时间，不做时区转换，增量加载键，口径见《时间口径》"},
+        {"name": "stat_month", "label": "统计月", "source": "date_format(o.ordered_at, 'yyyy-MM')", "description": "下单时间所属自然月，yyyy-MM 文字，口径见《时间口径》"},
+        {"name": "registered_at", "label": "注册时间", "source": "c.registered_at", "description": "客户注册时间，仅用于判断新客户，不用于订单统计，口径见《时间口径》"},
+        {"name": "is_new_customer", "label": "是否新客户", "source": "case when date_format(c.registered_at, 'yyyy-MM') = date_format(o.ordered_at, 'yyyy-MM') then 1 else 0 end", "description": "1 表示客户注册月与订单统计月相同（新客户），0 表示否，口径见《客户数与复购》"}
+      ],
+      "primary_key": ["order_id"],
+      "load": {"mode": "incremental", "key": "ordered_at"},
+      "quality_rules": [
+        {"name": "order_id_not_null", "condition": "order_id IS NOT NULL", "on_violation": "drop"},
+        {"name": "customer_id_not_null", "condition": "customer_id IS NOT NULL", "on_violation": "drop"},
+        {"name": "city_not_null", "condition": "city IS NOT NULL", "on_violation": "warn"},
+        {"name": "member_level_not_null", "condition": "member_level IS NOT NULL", "on_violation": "warn"}
+      ]
+    },
+    {
+      "name": "dws_retail_customer_month",
+      "description": "客户月表，一行一个客户在一个统计月的情况，含当月有效订单笔数和新客标记，供城市月表汇总",
+      "sources": ["dwd_retail_order_detail"],
+      "logic": "读订单明细表，按统计月、客户、城市、会员等级分组：订单笔数按订单ID计数，新客标记取该客户当月最大值。一个客户一个月只出现一行，城市和会员等级取客户档案归一后的值。",
+      "columns": [
+        {"name": "stat_month", "label": "统计月", "source": "stat_month", "description": "统计月，yyyy-MM 文字，口径见《时间口径》"},
+        {"name": "customer_id", "label": "客户ID", "source": "customer_id", "description": "客户标识，一行一个客户，口径见《客户数与复购》"},
+        {"name": "city", "label": "城市", "source": "city", "description": "客户档案归一后的城市，空值已归「未知」，口径见《城市与会员等级》"},
+        {"name": "member_level", "label": "会员等级", "source": "member_level", "description": "客户档案归一后的会员等级代码，空值已按 normal，口径见《城市与会员等级》"},
+        {"name": "order_count", "label": "有效订单数（笔）", "source": "cast(count(order_id) as bigint)", "description": "该客户当月有效订单笔数，用于判断复购，口径见《客户数与复购》"},
+        {"name": "is_new_customer", "label": "是否新客户", "source": "cast(max(is_new_customer) as int)", "description": "1 表示该客户为当月新客户，0 表示否，口径见《客户数与复购》"}
+      ],
+      "primary_key": ["stat_month", "customer_id"],
+      "load": {"mode": "full", "key": null},
+      "quality_rules": [
+        {"name": "stat_month_not_null", "condition": "stat_month IS NOT NULL", "on_violation": "drop"},
+        {"name": "customer_id_not_null", "condition": "customer_id IS NOT NULL", "on_violation": "drop"},
+        {"name": "city_not_null", "condition": "city IS NOT NULL", "on_violation": "warn"},
+        {"name": "member_level_not_null", "condition": "member_level IS NOT NULL", "on_violation": "warn"},
+        {"name": "order_count_positive", "condition": "order_count > 0", "on_violation": "warn"}
+      ]
+    },
+    {
+      "name": "dws_retail_customer_city_month",
+      "description": "城市月表，一行一个统计月 × 城市，输出新客户数、下单客户数、复购客户数和复购率",
+      "sources": ["dws_retail_customer_month"],
+      "logic": "读客户月表，按统计月、城市分组：下单客户数按客户行数计数，新客户数求和新客标记，复购客户数统计当月有效订单不少于 2 笔的客户，复购率用复购客户数除以下单客户数，分母为 0 时给空值，结果转 decimal(10,4)。城市含「未知」，保证各城市加总与全国一致。",
+      "columns": [
+        {"name": "stat_month", "label": "统计月", "source": "stat_month", "description": "统计月，yyyy-MM 文字，口径见《时间口径》"},
+        {"name": "city", "label": "城市", "source": "city", "description": "下单客户的注册城市，已归一，空值归「未知」，口径见《城市与会员等级》"},
+        {"name": "customer_count", "label": "下单客户数（人）", "source": "cast(count(customer_id) as bigint)", "description": "当月该城市有有效订单的客户数，人，口径见《客户数与复购》"},
+        {"name": "new_customer_count", "label": "新客户数（人）", "source": "cast(sum(is_new_customer) as bigint)", "description": "当月该城市注册且当月有有效订单的客户数，人，口径见《客户数与复购》"},
+        {"name": "repurchase_customer_count", "label": "复购客户数（人）", "source": "cast(sum(case when order_count >= 2 then 1 else 0 end) as bigint)", "description": "当月该城市有效订单不少于 2 笔的客户数，人，口径见《客户数与复购》"},
+        {"name": "repurchase_rate", "label": "复购率", "source": "cast(case when count(customer_id) > 0 then sum(case when order_count >= 2 then 1 else 0 end) / count(customer_id) end as decimal(10,4))", "description": "复购客户数除以下单客户数，四位小数，分母为 0 时为空值，口径见《客户数与复购》"}
+      ],
+      "primary_key": ["stat_month", "city"],
+      "load": {"mode": "full", "key": null},
+      "quality_rules": [
+        {"name": "stat_month_not_null", "condition": "stat_month IS NOT NULL", "on_violation": "drop"},
+        {"name": "city_not_null", "condition": "city IS NOT NULL", "on_violation": "warn"},
+        {"name": "customer_count_positive", "condition": "customer_count > 0", "on_violation": "warn"},
+        {"name": "repurchase_rate_range", "condition": "repurchase_rate IS NULL OR (repurchase_rate >= 0 AND repurchase_rate <= 1)", "on_violation": "warn"}
+      ]
+    }
+  ],
+  "rules": [
+    {"id": "r1", "text": "统计月按自然月，取下单时间格式化为 yyyy-MM 的文字，列名用 stat_month [9][10]", "basis": "knowledge"},
+    {"id": "r2", "text": "订单类指标一律以下单时间为准，源数据已是北京时间，不做时区转换；注册时间只用于判断新客户 [4][9]", "basis": "knowledge"},
+    {"id": "r3", "text": "有效订单指状态去空格转小写后为 paid、shipped、completed 的订单，cancelled、refunded 在转换逻辑里过滤掉 [2]", "basis": "knowledge"},
+    {"id": "r4", "text": "城市去首尾空格、去末尾「市」字，空值归「未知」并单独保留，不过滤 [3][8]", "basis": "knowledge"},
+    {"id": "r5", "text": "会员等级去空格转小写，空值按 normal [7]", "basis": "knowledge"},
+    {"id": "r6", "text": "新客户是注册时间落在统计月内、且当月有有效订单的客户 [1]", "basis": "knowledge"},
+    {"id": "r7", "text": "复购客户是当月有效订单不少于 2 笔的客户，按口径不区分新老客户 [5]", "basis": "knowledge"},
+    {"id": "r8", "text": "复购率等于复购客户数除以下单客户数，分母为 0 时给空值，比率用 decimal(10,4)，计数用 bigint [13][14]", "basis": "knowledge"},
+    {"id": "r9", "text": "客户名称在样本里全部形如「测试账号N」，按名称排除会剔除全部客户，方案暂不按名称过滤测试账号，待确认 [2]", "basis": "assumption"},
+    {"id": "r10", "text": "dwd 明细按下单时间增量加载，dws 汇总每次全量重算，管道可重复运行结果不变 [22][23]", "basis": "knowledge"},
+    {"id": "r11", "text": "客户类指标不需要金额明细，本方案不使用订单明细表和商品表 [12]", "basis": "assumption"},
+    {"id": "r12", "text": "订单明细表的订单号唯一性用建表主键表达，不写成逐行质量规则 [17][20]", "basis": "knowledge"}
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "text": "客户名都是「测试账号N」，要按名称排除吗？",
+      "why": "口径要求测试账号不算，但样本里客户名称全部形如「测试账号N」，按名称排除会把全部客户剔除，报表会为空。",
+      "options": [
+        {"value": "keep_all", "label": "不排除，全部客户都统计"},
+        {"value": "exclude_by_name", "label": "排除名称以「测试账号」开头的客户"}
+      ],
+      "suggested": "keep_all",
+      "affects": ["m1", "m2", "m3", "m4", "r9"]
+    },
+    {
+      "id": "q2",
+      "text": "新客户当月第二笔订单算复购吗？",
+      "why": "口径只说当月有效订单不少于 2 笔即为复购，未区分新老客户；业务上复购有时只统计老客户，处理方式不同会影响复购数和复购率。",
+      "options": [
+        {"value": "include_new", "label": "算，按口径不区分新老客户"},
+        {"value": "exclude_new", "label": "不算，复购只统计注册月早于统计月的客户"}
+      ],
+      "suggested": "include_new",
+      "affects": ["m3", "m4", "r7"]
+    }
+  ],
+  "answer": {
+    "target": "dws_retail_customer_city_month",
+    "filter": [{"column": "stat_month", "pick": "latest"}],
+    "group_by": ["city"],
+    "measures": ["new_customer_count", "customer_count", "repurchase_customer_count", "repurchase_rate"],
+    "order_by": [{"column": "new_customer_count", "desc": true}],
+    "top_n": 10,
+    "chart": {"type": "bar", "label": ["city"], "value": "new_customer_count"}
+  }
+}

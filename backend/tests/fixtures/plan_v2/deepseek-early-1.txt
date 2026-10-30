@@ -1,0 +1,182 @@
+{
+  "summary": "先建一张清洗后的有效订单明细表，把有效订单、城市与会员等级归一、销售额口径在这张表里落地一次；再按统计月 × 城市 × 会员等级汇总出销售额、订单数、下单客户数和客单价。",
+  "language": "pyspark",
+  "brief": {
+    "goal": "按月、城市、会员等级统计有效订单的销售额、订单数、下单客户数和客单价，供零售经营报表使用。",
+    "grain": "每个统计月 × 城市 × 会员等级一行。",
+    "metrics": [
+      {
+        "id": "m1",
+        "name": "销售额",
+        "unit": "元",
+        "definition": "有效订单明细行上「数量 × 单价 ×（1 − 折扣率，空值按 0）」之和，每行先四舍五入保留两位小数，不含运费 [2]",
+        "column": "sales_amount"
+      },
+      {
+        "id": "m2",
+        "name": "订单数",
+        "unit": "笔",
+        "definition": "有效订单按订单号去重计数，一笔订单有多行明细时只算一单 [4]",
+        "column": "order_count"
+      },
+      {
+        "id": "m3",
+        "name": "下单客户数",
+        "unit": "人",
+        "definition": "统计月内至少有一笔有效订单的客户数，按客户号去重计数；客户归入其档案中的城市和会员等级，一个客户在一个月里只属于一个城市 [1]",
+        "column": "customer_count"
+      },
+      {
+        "id": "m4",
+        "name": "客单价",
+        "unit": "元",
+        "definition": "销售额 ÷ 订单数，在汇总之后计算并四舍五入保留两位小数，订单数为 0 时为空 [8]",
+        "column": "avg_order_value"
+      }
+    ],
+    "dimensions": [
+      {
+        "id": "d1",
+        "name": "统计月",
+        "definition": "取下单时间所在的自然月，格式为 yyyy-MM [13]",
+        "column": "stat_month",
+        "examples": ["2025-11"]
+      },
+      {
+        "id": "d2",
+        "name": "城市",
+        "definition": "取下单客户档案中的注册城市，去掉首尾空格、去掉末尾的「市」字，NULL 和空字符串归为「未知」并单独列出 [5]",
+        "column": "city",
+        "examples": ["上海", "北京", "杭州", "南京", "苏州"]
+      },
+      {
+        "id": "d3",
+        "name": "会员等级",
+        "definition": "取下单客户档案中的会员等级，去空格并转小写，空值按普通会员 normal 统计 [3]",
+        "column": "member_level",
+        "examples": ["gold", "normal", "silver"]
+      }
+    ],
+    "filters": [
+      {
+        "id": "f1",
+        "text": "只统计有效订单：状态去掉首尾空格并转小写后为 paid、shipped、completed 之一，取消和退款订单不计入 [9]"
+      },
+      {
+        "id": "f2",
+        "text": "排除客户名称以「测试」开头的测试账号所产生的订单 [9]"
+      },
+      {
+        "id": "f3",
+        "text": "只统计数量大于 0 的明细行，数量为 0 或负数的明细不计入金额和订单数 [9]"
+      }
+    ],
+    "time_range": {
+      "text": "按下单时间统计，不限时间范围 [2]",
+      "column": "stat_month"
+    }
+  },
+  "targets": [
+    {
+      "name": "dwd_retail_order_detail",
+      "description": "有效订单的明细表，一行一条订单明细，已按口径完成有效订单筛选、测试账号排除、城市与会员等级归一和销售额计算。",
+      "sources": ["retail.orders", "retail.order_items", "retail.customers"],
+      "logic": "订单表按订单号关联明细表、按客户号关联客户表（内关联）；只保留状态去空格转小写后为 paid、shipped、completed 的订单，排除客户名称以「测试」开头的测试账号；城市按去首尾空格、去末尾「市」字、空值归「未知」归一，会员等级按去空格转小写、空值归 normal 归一；销售额按明细行计算并保留两位小数，不含运费；数量为 0 或负数的明细由质量规则丢弃，不在代码里另行过滤。",
+      "columns": [
+        {"name": "order_id", "label": "订单号", "source": "o.order_id", "description": "订单号，来源订单表主键，与行号组成明细表主键"},
+        {"name": "line_no", "label": "明细行号", "source": "i.line_no", "description": "订单明细行号，与订单号组成明细表主键"},
+        {"name": "customer_id", "label": "客户号", "source": "o.customer_id", "description": "下单客户号，用于下单客户数去重计数"},
+        {"name": "ordered_at", "label": "下单时间", "source": "o.ordered_at", "description": "下单时间，用于按月汇总，也是增量加载键 [22]"},
+        {"name": "quantity", "label": "数量（件）", "source": "i.quantity", "description": "购买数量，件"},
+        {"name": "unit_price", "label": "单价（元）", "source": "i.unit_price", "description": "成交单价，元"},
+        {"name": "discount_rate", "label": "折扣率", "source": "i.discount_rate", "description": "折扣率，0 到 1 之间的小数，空值在计算销售额时按 0 处理 [2]"},
+        {"name": "sales_amount", "label": "销售额（元）", "source": "cast(round(i.quantity * i.unit_price * (1 - coalesce(i.discount_rate, 0)), 2) as decimal(18,2))", "description": "销售额，元，不含运费，等于数量 × 单价 ×（1 − 折扣率），口径见《销售额与客单价》[2]"},
+        {"name": "city", "label": "城市", "source": "coalesce(nullif(regexp_replace(trim(c.city), '市$', ''), ''), '未知')", "description": "下单客户所在城市，去首尾空格、去末尾「市」字，空值为「未知」，口径见《城市与会员等级》[5]"},
+        {"name": "member_level", "label": "会员等级", "source": "coalesce(nullif(lower(trim(c.member_level)), ''), 'normal')", "description": "会员等级代码 normal、silver、gold，去空格转小写，空值为 normal，口径见《城市与会员等级》[3]"}
+      ],
+      "primary_key": ["order_id", "line_no"],
+      "load": {"mode": "incremental", "key": "ordered_at"},
+      "quality_rules": [
+        {"name": "order_id_line_no_not_null", "condition": "order_id is not null and line_no is not null", "on_violation": "drop"},
+        {"name": "ordered_at_not_null", "condition": "ordered_at is not null", "on_violation": "drop"},
+        {"name": "quantity_positive", "condition": "quantity > 0", "on_violation": "drop"},
+        {"name": "sales_amount_non_negative", "condition": "sales_amount >= 0", "on_violation": "warn"},
+        {"name": "city_member_level_not_null", "condition": "city is not null and member_level is not null", "on_violation": "warn"}
+      ]
+    },
+    {
+      "name": "dws_retail_sales_city_level_month",
+      "description": "按月 × 城市 × 会员等级的零售经营汇总表，包含销售额、订单数、下单客户数和客单价。",
+      "sources": ["dwd_retail_order_detail"],
+      "logic": "读有效订单明细表，按统计月、城市、会员等级分组：销售额求和后保留两位小数，订单数按订单号去重计数，下单客户数按客户号去重计数，客单价用销售额合计除以订单数合计后保留两位小数、订单数为 0 时给空值；不再重复做清洗。",
+      "columns": [
+        {"name": "stat_month", "label": "统计月", "source": "date_format(ordered_at, 'yyyy-MM')", "description": "统计月，格式 yyyy-MM，按下单时间所在自然月 [13]"},
+        {"name": "city", "label": "城市", "source": "city", "description": "下单客户所在城市，已归一，含「未知」 [5]"},
+        {"name": "member_level", "label": "会员等级", "source": "member_level", "description": "会员等级代码 normal、silver、gold [3]"},
+        {"name": "sales_amount", "label": "销售额（元）", "source": "cast(round(sum(sales_amount), 2) as decimal(18,2))", "description": "有效订单销售额合计，元，不含运费，口径见《销售额与客单价》[2]"},
+        {"name": "order_count", "label": "订单数（笔）", "source": "cast(count(distinct order_id) as bigint)", "description": "有效订单数，笔，按订单号去重 [4]"},
+        {"name": "customer_count", "label": "下单客户数（人）", "source": "cast(count(distinct customer_id) as bigint)", "description": "下单客户数，人，按客户号去重，客户按档案城市和等级归属 [1]"},
+        {"name": "avg_order_value", "label": "客单价（元）", "source": "cast(case when count(distinct order_id) = 0 then null else round(sum(sales_amount) / count(distinct order_id), 2) end as decimal(18,2))", "description": "客单价，元，销售额 ÷ 订单数，汇总后计算并保留两位小数，订单数为 0 时为空，口径见《销售额与客单价》[8]"}
+      ],
+      "primary_key": ["stat_month", "city", "member_level"],
+      "load": {"mode": "full", "key": null},
+      "quality_rules": [
+        {"name": "stat_month_not_null", "condition": "stat_month is not null", "on_violation": "drop"},
+        {"name": "city_member_level_not_null", "condition": "city is not null and member_level is not null", "on_violation": "warn"},
+        {"name": "sales_amount_non_negative", "condition": "sales_amount >= 0", "on_violation": "warn"},
+        {"name": "order_count_non_negative", "condition": "order_count >= 0", "on_violation": "warn"}
+      ]
+    }
+  ],
+  "rules": [
+    {"id": "r1", "text": "有效订单指状态去掉首尾空格并转小写后为 paid、shipped、completed 之一的订单，取消和退款订单不计入。", "basis": "knowledge"},
+    {"id": "r2", "text": "客户名称以「测试」开头的测试账号所产生的订单全部排除。", "basis": "knowledge"},
+    {"id": "r3", "text": "销售额按明细行「数量 × 单价 ×（1 − 折扣率，空值按 0）」计算，每行先四舍五入保留两位小数，不含运费，不参与订单表的运费字段。", "basis": "knowledge"},
+    {"id": "r4", "text": "订单数按订单号去重计数，一笔订单有多行明细时只算一单。", "basis": "knowledge"},
+    {"id": "r5", "text": "客单价 = 销售额 ÷ 订单数，在汇总之后计算并四舍五入保留两位小数，订单数为 0 时给空值，不写 0。", "basis": "knowledge"},
+    {"id": "r6", "text": "下单客户数按客户号去重计数，客户归入其档案中的城市和会员等级，一个客户在一个月里只属于一个城市。", "basis": "knowledge"},
+    {"id": "r7", "text": "城市取下单客户档案中的注册城市，去掉首尾空格、去掉末尾的「市」字，NULL 和空字符串归为「未知」并在报表里单独列出。", "basis": "knowledge"},
+    {"id": "r8", "text": "会员等级取客户档案中的值，去空格转小写，空值按普通会员 normal 统计。", "basis": "knowledge"},
+    {"id": "r9", "text": "数量为 0 或负数的明细行不计入金额和订单数，由明细表的质量规则丢弃并在运行报告中体现。", "basis": "knowledge"},
+    {"id": "r10", "text": "没有明细的有效订单、以及明细全部被作废的订单无法形成销售额，也不计入订单数。", "basis": "assumption"},
+    {"id": "r11", "text": "有效订单、城市与会员等级归一、销售额计算这些业务口径只在明细表落地一次，汇总表只做分组汇总。", "basis": "knowledge"},
+    {"id": "r12", "text": "明细表按下单时间增量加载，汇总表每次全量重算，管道重复运行结果不变。", "basis": "knowledge"},
+    {"id": "r13", "text": "金额类字段用 decimal(18,2)，计数用 bigint，除法分母为 0 时给空值。", "basis": "knowledge"},
+    {"id": "r14", "text": "汇总表同一统计月、城市、会员等级只保留一行，主键为这三列的组合。", "basis": "knowledge"},
+    {"id": "r15", "text": "需求没有指定统计时间范围，方案按全部历史数据统计，看板默认看最新一期。", "basis": "assumption"}
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "text": "没有有效明细的订单是否计入订单数？",
+      "why": "明细全部被作废或没有明细的订单销售额为 0，是否算一单会改变订单数和客单价。",
+      "options": [
+        {"value": "exclude", "label": "不计入，只算有有效明细的订单"},
+        {"value": "count", "label": "计入，按有效订单定义算一笔"}
+      ],
+      "suggested": "exclude",
+      "affects": ["m2", "m4", "r10"]
+    },
+    {
+      "id": "q2",
+      "text": "报表统计的时间范围？",
+      "why": "需求只说按月，没有说统计多久，会影响结果表的月份行数和看板总量。",
+      "options": [
+        {"value": "all", "label": "全部历史数据"},
+        {"value": "last_12_months", "label": "最近 12 个自然月"},
+        {"value": "current_year", "label": "本自然年"}
+      ],
+      "suggested": "all",
+      "affects": ["m1", "m2", "m3", "m4"]
+    }
+  ],
+  "answer": {
+    "target": "dws_retail_sales_city_level_month",
+    "filter": [{"column": "stat_month", "pick": "latest"}],
+    "group_by": ["city", "member_level"],
+    "measures": ["sales_amount", "order_count", "customer_count", "avg_order_value"],
+    "order_by": [{"column": "sales_amount", "desc": true}],
+    "top_n": 10,
+    "chart": {"type": "bar", "label": ["city"], "value": "sales_amount"}
+  }
+}

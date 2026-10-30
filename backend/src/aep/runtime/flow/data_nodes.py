@@ -20,8 +20,27 @@ from aep import llm
 from aep.databricks import DatabricksError, DevTarget, Landing, full_name
 from aep.datasources import DATABASE_KINDS, DataSource
 from aep.etl import codegen
-from aep.etl.plan import IDENTIFIER, EtlPlan, PlanError, validate_plan
-from aep.etl.profile import MAX_TABLES, describe_for_model, known_values, profile_tables
+from aep.etl.plan import (
+    BASIS_NAMES,
+    IDENTIFIER,
+    Confirmed,
+    EtlPlan,
+    EtlPlanV2,
+    PlanError,
+    Target,
+    answer_output,
+    bare,
+    uncited,
+    validate_plan,
+    validate_plan_v2,
+)
+from aep.etl.profile import (
+    MAX_TABLES,
+    describe_for_model,
+    known_values,
+    profile_tables,
+    seen_values,
+)
 from aep.knowledge.citations import IndexedHit
 from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
@@ -259,6 +278,38 @@ async def check_plan_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
                 p.add(("hits", i), "每项必须恰好是一个变量，如 {{glossary.hits}}")
     _text(node, "language", p, "代码语言", max_length=200)
     _int(node, "max_attempts", p, "连续不过的次数上限", 1, 5)
+    version = node.get("format")
+    if version is not None and (
+        not isinstance(version, int) or isinstance(version, bool) or version not in (1, 2)
+    ):
+        p.add(("format",), "方案版本 format 只能是 1 或 2")
+    answered = node.get("answered")
+    if answered is not None and answered != "":
+        if version != 2:
+            p.add(("answered",), "只有方案版本 format 为 2 时才能写已答的题")
+        elif not isinstance(answered, str) or refs.whole(answered) is None:
+            p.add(("answered",), "已答的题必须恰好是一个变量，如 {{review.record}}")
+
+
+def _answered(
+    node: dict[str, Any], state: dict[str, Any], get: refs.Lookup
+) -> dict[str, Confirmed]:
+    """The answers people gave to this node's plans, by ``bare`` question text: what the
+    node kept from earlier runs, then the answers in ``answered`` (a human node's record,
+    which holds its latest round only). A newer answer to a question replaces the older."""
+    memory: dict[str, Confirmed] = dict(_mine(state, node).get("answered") or {})
+    record = refs.resolve(node["answered"], get) if node.get("answered") else None
+    given = record.get("answers") if isinstance(record, dict) else None
+    if not isinstance(record, dict) or not isinstance(given, list):
+        return memory
+    actor = record.get("actor")
+    who = actor if isinstance(actor, str) and actor.strip() else None
+    for item in given:
+        label = item.get("label") if isinstance(item, dict) else None
+        value = item.get("value_label") if isinstance(item, dict) else None
+        if isinstance(label, str) and isinstance(value, str) and bare(label):
+            memory[bare(label)] = {"label": label, "value_label": value, "actor": who}
+    return memory
 
 
 def _hits(node: dict[str, Any], get: refs.Lookup) -> list[IndexedHit]:
@@ -277,42 +328,157 @@ def _hits(node: dict[str, Any], get: refs.Lookup) -> list[IndexedHit]:
 VIOLATION = {"warn": "只记录", "drop": "丢弃这一行", "fail": "整次运行失败"}
 
 
+def _target_lines(n: int, t: Target) -> list[str]:
+    """Target table ``n`` of a plan as a person reviews it (Markdown)."""
+    load = "全量覆盖"
+    if t.load.mode == "incremental":
+        load = f"增量（增量键 `{t.load.key}`）"
+    lines = ["", f"### 目标表 {n}：`{t.name}`", ""]
+    if t.description:
+        lines += [t.description, ""]
+    lines.append(f"- 加载方式：{load}")
+    lines.append("- 来源：" + "、".join(f"`{s}`" for s in t.sources))
+    lines.append(f"- 做法：{t.logic}")
+    if t.primary_key:
+        lines.append("- 主键：" + "、".join(f"`{k}`" for k in t.primary_key))
+    lines.append("")
+    rows = [[f"`{c.name}`", f"`{c.source}`", c.description] for c in t.columns]
+    lines += _table(["列", "计算方式", "说明"], rows)
+    if t.quality_rules:
+        lines += ["", "数据质量规则："]
+        lines += [
+            f"- `{r.name}`：`{r.condition}`（不满足时{VIOLATION[r.on_violation]}）"
+            for r in t.quality_rules
+        ]
+    return lines
+
+
+def _reference_lines(references: list[IndexedHit]) -> list[str]:
+    if not references:
+        return []
+    lines = ["", "### 依据的资料", ""]
+    for hit in references:
+        heading = f" {hit.heading}" if hit.heading else ""
+        lines.append(f"- [{hit.index}]《{hit.document_name}》{heading}（知识库「{hit.kb_name}」）")
+    return lines
+
+
+def _language(plan: EtlPlan) -> str:
+    return "PySpark" if plan.language == "pyspark" else "SQL"
+
+
 def plan_message(plan: EtlPlan) -> str:
     """The plan as a person reviews it (Markdown)."""
-    language = "PySpark" if plan.language == "pyspark" else "SQL"
-    lines = [f"**方案**：{plan.summary}", "", f"代码语言：{language}"]
+    lines = [f"**方案**：{plan.summary}", "", f"代码语言：{_language(plan)}"]
     for n, t in enumerate(plan.targets, 1):
-        load = "全量覆盖"
-        if t.load.mode == "incremental":
-            load = f"增量（增量键 `{t.load.key}`）"
-        lines += ["", f"### 目标表 {n}：`{t.name}`", ""]
-        if t.description:
-            lines += [t.description, ""]
-        lines.append(f"- 加载方式：{load}")
-        lines.append("- 来源：" + "、".join(f"`{s}`" for s in t.sources))
-        lines.append(f"- 做法：{t.logic}")
-        if t.primary_key:
-            lines.append("- 主键：" + "、".join(f"`{k}`" for k in t.primary_key))
-        lines.append("")
-        rows = [[f"`{c.name}`", f"`{c.source}`", c.description] for c in t.columns]
-        lines += _table(["列", "计算方式", "说明"], rows)
-        if t.quality_rules:
-            lines += ["", "数据质量规则："]
-            lines += [
-                f"- `{r.name}`：`{r.condition}`（不满足时{VIOLATION[r.on_violation]}）"
-                for r in t.quality_rules
-            ]
+        lines += _target_lines(n, t)
     if plan.assumptions:
         lines += ["", "### 需要确认的假设", ""]
         lines += [f"- {a}" for a in plan.assumptions]
-    if plan.references:
-        lines += ["", "### 依据的资料", ""]
-        for hit in plan.references:
-            heading = f" {hit.heading}" if hit.heading else ""
-            lines.append(
-                f"- [{hit.index}]《{hit.document_name}》{heading}（知识库「{hit.kb_name}」）"
-            )
+    lines += _reference_lines(plan.references)
     return "\n".join(lines)
+
+
+def plan_message_v2(plan: EtlPlanV2, answer: dict[str, Any] | None) -> str:
+    """A version 2 plan as a person reviews it (Markdown): the business part first,
+    then the technical one."""
+    brief = plan.brief
+    lines = ["## 业务说明"]
+    if brief is not None:
+        lines += ["", f"**目标**：{brief.goal}"]
+        if brief.grain and brief.grain.strip():
+            lines += ["", f"**粒度**：{brief.grain}"]
+        if brief.metrics:
+            rows = [
+                [m.id, m.name, m.unit or "", m.definition, _code(m.column) if m.column else ""]
+                for m in brief.metrics
+            ]
+            lines += ["", "### 指标", ""] + _table(["编号", "指标", "单位", "口径", "结果列"], rows)
+        if brief.dimensions:
+            rows = [
+                [
+                    d.id,
+                    d.name,
+                    d.definition,
+                    _code(d.column) if d.column else "",
+                    "、".join(d.examples or []),
+                ]
+                for d in brief.dimensions
+            ]
+            lines += ["", "### 维度", ""] + _table(["编号", "维度", "说明", "结果列", "例子"], rows)
+        if brief.filters:
+            lines += ["", "### 筛选", ""] + [f"- {f.text}" for f in brief.filters]
+        if brief.time_range is not None:
+            column = brief.time_range.column
+            by = f"（按 {_code(column)}）" if column else ""
+            lines += ["", "### 时间范围", "", brief.time_range.text + by]
+    if plan.questions:
+        lines += ["", "### 要回答的问题", ""]
+        for n, q in enumerate(plan.questions, 1):
+            names = {o.value: o.label for o in q.options or []}
+            lines.append(f"{n}. **{q.text}**（建议：{names.get(q.suggested, q.suggested)}）")
+            lines.append("   - 选项：" + "、".join(o.label or "" for o in q.options or []))
+            if q.why and q.why.strip():
+                lines.append(f"   - 为什么问：{q.why}")
+    if plan.rules:
+        lines += ["", "### 已按口径处理的规则", ""]
+        lines += [f"- {r.text}（{BASIS_NAMES.get(r.basis, r.basis)}）" for r in plan.rules]
+    if answer is not None:
+        lines += ["", "### 最后给你的答案", "", answer["text"]]
+    lines += ["", "## 技术方案", "", f"**方案**：{plan.summary}", ""]
+    lines.append(f"代码语言：{_language(plan)}")
+    for n, t in enumerate(plan.targets, 1):
+        lines += _target_lines(n, t)
+    lines += _reference_lines(plan.references)
+    return "\n".join(lines)
+
+
+def human_fields(plan: EtlPlanV2) -> list[dict[str, Any]]:
+    """The plan's questions as a human node's questions (flow-apps.md, 确认模式的题
+    ``fields``): ``why`` and ``affects`` only when there is something in them."""
+    fields = []
+    for q in plan.questions:
+        field: dict[str, Any] = {
+            "key": q.id,
+            "label": q.text,
+            "type": "select",
+            "required": True,
+            "choices": [{"value": o.value, "label": o.label} for o in q.options or []],
+            "suggested": q.suggested,
+        }
+        if q.why and q.why.strip():
+            field["why"] = q.why
+        if q.affects:
+            field["affects"] = list(q.affects)
+        fields.append(field)
+    return fields
+
+
+def _plan_summary(plan: EtlPlan) -> str:
+    """The plan in a few words, as the run says it."""
+    if isinstance(plan, EtlPlanV2):
+        metrics = len(plan.brief.metrics) if plan.brief is not None else 0
+        summary = f"{len(plan.targets)} 张目标表、{metrics} 个指标"
+        if plan.questions:
+            return summary + f"、{len(plan.questions)} 个问题待回答"
+        return summary + "，没有要回答的问题"
+    summary = f"{len(plan.targets)} 张目标表"
+    if plan.assumptions:
+        summary += f"、{len(plan.assumptions)} 条假设待确认"
+    return summary
+
+
+def _no_plan() -> dict[str, Any]:
+    """The outputs a failed check (or version 1, for those of version 2) leaves empty."""
+    return {
+        "references": [],
+        "summary": "",
+        "brief": None,
+        "questions": [],
+        "answer": None,
+        "uncited": [],
+        "cleaned": [],
+    }
 
 
 async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
@@ -325,12 +491,23 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     # The first time the model sees what the data really holds before its
     # assumptions are taken at their word (as in the code app).
     trust = (state.get("branch") or {}).get(node["id"]) == "retry"
+    v2 = node.get("format") == 2
+    # Version 2 remembers every answer people gave, across rounds: the human node's
+    # record holds only its latest one.
+    memory = _answered(node, state, get) if v2 else {}
     raw: Any = None
     plan: EtlPlan | None = None
+    cleaned: list[str] = []
     not_json = False
     try:
         raw = llm.parse_json(refs.render(node["reply"], get))
-        plan = validate_plan(raw, sources, known_values(profile), trust, _hits(node, get))
+        known, hits = known_values(profile), _hits(node, get)
+        if v2:
+            plan, cleaned = validate_plan_v2(
+                raw, sources, known, seen_values(profile), trust, hits, memory
+            )
+        else:
+            plan = validate_plan(raw, sources, known, trust, hits)
         problems: list[str] = []
     except PlanError as exc:
         problems = exc.problems
@@ -338,6 +515,9 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         problems = [f"回复不是要求的 JSON：{exc}"]
         not_json = True
     failures = _failures(state, node, plan is not None, "方案", problems)
+    private: dict[str, Any] = {"failures": failures}
+    if v2:
+        private["answered"] = memory
     if plan is None:
         text = "方案没有通过平台校验，带着问题让模型重写：\n" + "\n".join(
             f"- {p}" for p in problems
@@ -350,34 +530,43 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             "message": text,
             "sources": [],
             "targets": [],
-        }
+        } | _no_plan()
         return Outcome(
             outputs,
             "retry",
             messages=[{"role": "assistant", "content": said}],
-            private={"failures": failures},
+            private=private,
         )
     if language in ("pyspark", "sql"):
         plan.language = language  # type: ignore[assignment]
-    message = plan_message(plan)
     used = sorted({s for t in plan.targets for s in t.sources if s in sources})
+    summary = _plan_summary(plan)
+    dumped = plan.model_dump()
     outputs = {
         "ok": True,
-        "plan": plan.model_dump(),
+        "plan": dumped,
         "problems": "",
-        "message": message,
+        "message": plan_message(plan),
         "sources": used,
         "targets": [t.name for t in plan.targets],
-    }
+    } | _no_plan()
+    outputs |= {"references": dumped["references"], "summary": summary}
+    if isinstance(plan, EtlPlanV2):
+        answer = answer_output(plan)
+        outputs |= {
+            "message": plan_message_v2(plan, answer),
+            "brief": dumped["brief"],
+            "questions": human_fields(plan),
+            "answer": answer,
+            "uncited": uncited(plan),
+            "cleaned": cleaned,
+        }
     # The whole plan is in ``message``, for the person who reviews it.
-    said = f"方案整理好了：{len(plan.targets)} 张目标表"
-    if plan.assumptions:
-        said += f"、{len(plan.assumptions)} 条假设待确认"
     return Outcome(
         outputs,
         "ok",
-        messages=[{"role": "assistant", "content": said}],
-        private={"failures": 0},
+        messages=[{"role": "assistant", "content": f"方案整理好了：{summary}"}],
+        private=private,
     )
 
 
@@ -687,7 +876,21 @@ TYPES: dict[str, NodeType] = {
             check_plan_check,
             run_plan_check,
             _fixed("ok", "retry"),
-            _fixed("ok", "plan", "problems", "message", "sources", "targets"),
+            _fixed(
+                "ok",
+                "plan",
+                "problems",
+                "message",
+                "sources",
+                "targets",
+                "references",
+                "summary",
+                "brief",
+                "questions",
+                "answer",
+                "uncited",
+                "cleaned",
+            ),
             outputs=(
                 ("ok", "是否通过"),
                 ("plan", "校验后的方案（JSON）"),
@@ -695,6 +898,13 @@ TYPES: dict[str, NodeType] = {
                 ("message", "给人看的方案"),
                 ("sources", "方案用到的源表"),
                 ("targets", "目标表名"),
+                ("references", "方案引用了的资料"),
+                ("summary", "一句话总结"),
+                ("brief", "业务说明（第 2 版方案）"),
+                ("questions", "要人回答的题，可以整段给人工节点的 fields（第 2 版方案）"),
+                ("answer", "答案设计（第 2 版方案）"),
+                ("uncited", "没找到口径依据的指标、维度和筛选（第 2 版方案）"),
+                ("cleaned", "平台自动整理过的地方（第 2 版方案）"),
             ),
             defaults={"reply": "", "profile": "", "hits": [], "language": "", "max_attempts": 3},
             error_handling=True,

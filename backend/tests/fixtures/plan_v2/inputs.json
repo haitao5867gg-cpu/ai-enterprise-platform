@@ -1,0 +1,1698 @@
+{
+ "requests": {
+  "1": {
+   "request": "按月、按城市统计有效订单的销售额、订单数、下单客户数和客单价，再按会员等级拆开。口径按公司数据口径执行。",
+   "glossary": [
+    [
+     "05-客户数与复购#1",
+     1,
+     1.0
+    ],
+    [
+     "02-销售额与客单价#0",
+     2,
+     0.9428
+    ],
+    [
+     "03-城市与会员等级#2",
+     3,
+     0.8608
+    ],
+    [
+     "02-销售额与客单价#2",
+     4,
+     0.8554
+    ],
+    [
+     "03-城市与会员等级#1",
+     5,
+     0.8177
+    ],
+    [
+     "05-客户数与复购#0",
+     6,
+     0.8139
+    ],
+    [
+     "03-城市与会员等级#4",
+     7,
+     0.8123
+    ],
+    [
+     "02-销售额与客单价#3",
+     8,
+     0.7739
+    ],
+    [
+     "01-有效订单定义#0",
+     9,
+     0.7723
+    ],
+    [
+     "03-城市与会员等级#0",
+     10,
+     0.7229
+    ],
+    [
+     "05-客户数与复购#5",
+     11,
+     0.6566
+    ],
+    [
+     "01-有效订单定义#5",
+     12,
+     0.6293
+    ]
+   ],
+   "standards": [
+    [
+     "02-主键与字段#2",
+     13,
+     1.0
+    ],
+    [
+     "02-主键与字段#0",
+     14,
+     0.8489
+    ],
+    [
+     "05-PySpark编码规范#1",
+     15,
+     0.6382
+    ],
+    [
+     "03-数据质量规则#0",
+     16,
+     0.6114
+    ],
+    [
+     "03-数据质量规则#3",
+     17,
+     0.6049
+    ],
+    [
+     "02-主键与字段#3",
+     18,
+     0.5991
+    ],
+    [
+     "03-数据质量规则#2",
+     19,
+     0.5895
+    ],
+    [
+     "02-主键与字段#1",
+     20,
+     0.554
+    ],
+    [
+     "03-数据质量规则#4",
+     21,
+     0.5399
+    ],
+    [
+     "04-加载策略#0",
+     22,
+     0.5312
+    ],
+    [
+     "04-加载策略#1",
+     23,
+     0.4963
+    ],
+    [
+     "05-PySpark编码规范#0",
+     24,
+     0.4905
+    ],
+    [
+     "04-加载策略#2",
+     25,
+     0.4838
+    ],
+    [
+     "04-加载策略#3",
+     26,
+     0.4624
+    ],
+    [
+     "01-分层与命名#3",
+     27,
+     0.4462
+    ],
+    [
+     "01-分层与命名#0",
+     28,
+     0.4313
+    ],
+    [
+     "03-数据质量规则#1",
+     29,
+     0.4295
+    ],
+    [
+     "01-分层与命名#1",
+     30,
+     0.4204
+    ],
+    [
+     "05-PySpark编码规范#5",
+     31,
+     0.3987
+    ],
+    [
+     "05-PySpark编码规范#2",
+     32,
+     0.3982
+    ]
+   ]
+  },
+  "2": {
+   "request": "统计每个品类每月的销售额和毛利率，只看线上渠道。",
+   "glossary": [
+    [
+     "06-毛利#0",
+     1,
+     1.0
+    ],
+    [
+     "06-毛利#1",
+     2,
+     0.7203
+    ],
+    [
+     "06-毛利#4",
+     3,
+     0.5991
+    ],
+    [
+     "06-毛利#3",
+     4,
+     0.5748
+    ],
+    [
+     "06-毛利#2",
+     5,
+     0.414
+    ],
+    [
+     "03-城市与会员等级#3",
+     6,
+     0.3985
+    ],
+    [
+     "01-有效订单定义#2",
+     7,
+     0.351
+    ],
+    [
+     "02-销售额与客单价#1",
+     8,
+     0.2476
+    ],
+    [
+     "04-时间口径#1",
+     9,
+     0.246
+    ],
+    [
+     "01-有效订单定义#5",
+     10,
+     0.2389
+    ],
+    [
+     "03-城市与会员等级#0",
+     11,
+     0.1824
+    ],
+    [
+     "02-销售额与客单价#5",
+     12,
+     0.1744
+    ]
+   ],
+   "standards": [
+    [
+     "02-主键与字段#2",
+     13,
+     1.0
+    ],
+    [
+     "02-主键与字段#0",
+     14,
+     0.8489
+    ],
+    [
+     "05-PySpark编码规范#1",
+     15,
+     0.6382
+    ],
+    [
+     "03-数据质量规则#0",
+     16,
+     0.6114
+    ],
+    [
+     "03-数据质量规则#3",
+     17,
+     0.6049
+    ],
+    [
+     "02-主键与字段#3",
+     18,
+     0.5991
+    ],
+    [
+     "03-数据质量规则#2",
+     19,
+     0.5895
+    ],
+    [
+     "02-主键与字段#1",
+     20,
+     0.554
+    ],
+    [
+     "03-数据质量规则#4",
+     21,
+     0.5399
+    ],
+    [
+     "04-加载策略#0",
+     22,
+     0.5312
+    ],
+    [
+     "04-加载策略#1",
+     23,
+     0.4963
+    ],
+    [
+     "05-PySpark编码规范#0",
+     24,
+     0.4905
+    ],
+    [
+     "04-加载策略#2",
+     25,
+     0.4838
+    ],
+    [
+     "04-加载策略#3",
+     26,
+     0.4624
+    ],
+    [
+     "01-分层与命名#3",
+     27,
+     0.4462
+    ],
+    [
+     "01-分层与命名#0",
+     28,
+     0.4313
+    ],
+    [
+     "03-数据质量规则#1",
+     29,
+     0.4295
+    ],
+    [
+     "01-分层与命名#1",
+     30,
+     0.4204
+    ],
+    [
+     "05-PySpark编码规范#5",
+     31,
+     0.3987
+    ],
+    [
+     "05-PySpark编码规范#2",
+     32,
+     0.3982
+    ]
+   ]
+  },
+  "3": {
+   "request": "统计每月新客户数和复购率，按城市拆开。",
+   "glossary": [
+    [
+     "05-客户数与复购#3",
+     1,
+     1.0
+    ],
+    [
+     "05-客户数与复购#1",
+     2,
+     0.8482
+    ],
+    [
+     "03-城市与会员等级#1",
+     3,
+     0.8308
+    ],
+    [
+     "04-时间口径#1",
+     4,
+     0.8146
+    ],
+    [
+     "05-客户数与复购#0",
+     5,
+     0.7719
+    ],
+    [
+     "03-城市与会员等级#0",
+     6,
+     0.5601
+    ],
+    [
+     "03-城市与会员等级#2",
+     7,
+     0.5502
+    ],
+    [
+     "03-城市与会员等级#4",
+     8,
+     0.5385
+    ],
+    [
+     "04-时间口径#0",
+     9,
+     0.4616
+    ],
+    [
+     "04-时间口径#2",
+     10,
+     0.4419
+    ],
+    [
+     "05-客户数与复购#4",
+     11,
+     0.4048
+    ],
+    [
+     "02-销售额与客单价#1",
+     12,
+     0.2587
+    ]
+   ],
+   "standards": [
+    [
+     "02-主键与字段#2",
+     13,
+     1.0
+    ],
+    [
+     "02-主键与字段#0",
+     14,
+     0.8489
+    ],
+    [
+     "05-PySpark编码规范#1",
+     15,
+     0.6382
+    ],
+    [
+     "03-数据质量规则#0",
+     16,
+     0.6114
+    ],
+    [
+     "03-数据质量规则#3",
+     17,
+     0.6049
+    ],
+    [
+     "02-主键与字段#3",
+     18,
+     0.5991
+    ],
+    [
+     "03-数据质量规则#2",
+     19,
+     0.5895
+    ],
+    [
+     "02-主键与字段#1",
+     20,
+     0.554
+    ],
+    [
+     "03-数据质量规则#4",
+     21,
+     0.5399
+    ],
+    [
+     "04-加载策略#0",
+     22,
+     0.5312
+    ],
+    [
+     "04-加载策略#1",
+     23,
+     0.4963
+    ],
+    [
+     "05-PySpark编码规范#0",
+     24,
+     0.4905
+    ],
+    [
+     "04-加载策略#2",
+     25,
+     0.4838
+    ],
+    [
+     "04-加载策略#3",
+     26,
+     0.4624
+    ],
+    [
+     "01-分层与命名#3",
+     27,
+     0.4462
+    ],
+    [
+     "01-分层与命名#0",
+     28,
+     0.4313
+    ],
+    [
+     "03-数据质量规则#1",
+     29,
+     0.4295
+    ],
+    [
+     "01-分层与命名#1",
+     30,
+     0.4204
+    ],
+    [
+     "05-PySpark编码规范#5",
+     31,
+     0.3987
+    ],
+    [
+     "05-PySpark编码规范#2",
+     32,
+     0.3982
+    ]
+   ]
+  }
+ },
+ "profile": [
+  {
+   "name": "retail.customers",
+   "columns": [
+    {
+     "name": "customer_id",
+     "data_type": "bigint",
+     "nullable": false,
+     "primary_key": true
+    },
+    {
+     "name": "name",
+     "data_type": "varchar(100)",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "city",
+     "data_type": "varchar(50)",
+     "nullable": true,
+     "primary_key": false
+    },
+    {
+     "name": "member_level",
+     "data_type": "varchar(20)",
+     "nullable": true,
+     "primary_key": false
+    },
+    {
+     "name": "registered_at",
+     "data_type": "datetime",
+     "nullable": false,
+     "primary_key": false
+    }
+   ],
+   "foreign_keys": [],
+   "estimated_row_count": 1200,
+   "sample_row_count": 1000,
+   "sample_limit": 1000,
+   "column_stats": [
+    {
+     "name": "customer_id",
+     "null_fraction": 0.0,
+     "distinct_count": 1000
+    },
+    {
+     "name": "name",
+     "null_fraction": 0.0,
+     "distinct_count": 1000
+    },
+    {
+     "name": "city",
+     "null_fraction": 0.02,
+     "distinct_count": 11,
+     "top_values": [
+      {
+       "value": "北京",
+       "count": 110
+      },
+      {
+       "value": "南京",
+       "count": 110
+      },
+      {
+       "value": "广州",
+       "count": 110
+      },
+      {
+       "value": "成都",
+       "count": 110
+      },
+      {
+       "value": "杭州",
+       "count": 110
+      },
+      {
+       "value": "深圳",
+       "count": 110
+      },
+      {
+       "value": "上海",
+       "count": 105
+      },
+      {
+       "value": "苏州",
+       "count": 105
+      },
+      {
+       "value": " 上海 ",
+       "count": 50
+      },
+      {
+       "value": "上海市",
+       "count": 50
+      },
+      {
+       "value": "",
+       "count": 10
+      }
+     ]
+    },
+    {
+     "name": "member_level",
+     "null_fraction": 0.02,
+     "distinct_count": 5,
+     "top_values": [
+      {
+       "value": "gold",
+       "count": 310
+      },
+      {
+       "value": "normal",
+       "count": 310
+      },
+      {
+       "value": "silver",
+       "count": 310
+      },
+      {
+       "value": "SILVER",
+       "count": 30
+      },
+      {
+       "value": "Gold",
+       "count": 20
+      }
+     ]
+    },
+    {
+     "name": "registered_at",
+     "null_fraction": 0.0,
+     "distinct_count": 1000
+    }
+   ],
+   "sample": [
+    {
+     "customer_id": 1,
+     "name": "测试账号1",
+     "city": null,
+     "member_level": null,
+     "registered_at": "2024-01-08T00:02:17"
+    },
+    {
+     "customer_id": 2,
+     "name": "测试账号2",
+     "city": null,
+     "member_level": null,
+     "registered_at": "2024-01-15T00:04:34"
+    },
+    {
+     "customer_id": 3,
+     "name": "测试账号3",
+     "city": "",
+     "member_level": "SILVER",
+     "registered_at": "2024-01-22T00:06:51"
+    },
+    {
+     "customer_id": 4,
+     "name": "测试账号4",
+     "city": "上海市",
+     "member_level": "Gold",
+     "registered_at": "2024-01-29T00:09:08"
+    },
+    {
+     "customer_id": 5,
+     "name": "测试账号5",
+     "city": "上海市",
+     "member_level": "SILVER",
+     "registered_at": "2024-02-05T00:11:25"
+    }
+   ]
+  },
+  {
+   "name": "retail.order_items",
+   "columns": [
+    {
+     "name": "order_id",
+     "data_type": "bigint",
+     "nullable": false,
+     "primary_key": true
+    },
+    {
+     "name": "line_no",
+     "data_type": "int",
+     "nullable": false,
+     "primary_key": true
+    },
+    {
+     "name": "product_id",
+     "data_type": "bigint",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "quantity",
+     "data_type": "int",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "unit_price",
+     "data_type": "decimal(12,2)",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "discount_rate",
+     "data_type": "decimal(4,3)",
+     "nullable": true,
+     "primary_key": false
+    }
+   ],
+   "foreign_keys": [
+    {
+     "name": "order_items_ibfk_1",
+     "columns": [
+      "order_id"
+     ],
+     "referenced_schema": "retail",
+     "referenced_table": "orders",
+     "referenced_columns": [
+      "order_id"
+     ]
+    },
+    {
+     "name": "order_items_ibfk_2",
+     "columns": [
+      "product_id"
+     ],
+     "referenced_schema": "retail",
+     "referenced_table": "products",
+     "referenced_columns": [
+      "product_id"
+     ]
+    }
+   ],
+   "estimated_row_count": 36000,
+   "sample_row_count": 1000,
+   "sample_limit": 1000,
+   "column_stats": [
+    {
+     "name": "order_id",
+     "null_fraction": 0.0,
+     "distinct_count": 418
+    },
+    {
+     "name": "line_no",
+     "null_fraction": 0.0,
+     "distinct_count": 4,
+     "top_values": [
+      {
+       "value": "1",
+       "count": 418
+      },
+      {
+       "value": "2",
+       "count": 333
+      },
+      {
+       "value": "3",
+       "count": 166
+      },
+      {
+       "value": "4",
+       "count": 83
+      }
+     ]
+    },
+    {
+     "name": "product_id",
+     "null_fraction": 0.0,
+     "distinct_count": 150
+    },
+    {
+     "name": "quantity",
+     "null_fraction": 0.0,
+     "distinct_count": 7,
+     "top_values": [
+      {
+       "value": "2",
+       "count": 200
+      },
+      {
+       "value": "3",
+       "count": 200
+      },
+      {
+       "value": "4",
+       "count": 200
+      },
+      {
+       "value": "5",
+       "count": 200
+      },
+      {
+       "value": "1",
+       "count": 190
+      },
+      {
+       "value": "-1",
+       "count": 5
+      },
+      {
+       "value": "0",
+       "count": 5
+      }
+     ]
+    },
+    {
+     "name": "unit_price",
+     "null_fraction": 0.0,
+     "distinct_count": 774
+    },
+    {
+     "name": "discount_rate",
+     "null_fraction": 0.3,
+     "distinct_count": 280
+    }
+   ],
+   "sample": [
+    {
+     "order_id": 1,
+     "line_no": 1,
+     "product_id": 20,
+     "quantity": 2,
+     "unit_price": 1459.46,
+     "discount_rate": null
+    },
+    {
+     "order_id": 2,
+     "line_no": 1,
+     "product_id": 27,
+     "quantity": 3,
+     "unit_price": 163.88,
+     "discount_rate": null
+    },
+    {
+     "order_id": 2,
+     "line_no": 2,
+     "product_id": 40,
+     "quantity": 4,
+     "unit_price": 1123.07,
+     "discount_rate": null
+    },
+    {
+     "order_id": 3,
+     "line_no": 1,
+     "product_id": 34,
+     "quantity": 5,
+     "unit_price": 688.51,
+     "discount_rate": 0.068
+    },
+    {
+     "order_id": 3,
+     "line_no": 2,
+     "product_id": 47,
+     "quantity": 1,
+     "unit_price": 1673.83,
+     "discount_rate": 0.085
+    }
+   ]
+  },
+  {
+   "name": "retail.orders",
+   "columns": [
+    {
+     "name": "order_id",
+     "data_type": "bigint",
+     "nullable": false,
+     "primary_key": true
+    },
+    {
+     "name": "customer_id",
+     "data_type": "bigint",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "channel",
+     "data_type": "varchar(20)",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "status",
+     "data_type": "varchar(20)",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "ordered_at",
+     "data_type": "datetime",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "shipping_fee",
+     "data_type": "decimal(10,2)",
+     "nullable": false,
+     "primary_key": false
+    }
+   ],
+   "foreign_keys": [
+    {
+     "name": "orders_ibfk_1",
+     "columns": [
+      "customer_id"
+     ],
+     "referenced_schema": "retail",
+     "referenced_table": "customers",
+     "referenced_columns": [
+      "customer_id"
+     ]
+    }
+   ],
+   "estimated_row_count": 15000,
+   "sample_row_count": 1000,
+   "sample_limit": 1000,
+   "column_stats": [
+    {
+     "name": "order_id",
+     "null_fraction": 0.0,
+     "distinct_count": 1000
+    },
+    {
+     "name": "customer_id",
+     "null_fraction": 0.0,
+     "distinct_count": 1000
+    },
+    {
+     "name": "channel",
+     "null_fraction": 0.0,
+     "distinct_count": 3,
+     "top_values": [
+      {
+       "value": "online",
+       "count": 334
+      },
+      {
+       "value": "mini_program",
+       "count": 333
+      },
+      {
+       "value": "store",
+       "count": 333
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "null_fraction": 0.0,
+     "distinct_count": 7,
+     "top_values": [
+      {
+       "value": "paid",
+       "count": 300
+      },
+      {
+       "value": "shipped",
+       "count": 280
+      },
+      {
+       "value": "completed",
+       "count": 270
+      },
+      {
+       "value": "cancelled",
+       "count": 80
+      },
+      {
+       "value": "refunded",
+       "count": 50
+      },
+      {
+       "value": " Paid ",
+       "count": 10
+      },
+      {
+       "value": "COMPLETED",
+       "count": 10
+      }
+     ]
+    },
+    {
+     "name": "ordered_at",
+     "null_fraction": 0.0,
+     "distinct_count": 1000
+    },
+    {
+     "name": "shipping_fee",
+     "null_fraction": 0.0,
+     "distinct_count": 5,
+     "top_values": [
+      {
+       "value": "0.00",
+       "count": 200
+      },
+      {
+       "value": "11.00",
+       "count": 200
+      },
+      {
+       "value": "5.00",
+       "count": 200
+      },
+      {
+       "value": "7.00",
+       "count": 200
+      },
+      {
+       "value": "9.00",
+       "count": 200
+      }
+     ]
+    }
+   ],
+   "sample": [
+    {
+     "order_id": 1,
+     "customer_id": 1,
+     "channel": "online",
+     "status": "paid",
+     "ordered_at": "2025-11-01T00:02:17",
+     "shipping_fee": 7.0
+    },
+    {
+     "order_id": 2,
+     "customer_id": 2,
+     "channel": "store",
+     "status": "paid",
+     "ordered_at": "2025-11-01T00:04:34",
+     "shipping_fee": 9.0
+    },
+    {
+     "order_id": 3,
+     "customer_id": 3,
+     "channel": "mini_program",
+     "status": "paid",
+     "ordered_at": "2025-11-01T00:06:51",
+     "shipping_fee": 11.0
+    },
+    {
+     "order_id": 4,
+     "customer_id": 4,
+     "channel": "online",
+     "status": "paid",
+     "ordered_at": "2025-11-01T00:09:08",
+     "shipping_fee": 5.0
+    },
+    {
+     "order_id": 5,
+     "customer_id": 5,
+     "channel": "store",
+     "status": "paid",
+     "ordered_at": "2025-11-01T00:11:25",
+     "shipping_fee": 0.0
+    }
+   ]
+  },
+  {
+   "name": "retail.products",
+   "columns": [
+    {
+     "name": "product_id",
+     "data_type": "bigint",
+     "nullable": false,
+     "primary_key": true
+    },
+    {
+     "name": "name",
+     "data_type": "varchar(100)",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "category",
+     "data_type": "varchar(50)",
+     "nullable": true,
+     "primary_key": false
+    },
+    {
+     "name": "list_price",
+     "data_type": "decimal(12,2)",
+     "nullable": false,
+     "primary_key": false
+    },
+    {
+     "name": "cost_price",
+     "data_type": "decimal(12,2)",
+     "nullable": false,
+     "primary_key": false
+    }
+   ],
+   "foreign_keys": [],
+   "estimated_row_count": 150,
+   "sample_row_count": 150,
+   "sample_limit": 1000,
+   "column_stats": [
+    {
+     "name": "product_id",
+     "null_fraction": 0.0,
+     "distinct_count": 150
+    },
+    {
+     "name": "name",
+     "null_fraction": 0.0,
+     "distinct_count": 150
+    },
+    {
+     "name": "category",
+     "null_fraction": 0.03333333333333333,
+     "distinct_count": 5,
+     "top_values": [
+      {
+       "value": "个护",
+       "count": 30
+      },
+      {
+       "value": "家电",
+       "count": 30
+      },
+      {
+       "value": "数码",
+       "count": 30
+      },
+      {
+       "value": "食品",
+       "count": 30
+      },
+      {
+       "value": "家居",
+       "count": 25
+      }
+     ]
+    },
+    {
+     "name": "list_price",
+     "null_fraction": 0.0,
+     "distinct_count": 150
+    },
+    {
+     "name": "cost_price",
+     "null_fraction": 0.0,
+     "distinct_count": 150
+    }
+   ],
+   "sample": [
+    {
+     "product_id": 1,
+     "name": "商品001",
+     "category": "家电",
+     "list_price": 99.19,
+     "cost_price": 55.55
+    },
+    {
+     "product_id": 2,
+     "name": "商品002",
+     "category": "数码",
+     "list_price": 178.38,
+     "cost_price": 101.68
+    },
+    {
+     "product_id": 3,
+     "name": "商品003",
+     "category": "个护",
+     "list_price": 257.57,
+     "cost_price": 149.39
+    },
+    {
+     "product_id": 4,
+     "name": "商品004",
+     "category": "食品",
+     "list_price": 336.76,
+     "cost_price": 198.69
+    },
+    {
+     "product_id": 5,
+     "name": "商品005",
+     "category": "家居",
+     "list_price": 415.95,
+     "cost_price": 249.57
+    }
+   ]
+  }
+ ],
+ "chunks": {
+  "05-客户数与复购#1": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-05-客户数与复购",
+   "document_name": "05-客户数与复购.md",
+   "chunk_id": "05-客户数与复购#1",
+   "position": 1,
+   "text": "**下单客户数**是统计周期内至少有一笔有效订单的客户数，按 `customer_id` 去重计数：`count(DISTINCT customer_id)`。\n\n- 只数有效订单的客户，取消、退款订单和测试账号都不算。\n- 按城市、会员等级拆分时，客户归入其档案里的城市和等级（见《城市与会员等级》），一个客户在一个月里只属于一个城市。",
+   "heading": "客户数与复购 > 下单客户数",
+   "page": null
+  },
+  "02-销售额与客单价#0": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-02-销售额与客单价",
+   "document_name": "02-销售额与客单价.md",
+   "chunk_id": "02-销售额与客单价#0",
+   "position": 0,
+   "text": "- 适用范围：零售业务经营报表、看板和专题分析中的销售额、订单数、客单价\n- 版本：v3.0（2026-08-20 更新）\n- 维护部门：经营分析部\n- 相关口径：《有效订单定义》\n- 要点：销售额 = 有效明细行 `quantity × unit_price × (1 − coalesce(discount_rate, 0))` 之和，每行先保留两位小数，不含运费；订单数按 `order_id` 去重计数；客单价 = 销售额 ÷ 订单数，订单数为 0 时为空。",
+   "heading": "销售额与客单价",
+   "page": null
+  },
+  "03-城市与会员等级#2": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-03-城市与会员等级",
+   "document_name": "03-城市与会员等级.md",
+   "chunk_id": "03-城市与会员等级#2",
+   "position": 2,
+   "text": "会员等级取 `customers.member_level`，统一成小写英文代码：\n\n| 代码 | 中文名 |\n| --- | --- |\n| `normal` | 普通会员 |\n| `silver` | 银卡会员 |\n| `gold` | 金卡会员 |\n\n源数据里有 `Gold`、`SILVER` 这类大小写不一的写法，先去空格再转小写。等级为空的客户按普通会员 `normal` 统计。\n\n```sql\ncoalesce(nullif(lower(trim(c.member_level)), ''), 'normal')\n```",
+   "heading": "城市与会员等级 > 会员等级",
+   "page": null
+  },
+  "02-销售额与客单价#2": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-02-销售额与客单价",
+   "document_name": "02-销售额与客单价.md",
+   "chunk_id": "02-销售额与客单价#2",
+   "position": 2,
+   "text": "**订单数**是有效订单的个数，按 `order_id` 去重计数。一笔订单有多行明细时只算一单。",
+   "heading": "销售额与客单价 > 订单数",
+   "page": null
+  },
+  "03-城市与会员等级#1": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-03-城市与会员等级",
+   "document_name": "03-城市与会员等级.md",
+   "chunk_id": "03-城市与会员等级#1",
+   "position": 1,
+   "text": "订单表没有城市，统计用的城市是**下单客户的注册城市** `customers.city`，按客户当前档案统计，不追溯历史变更。\n\n源数据里城市的写法不统一，统计前按下面的顺序归一：\n\n1. 去掉首尾空格：「 上海 」→「上海」。\n2. 去掉末尾的「市」字：「上海市」→「上海」。\n3. 为空（NULL 或空字符串）的归为「未知」。\n\n```sql\ncoalesce(nullif(regexp_replace(trim(c.city), '市$', ''), ''), '未知')\n```\n\n归一后只有 8 个城市和「未知」：上海、北京、杭州、南京、苏州、深圳、广州、成都。报表里「未知」单独列出，不要丢掉，否则各城市加总对不上全国数。",
+   "heading": "城市与会员等级 > 城市",
+   "page": null
+  },
+  "05-客户数与复购#0": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-05-客户数与复购",
+   "document_name": "05-客户数与复购.md",
+   "chunk_id": "05-客户数与复购#0",
+   "position": 0,
+   "text": "- 适用范围：零售业务的客户类指标：下单客户数、复购客户数、复购率、新客户数\n- 版本：v1.3（2026-07-18 更新）\n- 维护部门：经营分析部\n- 相关口径：《有效订单定义》《时间口径》\n- 要点：下单客户数 = 有效订单的 `count(DISTINCT customer_id)`，客户按档案里的城市和会员等级归属；复购客户是当月有效订单不少于 2 笔的客户。",
+   "heading": "客户数与复购",
+   "page": null
+  },
+  "03-城市与会员等级#4": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-03-城市与会员等级",
+   "document_name": "03-城市与会员等级.md",
+   "chunk_id": "03-城市与会员等级#4",
+   "position": 4,
+   "text": "- 直接按 `city` 原值分组：同一个城市会拆成「上海」「上海市」「 上海 」三行。\n- 把城市为空的客户过滤掉：这部分订单的销售额就从报表里消失了。\n- 会员等级区分大小写分组：`gold` 和 `Gold` 被当成两个等级。",
+   "heading": "城市与会员等级 > 常见错误",
+   "page": null
+  },
+  "02-销售额与客单价#3": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-02-销售额与客单价",
+   "document_name": "02-销售额与客单价.md",
+   "chunk_id": "02-销售额与客单价#3",
+   "position": 3,
+   "text": "**客单价** = 销售额 ÷ 订单数，在汇总之后计算，四舍五入保留两位小数。订单数为 0 时客单价为空（null），不要写成 0。",
+   "heading": "销售额与客单价 > 客单价",
+   "page": null
+  },
+  "01-有效订单定义#0": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-01-有效订单定义",
+   "document_name": "01-有效订单定义.md",
+   "chunk_id": "01-有效订单定义#0",
+   "position": 0,
+   "text": "- 适用范围：零售业务所有以订单为基础的指标（销售额、订单数、下单客户数、客单价、复购、毛利）\n- 版本：v2.1（2026-09-15 更新）\n- 维护部门：经营分析部\n- 数据来源：零售交易库 retail 的 orders（订单）、order_items（订单明细）、customers（客户）\n- 要点：有效订单 = 状态 `lower(trim(orders.status))` 是 `paid`、`shipped`、`completed` 之一，且下单客户不是测试账号（`customers.name` 以「测试」开头）；数量小于等于 0 的明细行不计入金额和件数。",
+   "heading": "有效订单定义",
+   "page": null
+  },
+  "03-城市与会员等级#0": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-03-城市与会员等级",
+   "document_name": "03-城市与会员等级.md",
+   "chunk_id": "03-城市与会员等级#0",
+   "position": 0,
+   "text": "- 适用范围：按城市、会员等级、渠道拆分的所有零售指标\n- 版本：v1.4（2026-07-01 更新）\n- 维护部门：经营分析部\n- 要点：城市取下单客户的注册城市 `customers.city`，去首尾空格、去末尾「市」字，空的归为「未知」；会员等级取 `customers.member_level`，去空格转小写，空的按 `normal`；「线上渠道」指 `online` 和 `mini_program`。",
+   "heading": "城市与会员等级",
+   "page": null
+  },
+  "05-客户数与复购#5": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-05-客户数与复购",
+   "document_name": "05-客户数与复购.md",
+   "chunk_id": "05-客户数与复购#5",
+   "position": 5,
+   "text": "- 用订单数代替客户数：同一个客户下多单会被重复计算。\n- 把各月的下单客户数相加当作全年客户数：跨月重复购买的客户会被重复计算，全年要重新去重。",
+   "heading": "客户数与复购 > 常见错误",
+   "page": null
+  },
+  "01-有效订单定义#5": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-01-有效订单定义",
+   "document_name": "01-有效订单定义.md",
+   "chunk_id": "01-有效订单定义#5",
+   "position": 5,
+   "text": "- 只写 `status = 'paid'`：漏掉了已发货、已完成的订单，也漏掉 ` Paid `、`COMPLETED` 这类大小写和空格不一致的写法，销售额会少算一大半。\n- 忘记排除测试账号：测试账号每天都有下单，会让订单数和客户数虚高。\n- 把 `refunded` 当有效订单：退款订单的钱已经退回，不能算销售额。",
+   "heading": "有效订单定义 > 常见错误",
+   "page": null
+  },
+  "02-主键与字段#2": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-02-主键与字段",
+   "document_name": "02-主键与字段.md",
+   "chunk_id": "02-主键与字段#2",
+   "position": 2,
+   "text": "| 含义 | 类型 | 例子 |\n| --- | --- | --- |\n| 金额（含客单价等金额的商） | `decimal(18,2)` | `sales_amount`、`gross_profit`、`avg_order_value` |\n| 比率 | `decimal(10,4)` | `repurchase_rate`、`gross_margin` |\n| 计数 | `bigint` | `order_count`、`customer_count` |\n| 数量 | `int` | `quantity` |\n| ID | `bigint` | `order_id`、`customer_id` |\n| 日期 | `date` | `stat_date` |\n| 时间 | `timestamp` | `ordered_at` |\n| 月份 | `string`，`yyyy-MM` | `stat_month` |\n| 编码和名称 | `string` | `city`、`member_level`、`channel` |\n\n- 金额、比率必须显式转换类型，例如 `CAST(x AS DECIMAL(18,2))`，PySpark 里写 `.cast(\"decimal(18,2)\")`，不要留成 double。\n- 除法结果（客单价、比率）分母为 0 时给空值，不要给 0。",
+   "heading": "主键与字段 > 字段类型",
+   "page": null
+  },
+  "02-主键与字段#0": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-02-主键与字段",
+   "document_name": "02-主键与字段.md",
+   "chunk_id": "02-主键与字段#0",
+   "position": 0,
+   "text": "- 适用范围：dwd、dws 层所有表\n- 版本：v1.6（2026-08-12 更新）\n- 维护部门：数据平台组\n- 要点：每张表都声明主键（明细表用来源主键，汇总表用全部维度列）；金额 `decimal(18,2)`、比率 `decimal(10,4)`、计数 `bigint`，金额和比率要显式转换类型，分母为 0 时给空值。",
+   "heading": "主键与字段",
+   "page": null
+  },
+  "05-PySpark编码规范#1": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-05-PySpark编码规范",
+   "document_name": "05-PySpark编码规范.md",
+   "chunk_id": "05-PySpark编码规范#1",
+   "position": 1,
+   "text": "- 每张目标表的代码是一个函数体（不写 `def` 那一行），最后 `return` 一个 DataFrame。\n- 不写 `import`：`F`（`pyspark.sql.functions`）和 `Window` 已经可以直接用。\n- 读源表只用 `source(\"schema.table\")`，如 `source(\"retail.orders\")`，而且只能读方案里列出的源表。\n- 读同一个管道里的其他目标表用 `spark.read.table(\"目标表名\")`，如汇总表读 `spark.read.table(\"dwd_retail_order_detail\")`。\n- 质量规则由平台按方案生成，函数体里不要再写过滤坏数据的检查。",
+   "heading": "PySpark 编码规范 > 代码结构",
+   "page": null
+  },
+  "03-数据质量规则#0": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-03-数据质量规则",
+   "document_name": "03-数据质量规则.md",
+   "chunk_id": "03-数据质量规则#0",
+   "position": 0,
+   "text": "- 适用范围：dwd、dws 层所有表\n- 版本：v1.5（2026-09-20 更新）\n- 维护部门：数据平台组\n- 要点：质量规则写在方案每张表的 `quality_rules` 里、逐行判断：主键不为空（drop）、金额不为负（warn）、关键维度不为空（warn）、明细数量为正（drop）；唯一性用主键表达，口径要排除的数据在转换逻辑里过滤。",
+   "heading": "数据质量规则",
+   "page": null
+  },
+  "03-数据质量规则#3": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-03-数据质量规则",
+   "document_name": "03-数据质量规则.md",
+   "chunk_id": "03-数据质量规则#3",
+   "position": 3,
+   "text": "“汇总表每个维度组合只能有一行”“明细表一行一条明细”这类唯一性要求用主键 `primary_key` 表达，不要写成质量规则（逐行判断写不出唯一性）。",
+   "heading": "数据质量规则 > 唯一性",
+   "page": null
+  },
+  "02-主键与字段#3": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-02-主键与字段",
+   "document_name": "02-主键与字段.md",
+   "chunk_id": "02-主键与字段#3",
+   "position": 3,
+   "text": "每一列都写中文说明（方案里的 `description`）：含义、单位、口径出处，例如“销售额，元，不含运费，口径见《销售额与客单价》”。",
+   "heading": "主键与字段 > 列说明",
+   "page": null
+  },
+  "03-数据质量规则#2": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-03-数据质量规则",
+   "document_name": "03-数据质量规则.md",
+   "chunk_id": "03-数据质量规则#2",
+   "position": 2,
+   "text": "| 规则 | 写法 | 处理 |\n| --- | --- | --- |\n| 主键不能为空 | `order_id IS NOT NULL` | `drop` |\n| 金额不能为负 | `sales_amount >= 0` | `warn` |\n| 关键维度不能为空 | `city IS NOT NULL AND member_level IS NOT NULL` | `warn` |\n| 明细数量为正 | `quantity > 0` | `drop` |",
+   "heading": "数据质量规则 > 必须有的规则",
+   "page": null
+  },
+  "02-主键与字段#1": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-02-主键与字段",
+   "document_name": "02-主键与字段.md",
+   "chunk_id": "02-主键与字段#1",
+   "position": 1,
+   "text": "- 每张表都必须声明主键（方案里的 `primary_key`）。\n- 明细表保留来源主键：订单明细表的主键是 `order_id`、`line_no`。\n- 汇总表的主键是全部维度列的组合：按城市、会员等级、月汇总的表，主键是 `stat_month`、`city`、`member_level`。\n- 主键列不能为空；维度列的空值要先按业务口径替换成默认值（如城市「未知」、会员等级 `normal`、品类「未分类」），再作为主键。",
+   "heading": "主键与字段 > 主键",
+   "page": null
+  },
+  "03-数据质量规则#4": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-03-数据质量规则",
+   "document_name": "03-数据质量规则.md",
+   "chunk_id": "03-数据质量规则#4",
+   "position": 4,
+   "text": "按口径要排除的数据（取消订单、测试账号）在转换逻辑里过滤掉，不要写成质量规则去丢弃。质量规则用来处理“本不该出现”的数据问题，比如数量为 0 或负数的明细是录入错误，用 `quantity > 0` 规则 `drop`；违反的行数会出现在运行报告里，方便追查源头。",
+   "heading": "数据质量规则 > 业务口径和质量规则的分工",
+   "page": null
+  },
+  "04-加载策略#0": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-04-加载策略",
+   "document_name": "04-加载策略.md",
+   "chunk_id": "04-加载策略#0",
+   "position": 0,
+   "text": "- 适用范围：数据平台上的 ETL 管道\n- 版本：v1.2（2026-06-30 更新）\n- 维护部门：数据平台组\n- 要点：dwd 明细按下单时间增量加载 `{\"mode\": \"incremental\", \"key\": \"ordered_at\"}`，dws 汇总每次全量重算 `{\"mode\": \"full\", \"key\": null}`；管道可以重复运行，结果不变。",
+   "heading": "加载策略",
+   "page": null
+  },
+  "04-加载策略#1": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-04-加载策略",
+   "document_name": "04-加载策略.md",
+   "chunk_id": "04-加载策略#1",
+   "position": 1,
+   "text": "| 层 | 方式 | 方案里的写法 |\n| --- | --- | --- |\n| ods 贴源 | 每次整表覆盖，由平台抽取 | 不在方案里 |\n| dwd 明细 | 按业务时间增量，订单类明细以下单时间为增量键 | `\"load\": {\"mode\": \"incremental\", \"key\": \"ordered_at\"}` |\n| dws 汇总 | 每次全量重算 | `\"load\": {\"mode\": \"full\", \"key\": null}` |\n\n- 增量键必须是目标表里的列。订单明细表要保留 `ordered_at` 列，供增量加载和排查使用。\n- 汇总表数据量小，全量重算最简单，也不会因为迟到的数据算错。",
+   "heading": "加载策略 > 各层怎么加载",
+   "page": null
+  },
+  "05-PySpark编码规范#0": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-05-PySpark编码规范",
+   "document_name": "05-PySpark编码规范.md",
+   "chunk_id": "05-PySpark编码规范#0",
+   "position": 0,
+   "text": "- 适用范围：平台生成和人工编写的 Lakeflow 管道 PySpark 代码\n- 版本：v2.2（2026-09-25 更新）\n- 维护部门：数据平台组\n- 说明：本规范与平台的代码静态检查一致，检查不通过的代码不能部署。\n- 要点：每张目标表写一个最后 `return` DataFrame 的函数体；源表用 `source(\"retail.orders\")` 读，其他目标表用 `spark.read.table(\"表名\")` 读；不写 `import`，不写表，不拉数据到 driver，不用 `spark.sql` 和 Python UDF。",
+   "heading": "PySpark 编码规范",
+   "page": null
+  },
+  "04-加载策略#2": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-04-加载策略",
+   "document_name": "04-加载策略.md",
+   "chunk_id": "04-加载策略#2",
+   "position": 2,
+   "text": "- 管道可以重复运行，结果不变：同一批源数据跑两次，目标表的行数和金额一样。\n- 部署成 Lakeflow 管道时，物化视图会尽量只处理新增和变更的数据；在 dev 用 Job 模式试跑时每次整表重算，结果相同。",
+   "heading": "加载策略 > 重跑",
+   "page": null
+  },
+  "04-加载策略#3": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-04-加载策略",
+   "document_name": "04-加载策略.md",
+   "chunk_id": "04-加载策略#3",
+   "position": 3,
+   "text": "生产环境默认每天凌晨 2 点（北京时间）运行一次，在上游抽取完成之后。dev 环境只手动运行。",
+   "heading": "加载策略 > 调度",
+   "page": null
+  },
+  "01-分层与命名#3": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-01-分层与命名",
+   "document_name": "01-分层与命名.md",
+   "chunk_id": "01-分层与命名#3",
+   "position": 3,
+   "text": "- 小写英文加下划线（snake_case），不用中文和拼音，中文含义写在列说明里。\n- 同一含义在各表用同一个列名：`order_id`、`customer_id`、`stat_month`、`city`、`member_level`、`sales_amount`、`order_count`、`customer_count`、`avg_order_value`。",
+   "heading": "分层与命名 > 列命名",
+   "page": null
+  },
+  "01-分层与命名#0": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-01-分层与命名",
+   "document_name": "01-分层与命名.md",
+   "chunk_id": "01-分层与命名#0",
+   "position": 0,
+   "text": "- 适用范围：数据平台上所有 Databricks 数仓表（Unity Catalog）\n- 版本：v2.0（2026-09-01 更新）\n- 维护部门：数据平台组\n- 要点：表分 ods（平台抽取的源表）、dwd（清洗后的明细）、dws（汇总）三层；表名格式 `层_业务域_主题[_粒度]`，如 `dwd_retail_order_detail`、`dws_retail_sales_city_month`；业务口径在 dwd 落地一次，dws 读 dwd 只做汇总。",
+   "heading": "分层与命名",
+   "page": null
+  },
+  "03-数据质量规则#1": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-03-数据质量规则",
+   "document_name": "03-数据质量规则.md",
+   "chunk_id": "03-数据质量规则#1",
+   "position": 1,
+   "text": "质量规则写在方案每张目标表的 `quality_rules` 里，平台按规则生成 Databricks 的数据期望（expectations），管道代码里不用再写。\n\n- 规则逐行判断：条件是一个 Spark SQL 布尔表达式，只能用这一行的列，不能用 `count`、`sum` 等聚合函数。\n- 规则名用小写英文加下划线，说明它检查什么，如 `order_id_not_null`、`sales_amount_non_negative`。\n- 违反时的处理 `on_violation`：\n\n| 取值 | 含义 | 用在什么地方 |\n| --- | --- | --- |\n| `drop` | 丢弃这一行，并记录丢了多少行 | 这一行明显无法使用 |\n| `warn` | 保留这一行，记录违反的行数 | 需要关注、但不影响使用 |\n| `fail` | 整个更新失败 | 只用于数据错了会造成严重后果的情况，dev 阶段不用 |",
+   "heading": "数据质量规则 > 怎么写",
+   "page": null
+  },
+  "01-分层与命名#1": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-01-分层与命名",
+   "document_name": "01-分层与命名.md",
+   "chunk_id": "01-分层与命名#1",
+   "position": 1,
+   "text": "| 层 | 名称 | 放什么 | 谁来写 |\n| --- | --- | --- | --- |\n| ods | 贴源层 | 源系统表的原样复制，不做清洗 | 平台抽取，写到源表 catalog 下与源库同名的 schema，如 `retail.orders` |\n| dwd | 明细层 | 清洗、关联、按业务口径统一后的明细，一行一条业务记录 | ETL 管道 |\n| dws | 汇总层 | 按维度汇总的指标，一行一个维度组合 | ETL 管道 |\n\n规则：\n\n- dwd 只读 ods；dws 读 dwd，不直接读 ods。\n- 业务口径（有效订单、销售额、城市归一等）在 dwd 落地一次，dws 只做汇总，不再重复清洗。\n- 一个 ETL 方案通常是一张 dwd 明细表加若干张 dws 汇总表，同一个管道里先建明细表，汇总表读明细表。",
+   "heading": "分层与命名 > 分层",
+   "page": null
+  },
+  "05-PySpark编码规范#5": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-05-PySpark编码规范",
+   "document_name": "05-PySpark编码规范.md",
+   "chunk_id": "05-PySpark编码规范#5",
+   "position": 5,
+   "text": "  F.col(\"o.customer_id\").alias(\"customer_id\"),\n    F.col(\"o.ordered_at\").alias(\"ordered_at\"),\n    F.col(\"i.quantity\").alias(\"quantity\"),\n    F.round(amount, 2).cast(\"decimal(18,2)\").alias(\"sales_amount\"),\n)\n```",
+   "heading": "PySpark 编码规范 > 例子：订单明细表",
+   "page": null
+  },
+  "05-PySpark编码规范#2": {
+   "kb_id": "kb-dw-standards",
+   "kb_name": "数仓开发规范",
+   "document_id": "doc-05-PySpark编码规范",
+   "document_name": "05-PySpark编码规范.md",
+   "chunk_id": "05-PySpark编码规范#2",
+   "position": 2,
+   "text": "| 不要写 | 原因 |\n| --- | --- |\n| `.write`、`.writeStream`、`.saveAsTable`、`.insertInto`、`.save` | 写表由管道负责，代码只做读和转换 |\n| `.collect()`、`.toPandas()` | 把数据拉到 driver，数据量大时会内存溢出 |\n| `spark.sql(...)` | 不执行任意 SQL；用 DataFrame API 或 `F.expr` |\n| `dbutils`、`os`、`sys`、`subprocess`、`open`、`eval`、`exec`、`__import__` | 不访问文件系统和运行环境，不动态执行代码 |\n| Python UDF | 比内置函数慢得多，用 `F` 里的函数组合 |",
+   "heading": "PySpark 编码规范 > 禁止的写法",
+   "page": null
+  },
+  "06-毛利#0": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-06-毛利",
+   "document_name": "06-毛利.md",
+   "chunk_id": "06-毛利#0",
+   "position": 0,
+   "text": "- 适用范围：按品类、商品、渠道分析的毛利和毛利率\n- 版本：v1.1（2026-05-28 更新）\n- 维护部门：经营分析部、财务部\n- 相关口径：《销售额与客单价》\n- 要点：毛利 = 销售额 − `quantity × products.cost_price`（只算有效订单的有效明细行），毛利率 = 毛利 ÷ 销售额，先汇总再相除；品类为空的商品归为「未分类」。",
+   "heading": "毛利",
+   "page": null
+  },
+  "06-毛利#1": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-06-毛利",
+   "document_name": "06-毛利.md",
+   "chunk_id": "06-毛利#1",
+   "position": 1,
+   "text": "```\n明细行成本 = quantity × cost_price\n毛利 = 销售额 − 成本（只算有效订单的有效明细行）\n毛利率 = 毛利 ÷ 销售额\n```\n\n- 成本价取商品档案 `products.cost_price`，通过 `order_items.product_id` 关联。\n- 销售额按《销售额与客单价》计算，不含运费。\n- 毛利保留两位小数；毛利率保留四位小数（如 0.2345 表示 23.45%），销售额为 0 时毛利率为空。",
+   "heading": "毛利 > 定义",
+   "page": null
+  },
+  "06-毛利#4": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-06-毛利",
+   "document_name": "06-毛利.md",
+   "chunk_id": "06-毛利#4",
+   "position": 4,
+   "text": "- 用标价 `list_price` 减成本价算毛利，忽略了实际成交价和折扣。\n- 先算每行毛利率再求平均：应当先汇总毛利和销售额，再相除。",
+   "heading": "毛利 > 常见错误",
+   "page": null
+  },
+  "06-毛利#3": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-06-毛利",
+   "document_name": "06-毛利.md",
+   "chunk_id": "06-毛利#3",
+   "position": 3,
+   "text": "一行明细卖出 2 件，成交单价 100 元、折扣率 0.1，成本价 60 元：销售额 180 元，成本 120 元，毛利 60 元，毛利率 0.3333。",
+   "heading": "毛利 > 例子",
+   "page": null
+  },
+  "06-毛利#2": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-06-毛利",
+   "document_name": "06-毛利.md",
+   "chunk_id": "06-毛利#2",
+   "position": 2,
+   "text": "品类取商品档案 `products.category`，取值为家电、数码、个护、食品、家居。品类为空的商品归为「未分类」，单独列出。",
+   "heading": "毛利 > 品类",
+   "page": null
+  },
+  "03-城市与会员等级#3": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-03-城市与会员等级",
+   "document_name": "03-城市与会员等级.md",
+   "chunk_id": "03-城市与会员等级#3",
+   "position": 3,
+   "text": "渠道取 `orders.channel`：`online`（线上商城）、`store`（门店）、`mini_program`（小程序）。需求里说“线上渠道”时指 `online` 和 `mini_program` 两个；只说“线上商城”时才只指 `online`。",
+   "heading": "城市与会员等级 > 渠道",
+   "page": null
+  },
+  "01-有效订单定义#2": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-01-有效订单定义",
+   "document_name": "01-有效订单定义.md",
+   "chunk_id": "01-有效订单定义#2",
+   "position": 2,
+   "text": "有效订单里，数量 `order_items.quantity` 小于等于 0 的明细行是录入错误，不计入销售额、件数和毛利。订单本身是否有效只看上面两个条件，不受这些明细行影响。",
+   "heading": "有效订单定义 > 有效明细行",
+   "page": null
+  },
+  "02-销售额与客单价#1": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-02-销售额与客单价",
+   "document_name": "02-销售额与客单价.md",
+   "chunk_id": "02-销售额与客单价#1",
+   "position": 1,
+   "text": "**销售额**指有效订单里有效明细行的成交金额之和，按明细行计算：\n\n```\n明细行销售额 = quantity × unit_price × (1 − coalesce(discount_rate, 0))\n销售额 = 有效订单、有效明细行（quantity > 0）的明细行销售额之和\n```\n\n- 单价用成交单价 `order_items.unit_price`，不用商品档案里的标价 `products.list_price`。\n- 折扣率 `discount_rate` 为空表示没有打折，按 0 计算。\n- 销售额**不含运费**。运费 `orders.shipping_fee` 单独统计，不并入销售额。\n- 金额单位为元。明细行销售额四舍五入保留两位小数，和发票金额一致；汇总时把明细行销售额直接相加。",
+   "heading": "销售额与客单价 > 销售额",
+   "page": null
+  },
+  "04-时间口径#1": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-04-时间口径",
+   "document_name": "04-时间口径.md",
+   "chunk_id": "04-时间口径#1",
+   "position": 1,
+   "text": "订单类指标一律以**下单时间** `orders.ordered_at` 为准。源库里的时间已经是北京时间，统计时不要再做时区转换。\n\n不使用客户注册时间 `customers.registered_at` 统计订单；注册时间只用于判断新客户。",
+   "heading": "时间口径 > 统计时间",
+   "page": null
+  },
+  "02-销售额与客单价#5": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-02-销售额与客单价",
+   "document_name": "02-销售额与客单价.md",
+   "chunk_id": "02-销售额与客单价#5",
+   "position": 5,
+   "text": "- 折扣率为空时直接相乘，整行销售额变成空值，汇总时被丢掉。\n- 把运费加进销售额，或者用标价代替成交单价。\n- 订单数用明细行数 `count(*)`，一单多行时会重复计算。",
+   "heading": "销售额与客单价 > 常见错误",
+   "page": null
+  },
+  "05-客户数与复购#3": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-05-客户数与复购",
+   "document_name": "05-客户数与复购.md",
+   "chunk_id": "05-客户数与复购#3",
+   "position": 3,
+   "text": "**新客户**是注册时间 `customers.registered_at` 落在统计月内、且当月有有效订单的客户。",
+   "heading": "客户数与复购 > 新客户",
+   "page": null
+  },
+  "04-时间口径#0": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-04-时间口径",
+   "document_name": "04-时间口径.md",
+   "chunk_id": "04-时间口径#0",
+   "position": 0,
+   "text": "- 适用范围：零售业务所有按日、按月统计的指标\n- 版本：v1.2（2026-06-10 更新）\n- 维护部门：经营分析部\n- 要点：订单类指标按下单时间 `orders.ordered_at` 统计，不做时区转换；统计月写成 `yyyy-MM` 格式的文字 `date_format(ordered_at, 'yyyy-MM')`，列名 `stat_month`。",
+   "heading": "时间口径",
+   "page": null
+  },
+  "04-时间口径#2": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-04-时间口径",
+   "document_name": "04-时间口径.md",
+   "chunk_id": "04-时间口径#2",
+   "position": 2,
+   "text": "- **统计月**按自然月，写成 `yyyy-MM` 格式的文字，如 `2025-11`：`date_format(o.ordered_at, 'yyyy-MM')`。\n- **统计日**取下单日期：`to_date(o.ordered_at)`。\n- 月度报表的列名用 `stat_month`，日报用 `stat_date`。",
+   "heading": "时间口径 > 统计周期",
+   "page": null
+  },
+  "05-客户数与复购#4": {
+   "kb_id": "kb-retail-metrics",
+   "kb_name": "零售数据口径",
+   "document_id": "doc-05-客户数与复购",
+   "document_name": "05-客户数与复购.md",
+   "chunk_id": "05-客户数与复购#4",
+   "position": 4,
+   "text": "某城市 2026-01 有 3 位客户下单：A 下了 2 笔有效订单，B 下了 1 笔，C 只有 1 笔已取消的订单。下单客户数为 2（A、B），复购客户数为 1（A），复购率 0.5000。",
+   "heading": "客户数与复购 > 例子",
+   "page": null
+  }
+ }
+}
