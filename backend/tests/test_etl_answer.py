@@ -632,12 +632,18 @@ def test_an_answer_that_could_not_be_worked_out():
         ("202610", "int", "202610"),
         ("2026.5", "decimal(6,1)", "2026.5"),
         ("2026-10-31", "date", "DATE '2026-10-31'"),
-        ("2026-10-31 23:59:59", "timestamp", "TIMESTAMP '2026-10-31 23:59:59'"),
-        ("2026-10-31 23:59:59", "timestamp_ntz", "TIMESTAMP_NTZ '2026-10-31 23:59:59'"),
     ],
 )
 def test_the_query_writes_the_period_as_a_literal_of_its_type(period, kind, literal):
     assert f"WHERE `stat_month` = {literal}\n" in query(card(), TABLE, period, kind)
+
+
+@pytest.mark.parametrize("kind", ["timestamp", "timestamp_ntz"])
+def test_a_time_period_keeps_the_subquery_since_it_is_written_to_the_second(kind):
+    # The latest value may be 23:59:59.123456; a literal of the period would miss it.
+    got = query(card(), TABLE, "2026-10-31 23:59:59", kind)
+    where = "`icsd-ace-dev`.`trac_b_test`.`ads_sales_city_member_m`"
+    assert f"WHERE `stat_month` = (SELECT max(`stat_month`) FROM {where})\n" in got
 
 
 def test_the_query_quotes_every_name():

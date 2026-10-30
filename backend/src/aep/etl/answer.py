@@ -525,9 +525,11 @@ def query(
     lines = ["SELECT " + ", ".join(select), f"FROM {where}"]
     if card.get("filter"):
         column = q(card["filter"][0]["column"])
+        # ``period`` writes a time only to the second, so a time column keeps the subquery:
+        # a literal would miss a latest value with fractions of a second.
         value = (
             _literal(period, kind)
-            if period is not None
+            if period is not None and kind not in ("timestamp", "timestamp_ntz")
             else (f"(SELECT max({column}) FROM {where})")
         )
         lines.append(f"WHERE {column} = {value}")
