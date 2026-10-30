@@ -21,13 +21,21 @@ export type Message = {
   actor?: string | null;
   at?: string | null;
 };
+// A question an approval step asks (docs/api/flow-apps.md, "人工节点的扩展设置"): every
+// one is answered by a person; ``suggested`` is what the step does now.
+export type Question = FormField & {
+  suggested?: unknown;
+  why?: string | null;
+  affects?: string[] | null;
+};
 export type Pending = {
   kind: "approval" | "form";
   prompt: string;
   options: Decision[];
   comment_required?: string[];
   option_labels?: Record<string, string>;
-  fields?: FormField[];
+  // A form's fields, or an approval's questions.
+  fields?: Question[];
   // The option a decision turns into when an answer or a remark changes it
   // (null when the step sets none).
   changed_branch?: string | null;
@@ -35,6 +43,21 @@ export type Pending = {
   details?: unknown;
 };
 export type Approval = Pending;
+// Whether an answer given differs from its question's suggestion; then the decision goes
+// by the step's ``changed_branch`` (the service decides again the same way).
+export function answersChanged(
+  questions: Question[],
+  values: Record<string, unknown>,
+): boolean {
+  return questions.some(
+    (question) =>
+      question.suggested !== undefined &&
+      question.suggested !== null &&
+      values[question.key] !== undefined &&
+      values[question.key] !== "" &&
+      values[question.key] !== question.suggested,
+  );
+}
 export type RunStep = { node: string; title: string };
 export type RunSummary = {
   app_version?: number | null;

@@ -141,15 +141,23 @@ export type AgentNode = NodeBase &
     knowledge?: AgentKnowledge | null;
     max_steps: number;
   };
+// The extended settings (view, data, the approval's fields, changed_branch and
+// options[].requires) are written in templates or imported files; the editor shows them
+// and keeps them as they are (docs/api/flow-apps.md, "人工节点的扩展设置").
 export type HumanNode = NodeBase & {
   type: "human";
   prompt: string;
   show?: string;
+  view?: string | null;
+  data?: Record<string, unknown> | null;
 } & (
     | {
         mode: "approval";
-        options: { key: string; label: string }[];
+        options: { key: string; label: string; requires?: unknown }[];
         comment_required?: string[];
+        // The questions: a list, or one reference such as {{check_plan.questions}}.
+        fields?: unknown;
+        changed_branch?: string | null;
       }
     | { mode: "form"; fields: FormField[] }
   );

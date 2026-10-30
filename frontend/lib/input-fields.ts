@@ -51,6 +51,34 @@ export function validateFields(
     return msg ? [{ loc: ["body", section, field.key], msg }] : [];
   });
 }
+// An approval's questions: each must be answered, and like a field otherwise.
+export function questionErrors(
+  questions: Input[],
+  values: FieldValues,
+): Record<string, string> {
+  return Object.fromEntries(
+    questions.flatMap((question) => {
+      const value = values[question.key];
+      if (
+        value === undefined ||
+        value === null ||
+        (typeof value === "string" && !value.trim())
+      )
+        return [
+          [
+            question.key,
+            question.type === "select" || question.type === "boolean"
+              ? "请选一个答案"
+              : "请填写答案",
+          ],
+        ];
+      return validateFields([question], values, "values").map((issue) => [
+        question.key,
+        issue.msg,
+      ]);
+    }),
+  );
+}
 export function inputPayload(
   fields: Input[],
   values: FieldValues,

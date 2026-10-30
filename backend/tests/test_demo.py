@@ -3,6 +3,7 @@ knowledge bases' documents against the sample data and the code checks, GET
 /health/demo, and aep-demo making everything on a platform and changing nothing the
 second time."""
 
+import json
 import re
 import shutil
 from pathlib import Path
@@ -19,7 +20,8 @@ from aep.runtime.catalog import AppCatalog
 from aep.runtime.flow import builtin
 from aep.tools.mcp import McpTools
 from tests import fake_connector
-from tests.test_etl import PYSPARK_BODY, plan, reply
+from tests.test_etl import PYSPARK_BODY, reply
+from tests.test_etl_template_v2 import v2_plan, v2_value
 from tests.test_flow_data_nodes import PASSED, PREVIEW, Lakehouse, loaded
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -121,9 +123,19 @@ def test_pyspark_standards_pass_the_platforms_code_check():
 # The template
 
 
-def contract_block(after: str) -> str:
+def contract_block(after: str, kind: str = "") -> str:
     start = CONTRACT.index(after)
-    return re.search(r"```\n(.*?)\n```", CONTRACT[start:], re.S)[1]  # type: ignore[index]
+    return re.search(rf"```{kind}\n(.*?)\n```", CONTRACT[start:], re.S)[1]  # type: ignore[index]
+
+
+def contract_objects(after: str) -> list[dict]:
+    """The JSON objects in the jsonc block after ``after``."""
+    text, decoder, found = contract_block(after, "jsonc"), json.JSONDecoder(), []
+    at = 0
+    while (at := text.find("{", at)) >= 0:
+        value, at = decoder.raw_decode(text, at)
+        found.append(value)
+    return found
 
 
 def test_template_follows_the_contract():
@@ -131,6 +143,10 @@ def test_template_follows_the_contract():
     assert (template.title, template.needs) == (
         "数据 ETL（湖仓）",
         ("datasource", "knowledge_base"),
+    )
+    assert template.summary == (
+        "探查数据源、按口径知识库出方案，确认方案后抽取到 Databricks，"
+        "按开发规范写 PySpark 代码，在开发环境试算并算出答案，审核通过后交付。"
     )
     nodes = {n["id"]: n for n in template.config["graph"]["nodes"]}
     assert [(i, n["type"], n["title"]) for i, n in nodes.items()] == [
@@ -144,10 +160,14 @@ def test_template_follows_the_contract():
         ("ingest", "databricks_ingest", "抽取到湖仓"),
         ("codegen", "llm", "写代码"),
         ("check_code", "etl_code_check", "检查并打包"),
-        ("dev_run", "databricks_dev_run", "dev 运行"),
-        ("end", "end", "结束"),
+        ("dev_run", "databricks_dev_run", "开发环境试算"),
+        ("data_review", "human", "审核试算结果"),
+        ("end", "end", "交付"),
+        ("stopped", "end", "终止"),
     ]
     assert all(0 < len(n["note"]) <= 500 for n in nodes.values())
+    # The notes no longer speak of assumptions or of rejecting.
+    assert not [i for i, n in nodes.items() if "假设" in n["note"] or "驳回" in n["note"]]
     retries = {i: n["on_error"]["retry"] for i, n in nodes.items() if "on_error" in n}
     assert retries == {
         "profile": {"max": 2, "interval_seconds": 5},
@@ -156,9 +176,14 @@ def test_template_follows_the_contract():
         "codegen": {"max": 1, "interval_seconds": 2},
         "dev_run": {"max": 2, "interval_seconds": 5},
     }
-    assert nodes["plan"]["prompt"] == contract_block("`plan` 的提示词")
-    assert nodes["codegen"]["prompt"] == contract_block("`codegen` 的提示词")
-    assert nodes["plan"]["system"] == etl_plan.OUTPUT_FORMAT
+    inputs = {f["key"]: f for f in nodes["start"]["inputs"]}
+    assert inputs["request"]["examples"] == []
+    assert [k for k, f in inputs.items() if f.get("advanced")] == ["tables", "language", "name"]
+    assert nodes["plan"]["prompt"] == contract_block("`plan` 第 2 版的提示词")
+    assert nodes["codegen"]["prompt"] == contract_block("`codegen` 第 2 版的提示词")
+    assert nodes["plan"]["skills"] == [{"name": "etl-plan-brief", "version": 1}]
+    assert nodes["codegen"]["skills"] == [{"name": "etl-codegen", "version": 1}]
+    assert nodes["plan"]["system"] == etl_plan.OUTPUT_FORMAT_V2
     assert nodes["codegen"]["system"] == codegen.OUTPUT_FORMAT
     # Their replies are JSON for the checks, kept out of the run's messages.
     assert {i for i, n in nodes.items() if "quiet" in n} == {"plan", "codegen"}
@@ -169,17 +194,52 @@ def test_template_follows_the_contract():
     )
     assert (nodes["glossary"]["top_k"], nodes["standards"]["top_k"]) == (12, 20)
     assert nodes["check_plan"]["hits"] == ["{{glossary.hits}}", "{{standards.hits}}"]
+    assert (nodes["check_plan"]["format"], nodes["check_plan"]["answered"]) == (
+        2,
+        "{{review.record}}",
+    )
+    assert (nodes["ingest"]["reuse"], nodes["ingest"]["max_visits"]) == (True, 6)
+    dev = nodes["dev_run"]
+    assert (dev["plan"], dev["max_runs"], dev["preview_rows"], dev["max_visits"]) == (
+        "{{check_plan.plan}}",
+        3,
+        20,
+        9,
+    )
+    # The two people's steps are the contract's, word for word.
+    for human in contract_objects("两个人工节点："):
+        assert {k: v for k, v in nodes[human["id"]].items() if k != "note"} == human
+    outcomes = {i: n.get("outcome") for i, n in nodes.items() if n["type"] == "end"}
+    assert outcomes == {"end": "delivered", "stopped": "stopped"}
+    outputs = {
+        i: {o["key"]: o["from"] for o in n["outputs"]} for i, n in nodes.items() if i in outcomes
+    }
+    assert outputs["end"] == {
+        "report": ["{{dev_run.report}}"], "plan": ["{{check_plan.plan}}"],
+        "ingested": ["{{ingest.summary}}"], "brief": ["{{check_plan.brief}}"],
+        "answer": ["{{dev_run.answer}}"], "code": ["{{check_code.bundle}}"],
+        "quality": ["{{dev_run.quality}}"], "dev_url": ["{{dev_run.url}}"],
+        "confirmed": ["{{review.record}}"], "reviewed": ["{{data_review.record}}"],
+    }  # fmt: skip
+    assert outputs["stopped"] == {
+        "reason": ["{{data_review.comment}}", "{{data_review.feedback}}"],
+        "brief": ["{{check_plan.brief}}"], "plan": ["{{check_plan.plan}}"],
+        "report": ["{{dev_run.report}}"], "confirmed": ["{{review.record}}"],
+        "reviewed": ["{{data_review.record}}"],
+    }  # fmt: skip
     edges = {(e["from"], e.get("branch"), e["to"]) for e in template.config["graph"]["edges"]}
     assert edges == {
         ("start", None, "profile"), ("profile", None, "glossary"),
         ("glossary", None, "standards"), ("standards", None, "plan"),
         ("plan", None, "check_plan"),
         ("check_plan", "ok", "review"), ("check_plan", "retry", "plan"),
-        ("review", "approve", "ingest"), ("review", "reject", "plan"),
+        ("review", "approve", "ingest"), ("review", "revise", "plan"),
         ("ingest", None, "codegen"), ("codegen", None, "check_code"),
-        ("check_code", "ok", "dev_run"),
-        ("check_code", "retry", "codegen"), ("dev_run", "passed", "end"),
-        ("dev_run", "retry", "codegen"), ("dev_run", "failed", "end"),
+        ("check_code", "ok", "dev_run"), ("check_code", "retry", "codegen"),
+        ("dev_run", "passed", "data_review"), ("dev_run", "failed", "data_review"),
+        ("dev_run", "retry", "codegen"),
+        ("data_review", "approve", "end"), ("data_review", "fix_code", "codegen"),
+        ("data_review", "fix_plan", "plan"), ("data_review", "stop", "stopped"),
     }  # fmt: skip
 
 
@@ -225,15 +285,15 @@ async def platform(tmp_path, monkeypatch):
     # The sample source has the demo's retail database too.
     for (_, table), spec in list(fake_connector.TABLES.items()):
         monkeypatch.setitem(fake_connector.TABLES, ("retail", table), spec)
-    bad_plan = plan()
+    bad_plan = v2_value()
     bad_plan["targets"][0]["sources"] = ["sales.missing"]
     good_code = reply({"targets": {"order_facts": PYSPARK_BODY}})
     lake = DemoPlatform(
         tmp_path,
         [
             reply(bad_plan),  # the plan check sends it back
-            reply(plan(summary="订单明细宽表 [1]。")),  # a person sends it back
-            reply(plan(summary="改好了。")),
+            v2_plan(),  # a person sends it back
+            v2_plan(summary="改好了。"),
             reply({"targets": {"order_facts": 'return spark.sql("SELECT 1")'}}),
             good_code,  # fails on dev with a fixable error
             good_code,
@@ -340,6 +400,11 @@ async def test_demo_makes_everything_once_and_the_app_runs_to_the_end(platform, 
         "language": "pyspark",
         "name": None,
     }
+    assert nodes["start"]["inputs"][1]["examples"] == [
+        demo.REQUEST,
+        demo.SPARE_REQUEST,
+        "统计每月新客户数和复购率，按城市拆开。",
+    ]
     manual = (await platform.api.get("/apps/retail-etl/manual")).json()
     assert [(b["name"], b["document_count"]) for b in manual["knowledge_bases"]] == [
         ("零售数据口径", 6),
@@ -377,10 +442,17 @@ async def test_demo_makes_everything_once_and_the_app_runs_to_the_end(platform, 
     run_id = made.json()["run_id"]
     view = await platform.view(run_id)
     assert view["status"] == "waiting", view["error"]
-    assert "**方案**：订单明细宽表" in view["pending"]["details"]["show"]
-    view = await platform.decide(run_id, "reject", "先做全量")
+    assert "**目标**：按城市统计有效订单的订单数和商品数量" in view["pending"]["details"]["show"]
+    answers = {"q1": "all", "q2": "unknown"}
+    view = await platform.decide(run_id, "revise", "先做全量", values=answers)
+    # Both questions were answered: the second plan asks none.
+    assert view["pending"]["fields"] is None
+    view = await platform.decide(run_id, "approve")
+    assert view["status"] == "waiting", view["error"]
+    assert view["step"]["node"] == "data_review"
     view = await platform.decide(run_id, "approve")
     assert view["status"] == "done", view["error"]
+    assert view["outcome"] == "delivered"
     result = view["result"]
     assert result["ingested"].startswith("已把 2 张表共 6 行抽取到 Databricks")
     assert "## dev 运行通过" in result["report"] and "| 10 | 上海 | 2 |" in result["report"]
@@ -390,12 +462,13 @@ async def test_demo_makes_everything_once_and_the_app_runs_to_the_end(platform, 
         "plan", "check_plan", "plan", "check_plan", "review",
         "plan", "check_plan", "review",
         "ingest", "codegen", "check_code", "codegen", "check_code", "dev_run",
-        "codegen", "check_code", "dev_run", "end",
+        "codegen", "check_code", "dev_run", "data_review", "end",
     ]  # fmt: skip
     prompts = [r["body"]["messages"] for r in platform.gateway.requests if "messages" in r["body"]]
     first_plan = prompts[0][-1]["content"]
     assert demo.REQUEST in first_plan and "期望的代码语言：pyspark" in first_plan
-    assert prompts[0][0]["content"].endswith(etl_plan.OUTPUT_FORMAT)
+    assert prompts[0][0]["content"].endswith(etl_plan.OUTPUT_FORMAT_V2)
+    assert "【第 1 轮 · 确认方案 · 按我的意见修改方案】意见：先做全量" in prompts[2][-1]["content"]
     assert "开发规范（参考资料）" in prompts[-1][-1]["content"]
 
 

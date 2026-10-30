@@ -5,6 +5,7 @@ import { CitationScope, CitedMarkdown, SourceList } from "./citations";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  answersChanged,
   cancelRun,
   messageTime,
   durationText,
@@ -44,9 +45,11 @@ import { savedActor, saveActor } from "../lib/actor";
 import {
   initialValues,
   inputPayload,
+  questionErrors,
   validateFields,
   type FieldValues,
 } from "../lib/input-fields";
+import { ApprovalQuestions } from "./approval-questions";
 import { InputFields } from "./input-fields";
 
 // What a person typed is shown as typed; replies are Markdown with [n]
@@ -124,6 +127,7 @@ export function RunDetail({
   const [actionError, setActionError] = useState("");
   const [values, setValues] = useState<FieldValues>({});
   const [valueErrors, setValueErrors] = useState<Record<string, string>>({});
+  const [answersFor, setAnswersFor] = useState("");
   const [comment, setComment] = useState("");
   // On the server there is no storage and "" comes back; the field only renders after loading.
   const [actor, setActor] = useState(savedActor);
@@ -242,13 +246,25 @@ export function RunDetail({
       return;
     const fields = run.pending.fields ?? [];
     const submittedValues = { ...initialValues(fields), ...values };
+    // An approval's questions have no defaults: each one is answered.
+    const asking = run.pending.kind === "approval" && fields.length > 0;
     if (run.pending.kind === "form") {
       const issues = validateFields(fields, submittedValues, "values");
       setValueErrors(
         Object.fromEntries(issues.map((issue) => [issue.loc[2], issue.msg])),
       );
       if (issues.length) return;
+    } else if (asking) {
+      const issues = questionErrors(fields, values);
+      setValueErrors(issues);
+      if (Object.keys(issues).length) return;
     }
+    // What the person saw: a step whose content changed since is refused (409).
+    const details = run.pending.details;
+    const seen =
+      isRecord(details) && typeof details.seen === "string"
+        ? { seen: details.seen }
+        : {};
     busy.current = true;
     setSubmitting(decision);
     setMutationError("");
@@ -265,8 +281,18 @@ export function RunDetail({
             decision,
             ...(run.pending.kind === "form"
               ? { values: inputPayload(fields, submittedValues) }
-              : { comment: comment.trim() }),
+              : {
+                  comment: comment.trim(),
+                  ...(asking
+                    ? {
+                        values: Object.fromEntries(
+                          fields.map((field) => [field.key, values[field.key]]),
+                        ),
+                      }
+                    : {}),
+                }),
             ...(actor.trim() ? { actor: actor.trim() } : {}),
+            ...seen,
           }),
         }),
       );
@@ -287,7 +313,14 @@ export function RunDetail({
       );
     } catch (err) {
       if (!controller.signal.aborted) {
-        setMutationError(errorMessage(err));
+        // The run is read again below; the answers and the remark stay for another look.
+        setMutationError(
+          err instanceof ApiError &&
+            err.status === 409 &&
+            err.message.includes("内容已经更新")
+            ? "内容已经更新：已重新载入，请看过最新的内容再处理。"
+            : errorMessage(err),
+        );
         setValueErrors(fieldErrors(err, "values"));
       }
     } finally {
@@ -372,6 +405,50 @@ export function RunDetail({
     isRecord(run?.pending?.details) && run.pending.details.type === "flow_human"
       ? run.pending.details
       : null;
+  const questions =
+    run?.pending?.kind === "approval" ? (run.pending.fields ?? []) : [];
+  // Answers belong to one step and round: when the run moves on (say, someone decided in
+  // another browser) they are cleared, while a refresh of the same step keeps them.
+  const pendingStep =
+    run?.status === "waiting" && run.pending
+      ? [
+          run.pending.kind,
+          String(humanDetails?.node ?? run.step?.node ?? ""),
+          String(humanDetails?.round ?? ""),
+        ].join(":")
+      : "";
+  if (pendingStep !== answersFor) {
+    setAnswersFor(pendingStep);
+    setValues({});
+    setValueErrors({});
+  }
+  // Questions the step was given but could not ask (badly written, past the 20th).
+  const dropped =
+    run?.status === "waiting" && Array.isArray(humanDetails?.dropped_fields)
+      ? humanDetails.dropped_fields.filter(isRecord)
+      : [];
+  const remarked = Boolean(comment.trim());
+  const answered = answersChanged(questions, values);
+  // A changed answer or a remark turns the decision into the step's changed_branch: that
+  // is the button then, and the options it would turn are not offered.
+  const turnTo =
+    run?.pending?.kind === "approval" &&
+    run.pending.changed_branch &&
+    run.pending.options.includes(run.pending.changed_branch)
+      ? run.pending.changed_branch
+      : null;
+  const turning = Boolean(turnTo && (answered || remarked));
+  const optionLabel = (option: string) =>
+    run?.pending?.option_labels?.[option] ??
+    (option === "approve"
+      ? release
+        ? "确认上线"
+        : "确认"
+      : option === "reject"
+        ? "驳回"
+        : option === "submit"
+          ? "提交"
+          : option);
   const humanShow =
     run?.status === "waiting" &&
     typeof humanDetails?.show === "string" &&
@@ -817,16 +894,65 @@ export function RunDetail({
                         }}
                         disabled={controlsDisabled}
                       />
+                      {dropped.length > 0 && (
+                        <div className="dropped-questions" role="note">
+                          <p>没有问的题</p>
+                          <ul>
+                            {dropped.map((item, i) => (
+                              <li key={i}>
+                                {typeof item.index === "number"
+                                  ? `第 ${item.index + 1} 题${
+                                      typeof item.key === "string"
+                                        ? `（${item.key}）`
+                                        : ""
+                                    }：`
+                                  : ""}
+                                {String(item.problem ?? "")}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {questions.length > 0 && (
+                        <ApprovalQuestions
+                          key={`${String(humanDetails?.node)}-${String(humanDetails?.round)}`}
+                          questions={questions}
+                          values={values}
+                          onChange={(next) => {
+                            setValues(next);
+                            setValueErrors({});
+                          }}
+                          errors={valueErrors}
+                          disabled={controlsDisabled}
+                        />
+                      )}
                       {run.pending.kind !== "form" && (
                         <>
                           <label htmlFor="rejection-comment">
-                            驳回意见
+                            {humanDetails &&
+                            !run.pending.options.includes("reject")
+                              ? "意见"
+                              : "驳回意见"}
                             <span className="muted">
-                              {commentRequired
-                                ? "（驳回时必填）"
-                                : requiredOptions.length
-                                  ? "（部分操作必填）"
-                                  : "（选填）"}
+                              {humanDetails
+                                ? requiredOptions.length
+                                  ? `（选${requiredOptions
+                                      .filter((option) =>
+                                        run.pending!.options.includes(option),
+                                      )
+                                      .map(
+                                        (option) =>
+                                          `「${optionLabel(option)}」`,
+                                      )
+                                      .join("")}时必填${
+                                      questions.length ? "，改了答案也算" : ""
+                                    }）`
+                                  : "（选填）"
+                                : commentRequired
+                                  ? "（驳回时必填）"
+                                  : requiredOptions.length
+                                    ? "（部分操作必填）"
+                                    : "（选填）"}
                             </span>
                           </label>
                           <textarea
@@ -839,50 +965,72 @@ export function RunDetail({
                           />
                         </>
                       )}
+                      {turning && turnTo && (
+                        <p className="turn-hint" role="status">
+                          你改了建议的答案或写了意见，会按「
+                          {optionLabel(turnTo)}
+                          」处理。要按原样继续，把答案改回建议、清空意见。
+                        </p>
+                      )}
                       <div className="approval-actions">
                         {(run.pending.option_labels ||
                         run.pending.kind === "form"
                           ? run.pending.options
                           : ["approve", "reject"]
-                        ).map((option) => (
-                          <button
-                            key={option}
-                            type="button"
-                            className={`button ${option === "reject" ? "reject" : "primary"}`}
-                            disabled={
-                              controlsDisabled ||
-                              !run.pending!.options.includes(option) ||
-                              (requiredOptions.includes(option) &&
-                                !comment.trim())
-                            }
-                            onClick={() => void resume(option)}
-                          >
-                            {submitting === option ? (
-                              <>
-                                <span className="spinner" />
-                                提交中…
-                              </>
-                            ) : (
-                              <>
-                                {option === "reject" ? (
-                                  <Icon name="close" size={16} />
+                        )
+                          .filter(
+                            (option) =>
+                              !turning ||
+                              option === turnTo ||
+                              requiredOptions.includes(option),
+                          )
+                          .map((option) => {
+                            const stops =
+                              option === "reject" || option === "stop";
+                            // A step's own options: the one that needs a remark is
+                            // not the main one, unless an answer or remark made it so.
+                            const tone = stops
+                              ? "reject"
+                              : turning
+                                ? option === turnTo
+                                  ? "primary"
+                                  : "secondary"
+                                : humanDetails &&
+                                    requiredOptions.includes(option)
+                                  ? "secondary"
+                                  : "primary";
+                            return (
+                              <button
+                                key={option}
+                                type="button"
+                                className={`button ${tone}`}
+                                disabled={
+                                  controlsDisabled ||
+                                  !run.pending!.options.includes(option) ||
+                                  (requiredOptions.includes(option) &&
+                                    !remarked &&
+                                    !answered)
+                                }
+                                onClick={() => void resume(option)}
+                              >
+                                {submitting === option ? (
+                                  <>
+                                    <span className="spinner" />
+                                    提交中…
+                                  </>
                                 ) : (
-                                  <Icon name="check" size={16} />
+                                  <>
+                                    {stops ? (
+                                      <Icon name="close" size={16} />
+                                    ) : (
+                                      <Icon name="check" size={16} />
+                                    )}
+                                    {optionLabel(option)}
+                                  </>
                                 )}
-                                {run.pending!.option_labels?.[option] ??
-                                  (option === "approve"
-                                    ? release
-                                      ? "确认上线"
-                                      : "确认"
-                                    : option === "reject"
-                                      ? "驳回"
-                                      : option === "submit"
-                                        ? "提交"
-                                        : option)}
-                              </>
-                            )}
-                          </button>
-                        ))}
+                              </button>
+                            );
+                          })}
                       </div>
                       {rechecking && (
                         <p className="field-hint" role="status">

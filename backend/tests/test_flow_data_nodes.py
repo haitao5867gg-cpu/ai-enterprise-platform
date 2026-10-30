@@ -1307,8 +1307,10 @@ class Lakehouse:
         await self.service.wait_idle()
         return (await self.api.get(f"/runs/{run_id}")).json()
 
-    async def decide(self, run_id: str, decision: str, comment: str | None = None) -> dict:
-        body = {"decision": decision, "comment": comment}
+    async def decide(
+        self, run_id: str, decision: str, comment: str | None = None, **answers
+    ) -> dict:
+        body = {"decision": decision, "comment": comment} | answers
         resp = await self.api.post(f"/runs/{run_id}/resume", json=body)
         assert resp.status_code == 202, resp.text
         return await self.view(run_id)

@@ -39,7 +39,7 @@ import {
   simulateDataNode,
 } from "./mock-data-nodes";
 import type { Flow, NodeKind } from "../flow";
-import { isRecord } from "../runs";
+import { isRecord, type Question } from "../runs";
 import { mockSkillVersionExists } from "./mock-skills";
 import { allMockSources } from "./mock-datasources";
 import type { ValidationIssue } from "./mock-assets";
@@ -270,6 +270,86 @@ export function formConfig(): FlowConfig {
       edges: [
         { from: "start", to: "ask_order" },
         { from: "ask_order", to: "end" },
+      ],
+    },
+  };
+}
+// A confirmation with questions (docs/api/flow-apps.md, "人工节点的扩展设置"): a changed
+// answer or a remark turns 确认 into 按我的意见修改方案.
+export function questionsConfig(): FlowConfig {
+  return {
+    schema_version: 1,
+    env: { vars: [], secrets: [] },
+    graph: {
+      nodes: [
+        {
+          id: "start",
+          type: "start",
+          title: "开始",
+          inputs: [
+            { key: "request", label: "需求", type: "textarea", required: true },
+          ],
+        },
+        {
+          id: "draft",
+          type: "llm",
+          title: "出方案",
+          model: null,
+          skills: [],
+          prompt: "需求：{{start.request}}\n意见：{{review.feedback}}",
+          output: { kind: "text" },
+        },
+        {
+          id: "review",
+          type: "human",
+          title: "确认方案",
+          mode: "approval",
+          prompt: "请检查方案，并回答每道问题。",
+          show: "{{draft.text}}",
+          view: "etl_plan_review",
+          data: { plan: "{{draft.text}}", previous: "{{review.record}}" },
+          fields: [
+            {
+              key: "q1",
+              label: "统计哪段时间？",
+              type: "select",
+              choices: [
+                { value: "all", label: "源库现有的 12 个月" },
+                { value: "y2026", label: "只看 2026 年" },
+              ],
+              suggested: "all",
+              why: "需求没说时间范围",
+            },
+            {
+              key: "q2",
+              label: "要不要去掉测试订单？",
+              type: "boolean",
+              suggested: true,
+            },
+          ],
+          changed_branch: "revise",
+          options: [
+            { key: "approve", label: "确认方案，开始做" },
+            { key: "revise", label: "按我的意见修改方案" },
+          ],
+          comment_required: ["revise"],
+          max_visits: 5,
+        },
+        {
+          id: "end",
+          type: "end",
+          title: "交付",
+          outputs: [
+            { key: "plan", from: ["{{draft.text}}"] },
+            { key: "confirmed", from: ["{{review.record}}"] },
+          ],
+        },
+      ],
+      edges: [
+        { from: "start", to: "draft" },
+        { from: "draft", to: "review" },
+        { from: "review", to: "end", branch: "approve" },
+        { from: "review", to: "draft", branch: "revise" },
       ],
     },
   };
@@ -1056,7 +1136,31 @@ export function simulateNode(
     );
   return { outputs, branch, rendered };
 }
-export function humanPending(node: HumanNode, pool: VariablePool) {
+// An approval's questions as they wait: written in the node or taken from a reference,
+// without defaults, every one required.
+function questionsOf(node: HumanNode, pool: VariablePool) {
+  if (node.mode !== "approval") return [];
+  const asked = render(node.fields ?? null, pool, true);
+  return (Array.isArray(asked) ? asked : []).filter(isRecord).map((field) => {
+    const rest = { ...field };
+    delete rest.default;
+    return { ...rest, required: true } as Question;
+  });
+}
+// A step with any extended setting shows what it was given, which round this is, and the
+// fingerprint of what the person sees (refused on submit once it changed).
+function extended(node: HumanNode) {
+  return (
+    node.view != null ||
+    node.data != null ||
+    (node.mode === "approval" &&
+      (node.fields != null ||
+        node.changed_branch != null ||
+        node.options.some((option) => option.requires != null)))
+  );
+}
+export function humanPending(node: HumanNode, pool: VariablePool, round = 1) {
+  const asked = questionsOf(node, pool);
   return {
     kind: node.mode,
     prompt: String(render(node.prompt, pool)),
@@ -1072,11 +1176,26 @@ export function humanPending(node: HumanNode, pool: VariablePool) {
         : Object.fromEntries(
             node.options.map((option) => [option.key, option.label]),
           ),
-    ...(node.mode === "form" ? { fields: node.fields } : {}),
+    ...(node.mode === "form"
+      ? { fields: node.fields }
+      : asked.length
+        ? { fields: asked }
+        : {}),
+    changed_branch:
+      node.mode === "approval" ? (node.changed_branch ?? null) : null,
     details: {
       type: "flow_human",
       node: node.id,
       show: render(node.show ?? "", pool),
+      ...(extended(node)
+        ? {
+            view: node.view ?? null,
+            data: render(node.data ?? {}, pool, true),
+            round,
+            seen: `sha256:mock-${node.id}-${round}`,
+            dropped_fields: [],
+          }
+        : {}),
     },
   };
 }
