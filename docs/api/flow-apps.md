@@ -39,7 +39,7 @@
   "id": "draft",              // ^[a-z][a-z0-9_]{0,31}$，应用内唯一；env、secret 保留
   "type": "llm",              // 见下面的节点类型
   "title": "起草售后回复",     // 1–50 字符
-  "max_visits": 3,            // 一次运行里最多跑几次，1–10，不写为 3；超过时运行失败并写明原因
+  "max_visits": 3,            // 一次运行里最多跑几次，1–10，不写为 3；超过时运行失败并写明原因，不能重试（见下）
   "on_error": OnError,        // 只有 llm、classifier、tool、knowledge、agent、code 可以设；不写等于 {"then": "stop"}
   "ui": {"x": 120, "y": 40},  // 留给以后的画布，平台原样保存，不参与运行
   "note": "讲解说明"           // 可选，最多 500 字符，只给人看，见 data-nodes.md
@@ -54,6 +54,8 @@
 ```
 
 节点出错并且 `then` 是 `default` 或 `branch` 时，这个节点除了产出（`default` 时是默认值，`branch` 时为空），还有 `error_type` 和 `error_message` 两个变量，后面的节点可以引用。`error_type` 取值：`timeout`、`model_error`（网关或模型报错）、`output_format`（JSON 输出不合格式）、`tool_error`、`knowledge_error`（知识库不存在或检索失败）、`code_error`、`sandbox_unavailable`、`step_limit`（Agent 达到步数上限）、`databricks_error`、`input_error`（运行输入或节点设置有问题，比如表名写错、超过行数上限、没选数据源；再试结果一样，所以不按 `retry` 重试，运行页也不提供重试）。
+
+整个运行失败时，运行详情的 `failed.error_type` 除了上面这些，还可能是 `max_visits`（某个节点跑满了 `max_visits`）或 `max_steps`（总步数到了上限，见“保存草稿时的检查”最后一句）。这两种和 `input_error` 一样不能重试：再从同一步接着跑，马上又会到上限。运行页只给“复制并重新发起”，并用业务语言说明原因，比如“在「确认方案」这一步，流程在同一步来回的次数到了上限”：只用 `failed.title`，上限是几次不在接口里。见 `backend/src/aep/api/runs.py`。
 
 ### 变量引用
 
@@ -81,6 +83,21 @@
 ```
 
 产出：每个输入字段。`datasource` 类型的值是 `datasource_id`。无分支。
+
+输入还可以写两个只管新建运行页怎么显示的属性，都是可选的：
+
+```jsonc
+{"key": "request", "label": "需求", "type": "textarea", "required": true,
+ "examples": ["按月、按城市统计有效订单的销售额……", "统计每个品类每月的销售额和毛利率……"]}   // 可选，不写为 []
+{"key": "tables", "label": "表范围", "type": "text", "advanced": true}                       // 可选，不写为 false
+```
+
+- `advanced`：true 时，新建运行页把这个输入收进默认收起的“高级选项”。必须是 true 或 false。必填又没有默认值的输入不能收起来（使用者看不见就没法填），保存时报错“必填且没有默认值的输入不能收进高级选项”。
+- `examples`：需求框下面的例子，点一下就用这句替换框里的内容。只有 `text`、`textarea` 能写；0–5 条，每条 1–2000 个字符、不能只有空格，设了 `max_length` 时也不能超过它。
+- 两个属性都不改输入的校验、产出和运行标题。`AppDetail.inputs` 和 `RunDetail.inputs` 原样带上它们，以前的配置没有这两个键，按 false 和 `[]` 处理。
+- 只有开始节点的输入能写；人工节点填写模式的字段写了，保存时报错“只有开始节点的输入可以设”。
+- 报错的 `loc` 指到具体位置，如 `["body", "config", "graph", "nodes", "start", "inputs", 2, "advanced"]`、`[..., "inputs", 1, "examples", 0]`。
+- 编辑页的开始节点表单：每个输入可以勾“收进高级选项”（`advanced`）；`text`、`textarea` 输入另有“例子”列表（`examples`），可以增删改。把类型改成别的种类时清掉 `examples`，免得保存时报一个表单上看不见的错。
 
 **llm 调用模型**
 
@@ -164,7 +181,67 @@
  "fields": [{"key": "order_id", "label": "订单号", "type": "text", "required": true}]}   // 1–20 个，字段写法同 start 的 inputs，但没有 datasource 类型
 ```
 
-产出：确认模式是 `decision`、`comment`、`actor`；填写模式是每个字段和 `actor`。分支：确认模式每个选项的 key；填写模式无分支。
+产出：确认模式是 `decision`、`comment`、`actor`、`values`、`notes`、`changed`、`feedback`、`record`（后五个见下）；填写模式是每个字段和 `actor`。分支：确认模式每个选项的 key；填写模式无分支。
+
+**人工节点的扩展设置**（第二批新增）。下面的设置都是可选的（值为 null 的和没写一样）；一个都没写的人工节点和以前一样：等待时的 `pending` 只多一个 `changed_branch: null`，`details` 仍然只有 `type`、`node`、`show`；运行过程里的那句话不变；确认模式多了几个产出。
+
+```jsonc
+{"mode": "approval",
+ "prompt": "请检查方案，回答每道问题",
+ "view": "etl_plan_review",                         // 可选：页面用哪种专门的样子显示
+ "show": "{{check_plan.message}}",                  // 页面不认识 view 时照旧显示它
+ "data": {"brief": "{{check_plan.brief}}", "plan": "{{check_plan.plan}}"},   // 可选：给 view 用的数据
+ "fields": "{{check_plan.questions}}",              // 可选：确认时要回答的题，列表或整段引用
+ "changed_branch": "revise",                        // 可选：改了建议答案或写了意见时按哪个选项处理
+ "options": [{"key": "approve", "label": "确认方案，开始做"},
+             {"key": "revise", "label": "按我的意见修改方案"}],
+ "comment_required": ["revise"]}
+
+// 选项可以带 requires：值不是 true 时这个选项不显示，提交了也不接受
+{"key": "approve", "label": "通过", "requires": "{{dev_run.ok}}"}
+```
+
+| 设置 | 模式 | 不写时 | 规则 |
+| --- | --- | --- | --- |
+| `view` | 两种 | null | 写法同节点 id，最多 32 个字符。页面认识的有 `etl_plan_review`、`etl_dev_review`，见 [data-nodes.md](data-nodes.md) 的“两个人工步骤的页面”。null 或页面不认识时，照旧把 `show` 按 Markdown 显示，`data` 不显示 |
+| `data` | 两种 | `{}` | 对象，最多 12 个键，键的写法同节点 id。值可以是字面值或引用：恰好是一个引用时取原始值，其余按文本替换，对象和数组里的引用逐层替换（同工具参数）。只放页面要显示的东西，代码这类大块内容不要放，页面另从 `GET /runs/{id}/flow` 取 |
+| `fields` | 确认模式 | 不带题 | 要人回答的题，见下 |
+| `changed_branch` | 确认模式 | null | 必须是某个选项的 key，这个选项不能设 `requires`。提交时改了建议答案、写了意见或挂了意见，就按这个选项处理，见“人工节点在工作台上的样子” |
+| `options[].requires` | 确认模式 | 总是显示 | `true`、`false` 或恰好是一个引用（如 `"{{dev_run.ok}}"`）。到这一步暂停时取值，恰好是 `true` 才显示；`false`、null、文字、数字都算不显示。至少要有一个选项不设 `requires` |
+
+确认模式的题 `fields`：
+- 写成列表时 0–20 题，每题的写法同填写模式的字段（没有 `datasource` 类型），题目（`label`）最多 200 个字符。另可写 `suggested`（建议的答案，必须是这题能填的值）、`why`（为什么问，最多 500 个字符）、`affects`（影响到哪些条目，最多 20 个字符串，每个最多 64 个字符）。`suggested`、`why`、`affects` 的值为 null 时当作没写，保存时和运行时都不算不合格。
+- 每题都必答：`required` 不用写，一律当作 true；不能写 `default`，保存时报错“题不能有默认值，每题都要人来答”。
+- 也可以整段引用别的节点产出的题目列表，如 `"{{check_plan.questions}}"`。保存时只检查引用本身；到这一步暂停时取值，按上面的规则逐题检查：`default` 去掉、`required` 改成 true，其他不合格的题丢掉，超过 20 题的从第 21 题起丢掉。丢掉的题列在 `pending.details.dropped_fields`，页面上标出来。取到 null 或空文字时这一步不带题；取到别的不是列表的值，也当作不带题，并在 `dropped_fields` 里记一条。
+- 写成列表的题在运行时也按整段引用的规则逐题检查，丢掉不合格的，记进 `dropped_fields`：以前确认模式的保存检查从来不看 `fields`，导入的文件可能给已经发布的版本留下从没检查过的题。
+
+`comment_required` 里的选项，写了意见、挂了至少一条意见、或者改了建议答案，三者有一个就算满足（以前只认意见）。
+
+保存时报错的 `loc` 指到具体设置：`[..., "nodes", "review", "view"]`、`[..., "data", "brief"]`、`[..., "fields", 0, "suggested"]`、`[..., "changed_branch"]`、`[..., "options", 2, "requires"]`。填写模式写了 `changed_branch` 或 `requires`，报错“只有确认模式可以设”。编辑页从来不写这些键，用编辑页建的确认模式节点保存结果不变；导入的配置里确认模式节点如果已经有 `fields`，第二批起会当作题（保存时按上面的规则检查，运行时见上一段）。
+
+确认模式的产出：
+
+| 字段 | 内容 |
+| --- | --- |
+| `decision` | 最后按哪个选项处理；按 `changed_branch` 改过时是它，分支也走它 |
+| `comment` | 意见，原样 |
+| `actor` | 处理人 |
+| `values` | 每题的答案，如 `{"q1": "y2026"}`；不带题时为 `{}` |
+| `notes` | 挂在条目上的意见 `[{"item": "metric:m4", "label": "客单价", "text": "保留两位小数"}]`；没有时为 `[]` |
+| `changed` | 有没有哪题没按建议答（没写 `suggested` 的题不算） |
+| `feedback` | 交给后面步骤（比如重写方案的模型）的一段话，见下 |
+| `record` | 这次处理的完整记录，写法见“人工节点在工作台上的样子” |
+
+`feedback` 写成 `【第 n 轮 · 节点标题 · 选项名】`，后面依次接没按建议答的题 `「统计哪段时间？」选「只看 2026 年」（原建议「源库现有的 12 个月」）`、挂的意见 `指标「客单价」：保留两位小数`、意见 `意见：……`，各部分用“；”连接。n 是这个节点在这次运行里第几次等人处理，节点标题是这次运行用的标题，选项名是最后按哪个选项处理的名称。只有最后的选项在 `comment_required` 里、或者就是 `changed_branch` 时才写；其余选项（如“确认”“通过”）的 `feedback` 为 `""`：这一步过了，旧意见就不再往后传给模型。
+
+例子：
+
+```text
+【第 1 轮 · 确认方案 · 按我的意见修改方案】「统计哪段时间？」选「只看 2026 年」（原建议「源库现有的 12 个月」）；指标「客单价」：保留两位小数
+【第 2 轮 · 审核试算结果 · 改代码】列「ads_sales_city_member_m.avg_order_value」：要保留两位小数；意见：其他没问题
+```
+
+填写模式的产出不变，不加 `record` 这些固定名字（字段的 key 是用户起的，可能重名）；`view`、`data` 两种模式都能用。编辑页的节点表单第一阶段只显示这些扩展设置、不提供编辑（写在模板或导入的文件里），保存时原样保留；改某个选项的 key 时，`comment_required` 和 `changed_branch` 跟着改；切换模式时删掉这些键（不写成 null）。
 
 **template 文本拼接**
 
@@ -194,10 +271,17 @@
 **end 结束**：至少一个，没有出边。
 
 ```jsonc
-{"outputs": [{"key": "reply", "from": ["{{draft.text}}", "{{answer.text}}", "{{handoff.text}}"]}]}   // 1–20 个
+{"outputs": [{"key": "reply", "from": ["{{draft.text}}", "{{answer.text}}", "{{handoff.text}}"]}],   // 1–20 个
+ "outcome": "delivered"}   // 可选，第二批新增；不写为 null
 ```
 
 `from` 依次取第一个有值的引用，所以几个分支可以汇到同一个结束节点。运行到结束节点时，`outputs` 组成运行的 `result`，例如 `{"reply": "……"}`。
+
+`outcome` 说明运行停在这里算什么结果，写法同节点 id，不合格时保存报错，`loc` 指到 `outcome`。
+- 运行到这个结束节点时，运行记录的 `outcome` 就是它（见 `backend/src/aep/api/runs.py`）。运行的 `status` 仍是 `done`，`result` 仍然只有 `outputs`，不加 `outcome` 键。
+- 平台认识两个值：`delivered`（列表和页头显示“已交付”）、`stopped`（“已终止”）。别的值显示这个结束节点的标题。
+- 一个应用可以有几个结束节点（本来就允许），各写各的 `outcome`。比如 `etl-lakehouse` 模板第 2 版的结束节点“交付”写 `delivered`，审核时选“终止”走到的结束节点“终止”（id `stopped`）写 `stopped`。
+- 没写 `outcome` 的结束节点、以前的配置和以前的运行，`outcome` 都是 null，显示“已完成”。
 
 ### 保存草稿时的检查
 
@@ -235,6 +319,8 @@
   "max_count": null                        // 一个应用里最多几个，start 为 1
 }]
 ```
+
+人工节点的 `outputs` 列出 `decision`、`comment`、`actor`、`values`、`notes`、`changed`、`feedback`、`record`，只有确认模式才有的几个在说明里注明“（确认模式）”。人工节点、开始节点和结束节点的 `defaults` 不变：新加的人工节点没有 `view`、`data`、题和 `changed_branch`，新加的结束节点没有 `outcome`，和以前一样。
 
 ## 应用
 
@@ -350,8 +436,8 @@ requires:                 # 方便导入时核对
   - `actor`：谁说的。开始节点的消息是提出人（`POST /runs` 的 `requester`），人工节点的消息是处理人（`resume` 的 `actor`）；没给时为 null，`assistant` 的总是 null；
   - `at`：说这句话的时间（ISO）；人工节点是做出处理的时间。
 
-  这四个字段在之前的运行里没有，接口返回 null；`etl` 代码应用的消息也没有。说话人的身份（`audience`，如业务方）第二批再加。
-- 哪些节点说什么。表里的“第 k/n 次”是说接下来是第 k 次、最多 n 次：校验节点算的是连续第几次（n 是 `max_attempts`），dev 运行算的是这个节点第几次运行（n 是 `max_runs`）。
+  这四个字段在之前的运行里没有，接口返回 null；`etl` 代码应用的消息也没有。第一阶段只有数据团队一方在用，消息不标身份；业务方和数据团队分开的视角放到第二阶段。
+- 哪些节点说什么。表里的“第 k/n 次”是说接下来是第 k 次、最多 n 次：校验节点算的是连续第几次（n 是 `max_attempts`），dev 运行算的是这一轮第几次运行（每次走 `passed` 或 `failed` 后重新数，n 是 `max_runs`）。
 
 | 节点 | role | content |
 | --- | --- | --- |
@@ -359,18 +445,30 @@ requires:                 # 方便导入时核对
 | llm，文本输出 | assistant | 模型的回答；`quiet: true` 时不说 |
 | llm，JSON 输出 | — | 不说：产出给后面节点用，在流程视图里看 |
 | agent | assistant | 最后的回答 |
-| human，确认模式 | user | `选了「确认」`；写了意见时 `选了「驳回」，意见：语气再软一点` |
+| human，确认模式 | user | `选了「确认」`；写了意见时 `选了「驳回」，意见：语气再软一点`。`pending` 里有 `fields`（运行时取到至少一题）、挂了意见或按 `changed_branch` 改过时，一律改用“；”连接，开头后面依次接有的部分：`选了「按我的意见修改方案」；「统计哪段时间？」选了「只看 2026 年」（原建议「源库现有的 12 个月」）；意见：……；另挂了 2 条意见`，只列没按建议答的题，没有的部分不说。按 `changed_branch` 改过时开头写成 `点了「确认方案，开始做」，改了答案或写了意见，按「按我的意见修改方案」处理`；只写了意见时如 `点了「确认」，改了答案或写了意见，按「驳回」处理；意见：……` |
 | human，填写模式 | user | 每个字段一句，用“；”连接：`订单号填了「A1001」`；下拉和是否 `统计时段选了「只看 2026 年」`（下拉写选项的名称，是否写“是”或“否”）；没填 `件数没填` |
 | etl_profile | assistant | `已探查 示例库 的 2 张表：sales.customers、sales.orders` |
-| etl_plan_check 通过 | assistant | `方案整理好了：1 张目标表、2 条假设待确认`（没有假设时只说目标表）；完整方案在产出 `message` 里 |
+| etl_plan_check 通过 | assistant | `方案整理好了：1 张目标表、2 条假设待确认`（没有假设时只说目标表）；`format` 为 2 时 `方案整理好了：2 张目标表、4 个指标、2 个问题待回答`（没有问题时 `……、4 个指标，没有要回答的问题`）；完整方案在产出 `message` 里 |
 | etl_plan_check 不过 | assistant | `方案有 2 处没通过校验，让模型重写（第 2/3 次）`；回答不是 JSON 时 `模型没按要求的 JSON 格式回答，让模型重写（第 2/3 次）`；连续不过到上限时不说，运行失败，`error` 写明问题 |
-| databricks_ingest | assistant | `已把 2 张表共 6 行抽取到 Databricks：…`，每条注意事项另起一行 `注意：…` |
+| databricks_ingest | assistant | `已把 2 张表共 6 行抽取到 Databricks：…`，每条注意事项另起一行 `注意：…`；`reuse` 为 true、表和这次运行上次抽取的一样或是其中一部分时 `要的 2 张表这次运行已经抽取过，沿用（共 6 行）` |
 | etl_code_check 通过 | assistant | `代码检查通过，打包成 bundle order_facts（5 个文件）` |
 | etl_code_check 不过 | assistant | `代码有 1 处没通过检查，让模型重写（第 2/3 次）`；不是 JSON 时（包括没有 `targets` 对象）同上；到上限时同上 |
-| databricks_dev_run | assistant | 通过：`dev 运行通过：写出 1 张表共 96 行，质量规则丢弃 1 行`（cluster 模式说“得到”；有表行数不明时不说行数；没丢弃不说丢弃；没有结果表时只说 `dev 运行通过`）。带着报错重写：`dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）`。不再重试：`dev 运行失败（1 条报错），不再重试`。没有报错时是 `dev 运行失败，……`。完整报告在产出 `report` 里 |
+| databricks_dev_run | assistant | 通过：`dev 运行通过：写出 1 张表共 96 行，质量规则丢弃 1 行`（cluster 模式说“得到”；有表行数不明时不说行数；没丢弃不说丢弃；没有结果表时只说 `dev 运行通过`）。带着报错重写：`dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）`。不再重试：`dev 运行失败（1 条报错），不再重试`。没有报错时是 `dev 运行失败，……`。“第 2/3 次运行”数的是这一轮。完整报告在产出 `report` 里，答案的数字不写进这句话 |
 | 其他节点（classifier、condition、template、tool、code、knowledge、end），以及出错后走默认值或失败分支 | — | 不说 |
 
 - 运行失败时 `error` 写明节点：`节点「起草售后回复」(draft)：模型没有按格式回答`。
+- 运行停在设了 `outcome` 的结束节点时，运行记录的 `outcome` 就是它，其他情况为 null。
+- 运行在等人处理时，运行记录的 `step` 就是它等的那个节点，不另加字段。
+- 列表和页头的状态文字只改 `done` 一种，按 `outcome` 写：
+
+  | `outcome` | 状态文字 |
+  | --- | --- |
+  | `delivered` | 已交付 |
+  | `stopped` | 已终止 |
+  | 其他值 | 结束节点的标题（`step.title`） |
+  | null | 已完成（同以前） |
+
+  其他状态的文字照第一批已经做好的不变（`frontend/lib/runs.ts` 的 `statusLabels` 和 `stepText`：“等待确认”“进行到「…」”“停在「…」”“失败于「…」”“取消于「…」”等）。
 
 ### 人工节点在工作台上的样子
 
@@ -380,6 +478,7 @@ requires:                 # 方便导入时核对
 // 确认模式：和原来一样，多了显示文字
 {"kind": "approval", "prompt": "确认这条回复吗？", "options": ["approve", "reject"], "comment_required": ["reject"],
  "option_labels": {"approve": "确认", "reject": "驳回"},     // 新增；etl 和老的运行可能没有，前端用原来的默认文字
+ "changed_branch": null,                                       // 第二批新增，见下；没设时为 null
  "details": {"type": "flow_human", "node": "review", "show": "……Markdown……"}}
 
 // 填写模式
@@ -389,7 +488,102 @@ requires:                 # 方便导入时核对
  "details": {"type": "flow_human", "node": "ask_order", "show": ""}}
 ```
 
-`POST /runs/{id}/resume` 新增可选字段 `values`。填写模式用 `{"decision": "submit", "values": {"order_id": "A1001"}, "actor"?}`；缺必填字段或类型不对返回 422，`loc` 为 `["body", "values", "order_id"]`。确认模式不用 `values`。
+`POST /runs/{id}/resume` 新增可选字段 `values`。填写模式用 `{"decision": "submit", "values": {"order_id": "A1001"}, "actor"?}`；缺必填字段或类型不对返回 422，`loc` 为 `["body", "values", "order_id"]`。不带题的确认模式不看 `values`。
+
+#### 带扩展设置的人工节点（第二批）
+
+带扩展设置的确认模式节点，等待时的 `pending` 是这样（以 `etl-lakehouse` 模板第 2 版的“确认方案”第 1 轮为例）：
+
+```jsonc
+{"kind": "approval", "prompt": "请检查方案……",
+ "options": ["approve", "revise"], "comment_required": ["revise"],
+ "option_labels": {"approve": "确认方案，开始做", "revise": "按我的意见修改方案"},
+ "changed_branch": "revise",
+ "fields": [{"key": "q1", "label": "统计哪段时间？", "type": "select", "required": true,
+             "choices": [{"value": "all", "label": "源库现有的 12 个月"}, {"value": "y2026", "label": "只看 2026 年"}],
+             "suggested": "all", "why": "需求没说时间范围", "affects": ["m1", "m2", "m3", "m4"]}],
+ "details": {"type": "flow_human", "node": "review", "show": "……Markdown……",
+             "view": "etl_plan_review",
+             "data": {"brief": {…}, "plan": {…}, "answer": {…}, "uncited": […], "cleaned": […],
+                      "returned": null, "previous": null},   // 引用替换后的值；第 1 轮时两个 record 还是 null
+             "round": 1,
+             "seen": "sha256:3f5a……",
+             "dropped_fields": []}}
+```
+
+- `options`、`option_labels`、`comment_required` 只列显示的选项：`requires` 不成立的选项三处都去掉。
+- `changed_branch`：节点设的值；没设时为 null，以前的运行也是 null。
+- `fields`：确认模式运行时取到至少一题时才有，每题 `required` 都是 true，有 `suggested`、`why`、`affects` 时原样带上，没有 `default`；取到 0 题时 `pending` 不带 `fields`。本文说确认模式“带题”“不带题”，都是看 `pending` 里有没有 `fields`。
+- 只要节点设了 `view` 或 `data`，或者是确认模式设了 `fields`（不管运行时取到几题、取到的是不是列表），`details` 就有 `view`、`data`、`round`、`seen`、`dropped_fields` 这五项；其他节点的 `details` 仍然只有 `type`、`node`、`show`。填写模式的 `fields` 是表单本身，不算扩展设置：只有 `fields` 的填写模式节点 `details` 不变。
+  - “设了”指配置里有这个键、而且值不是 null：`data: {}`、`fields: []` 算设了；`view: null`、`data: null`、`fields: null`、`changed_branch: null` 和没写一样。
+  - `round`：这个节点在这次运行里第几次等人处理，从 1 开始。
+  - `seen`：这次显示内容的指纹，写成 `"sha256:" + 十六进制`。算法：整个 `pending` 去掉 `details.seen` 和 `details.round`，转成 JSON（键按字母排序、UTF-8 原样输出中文、不加空格），再算 SHA-256。
+  - `dropped_fields`：运行时检查没通过、被丢掉的题，`[{"index": 3, "key": "q4", "problem": "建议的答案不在选项里"}]`；`index` 是在题目列表（写的列表或引用到的列表）里的位置，取到的值不是列表时为 null，`key` 认不出时为 null。
+
+提交：
+
+```jsonc
+// POST /runs/{id}/resume
+{"decision": "approve",
+ "comment": "",                                    // 可选
+ "actor": "韩梅梅",                                 // 可选，最多 100 个字符
+ "values": {"q1": "y2026"},                         // 带题时每题都要答
+ "notes": [{"item": "metric:m4", "text": "保留两位小数"}],   // 可选，只有确认模式能挂
+ "seen": "sha256:3f5a……"}                          // 可选，页面把 details.seen 原样带回
+```
+
+请求体本身不合格（比如 `actor` 超过 100 个字符、`notes` 不是列表）先返回 422。然后按下面的顺序检查，第一个不过就返回：
+
+1. 运行不在等人处理：409（同以前）。
+2. 带了 `seen`，`pending` 里也有 `details.seen`，两者不一样：409，`detail` 为“内容已经更新，请刷新后再处理”。没带 `seen`，或者 `pending` 里没有，不比。
+3. `decision` 不在 `pending.options` 里（包括因为 `requires` 没显示的选项）：422，`detail` 为“这一步现在不能选「approve」”。
+4. `values`：填写模式缺必填字段或类型不对；带题的确认模式每题都要答（没有默认值），答案要合这题的类型和选项。422，`loc` 为 `["body", "values", "q1"]`。`values` 里多出来的键不管。
+5. `notes`：最多 50 条；`text` 1–500 个字符，不能只有空格；`item` 的写法见下。422，`loc` 为 `["body", "notes", 0, "item"]` 或 `["body", "notes", 0, "text"]`；超过 50 条，或者填写模式带了非空的 `notes`（null 和 `[]` 当作没带），`loc` 为 `["body", "notes"]`。
+6. 算 `changed`（有没有哪题的答案和它的 `suggested` 不一样），再看要不要改成 `changed_branch`：提交的选项不在 `comment_required` 里、也不是 `changed_branch`，而且改了建议答案、写了意见（只有空格不算）或挂了意见，就按 `changed_branch` 处理。比如带着一句意见点“确认方案，开始做”，按“按我的意见修改方案”处理。这一步在服务端做，不只靠页面。
+7. 最后的选项在 `comment_required` 里时，要写了意见、挂了意见或改了建议答案，三者有一个，否则 422，`detail` 为“这个决定需要写明意见”。
+8. 同时有人处理或取消了：409（同以前）。
+
+成功仍返回 202 和 `{run_id, status}`，页面再读一次运行。
+
+`notes[].item` 写成 `类别:标识`，指向页面上显示的某个条目：
+- 类别的写法同节点 id；标识 1–200 个字符，是第一个 `:` 后面的全部。
+- 标识要在 `details.data` 里找得到。按 `data` 的键名排序（按字符编码从小到大），逐个往深处找；里层对象的键同样按键名排序，列表按顺序。配置写的顺序不算数：配置存在 Postgres 的 jsonb 列里，键的顺序不保留，按写的顺序找，测试和生产会对上不同的对象。值是人工节点 `record`（同时有 `node`、`round`、`decision` 的对象）的整个跳过，所以不会对上以前某一轮记录里已经不在的条目。按下面的顺序，前一步找到就不再往下：
+  1. 找对象：`id`、`key`、`name` 或 `path` 等于标识的对象，取第一个。
+  2. 没有对象对得上时，找文字列表里等于标识的一项。
+  3. 都没有时，如果标识在第一个 `.` 处能分成 `外层.内层`：按同样的顺序找 `id`、`key` 或 `name` 等于外层的对象，它里面（任意深度）又有一个对象的 `id`、`key` 或 `name` 等于内层，取第一个这样的。
+
+  例如 `metric:m3` 对上 `brief.metrics` 里 `id` 为 `m3` 的指标，而不是 `uncited` 里的 `"m3"`；`column:ads_sales.city` 指方案里 `ads_sales` 这张表的 `city` 列；`file:src/pipeline.py` 指 `data.files` 里的一个文件。
+- 平台不核对类别和找到的东西是否对得上，类别只决定 `feedback` 里怎么称呼：`metric` 指标、`dimension` 维度、`filter` 筛选、`rule` 规则、`question` 问题、`column` 列、`quality` 质量规则、`file` 文件，其他叫“条目”。
+- 名称 `label` 由平台定：按第 1 步找到的取那个对象的 `label`、`name`、`text`、`title` 里第一个有的，都没有就用标识；按第 2 步找到的就是这一项本身；按第 3 步找到的就是标识本身。最多 60 个字符，超出的截断加“…”。
+- 每种 `view` 用哪些类别，见 data-nodes.md 的“两个人工步骤的页面”。
+
+确认模式的 `record`：
+
+```jsonc
+{"node": "review", "title": "确认方案", "round": 1,
+ "actor": "韩梅梅", "at": "2026-10-30T08:12:03Z",
+ "decision": "revise", "decision_label": "按我的意见修改方案",
+ "submitted": "approve",          // 提交的选项被改成 changed_branch 时是提交的那个，否则为 null
+ "seen": "sha256:3f5a……",         // pending 的 details.seen 原样抄来；没有时为 null
+ "comment": "", "changed": true,
+ "notes": [{"item": "metric:m4", "label": "客单价", "text": "保留两位小数"}],
+ "answers": [{"key": "q1", "label": "统计哪段时间？", "value": "y2026", "value_label": "只看 2026 年",
+              "suggested": "all", "suggested_label": "源库现有的 12 个月", "picked_suggested": false}],
+ "dropped_fields": []}            // 同 details.dropped_fields；没有时为 []
+```
+
+- `answers` 按题的顺序；`value_label`：下拉题写选项名称，是否题写“是”或“否”，其他转成文字原样写。没写 `suggested` 的题，`suggested`、`suggested_label`、`picked_suggested` 都是 null。
+- 不带题、没挂意见的节点，`answers` 和 `notes` 都是 `[]`，其他照样记。
+- 第一阶段没有登录，`actor` 是页面上自己填的名字，平台不核对。
+
+页面怎么用这些（所有编排应用通用）：
+- 名字框叫“你的名字”，浏览器记住；页面要求先填名字再提交，接口本身不强制。
+- 每道题都要点选，标“建议”的选项是现在的做法；有 `why` 时显示“为什么问”。
+- 有 `changed_branch` 时，只要有一题没按建议答、写了意见或挂了意见，主按钮就换成 `changed_branch` 那个选项，并提示会按意见重新处理；服务端按同样的规则再判断一次。
+- 页面认识这个 `view` 时按它的样子显示 `data`，“这里不对”挂在它规定的条目上；不认识时照旧显示 `show`，只能写总体意见。
+- 提交时带上 `details.seen`；收到 409“内容已经更新”就重新读运行。
+
+`etl` 代码应用的确认照旧：等待时不带题，也没有 `data`，挂意见会因为找不到条目返回 422，运行结果里的 `approvals` 不变。
 
 ### 流程视图
 
