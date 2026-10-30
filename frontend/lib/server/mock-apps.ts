@@ -25,6 +25,7 @@ import {
   mockModels,
   mockNodeTypes,
   mockTemplates,
+  questionsConfig,
   simulateNode,
   validateFlow,
 } from "./mock-flow-apps";
@@ -222,6 +223,18 @@ const store = (globalStore.aepMockApps ??= new Map([
       title: "订单信息填写",
       summary: "人工填写订单号后返回结果。",
       versions: [{ ...initial("hello").versions[0], config: formConfig() }],
+    },
+  ],
+  [
+    "plan-questions",
+    {
+      ...initial("hello"),
+      app: "plan-questions",
+      title: "方案确认（带题）",
+      summary: "出方案后请人回答问题并确认；改了答案或写了意见就重写方案。",
+      versions: [
+        { ...initial("hello").versions[0], config: questionsConfig() },
+      ],
     },
   ],
 ]));

@@ -3,6 +3,7 @@ import type { Reference, RunSource } from "../knowledge";
 import { searchMockKnowledge } from "./mock-knowledge";
 import { randomUUID } from "node:crypto";
 import {
+  answersChanged,
   isFinished,
   isRecord,
   jsonObject,
@@ -476,7 +477,7 @@ function advanceFlow(entry: StoredRun): Run {
     }
     if (node.type === "human") {
       setStatus(run, "waiting");
-      run.pending = humanPending(node, flow.pool);
+      run.pending = humanPending(node, flow.pool, flow.visits[node.id]);
       addStep(
         entry.steps,
         node.id,
@@ -1048,11 +1049,30 @@ export async function mockRuns(request: Request, path: string[]) {
   }
   if (run.status !== "waiting")
     return json({ detail: "Run is not waiting for approval" }, 409);
+  const shown = isRecord(run.pending?.details)
+    ? run.pending.details.seen
+    : null;
+  if (
+    typeof body.seen === "string" &&
+    typeof shown === "string" &&
+    body.seen !== shown
+  )
+    return json({ detail: "内容已经更新，请刷新后再处理" }, 409);
   if (!run.pending?.options.includes(body.decision))
-    return invalid([{ loc: ["body", "decision"], msg: "请选择有效操作" }]);
+    return json({ detail: `这一步现在不能选「${body.decision}」` }, 422);
+  const asked =
+    run.pending.kind === "approval" ? (run.pending.fields ?? []) : [];
+  const answers = isRecord(body.values) ? body.values : {};
+  if (asked.length) {
+    const issues = validateFields(asked, answers, "values");
+    if (issues.length) return invalid(issues);
+  }
+  const remark = typeof body.comment === "string" && body.comment.trim() !== "";
+  const differs = answersChanged(asked, answers);
   if (
     run.pending.comment_required?.includes(body.decision) &&
-    (typeof body.comment !== "string" || !body.comment.trim())
+    !remark &&
+    !differs
   )
     return invalid([{ loc: ["body", "comment"], msg: "请填写处理意见" }]);
   if (entry.flow) {
@@ -1064,6 +1084,18 @@ export async function mockRuns(request: Request, path: string[]) {
       const issues = validateFields(pending.fields ?? [], values, "values");
       if (issues.length) return invalid(issues);
     }
+    // A changed answer or a remark turns an option that needs none into changed_branch.
+    const turn = pending.changed_branch;
+    const decision =
+      turn &&
+      pending.options.includes(turn) &&
+      body.decision !== turn &&
+      !pending.comment_required?.includes(body.decision) &&
+      (differs || remark)
+        ? turn
+        : body.decision;
+    const label = (key: string) => pending.option_labels?.[key] ?? key;
+    const round = isRecord(pending.details) ? pending.details.round : null;
     const node = entry.flow.next;
     const output =
       pending.kind === "form"
@@ -1072,9 +1104,32 @@ export async function mockRuns(request: Request, path: string[]) {
             actor: typeof body.actor === "string" ? body.actor : "",
           }
         : {
-            decision: body.decision,
+            decision,
             comment: body.comment ?? "",
             actor: typeof body.actor === "string" ? body.actor : "",
+            ...(typeof round === "number"
+              ? {
+                  values: asked.length ? answers : {},
+                  notes: [],
+                  changed: differs,
+                  feedback:
+                    decision === turn ||
+                    pending.comment_required?.includes(decision)
+                      ? `【第 ${round} 轮 · ${run.step?.title ?? node} · ${label(decision)}】${
+                          remark ? `意见：${String(body.comment).trim()}` : ""
+                        }`
+                      : "",
+                  record: {
+                    node,
+                    round,
+                    decision,
+                    decision_label: label(decision),
+                    submitted: body.decision,
+                    actor: typeof body.actor === "string" ? body.actor : null,
+                    answers,
+                  },
+                }
+              : {}),
           };
     entry.flow.pool[node] = output;
     decideStep(entry.steps, output);
@@ -1084,8 +1139,7 @@ export async function mockRuns(request: Request, path: string[]) {
       entry.flow.config.graph.edges.find(
         (edge) =>
           edge.from === node &&
-          (edge.branch ?? null) ===
-            (pending.kind === "form" ? null : body.decision),
+          (edge.branch ?? null) === (pending.kind === "form" ? null : decision),
       )?.to ?? "";
     const human = entry.flow.config.graph.nodes.find(
       (item) => item.id === node,
@@ -1101,10 +1155,9 @@ export async function mockRuns(request: Request, path: string[]) {
                   pending.fields ?? [],
                   inputPayload(pending.fields ?? [], values),
                 )
-              : approvalSaid(
-                  pending.option_labels?.[body.decision] ?? body.decision,
-                  body.comment,
-                ),
+              : decision !== body.decision
+                ? `点了「${label(body.decision)}」，改了答案或写了意见，按「${label(decision)}」处理`
+                : approvalSaid(label(decision), body.comment),
         },
         typeof body.actor === "string" ? body.actor : null,
       ),

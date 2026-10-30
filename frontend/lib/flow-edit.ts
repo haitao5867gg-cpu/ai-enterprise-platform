@@ -97,7 +97,16 @@ export function ownOutputs(node: FlowNode): string[] {
     case "human":
       return node.mode === "form"
         ? [...node.fields.map((item) => item.key), "actor"]
-        : ["decision", "comment", "actor"];
+        : [
+            "decision",
+            "comment",
+            "actor",
+            "values",
+            "notes",
+            "changed",
+            "feedback",
+            "record",
+          ];
     case "template":
       return ["text"];
     case "code":
@@ -112,13 +121,38 @@ export function ownOutputs(node: FlowNode): string[] {
         "summary",
       ];
     case "etl_plan_check":
-      return ["ok", "plan", "problems", "message", "sources", "targets"];
+      return [
+        "ok",
+        "plan",
+        "problems",
+        "message",
+        "sources",
+        "targets",
+        "references",
+        "summary",
+        "brief",
+        "questions",
+        "answer",
+        "uncited",
+        "cleaned",
+      ];
     case "databricks_ingest":
-      return ["catalog", "tables", "summary"];
+      return ["catalog", "tables", "summary", "reused"];
     case "etl_code_check":
-      return ["ok", "code", "problems", "bundle", "summary"];
+      return ["ok", "code", "problems", "bundle", "files", "summary"];
     case "databricks_dev_run":
-      return ["status", "run", "url", "tables", "preview", "errors", "report"];
+      return [
+        "status",
+        "ok",
+        "run",
+        "url",
+        "tables",
+        "preview",
+        "quality",
+        "answer",
+        "errors",
+        "report",
+      ];
     case "end":
       return [];
   }
@@ -259,7 +293,8 @@ export function walk(
 }
 
 // Nodes that can run before `id` on some path from the start node. Inside a loop this
-// includes the later nodes of the loop, which the contract allows to be referenced.
+// includes the later nodes of the loop, which the contract allows to be referenced, and
+// the node itself (its last round, such as a review step's previous record).
 export function upstreamOf(config: FlowConfig, id: string): FlowNode[] {
   const start = config.graph.nodes.find((node) => node.type === "start");
   if (!start) return [];
@@ -267,7 +302,7 @@ export function upstreamOf(config: FlowConfig, id: string): FlowNode[] {
   reached.add(start.id);
   const before = walk(config, [id], true);
   return config.graph.nodes.filter(
-    (node) => node.id !== id && reached.has(node.id) && before.has(node.id),
+    (node) => reached.has(node.id) && before.has(node.id),
   );
 }
 

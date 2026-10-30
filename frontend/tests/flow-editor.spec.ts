@@ -435,6 +435,57 @@ test("llm 节点「回答不写进运行过程」保存后保留", async ({ page
   await expect(quiet).toHaveCount(0);
 });
 
+test("a human node's extended settings are shown, kept on save and follow a renamed option", async ({
+  page,
+  request,
+}) => {
+  const app = await blank(request, page);
+  const source: AppDetail = await (
+    await request.get("/api/apps/plan-questions")
+  ).json();
+  const saved = await request.put(`/api/apps/${app}/draft`, {
+    data: { config: source.current.config },
+  });
+  expect(saved.status(), await saved.text()).toBe(200);
+  await page.reload();
+  await nodeButton(page, "确认方案", "review").click();
+  const extras = panel(page).getByRole("region", { name: "扩展设置" });
+  await expect(extras).toContainText("只能查看，保存时原样保留");
+  await expect(extras).toContainText("etl_plan_review");
+  await expect(extras).toContainText("previous：{{review.record}}");
+  await expect(extras).toContainText("统计哪段时间？、要不要去掉测试订单？");
+  await expect(extras).toContainText("「按我的意见修改方案」处理");
+
+  // Renaming the option renames changed_branch, comment_required and the edge.
+  await panel(page)
+    .getByRole("group", { name: "选项 2" })
+    .getByLabel("标识", { exact: true })
+    .fill("rewrite");
+  await save(page);
+  await expect(page.locator(".asset-notice")).toContainText("草稿已保存");
+  const review = (await draftConfig(request, app)).graph.nodes.find(
+    (node) => node.id === "review",
+  );
+  expect(review).toMatchObject({
+    changed_branch: "rewrite",
+    comment_required: ["rewrite"],
+    view: "etl_plan_review",
+    data: { plan: "{{draft.text}}", previous: "{{review.record}}" },
+    fields: [{ key: "q1" }, { key: "q2" }],
+  });
+  expect(
+    (await draftConfig(request, app)).graph.edges.find(
+      (edge) => edge.from === "review" && edge.to === "draft",
+    ),
+  ).toMatchObject({ branch: "rewrite" });
+
+  // A form has none of them: switching takes them away.
+  await panel(page)
+    .getByLabel("处理方式", { exact: true })
+    .selectOption("form");
+  await expect(extras).toHaveCount(0);
+});
+
 test("draft trial run asks to save first, then runs the draft and is labelled", async ({
   page,
   request,

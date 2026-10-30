@@ -241,7 +241,7 @@
 【第 2 轮 · 审核试算结果 · 改代码】列「ads_sales_city_member_m.avg_order_value」：要保留两位小数；意见：其他没问题
 ```
 
-填写模式的产出不变，不加 `record` 这些固定名字（字段的 key 是用户起的，可能重名）；`view`、`data` 两种模式都能用。编辑页的节点表单第一阶段只显示这些扩展设置、不提供编辑（写在模板或导入的文件里），保存时原样保留；改某个选项的 key 时，`comment_required` 和 `changed_branch` 跟着改；切换模式时删掉这些键（不写成 null）。
+填写模式的产出不变，不加 `record` 这些固定名字（字段的 key 是用户起的，可能重名）；`view`、`data` 两种模式都能用。编辑页的节点表单第一阶段只显示这些扩展设置、不提供编辑（写在模板或导入的文件里），保存时原样保留；改某个选项的 key 时，`comment_required` 和 `changed_branch` 跟着改；删掉 `changed_branch` 指的那个选项时，`changed_branch` 也删掉；切换模式时删掉这些键（不写成 null）。
 
 **template 文本拼接**
 

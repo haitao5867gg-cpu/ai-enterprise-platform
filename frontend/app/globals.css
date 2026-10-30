@@ -1920,14 +1920,108 @@ textarea::placeholder {
 }
 .approval-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 16px;
 }
 .approval-actions .button {
-  flex: 1;
+  flex: 1 1 40%;
   padding: 9px 10px;
   min-height: 36px;
   font-size: 11px;
+}
+/* An approval's questions: every one is picked; the step's suggestion is marked. */
+.approval-questions {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+.approval-question {
+  min-width: 0;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #eae0cd;
+  border-radius: 8px;
+  background: #fffefa;
+}
+.approval-question[aria-invalid="true"] {
+  border-color: #d9a597;
+}
+.approval-question legend {
+  padding: 0 4px;
+  color: #6f5a35;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.question-why {
+  margin: 2px 0 8px;
+  color: #ab9470;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.question-why > span:first-child:not(.suggested-tag) {
+  font-weight: 600;
+}
+.question-choices {
+  display: grid;
+  gap: 6px;
+}
+.approval-card label.question-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: #524a61;
+  cursor: pointer;
+}
+.approval-card .question-choice input {
+  display: inline;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--purple);
+}
+.suggested-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 9px;
+  color: #3b8e6c;
+  background: #e5f3ec;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.question-choice .suggested-tag {
+  margin-right: 0;
+}
+.dropped-questions {
+  margin-top: 16px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: #8a4a3c;
+  background: #fbebe6;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.dropped-questions p {
+  margin: 0;
+  font-weight: 600;
+}
+.dropped-questions ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+.turn-hint {
+  margin: 14px 0 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: #8a5a17;
+  background: #f8edcf;
+  font-size: 11px;
+  line-height: 1.7;
 }
 .result-card,
 .failure-card {
@@ -3578,9 +3672,37 @@ a.asset-card:hover,
     max-width: 100%;
     height: auto;
   }
-  .approval-actions {
-    flex-wrap: wrap;
-  }
+}
+
+/* A human node's extended settings in the editor: shown, not edited. */
+.human-extras {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px dashed #ddd6e9;
+  border-radius: 8px;
+}
+.human-extras h4 {
+  margin: 0;
+  font-size: 12px;
+  color: #65567b;
+}
+.human-extras > p {
+  margin: 0;
+  font-size: 11px;
+}
+.read-only-label {
+  font-weight: 600;
+}
+.read-only-setting > div {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.read-only-setting ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.8;
 }
 
 /* Flow editor (form version): preview, node list and the selected node's settings. */

@@ -3,7 +3,7 @@
 import { KnowledgePicker } from "./knowledge-form";
 import { RetrievalFields } from "./retrieval-fields";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import type {
   AgentNode,
   AppDetail,
@@ -31,6 +31,7 @@ import { errorMessage } from "../lib/runs";
 import { SkillPicker } from "./app-settings";
 import {
   CheckField,
+  FieldIssues,
   ListEditor,
   NumberField,
   RefField,
@@ -44,6 +45,7 @@ export type Change = (
 ) => void;
 type Options = AppDetail["options"];
 type Issues = Record<string, string> | undefined;
+type HumanOption = Extract<HumanNode, { mode: "approval" }>["options"][number];
 type Tool = {
   name: string;
   description?: string | null;
@@ -917,19 +919,26 @@ function HumanFields({
         onChange={(show) => change({ ...node, show })}
       />
       {node.mode === "approval" ? (
-        <ListEditor
+        <ListEditor<HumanOption>
           label="选项"
           items={node.options}
           min={2}
           max={5}
           onChange={(options) =>
-            change({
-              ...node,
-              options,
-              comment_required: (node.comment_required ?? []).filter((key) =>
-                options.some((option) => option.key === key),
+            change(
+              withChangedBranch(
+                {
+                  ...node,
+                  options,
+                  comment_required: (node.comment_required ?? []).filter(
+                    (key) => options.some((option) => option.key === key),
+                  ),
+                },
+                options.some((option) => option.key === node.changed_branch)
+                  ? node.changed_branch
+                  : null,
               ),
-            })
+            )
           }
           make={() => ({
             key: `option_${node.options.length + 1}`,
@@ -945,15 +954,20 @@ function HumanFields({
                   value={option.key}
                   onChange={(key) =>
                     change(
-                      {
-                        ...node,
-                        options: node.options.map((o, j) =>
-                          j === i ? { ...o, key } : o,
-                        ),
-                        comment_required: required.map((item) =>
-                          item === option.key ? key : item,
-                        ),
-                      },
+                      withChangedBranch(
+                        {
+                          ...node,
+                          options: node.options.map((o, j) =>
+                            j === i ? { ...o, key } : o,
+                          ),
+                          comment_required: required.map((item) =>
+                            item === option.key ? key : item,
+                          ),
+                        },
+                        node.changed_branch === option.key
+                          ? key
+                          : node.changed_branch,
+                      ),
                       { from: option.key, to: key },
                     )
                   }
@@ -970,6 +984,15 @@ function HumanFields({
                     })
                   }
                 />
+                {option.requires != null && option.requires !== "" && (
+                  <ReadOnlySetting
+                    label="显示条件"
+                    issues={issuesUnder(issues, `options.${i}.requires`)}
+                  >
+                    {settingText(option.requires)}
+                    <span className="muted">（成立时才显示这个选项）</span>
+                  </ReadOnlySetting>
+                )}
                 <CheckField
                   label="必须写意见"
                   checked={required.includes(option.key)}
@@ -996,7 +1019,110 @@ function HumanFields({
           onChange={(fields) => change({ ...node, fields })}
         />
       )}
+      <HumanExtras node={node} issues={issues} />
     </>
+  );
+}
+
+// changed_branch follows its option; without one the key goes (never written as null).
+function withChangedBranch(
+  node: Extract<HumanNode, { mode: "approval" }>,
+  branch: string | null | undefined,
+): HumanNode {
+  const rest = { ...node };
+  delete rest.changed_branch;
+  return branch ? { ...rest, changed_branch: branch } : rest;
+}
+
+function settingText(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function ReadOnlySetting({
+  label,
+  issues,
+  children,
+}: {
+  label: string;
+  issues: string[];
+  children: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div className="asset-field read-only-setting">
+      <span className="read-only-label" id={id}>
+        {label}
+      </span>
+      <div aria-labelledby={id}>{children}</div>
+      <FieldIssues id={`${id}-issues`} messages={issues} />
+    </div>
+  );
+}
+
+// The extended settings written in a template or an imported file: shown, not edited,
+// and saved as they are.
+function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
+  const fields = node.mode === "approval" ? node.fields : null;
+  const data = node.data && Object.entries(node.data);
+  const asked =
+    typeof fields === "string"
+      ? fields
+        ? settingText(fields)
+        : ""
+      : Array.isArray(fields) && fields.length
+        ? fields
+            .map((field) =>
+              typeof field === "object" && field && "label" in field
+                ? String(field.label)
+                : settingText(field),
+            )
+            .join("、")
+        : "";
+  const changed =
+    node.mode === "approval" && node.changed_branch
+      ? (node.options.find((option) => option.key === node.changed_branch)
+          ?.label ?? node.changed_branch)
+      : "";
+  if (!node.view && !data?.length && !asked && !changed) return null;
+  return (
+    <section className="human-extras" aria-label="扩展设置">
+      <h4>扩展设置</h4>
+      <p className="muted">
+        写在模板或导入的文件里，这里只能查看，保存时原样保留。
+      </p>
+      {node.view && (
+        <ReadOnlySetting label="页面样式" issues={issuesUnder(issues, "view")}>
+          <code>{node.view}</code>
+        </ReadOnlySetting>
+      )}
+      {data && data.length > 0 && (
+        <ReadOnlySetting label="页面数据" issues={issuesUnder(issues, "data")}>
+          <ul>
+            {data.map(([key, value]) => (
+              <li key={key}>
+                <code>{key}</code>：{settingText(value)}
+              </li>
+            ))}
+          </ul>
+        </ReadOnlySetting>
+      )}
+      {asked && (
+        <ReadOnlySetting
+          label="要回答的题"
+          issues={issuesUnder(issues, "fields")}
+        >
+          {asked}
+        </ReadOnlySetting>
+      )}
+      {changed && (
+        <ReadOnlySetting
+          label="改了建议答案或写了意见时按"
+          issues={issuesUnder(issues, "changed_branch")}
+        >
+          「{changed}」处理
+        </ReadOnlySetting>
+      )}
+    </section>
   );
 }
 

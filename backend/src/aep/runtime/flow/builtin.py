@@ -315,13 +315,18 @@ PLAN_PROMPT = """需求：{{start.request}}
 {{standards.context}}
 
 需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式\
-按开发规范。在 summary、assumptions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要\
-编号。资料和需求冲突时以需求为准，并写进 assumptions。
+按开发规范。在 brief、rules、questions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容\
+不要编号。资料和需求冲突时以需求为准，并写进 rules。需求没说清、要人拍板的地方写成 questions，\
+方案按建议的选项写。
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}
-用户的修改意见（为空时忽略）：{{review.comment}}
-有上一版方案时，在它的基础上按问题和意见修改，输出完整方案。"""
+确认方案时的意见（为空时忽略）：{{review.feedback}}
+审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
+意见开头写着第几轮、哪一步、什么决定。两段意见都有时，确认方案时的意见是最新的，两者冲突时\
+以它为准；审核试算结果时的意见上一版方案已经按它改过。只处理最新一轮、和方案有关的意见；\
+上一版方案里已经按它改过的，不要重复处理。有上一版方案时，在它的基础上按问题和意见修改，\
+输出完整方案。"""
 
 CODEGEN_PROMPT = """已确认的方案：
 {{check_plan.plan}}
@@ -334,8 +339,10 @@ CODEGEN_PROMPT = """已确认的方案：
 
 上一版代码（第一次写时为空，忽略）：{{check_code.code}}
 静态检查发现的问题（为空时忽略）：{{check_code.problems}}
-Databricks dev 运行的报错（为空时忽略）：{{dev_run.errors}}
-有上一版代码时，按问题和报错修改，输出全部目标表的完整代码。"""
+Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
+审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
+意见开头写着第几轮、哪一步、什么决定。只处理和代码有关的意见；上一版代码里已经按它改过的，\
+不要重复处理。有上一版代码时，按问题、报错和意见修改，输出全部目标表的完整代码。"""
 
 # The standards are needed in full every time, whatever the request says: the query
 # is the documents' subjects and top_k takes nearly every chunk.
@@ -349,9 +356,10 @@ def _retry(times: int, interval_seconds: int) -> dict[str, Any]:
 
 
 def _etl_lakehouse() -> dict[str, Any]:
-    """Profile a source, plan by the company's metric definitions, have a person
-    confirm, copy the sources into Databricks, write code by the warehouse standards
-    and run it on dev (docs/api/data-nodes.md)."""
+    """Profile a source, plan by the company's metric definitions, have the data team
+    confirm the plan and answer its questions, copy the sources into Databricks, write
+    code by the warehouse standards, try it on dev and have the result reviewed before
+    it is delivered (docs/api/data-nodes.md, template version 2)."""
     # Imported here: the ETL modules are not needed to list the other templates.
     from aep.etl import codegen, plan
 
@@ -361,12 +369,19 @@ def _etl_lakehouse() -> dict[str, Any]:
             "id": "start",
             "type": "start",
             "title": "开始",
-            "note": "运行时填写：选数据源，用业务语言写需求（不用提表名和字段），"
-            "表范围写成 schema.* 或 schema.table，留空就是全部表。",
+            "note": "运行时填写：选数据源，用业务语言写需求（不用提表名和字段）。"
+            "表范围写成 schema.* 或 schema.table，留空就是全部表；"
+            "表范围、代码语言和 bundle 名一般不用改。",
             "inputs": [
                 {"key": "datasource", "label": "数据源", "type": "datasource", "required": True},
-                {"key": "request", "label": "需求", "type": "textarea", "required": True},
-                {"key": "tables", "label": "表范围", "type": "text"},
+                {
+                    "key": "request",
+                    "label": "需求",
+                    "type": "textarea",
+                    "required": True,
+                    "examples": [],
+                },
+                {"key": "tables", "label": "表范围", "type": "text", "advanced": True},
                 {
                     "key": "language",
                     "label": "代码语言",
@@ -376,8 +391,9 @@ def _etl_lakehouse() -> dict[str, Any]:
                         {"value": "pyspark", "label": "PySpark"},
                         {"value": "sql", "label": "SQL"},
                     ],
+                    "advanced": True,
                 },
-                {"key": "name", "label": "bundle 名", "type": "text"},
+                {"key": "name", "label": "bundle 名", "type": "text", "advanced": True},
             ],
         },
         {
@@ -422,12 +438,14 @@ def _etl_lakehouse() -> dict[str, Any]:
             "id": "plan",
             "type": "llm",
             "title": "出方案",
-            "note": "模型按 Skill etl-plan 的做法，结合需求、探查结果、口径和开发规范写 ETL 方案："
-            "目标表、列映射、清洗和质量规则、需要人确认的假设。"
-            "系统提示词是平台规定的输出格式，Skill 管怎么做，两者分开维护。",
+            "note": "模型按 Skill etl-plan-brief 的做法，结合需求、探查结果、口径和开发规范写方案："
+            "先写给人看的业务说明（指标怎么算、维度、筛选、时间范围），再写目标表和列映射、"
+            "已按口径处理的规则、要人拍板的问题和最后给出的答案。确认方案或审核试算结果时"
+            "提了意见，就带着意见回到这里重写。系统提示词是平台规定的输出格式，"
+            "Skill 管怎么做，两者分开维护。",
             "model": None,
-            "skills": [{"name": "etl-plan", "version": 1}],
-            "system": plan.OUTPUT_FORMAT,
+            "skills": [{"name": "etl-plan-brief", "version": 1}],
+            "system": plan.OUTPUT_FORMAT_V2,
             "prompt": PLAN_PROMPT,
             "output": {"kind": "text"},
             # The reply is JSON for the check after it (so is codegen's), not for the
@@ -441,12 +459,15 @@ def _etl_lakehouse() -> dict[str, Any]:
             "type": "etl_plan_check",
             "title": "校验方案",
             "note": "模型可能编出数据里没有的表、列或取值，平台在这里逐条对照探查结果，"
-            "不过就带着问题让模型重写，连续 3 次不过才停下。"
+            "不过就带着问题让模型重写，连续 3 次不过才停下。平台还会先自动整理："
+            "去掉业务文字里的代码和英文前缀，第 6 题起和已经答过的题改成规则。"
             "通过后把方案整理成给人看的格式，列出引用的资料。",
             "reply": "{{plan.text}}",
             "profile": "{{profile.tables}}",
             "hits": ["{{glossary.hits}}", "{{standards.hits}}"],
             "language": "{{start.language}}",
+            "format": 2,
+            "answered": "{{review.record}}",
             "max_attempts": 3,
             "max_visits": 10,
         },
@@ -454,17 +475,31 @@ def _etl_lakehouse() -> dict[str, Any]:
             "id": "review",
             "type": "human",
             "title": "确认方案",
-            "note": "人工确认点：看目标表、口径依据和假设，没问题就确认；不满意就驳回并写意见，"
-            "模型按意见重写方案。确认之前不会动 Databricks 里的任何数据。",
+            "note": "人工确认点：看业务说明、技术方案和已按口径处理的规则，回答每道问题。"
+            "都按建议答、没写意见就确认，开始抽取数据；改了建议答案或写了意见，"
+            "模型按意见重写方案，再确认一次。确认之前不会动 Databricks 里的任何数据。",
             "mode": "approval",
-            "prompt": "请检查方案：目标表和字段、带 [n] 的口径依据、清洗规则和假设。"
-            "确认后平台会把方案用到的源表抽取到 Databricks；驳回时写下修改意见。",
+            "prompt": "请检查方案：业务说明（指标、维度、筛选、时间范围）、技术方案和已按口径"
+            "处理的规则，并回答每道问题。确认后平台把用到的源表抽取到 Databricks；"
+            "改了建议答案或写了意见，平台会按意见重写方案，再请你确认一次。",
+            "view": "etl_plan_review",
             "show": "{{check_plan.message}}",
+            "data": {
+                "brief": "{{check_plan.brief}}",
+                "plan": "{{check_plan.plan}}",
+                "answer": "{{check_plan.answer}}",
+                "uncited": "{{check_plan.uncited}}",
+                "cleaned": "{{check_plan.cleaned}}",
+                "returned": "{{data_review.record}}",
+                "previous": "{{review.record}}",
+            },
+            "fields": "{{check_plan.questions}}",
+            "changed_branch": "revise",
             "options": [
-                {"key": "approve", "label": "确认"},
-                {"key": "reject", "label": "驳回"},
+                {"key": "approve", "label": "确认方案，开始做"},
+                {"key": "revise", "label": "按我的意见修改方案"},
             ],
-            "comment_required": ["reject"],
+            "comment_required": ["revise"],
             "max_visits": 5,
         },
         {
@@ -473,10 +508,13 @@ def _etl_lakehouse() -> dict[str, Any]:
             "title": "抽取到湖仓",
             "note": "确认后才搬数据：只把方案用到的源表整表复制到 Databricks，"
             "经 Unity Catalog Volume 落地，再在已有集群上建表，写到源表 catalog 下同名的 schema。"
-            "表注释里记着来源和这次运行，方便追溯。",
+            "表注释里记着来源和这次运行，方便追溯。改方案后再确认时，"
+            "要的表这次运行都抽取过就沿用，不再复制。",
             "datasource": "{{start.datasource}}",
             "tables": "{{check_plan.sources}}",
             "max_rows": 200000,
+            "reuse": True,
+            "max_visits": 6,
             "on_error": _retry(2, 5),
         },
         {
@@ -484,7 +522,8 @@ def _etl_lakehouse() -> dict[str, Any]:
             "type": "llm",
             "title": "写代码",
             "note": "模型按 Skill etl-codegen 和开发规范，为每张目标表写 PySpark 转换代码"
-            "（函数体）。后面的检查或 dev 运行不通过时，会带着问题和报错回到这里改。",
+            "（函数体）。后面的检查或试算不通过、审核要求改代码时，"
+            "会带着问题、报错和意见回到这里改。",
             "model": None,
             "skills": [{"name": "etl-codegen", "version": 1}],
             "system": codegen.OUTPUT_FORMAT,
@@ -511,25 +550,89 @@ def _etl_lakehouse() -> dict[str, Any]:
         {
             "id": "dev_run",
             "type": "databricks_dev_run",
-            "title": "dev 运行",
-            "note": "把 bundle 部署成已有集群上的 Job，在 dev 目标运行，收集每张表的行数和"
-            "质量规则结果，读出结果表的前 20 行。能修的报错带回去重写代码，最多运行 3 次。",
+            "title": "开发环境试算",
+            "note": "把 bundle 部署成已有集群上的 Job，在开发环境运行，收集每张表的行数和"
+            "质量规则结果，读出结果表的前 20 行。能修的报错带回去重写代码，每轮最多运行 3 次；"
+            "试算没通过也交给人审核。",
             "bundle": "{{check_code.bundle}}",
+            "plan": "{{check_plan.plan}}",
             "max_runs": 3,
             "preview_rows": 20,
-            "max_visits": 3,
+            "max_visits": 9,
             "on_error": _retry(2, 5),
+        },
+        {
+            "id": "data_review",
+            "type": "human",
+            "title": "审核试算结果",
+            "note": "人工审核点：看试算结果、代码和方案。没问题就通过，交付结果；"
+            "数字或代码不对时选改代码或改方案并写明意见，平台带着意见重做；"
+            "不做了就终止并写明原因。试算没通过时没有“通过”。",
+            "mode": "approval",
+            "prompt": "请看开发环境试算的结果、代码和方案。通过后交付；改代码、改方案时写明意见，"
+            "可以挂在某一列、某条质量规则或某个文件上；终止时写明原因。",
+            "view": "etl_dev_review",
+            "show": "{{dev_run.report}}",
+            "data": {
+                "brief": "{{check_plan.brief}}",
+                "plan": "{{check_plan.plan}}",
+                "uncited": "{{check_plan.uncited}}",
+                "confirmed": "{{review.record}}",
+                "status": "{{dev_run.status}}",
+                "tables": "{{dev_run.tables}}",
+                "preview": "{{dev_run.preview}}",
+                "answer": "{{dev_run.answer}}",
+                "quality": "{{dev_run.quality}}",
+                "url": "{{dev_run.url}}",
+                "errors": "{{dev_run.errors}}",
+                "files": "{{check_code.files}}",
+            },
+            "options": [
+                {"key": "approve", "label": "通过", "requires": "{{dev_run.ok}}"},
+                {"key": "fix_code", "label": "改代码"},
+                {"key": "fix_plan", "label": "改方案"},
+                {"key": "stop", "label": "终止"},
+            ],
+            "comment_required": ["fix_code", "fix_plan", "stop"],
+            "max_visits": 4,
         },
         {
             "id": "end",
             "type": "end",
-            "title": "结束",
-            "note": "输出运行报告：抽取了哪些表、写出哪些表和行数、质量规则结果、"
-            "Databricks 链接和结果数据预览，以及最终确认的方案。",
+            "title": "交付",
+            "note": "交付审核通过的结果：答案、业务说明、方案、代码、运行报告和质量小结，"
+            "以及确认方案和审核试算结果的记录。数据还在开发环境，没有上线。",
+            "outcome": "delivered",
             "outputs": [
                 {"key": "report", "from": ["{{dev_run.report}}"]},
                 {"key": "plan", "from": ["{{check_plan.plan}}"]},
                 {"key": "ingested", "from": ["{{ingest.summary}}"]},
+                {"key": "brief", "from": ["{{check_plan.brief}}"]},
+                {"key": "answer", "from": ["{{dev_run.answer}}"]},
+                {"key": "code", "from": ["{{check_code.bundle}}"]},
+                {"key": "quality", "from": ["{{dev_run.quality}}"]},
+                {"key": "dev_url", "from": ["{{dev_run.url}}"]},
+                {"key": "confirmed", "from": ["{{review.record}}"]},
+                {"key": "reviewed", "from": ["{{data_review.record}}"]},
+            ],
+        },
+        {
+            "id": "stopped",
+            "type": "end",
+            "title": "终止",
+            "note": "审核时选了终止：运行停在这里，记下原因、业务说明、方案、运行报告和两次人工处理"
+            "的记录。没通过审核的数字和代码不作为结果交付。",
+            "outcome": "stopped",
+            "outputs": [
+                {
+                    "key": "reason",
+                    "from": ["{{data_review.comment}}", "{{data_review.feedback}}"],
+                },
+                {"key": "brief", "from": ["{{check_plan.brief}}"]},
+                {"key": "plan", "from": ["{{check_plan.plan}}"]},
+                {"key": "report", "from": ["{{dev_run.report}}"]},
+                {"key": "confirmed", "from": ["{{review.record}}"]},
+                {"key": "reviewed", "from": ["{{data_review.record}}"]},
             ],
         },
     ]
@@ -542,14 +645,18 @@ def _etl_lakehouse() -> dict[str, Any]:
         ("check_plan", "ok", "review"),
         ("check_plan", "retry", "plan"),
         ("review", "approve", "ingest"),
-        ("review", "reject", "plan"),
+        ("review", "revise", "plan"),
         ("ingest", None, "codegen"),
         ("codegen", None, "check_code"),
         ("check_code", "ok", "dev_run"),
         ("check_code", "retry", "codegen"),
-        ("dev_run", "passed", "end"),
+        ("dev_run", "passed", "data_review"),
+        ("dev_run", "failed", "data_review"),
         ("dev_run", "retry", "codegen"),
-        ("dev_run", "failed", "end"),
+        ("data_review", "approve", "end"),
+        ("data_review", "fix_code", "codegen"),
+        ("data_review", "fix_plan", "plan"),
+        ("data_review", "stop", "stopped"),
     ]
     return {
         "schema_version": 1,
@@ -621,8 +728,8 @@ TEMPLATES = {
         Template(
             "etl-lakehouse",
             "数据 ETL（湖仓）",
-            "探查数据源、按口径知识库出方案、经人确认后抽取到 Databricks，"
-            "按开发规范写 PySpark 代码并在 dev 运行，预览结果数据。",
+            "探查数据源、按口径知识库出方案，确认方案后抽取到 Databricks，"
+            "按开发规范写 PySpark 代码，在开发环境试算并算出答案，审核通过后交付。",
             _etl_lakehouse(),
             needs=("datasource", "knowledge_base"),
         ),

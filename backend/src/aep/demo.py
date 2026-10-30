@@ -12,8 +12,8 @@ Through the platform's HTTP API only (docs/api/data-nodes.md, "演示"):
    only the demo's documents (they are uploaded again); then waits until every
    file's document is processed;
 3. the app ``retail-etl`` from the template ``etl-lakehouse``, with the bases, the
-   model alias and the start node's defaults filled in, published when its current
-   version differs from that;
+   model alias, the start node's defaults and the request's examples filled in,
+   published when its current version differs from that;
 4. prints the pages to open and the demo request.
 
 Running it again changes nothing. The MySQL ``retail`` database itself is loaded by
@@ -43,6 +43,8 @@ REQUEST = (
     "口径按公司数据口径执行。"
 )
 SPARE_REQUEST = "统计每个品类每月的销售额和毛利率，只看线上渠道。"
+# Offered on the new-run page under the request (template version 2 on).
+EXAMPLES = [REQUEST, SPARE_REQUEST, "统计每月新客户数和复购率，按城市拆开。"]
 ACTOR = "aep-demo"
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[3] / "demo" / "knowledge"
 WAIT_SECONDS = 300.0
@@ -334,6 +336,8 @@ class Demo:
                 for field in node["inputs"]:
                     if field["key"] in defaults:
                         field["default"] = defaults[field["key"]]
+                    if field["key"] == "request" and "examples" in field:
+                        field["examples"] = list(EXAMPLES)
             if node["id"] in bases:
                 node["knowledge_bases"] = [bases[node["id"]]["kb_id"]]
             if node["type"] == "llm":

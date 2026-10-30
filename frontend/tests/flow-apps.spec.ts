@@ -173,6 +173,109 @@ test("form human node requires order ID, maps server validation to its field, su
   await expect(answered).toContainText("订单号填了「A2002」");
 });
 
+test("approval questions: each one picked, a changed answer turns the decision, seen goes with it and a changed step is read again", async ({
+  page,
+}) => {
+  await page.goto("/runs/new?app=plan-questions");
+  await page.getByLabel("需求").fill("按城市统计客单价");
+  await page.getByRole("button", { name: "开始运行" }).click();
+  await expect(
+    page.getByRole("heading", { name: "需要你的确认" }),
+  ).toBeVisible();
+  const first = page.getByRole("group", { name: "1. 统计哪段时间？" });
+  const second = page.getByRole("group", { name: "2. 要不要去掉测试订单？" });
+  await expect(first).toContainText("为什么问：需求没说时间范围");
+  await expect(
+    first.locator(".question-choice").filter({ hasText: "源库现有的 12 个月" }),
+  ).toContainText("建议");
+  await expect(
+    second.locator(".question-choice").filter({ hasText: "是" }),
+  ).toContainText("建议");
+  const confirm = page.getByRole("button", {
+    name: "确认方案，开始做",
+    exact: true,
+  });
+  const revise = page.getByRole("button", {
+    name: "按我的意见修改方案",
+    exact: true,
+  });
+  await expect(page.getByLabel(/^意见/)).toBeVisible();
+  await expect(revise).toBeDisabled();
+  let posts = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/resume"))
+      posts++;
+  });
+  // Every question is answered by a person: nothing is picked for them.
+  await confirm.click();
+  await expect(page.locator("#question-q1-error")).toHaveText("请选一个答案");
+  await expect(page.locator("#question-q2-error")).toHaveText("请选一个答案");
+  expect(posts).toBe(0);
+
+  // An answer other than the suggestion: the decision goes by 按我的意见修改方案.
+  await first.getByLabel("只看 2026 年").check();
+  await second.getByLabel("是").check();
+  await expect(page.locator(".turn-hint")).toContainText(
+    "会按「按我的意见修改方案」处理",
+  );
+  await expect(confirm).toHaveCount(0);
+  await expect(revise).toBeEnabled();
+  await first.getByLabel("源库现有的 12 个月").check();
+  await expect(confirm).toBeVisible();
+  await expect(revise).toBeDisabled();
+  // So does a remark.
+  await page.getByLabel(/^意见/).fill("客单价按支付金额算");
+  await expect(confirm).toHaveCount(0);
+  await page.getByLabel(/^意见/).fill("");
+
+  // The step changed after the page read it: the run is read again, answers kept.
+  await page.route("**/api/runs/*/resume", (route) =>
+    route.fulfill({
+      status: 409,
+      json: { detail: "内容已经更新，请刷新后再处理" },
+    }),
+  );
+  await confirm.click();
+  await expect(page.getByRole("main").getByRole("alert")).toContainText(
+    "内容已经更新：已重新载入",
+  );
+  await page.unroute("**/api/runs/*/resume");
+  await expect(first.getByLabel("源库现有的 12 个月")).toBeChecked();
+
+  await first.getByLabel("只看 2026 年").check();
+  const sent = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && request.url().endsWith("/resume"),
+  );
+  await revise.click();
+  expect((await sent).postDataJSON()).toMatchObject({
+    decision: "revise",
+    comment: "",
+    values: { q1: "y2026", q2: true },
+    seen: "sha256:mock-review-1",
+  });
+  // Written again with the changed answer; the second round starts unanswered.
+  await expect(page.locator(".human-show")).toContainText(
+    "【第 1 轮 · 确认方案 · 按我的意见修改方案】",
+  );
+  await expect(first.getByLabel("只看 2026 年")).not.toBeChecked();
+  await first.getByLabel("源库现有的 12 个月").check();
+  await second.getByLabel("是").check();
+  const confirmed = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && request.url().endsWith("/resume"),
+  );
+  await confirm.click();
+  expect((await confirmed).postDataJSON()).toMatchObject({
+    decision: "approve",
+    seen: "sha256:mock-review-2",
+  });
+  await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
+  await expect(page.locator(".result-json")).toContainText(
+    '"decision": "approve"',
+  );
+});
+
 test("copy a hello version, rename and archive; historical runs remain readable", async ({
   page,
   request,
