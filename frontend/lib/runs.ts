@@ -28,6 +28,9 @@ export type Pending = {
   comment_required?: string[];
   option_labels?: Record<string, string>;
   fields?: FormField[];
+  // The option a decision turns into when an answer or a remark changes it
+  // (null when the step sets none).
+  changed_branch?: string | null;
   // Apps may add new detail types; the generic approval remains usable.
   details?: unknown;
 };
@@ -53,6 +56,9 @@ export type RunSummary = {
   wait_seconds?: number | null;
   cancelled_by?: string | null;
   rerun_of?: string | null;
+  // What a done flow run came to: the outcome of the end step it ended at
+  // ("delivered", "stopped" or another word the app chose); null otherwise.
+  outcome?: string | null;
 };
 export type RunFailure = {
   node: string | null;
@@ -82,6 +88,19 @@ export const statusLabels: Record<RunStatus, string> = {
   error: "运行失败",
   cancelled: "已取消",
 };
+
+const outcomeLabels: Record<string, string> = {
+  delivered: "已交付",
+  stopped: "已终止",
+};
+
+// The run's status in words: a done run says what it came to.
+export function statusText(
+  run: Pick<RunSummary, "status" | "outcome" | "step">,
+): string {
+  if (run.status !== "done" || !run.outcome) return statusLabels[run.status];
+  return outcomeLabels[run.outcome] ?? run.step?.title ?? statusLabels.done;
+}
 
 // A run in one of these has ended and is not polled any more.
 export const isFinished = (status: RunStatus) =>

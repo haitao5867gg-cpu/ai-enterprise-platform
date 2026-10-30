@@ -78,6 +78,17 @@ def inputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return list(start_node(config).get("inputs") or [])
 
 
+def outcome(config: dict[str, Any], state: dict[str, Any]) -> str | None:
+    """What a finished run came to: the ``outcome`` of the end node it ended at, or None
+    (docs/api/flow-apps.md, "end")."""
+    visits = state.get("visits") or {}
+    for node in nodes(config):
+        if node["type"] == "end" and visits.get(node["id"]):
+            value = node.get("outcome")
+            return value if isinstance(value, str) else None
+    return None
+
+
 def skill_refs(config: dict[str, Any]) -> list[tuple[str, int]]:
     found: list[tuple[str, int]] = []
     for node in nodes(config):

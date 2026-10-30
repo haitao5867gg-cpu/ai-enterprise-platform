@@ -1518,12 +1518,13 @@ async def test_plan_check_format_and_answered_are_checked(lake):
         {"format": None},
         {"format": 2, "answered": ""},
         {"format": 2, "answered": None},
-        # A whole reference; the human node's record comes with its extension.
+        # A whole reference, to what the node is meant for or to anything else.
+        {"format": 2, "answered": "{{review.record}}"},
         {"format": 2, "answered": "{{review.decision}}"},
     ):
         assert await saved(**settings) == {}, settings
-    assert await saved(format=2, answered="{{review.record}}") == {
-        ("check_plan", "answered"): "节点 review 没有产出 record"
+    assert await saved(format=2, answered="{{review.records}}") == {
+        ("check_plan", "answered"): "节点 review 没有产出 records"
     }
 
 

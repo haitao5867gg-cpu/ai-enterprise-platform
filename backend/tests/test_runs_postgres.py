@@ -157,3 +157,24 @@ async def test_status_changes_only_from_the_expected_status():
         await service.wait_idle()
         retried = await store.get(rerun.run_id)
         assert (retried.status, retried.error, retried.error_type) == ("waiting", None, None)
+
+
+async def test_a_finished_run_keeps_its_outcome():
+    gateway = FakeGateway(replies=["回答", "回答"])
+
+    async with platform(gateway) as service:
+        record = await service.create("hello", {"text": "你好"})
+        await service.wait_idle()
+        store = service._store
+        assert (await store.get(record.run_id)).outcome is None
+        assert await store.set_status(
+            record.run_id, "done", expected=("waiting",), outcome="delivered"
+        )
+        assert (await store.get(record.run_id)).outcome == "delivered"
+        # The end node of ``hello`` names no outcome.
+        other = await service.create("hello", {"text": "你好"})
+        await service.wait_idle()
+        await service.resume(other.run_id, "approve", None)
+        await service.wait_idle()
+        finished = await store.get(other.run_id)
+        assert (finished.status, finished.outcome) == ("done", None)

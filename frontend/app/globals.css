@@ -1193,7 +1193,8 @@ nav {
   background: #fbeeea;
   color: #b26c5b;
 }
-.status-badge.cancelled {
+.status-badge.cancelled,
+.status-badge.done.stopped {
   background: #f1f0f4;
   color: #7d7889;
 }

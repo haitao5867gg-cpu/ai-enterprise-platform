@@ -1,12 +1,17 @@
 import type { ReactNode } from "react";
-import { statusLabels, type RunStatus } from "../lib/runs";
+import { statusText, type RunSummary } from "../lib/runs";
 import { Icon } from "./icons";
 
-export function StatusBadge({ status }: { status: RunStatus }) {
+export function StatusBadge({
+  run,
+}: {
+  run: Pick<RunSummary, "status" | "outcome" | "step">;
+}) {
+  const stopped = run.status === "done" && run.outcome === "stopped";
   return (
-    <span className={`status-badge ${status}`}>
+    <span className={`status-badge ${run.status}${stopped ? " stopped" : ""}`}>
       <span className="dot" />
-      {statusLabels[status]}
+      {statusText(run)}
     </span>
   );
 }

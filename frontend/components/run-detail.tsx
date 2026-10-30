@@ -414,7 +414,7 @@ export function RunDetail({
             <span className="detail-title">
               {run ? runTitle(run) : "运行详情"}
             </span>
-            {run && <StatusBadge status={run.status} />}
+            {run && <StatusBadge run={run} />}
           </h1>
           {run && (
             <p className="detail-meta">
@@ -723,7 +723,7 @@ export function RunDetail({
                   <div>
                     <dt>当前状态</dt>
                     <dd>
-                      <StatusBadge status={run.status} />
+                      <StatusBadge run={run} />
                       {stepText(run) && (
                         <span className="run-step">{stepText(run)}</span>
                       )}

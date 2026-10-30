@@ -234,7 +234,7 @@ export function RunList() {
                         )}
                       </td>
                       <td>
-                        <StatusBadge status={run.status} />
+                        <StatusBadge run={run} />
                         {where && <span className="run-step">{where}</span>}
                       </td>
                       <td className="run-cell">
