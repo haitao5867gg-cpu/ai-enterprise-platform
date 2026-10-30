@@ -49,6 +49,9 @@ class RunRecord:
     error_type: str | None = None
     cancelled_by: str | None = None
     rerun_of: str | None = None
+    # What a ``done`` flow run came to: the ``outcome`` of the end node it ended at
+    # (``delivered``, ``stopped`` or another word the app chose); None otherwise.
+    outcome: str | None = None
 
 
 class RunStore(Protocol):
@@ -74,13 +77,15 @@ class RunStore(Protocol):
         expected: tuple[RunStatus, ...] | None = None,
         error_type: str | None = None,
         actor: str | None = None,
+        outcome: str | None = None,
     ) -> bool:
         """Change the status, only from one of ``expected`` if given; False when the run
         was in another status (someone else changed it first) and nothing changed.
 
         Also keeps the waiting time: entering ``waiting`` starts a wait, leaving it
         adds the wait to ``wait_seconds``; so does leaving ``error`` (a retry): the
-        failure waited for someone to retry it. ``actor`` is who cancelled, for ``cancelled``."""
+        failure waited for someone to retry it. ``actor`` is who cancelled, for ``cancelled``;
+        ``outcome`` what a ``done`` run came to (every change sets it, None by default)."""
         ...
 
     async def set_step(self, run_id: str, node: str, title: str) -> None: ...
@@ -136,6 +141,7 @@ class MemoryRunStore:
         expected: tuple[RunStatus, ...] | None = None,
         error_type: str | None = None,
         actor: str | None = None,
+        outcome: str | None = None,
     ) -> bool:
         run, now = self._runs[run_id], datetime.now(UTC)
         if expected is not None and run.status not in expected:
@@ -157,6 +163,7 @@ class MemoryRunStore:
             wait_seconds=waited,
             error_type=error_type,
             cancelled_by=actor if status == "cancelled" else run.cancelled_by,
+            outcome=outcome,
         )
         return True
 
@@ -188,12 +195,13 @@ CREATE TABLE IF NOT EXISTS runs (
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_type text",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS cancelled_by text",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS rerun_of uuid",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS outcome text",
 ]
 
 COLUMNS = (
     "run_id::text, app, status, input, tenant_id, error, app_version, config, created_at,"
     " updated_at, created_by, step, waiting_since, wait_seconds, error_type, cancelled_by,"
-    " rerun_of::text"
+    " rerun_of::text, outcome"
 )
 
 
@@ -269,6 +277,7 @@ class PostgresRunStore:
         expected: tuple[RunStatus, ...] | None = None,
         error_type: str | None = None,
         actor: str | None = None,
+        outcome: str | None = None,
     ) -> bool:
         # The right-hand sides and the WHERE clause read the row as it was before this
         # update, and the row is locked while it changes: of two updates expecting the
@@ -276,7 +285,7 @@ class PostgresRunStore:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 "UPDATE runs SET status = %(status)s, error = %(error)s, updated_at = now(),"
-                " error_type = %(error_type)s,"
+                " error_type = %(error_type)s, outcome = %(outcome)s,"
                 " cancelled_by = CASE WHEN %(status)s = 'cancelled' THEN %(actor)s"
                 "   ELSE cancelled_by END,"
                 " wait_seconds = wait_seconds + CASE"
@@ -295,6 +304,7 @@ class PostgresRunStore:
                     "error": error,
                     "error_type": error_type,
                     "actor": actor,
+                    "outcome": outcome,
                     "run_id": uuid.UUID(run_id),
                     "any": expected is None,
                     "expected": list(expected or ()),

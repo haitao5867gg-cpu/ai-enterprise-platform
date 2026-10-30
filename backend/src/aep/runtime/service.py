@@ -47,7 +47,7 @@ from langgraph.types import Command
 from aep import tracing
 from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
-from aep.runtime import appconfig, design
+from aep.runtime import appconfig, design, human
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import nodes as flownodes
 from aep.runtime.flow.builtin import BuiltinFlow
@@ -78,11 +78,15 @@ class NotWaiting(Exception):
 
 
 class InvalidDecision(Exception):
-    pass
+    """The decision is not one of the options shown (``requires`` may hide some)."""
 
 
 class CommentRequired(Exception):
     pass
+
+
+class ContentChanged(Exception):
+    """The decision was made on a page showing something else than the run waits with."""
 
 
 class UnknownVersion(Exception):
@@ -153,6 +157,43 @@ class InvalidValues(Exception):
     def __init__(self, problems: dict[str, str]) -> None:
         super().__init__("；".join(problems.values()))
         self.problems = problems
+
+
+class InvalidNotes(Exception):
+    """Notes that cannot be taken; ``problems`` located in ``notes`` (``()`` is the list,
+    ``(0, "item")`` the first note's item)."""
+
+    def __init__(self, problems: list[tuple[tuple[int | str, ...], str]]) -> None:
+        super().__init__("；".join(message for _, message in problems))
+        self.problems = problems
+
+
+MAX_NOTES = 50
+MAX_NOTE_TEXT = 500
+
+
+def _notes(pending: dict[str, Any], notes: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    """The notes with the names of what they are on (``item``, ``label``, ``text``)."""
+    if not notes:
+        return []
+    if pending.get("kind") == "form":
+        raise InvalidNotes([((), "填写的步骤不能挂意见")])
+    if len(notes) > MAX_NOTES:
+        raise InvalidNotes([((), f"最多挂 {MAX_NOTES} 条意见")])
+    data = (pending.get("details") or {}).get("data")
+    problems: list[tuple[tuple[int | str, ...], str]] = []
+    named = []
+    for i, note in enumerate(notes):
+        item, text = note["item"], note["text"]
+        label = human.note_label(data, item)
+        if label is None:
+            problems.append(((i, "item"), f"页面上没有「{item[:60]}」这一项，挂不了意见"))
+        if not text.strip() or len(text) > MAX_NOTE_TEXT:
+            problems.append(((i, "text"), f"意见要写 1–{MAX_NOTE_TEXT} 个字，不能只有空格"))
+        named.append({"item": item, "label": label or "", "text": text})
+    if problems:
+        raise InvalidNotes(problems)
+    return named
 
 
 @dataclass(frozen=True)
@@ -542,20 +583,56 @@ class RunService:
         comment: str | None,
         actor: str | None = None,
         values: dict[str, Any] | None = None,
+        notes: list[dict[str, str]] | None = None,
+        seen: str | None = None,
     ) -> RunRecord:
+        """Go on with a waiting run, checked in the order docs/api/flow-apps.md gives
+        ("人工节点在工作台上的样子"). An approval's answer also has ``values`` (the answers
+        to its questions), ``notes`` (with the name of what each is on), ``changed`` and
+        ``submitted``: the option chosen when it turned into ``changed_branch``."""
         view = await self.get(run_id)
-        if view.record.status != "waiting" or view.pending is None:
+        pending = view.pending
+        if view.record.status != "waiting" or pending is None:
             raise NotWaiting(run_id)
-        if decision not in view.pending.get("options", []):
+        shown = (pending.get("details") or {}).get("seen")
+        if seen is not None and isinstance(shown, str) and seen != shown:
+            raise ContentChanged(run_id)
+        if decision not in pending.get("options", []):
             raise InvalidDecision(decision)
-        if decision in view.pending.get("comment_required", []) and not (comment or "").strip():
-            raise CommentRequired(decision)
         answer: dict[str, Any] = {"decision": decision, "comment": comment, "actor": actor}
-        if view.pending.get("kind") == "form":
-            checked, problems = flownodes.answers(view.pending.get("fields") or [], values or {})
+        if pending.get("kind") == "form":
+            checked, problems = flownodes.answers(pending.get("fields") or [], values or {})
             if problems:
                 raise InvalidValues(problems)
+            _notes(pending, notes)
             answer["values"] = checked
+        else:
+            asked = pending.get("fields") or []
+            checked, problems = flownodes.answers(asked, values or {}) if asked else ({}, {})
+            if problems:
+                raise InvalidValues(problems)
+            named = _notes(pending, notes)
+            differs = flownodes.changed(asked, checked)
+            remark = bool((comment or "").strip())
+            required = pending.get("comment_required", [])
+            turn = pending.get("changed_branch")
+            submitted = None
+            if (
+                turn in pending.get("options", [])
+                and decision not in required
+                and decision != turn
+                and (differs or remark or named)
+            ):
+                submitted, decision = decision, turn
+            if decision in required and not (remark or named or differs):
+                raise CommentRequired(decision)
+            answer |= {
+                "decision": decision,
+                "values": checked,
+                "notes": named,
+                "changed": differs,
+                "submitted": submitted,
+            }
         # Only one of two decisions sent at once, or a decision and a cancel, gets here.
         if not await self._store.set_status(run_id, "running", expected=("waiting",)):
             raise NotWaiting(run_id)
@@ -685,7 +762,11 @@ class RunService:
                         "result": (state.values or {}).get("result"),
                     }
                 )
-                await self._finish(record.run_id, status)
+                outcome = None
+                if status == "done" and record.app not in self._graphs:
+                    flow = self.flow_config(record.app, record.config)
+                    outcome = flowgraph.outcome(flow, state.values or {})
+                await self._finish(record.run_id, status, outcome=outcome)
             except (RunStopped, asyncio.CancelledError) as exc:
                 # Cancelled (its status says so already), or this process is stopping:
                 # then the run is still running and ``recover`` picks it up again.

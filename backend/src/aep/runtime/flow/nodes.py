@@ -12,6 +12,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import openai
@@ -33,6 +34,7 @@ from aep.skills import SkillContent, SkillStore
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo
 
 ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+ID_RULE = "只能用小写字母、数字和下划线，以字母开头，最多 32 个字符"
 MAX_TEXT = 20000
 FIELD_TYPES = ("text", "textarea", "number", "boolean", "select", "datasource")
 JSON_TYPES = ("string", "number", "boolean", "array", "object")
@@ -349,29 +351,42 @@ def check_fields(
     node: dict[str, Any], key: str, p: Problems, types: tuple[str, ...] = FIELD_TYPES
 ) -> None:
     """Input fields (a start node's inputs, a human node's form)."""
-    for i, f in enumerate(_keyed(_list(node, key, p, "字段", 1, 20), key, p, "字段")):
+    for f in _keyed(_list(node, key, p, "字段", 1, 20), key, p, "字段"):
         loc = (key, node[key].index(f))
-        del i
-        _label(f, loc, p)
-        kind = f.get("type")
-        if kind not in types:
-            p.add((*loc, "type"), "类型只能是 " + "、".join(types))
-        if "required" in f and not isinstance(f["required"], bool):
-            p.add((*loc, "required"), "required 必须是 true 或 false")
-        if kind == "select":
-            choices = f.get("choices")
-            if not isinstance(choices, list) or not 1 <= len(choices) <= 50:
-                p.add((*loc, "choices"), "下拉选项要有 1–50 项")
-            else:
-                for j, c in enumerate(choices):
-                    if not isinstance(c, dict) or not isinstance(c.get("value"), str):
-                        p.add((*loc, "choices", j), "每个选项要有文字 value 和 label")
-        if "max_length" in f and f["max_length"] is not None:
-            m = f["max_length"]
-            if kind not in ("text", "textarea"):
-                p.add((*loc, "max_length"), "只有文字类型可以设最大长度")
-            elif not isinstance(m, int) or isinstance(m, bool) or not 1 <= m <= MAX_TEXT:
-                p.add((*loc, "max_length"), f"最大长度要在 1–{MAX_TEXT} 之间")
+        for where, message in _field_problems(f, types):
+            p.add((*loc, *where), message)
+
+
+def _field_problems(
+    f: dict[str, Any], types: tuple[str, ...], label_length: int = 50
+) -> list[tuple[Loc, str]]:
+    """What is wrong with one field besides its ``key``, located inside it."""
+    found: list[tuple[Loc, str]] = []
+    label = f.get("label")
+    if not isinstance(label, str) or not label.strip():
+        found.append((("label",), "名称不能为空"))
+    elif len(label) > label_length:
+        found.append((("label",), f"名称最多 {label_length} 个字符"))
+    kind = f.get("type")
+    if kind not in types:
+        found.append((("type",), "类型只能是 " + "、".join(types)))
+    if "required" in f and not isinstance(f["required"], bool):
+        found.append((("required",), "required 必须是 true 或 false"))
+    if kind == "select":
+        choices = f.get("choices")
+        if not isinstance(choices, list) or not 1 <= len(choices) <= 50:
+            found.append((("choices",), "下拉选项要有 1–50 项"))
+        else:
+            for j, c in enumerate(choices):
+                if not isinstance(c, dict) or not isinstance(c.get("value"), str):
+                    found.append((("choices", j), "每个选项要有文字 value 和 label"))
+    if "max_length" in f and f["max_length"] is not None:
+        m = f["max_length"]
+        if kind not in ("text", "textarea"):
+            found.append((("max_length",), "只有文字类型可以设最大长度"))
+        elif not isinstance(m, int) or isinstance(m, bool) or not 1 <= m <= MAX_TEXT:
+            found.append((("max_length",), f"最大长度要在 1–{MAX_TEXT} 之间"))
+    return found
 
 
 def field_problem(f: dict[str, Any], value: Any) -> str | None:
@@ -657,10 +672,153 @@ async def run_condition(node: dict[str, Any], state: dict[str, Any], rt: Runtime
 
 # human
 
+MAX_QUESTIONS = 20
+MAX_DATA_KEYS = 12
+QUESTION_TYPES = tuple(t for t in FIELD_TYPES if t != "datasource")
+APPROVAL_ONLY = "只有确认模式可以设"
+# What an approval produces (a form produces its fields and ``actor``).
+APPROVAL_OUTPUTS = (
+    "decision",
+    "comment",
+    "actor",
+    "values",
+    "notes",
+    "changed",
+    "feedback",
+    "record",
+)
+
+
+def _set(node: dict[str, Any], key: str) -> bool:
+    """Whether an extended setting is set: there and not null (``{}`` and ``[]`` are)."""
+    return node.get(key) is not None
+
+
+def _extended(node: dict[str, Any]) -> bool:
+    """Whether the node's ``details`` show its ``view``, ``data``, ``round``, ``seen`` and
+    ``dropped_fields``: it sets ``view`` or ``data``, or is an approval that sets
+    ``fields`` (a form's fields are the form itself)."""
+    approval = node.get("mode", "approval") == "approval"
+    return _set(node, "view") or _set(node, "data") or (approval and _set(node, "fields"))
+
+
+def question_problems(f: Any) -> list[tuple[Loc, str]]:
+    """What is wrong with one of an approval's questions (flow-apps.md, 确认模式的题),
+    located inside it; a ``default`` is reported, ``required`` is taken as true. A
+    ``suggested``, ``why`` or ``affects`` that is null counts as not written."""
+    if not isinstance(f, dict):
+        return [((), "每道题必须是对象")]
+    found: list[tuple[Loc, str]] = []
+    key = f.get("key")
+    if not isinstance(key, str) or not ID.match(key):
+        found.append((("key",), "标识" + ID_RULE))
+    found += _field_problems(f, QUESTION_TYPES, label_length=200)
+    if f.get("default") is not None:
+        found.append((("default",), "题不能有默认值，每题都要人来答"))
+    suggested = f.get("suggested")
+    if suggested is not None and not found:
+        if field_problem({**f, "required": True}, suggested) is not None:
+            wrong = "不在选项里" if f.get("type") == "select" else "不是这题能填的值"
+            found.append((("suggested",), "建议的答案" + wrong))
+    why = f.get("why")
+    if why is not None and (not isinstance(why, str) or len(why) > 500):
+        found.append((("why",), "为什么问必须是文字，最多 500 个字符"))
+    affects = f.get("affects")
+    if affects is not None and (
+        not isinstance(affects, list)
+        or len(affects) > 20
+        or any(not isinstance(a, str) or len(a) > 64 for a in affects)
+    ):
+        found.append((("affects",), "影响的条目最多 20 个，每个是最多 64 个字符的文字"))
+    return found
+
+
+def questions(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The questions an approval asks when it pauses, from its ``fields`` (a list, or
+    what a reference to one gave), and those dropped: ``index``, ``key`` and
+    ``problem``. A question loses its ``default``, gets ``required: true`` and keeps
+    ``suggested``, ``why`` and ``affects`` when they are not null."""
+    if value is None or value == "":
+        return [], []
+    if not isinstance(value, list):
+        return [], [{"index": None, "key": None, "problem": "题目不是列表，这一步不带题"}]
+    asked: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for i, f in enumerate(value):
+        key = f.get("key") if isinstance(f, dict) else None
+        key = key if isinstance(key, str) and ID.match(key) else None
+        # A default and ``required`` are put right, not held against the question.
+        if isinstance(f, dict):
+            f = {k: v for k, v in f.items() if k != "default"} | {"required": True}
+        found = question_problems(f)
+        if i >= MAX_QUESTIONS:
+            problem = f"最多 {MAX_QUESTIONS} 题，从第 {MAX_QUESTIONS + 1} 题起不问"
+        elif found:
+            problem = found[0][1]
+        elif any(q["key"] == key for q in asked):
+            problem = f"标识 {key} 重复"
+        else:
+            asked.append(
+                {
+                    k: v
+                    for k, v in f.items()
+                    if not (k in ("suggested", "why", "affects") and v is None)
+                }
+            )
+            continue
+        dropped.append({"index": i, "key": key, "problem": problem})
+    return asked, dropped
+
+
+def _check_questions(node: dict[str, Any], p: Problems) -> None:
+    value = node.get("fields")
+    if value is None:
+        return
+    if isinstance(value, str):
+        if refs.whole(value) is None:
+            p.add(("fields",), "题目必须是列表，或恰好是一个变量，如 {{check_plan.questions}}")
+        return
+    if not isinstance(value, list):
+        p.add(("fields",), "题目必须是列表，或恰好是一个变量，如 {{check_plan.questions}}")
+        return
+    if len(value) > MAX_QUESTIONS:
+        p.add(("fields",), f"最多 {MAX_QUESTIONS} 题")
+    keys: set[str] = set()
+    for i, f in enumerate(value):
+        found = question_problems(f)
+        for where, message in found:
+            p.add(("fields", i, *where), message)
+        key = f.get("key") if isinstance(f, dict) else None
+        if not found and key in keys:
+            p.add(("fields", i, "key"), f"标识 {key} 重复")
+        if isinstance(key, str):
+            keys.add(key)
+
+
+def _requires_problem(value: Any) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and refs.whole(value) is not None:
+        return None
+    return "requires 只能是 true、false，或恰好是一个变量，如 {{dev_run.ok}}"
+
 
 async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     _text(node, "prompt", p, "提示语", required=True, max_length=2000)
     _text(node, "show", p, "给人看的内容")
+    view = node.get("view")
+    if view is not None and (not isinstance(view, str) or not ID.match(view)):
+        p.add(("view",), "页面样式" + ID_RULE)
+    data = node.get("data")
+    if data is not None:
+        if not isinstance(data, dict):
+            p.add(("data",), "data 必须是对象")
+        else:
+            if len(data) > MAX_DATA_KEYS:
+                p.add(("data",), f"data 最多 {MAX_DATA_KEYS} 个键")
+            for key in data:
+                if not ID.match(key):
+                    p.add(("data", key), "键名" + ID_RULE)
     mode = node.get("mode", "approval")
     if mode == "approval":
         options = _list(node, "options", p, "选项", 2, 5)
@@ -671,8 +829,29 @@ async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
         keys = _keys(good)
         if not isinstance(required, list) or any(k not in keys for k in required):
             p.add(("comment_required",), "必须写意见的选项要在选项里")
+        guarded = set()
+        for i, o in enumerate(options):
+            if isinstance(o, dict) and o.get("requires") is not None:
+                guarded.add(o.get("key"))
+                if (problem := _requires_problem(o["requires"])) is not None:
+                    p.add(("options", i, "requires"), problem)
+        if good and all(o.get("key") in guarded for o in good):
+            p.add(("options",), "至少要有一个选项不设 requires，总是显示")
+        branch = node.get("changed_branch")
+        if branch is not None:
+            if branch not in keys:
+                p.add(("changed_branch",), "按意见处理的选项要在选项里")
+            elif branch in guarded:
+                p.add(("changed_branch",), "按意见处理的选项不能设 requires")
+        _check_questions(node, p)
     elif mode == "form":
-        check_fields(node, "fields", p, tuple(t for t in FIELD_TYPES if t != "datasource"))
+        check_fields(node, "fields", p, QUESTION_TYPES)
+        if node.get("changed_branch") is not None:
+            p.add(("changed_branch",), APPROVAL_ONLY)
+        options = node.get("options")
+        for i, o in enumerate(options if isinstance(options, list) else []):
+            if isinstance(o, dict) and o.get("requires") is not None:
+                p.add(("options", i, "requires"), APPROVAL_ONLY)
     else:
         p.add(("mode",), "模式只能是 approval（确认）或 form（填写）")
 
@@ -680,18 +859,32 @@ async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
 def produces_human(node: dict[str, Any]) -> list[str]:
     if node.get("mode", "approval") == "form":
         return [*_keys(node.get("fields")), "actor"]
-    return ["decision", "comment", "actor"]
+    return list(APPROVAL_OUTPUTS)
 
 
 async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     get = rt.lookup(state)
-    details = {
+    details: dict[str, Any] = {
         "type": "flow_human",
         "node": node["id"],
         "show": refs.render(node.get("show") or "", get),
     }
     prompt = refs.render(node["prompt"], get)
-    if node.get("mode", "approval") == "form":
+    form = node.get("mode", "approval") == "form"
+    rounds = (state.get("visits") or {}).get(node["id"], 0) + 1
+    asked: list[dict[str, Any]] = []
+    extended = _extended(node)
+    if extended:
+        dropped: list[dict[str, Any]] = []
+        if not form and _set(node, "fields"):
+            asked, dropped = questions(refs.resolve(node["fields"], get))
+        details |= {
+            "view": node.get("view"),
+            "data": refs.resolve(node.get("data") or {}, get),
+            "round": rounds,
+            "dropped_fields": dropped,
+        }
+    if form:
         fields = node["fields"]
         answer = human.ask(
             prompt,
@@ -700,28 +893,150 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             kind="form",
             option_labels={"submit": "提交"},
             fields=fields,
+            seen=extended,
         )
         values = answer.get("values") or {}
         outputs = {**{f["key"]: values.get(f["key"]) for f in fields}, "actor": answer.get("actor")}
         said = {"role": "user", "content": _form_said(fields, values), "actor": answer.get("actor")}
         return Outcome(outputs, messages=[said])
-    options = node["options"]
-    labels = {o["key"]: o.get("label", o["key"]) for o in options}
+    labels = {o["key"]: o.get("label", o["key"]) for o in node["options"]}
+    shown = [o["key"] for o in node["options"] if _shown(o, get)]
     answer = human.ask(
         prompt,
         details,
-        options=[o["key"] for o in options],
-        comment_required=node.get("comment_required", []),
-        option_labels=labels,
+        options=shown,
+        comment_required=[k for k in node.get("comment_required", []) if k in shown],
+        option_labels={k: labels[k] for k in shown},
+        fields=asked or None,
+        changed_branch=node.get("changed_branch"),
+        seen=extended,
     )
+    return _decided(node, answer, asked, details, rounds, labels)
+
+
+def _shown(option: dict[str, Any], get: refs.Lookup) -> bool:
+    """Whether an option is offered: it has no ``requires``, or it is exactly true now."""
+    requires = option.get("requires")
+    if requires is None:
+        return True
+    return (refs.resolve(requires, get) if isinstance(requires, str) else requires) is True
+
+
+def changed(asked: list[dict[str, Any]], values: dict[str, Any]) -> bool:
+    """Whether an answer differs from its question's ``suggested`` (when it has one)."""
+    return any(
+        q.get("suggested") is not None and values.get(q["key"]) != q["suggested"] for q in asked
+    )
+
+
+def _value_label(q: dict[str, Any], value: Any) -> str:
+    if q.get("type") == "select":
+        names = {c.get("value"): c.get("label") for c in q.get("choices") or []}
+        name = names.get(value)
+        return name if isinstance(name, str) and name else refs.as_text(value)
+    if q.get("type") == "boolean" and isinstance(value, bool):
+        return "是" if value else "否"
+    return refs.as_text(value)
+
+
+def _decided(
+    node: dict[str, Any],
+    answer: dict[str, Any],
+    asked: list[dict[str, Any]],
+    details: dict[str, Any],
+    rounds: int,
+    labels: dict[str, str],
+) -> Outcome:
+    """An approval's outputs and what it says, from the answer the run resumed with
+    (the decision already turned into ``changed_branch`` where it had to be)."""
     decision = answer.get("decision")
     comment = answer.get("comment")
-    text = f"选了「{labels.get(decision, decision or '')}」"
-    if comment:
-        text += f"，意见：{comment}"
-    outputs = {"decision": decision, "comment": comment, "actor": answer.get("actor")}
-    said = {"role": "user", "content": text, "actor": answer.get("actor")}
+    actor = answer.get("actor")
+    values = (answer.get("values") or {}) if asked else {}
+    notes = list(answer.get("notes") or [])
+    submitted = answer.get("submitted")
+    answers = []
+    for q in asked:
+        value, suggested = values.get(q["key"]), q.get("suggested")
+        answers.append(
+            {
+                "key": q["key"],
+                "label": q["label"],
+                "value": value,
+                "value_label": _value_label(q, value),
+                "suggested": suggested,
+                "suggested_label": None if suggested is None else _value_label(q, suggested),
+                "picked_suggested": None if suggested is None else value == suggested,
+            }
+        )
+    title = node.get("title") or node["id"]
+    label = labels.get(decision, decision or "")
+    record = {
+        "node": node["id"],
+        "title": title,
+        "round": rounds,
+        "actor": actor,
+        "at": datetime.now(UTC).isoformat(),
+        "decision": decision,
+        "decision_label": label,
+        "submitted": submitted,
+        "seen": details.get("seen"),
+        "comment": comment,
+        "changed": changed(asked, values),
+        "notes": notes,
+        "answers": answers,
+        "dropped_fields": details.get("dropped_fields", []),
+    }
+    remark = comment.strip() if isinstance(comment, str) else ""
+    differs = [a for a in answers if a["picked_suggested"] is False]
+    passed_on = decision in node.get("comment_required", []) or (
+        decision is not None and decision == node.get("changed_branch")
+    )
+    feedback = ""
+    if passed_on:
+        parts = [
+            f"「{a['label']}」选「{a['value_label']}」（原建议「{a['suggested_label']}」）"
+            for a in differs
+        ]
+        parts += [f"{_kind(n['item'])}「{n['label']}」：{n['text']}" for n in notes]
+        if remark:
+            parts.append(f"意见：{remark}")
+        feedback = f"【第 {rounds} 轮 · {title} · {label}】" + "；".join(parts)
+    if not asked and not notes and submitted is None:
+        text = f"选了「{label}」" + (f"，意见：{comment}" if comment else "")
+    else:
+        if submitted is None:
+            head = f"选了「{label}」"
+        else:
+            first = labels.get(submitted, submitted)
+            head = f"点了「{first}」，改了答案或写了意见，按「{label}」处理"
+        parts = [head]
+        parts += [
+            f"「{a['label']}」选了「{a['value_label']}」（原建议「{a['suggested_label']}」）"
+            for a in differs
+        ]
+        if remark:
+            parts.append(f"意见：{remark}")
+        if notes:
+            parts.append(f"另挂了 {len(notes)} 条意见")
+        text = "；".join(parts)
+    outputs = {
+        "decision": decision,
+        "comment": comment,
+        "actor": actor,
+        "values": values,
+        "notes": notes,
+        "changed": record["changed"],
+        "feedback": feedback,
+        "record": record,
+    }
+    said = {"role": "user", "content": text, "actor": actor}
     return Outcome(outputs, decision, messages=[said])
+
+
+def _kind(item: str) -> str:
+    """What a note's item is called: ``metric:m4`` is a 指标."""
+    return human.NOTE_KINDS.get(item.partition(":")[0], "条目")
 
 
 def _form_said(fields: list[dict[str, Any]], values: dict[str, Any]) -> str:
@@ -820,6 +1135,9 @@ async def check_end(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
         for j, s in enumerate(sources):
             if not isinstance(s, str) or refs.whole(s) is None:
                 p.add((*loc, "from", j), "每项必须恰好是一个变量，如 {{answer.text}}")
+    outcome = node.get("outcome")
+    if outcome is not None and (not isinstance(outcome, str) or not ID.match(outcome)):
+        p.add(("outcome",), "运行结果" + ID_RULE)
 
 
 async def run_end(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
@@ -1337,9 +1655,14 @@ TYPES: dict[str, NodeType] = {
             ),
             produces_human,
             outputs=(
-                ("decision", "选了哪个选项（确认模式）"),
+                ("decision", "最后按哪个选项处理（确认模式）"),
                 ("comment", "意见（确认模式）"),
                 ("actor", "处理人"),
+                ("values", "每题的答案（确认模式）"),
+                ("notes", "挂在条目上的意见（确认模式）"),
+                ("changed", "有没有哪题没按建议答（确认模式）"),
+                ("feedback", "交给后面步骤的一段话，按意见处理时才有（确认模式）"),
+                ("record", "这次处理的完整记录（确认模式）"),
             ),
             defaults={
                 "mode": "approval",

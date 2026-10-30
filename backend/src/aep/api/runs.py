@@ -196,7 +196,9 @@ from pydantic import BaseModel, Field
 from aep.knowledge.citations import CitedSource
 from aep.runtime.service import (
     CommentRequired,
+    ContentChanged,
     InvalidDecision,
+    InvalidNotes,
     InvalidValues,
     NoDraftToRun,
     NotCancellable,
@@ -232,14 +234,25 @@ class CreateRun(BaseModel):
     requester: str | None = Field(default=None, max_length=100)
 
 
+class Note(BaseModel):
+    # ``kind:id``: one thing the page shows, found in ``pending.details.data``.
+    item: str
+    text: str
+
+
 class Resume(BaseModel):
     decision: str
     comment: str | None = None
     # Who decided. Until sign-in exists (M4) the client says so; it goes into the
     # run's approval record.
-    actor: str | None = None
-    # A form's answers (``pending.kind`` is ``form``), by field key.
+    actor: str | None = Field(default=None, max_length=100)
+    # A form's answers, or the answers to an approval's questions, by field key.
     values: dict[str, Any] | None = None
+    # Remarks on single things the page shows (approvals only); their number and
+    # length are checked after the decision and the values, in the documented order.
+    notes: list[Note] | None = None
+    # The ``details.seen`` of the page the decision was made on.
+    seen: str | None = None
 
 
 class Cancel(BaseModel):
@@ -283,6 +296,7 @@ class RunSummary(BaseModel):
     wait_seconds: float | None
     cancelled_by: str | None
     rerun_of: str | None
+    outcome: str | None
 
 
 class Message(BaseModel):
@@ -302,6 +316,8 @@ class Pending(BaseModel):
     comment_required: list[str] = []
     option_labels: dict[str, str] | None = None
     fields: list[dict[str, Any]] | None = None
+    # The option a decision turns into when an answer or a remark changes it.
+    changed_branch: str | None = None
     details: dict[str, Any] | None = None
 
 
@@ -392,6 +408,7 @@ def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> d
         "wait_seconds": r.wait_seconds,
         "cancelled_by": r.cancelled_by,
         "rerun_of": r.rerun_of,
+        "outcome": r.outcome if r.status == "done" else None,
     }
 
 
@@ -492,17 +509,34 @@ async def get_manual(run_id: str, request: Request) -> dict[str, Any]:
 @router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
 async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
     try:
-        record = await service.resume(run_id, body.decision, body.comment, body.actor, body.values)
+        record = await service.resume(
+            run_id,
+            body.decision,
+            body.comment,
+            body.actor,
+            body.values,
+            notes=[n.model_dump() for n in body.notes] if body.notes is not None else None,
+            seen=body.seen,
+        )
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
     except NotWaiting as exc:
         raise HTTPException(409, "run is not waiting for a decision") from exc
+    except ContentChanged as exc:
+        raise HTTPException(409, "内容已经更新，请刷新后再处理") from exc
     except InvalidDecision as exc:
-        raise HTTPException(422, f"invalid decision: {body.decision}") from exc
+        raise HTTPException(422, f"这一步现在不能选「{body.decision}」") from exc
     except CommentRequired as exc:
         raise HTTPException(422, "这个决定需要写明意见") from exc
     except InvalidValues as exc:
         raise _invalid_values("values", exc) from exc
+    except InvalidNotes as exc:
+        raise RequestValidationError(
+            [
+                {"loc": ["body", "notes", *where], "msg": message, "type": "value_error"}
+                for where, message in exc.problems
+            ]
+        ) from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 
