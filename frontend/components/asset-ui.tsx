@@ -46,9 +46,9 @@ export function ActorField({
 }) {
   return (
     <label className="asset-field">
-      审批人<span className="muted">与运行工作台共用，浏览器会记住</span>
+      你的名字<span className="muted">和运行页共用，浏览器会记住</span>
       <input
-        aria-label="审批人"
+        aria-label="你的名字"
         value={actor}
         disabled={disabled}
         onChange={(event) => {

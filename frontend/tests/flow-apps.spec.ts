@@ -89,7 +89,8 @@ test("intent template → input → after-sales rejection and approval → resul
   await expect(
     page.getByRole("button", { name: "驳回重写", exact: true }),
   ).toBeDisabled();
-  await page.getByLabel("驳回意见").fill("请补充退货时间");
+  await page.getByLabel("你的名字").fill("售后专员");
+  await page.getByLabel("修改意见").fill("请补充退货时间");
   await page.getByRole("button", { name: "驳回重写", exact: true }).click();
   await expect(page.locator(".human-show")).toContainText("请补充退货时间");
   await page.getByRole("button", { name: "确认回复", exact: true }).click();
@@ -121,6 +122,7 @@ test("form human node requires order ID, maps server validation to its field, su
   await page.getByLabel("客户问题").fill("查询订单状态");
   await page.getByRole("button", { name: "开始运行" }).click();
   await expect(page.getByRole("heading", { name: "需要你填写" })).toBeVisible();
+  await page.getByLabel("你的名字").fill("订单专员");
   let posts = 0;
   page.on("request", (request) => {
     if (request.method() === "POST" && request.url().endsWith("/resume"))
@@ -148,7 +150,6 @@ test("form human node requires order ID, maps server validation to its field, su
   );
   await page.unroute("**/api/runs/*/resume");
   await page.getByRole("textbox", { name: /^订单号/ }).fill("A2002");
-  await page.getByLabel("审批人").fill("订单专员");
   const resumed = page.waitForRequest(
     (request) =>
       request.method() === "POST" && request.url().endsWith("/resume"),
@@ -201,6 +202,7 @@ test("approval questions: each one picked, a changed answer turns the decision, 
   });
   await expect(page.getByLabel(/^意见/)).toBeVisible();
   await expect(revise).toBeDisabled();
+  await page.getByLabel("你的名字").fill("韩梅梅");
   let posts = 0;
   page.on("request", (request) => {
     if (request.method() === "POST" && request.url().endsWith("/resume"))

@@ -30,6 +30,9 @@ export type Input<T extends InputType = InputType> = {
   default?: string | number | boolean | null;
   choices?: { value: string; label: string }[];
   max_length?: number;
+  // Start inputs only: folded under 高级选项 on the new-run page; sentences to pick from.
+  advanced?: boolean;
+  examples?: string[];
 };
 export type FormField = Input<Exclude<InputType, "datasource">>;
 export type ValueType = "string" | "number" | "boolean" | "array" | "object";

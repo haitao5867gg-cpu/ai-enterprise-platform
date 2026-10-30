@@ -4872,3 +4872,44 @@ a.asset-card:hover,
     margin: 0 16px 18px;
   }
 }
+/* The new-run page: inputs folded under 高级选项, and sentences to start from. */
+.advanced-inputs {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.advanced-inputs > summary {
+  color: var(--purple);
+  font-size: 12px;
+  padding: 2px 0 12px;
+}
+.advanced-inputs > summary .muted {
+  margin-left: 8px;
+  font-size: 11px;
+}
+.input-examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.input-examples .field-hint {
+  margin: 0;
+}
+.example-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid #ddd5f2;
+  border-radius: 999px;
+  background: #faf9fe;
+  color: var(--purple-dark);
+  font-size: 11px;
+  padding: 4px 11px;
+}
+.example-chip:hover:not(:disabled) {
+  border-color: var(--purple);
+  background: #f1edfd;
+}

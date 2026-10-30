@@ -6,6 +6,8 @@ import { test, expect, type Page } from "@playwright/test";
 async function start(page: Page, request = "按城市和会员等级统计上个月的销售") {
   await page.goto("/runs/new?app=retail-etl-v2");
   await page.getByLabel("需求").fill(request);
+  // Whoever starts it decides its steps, under the same name.
+  await page.getByLabel("你的名字").fill("韩梅梅");
   await page.getByRole("button", { name: "开始运行" }).click();
   await expect(
     page.getByRole("heading", { name: "确认方案", exact: true }),

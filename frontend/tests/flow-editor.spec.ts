@@ -522,6 +522,42 @@ test("draft trial run asks to save first, then runs the draft and is labelled", 
     draft: true,
   });
   await expect(page).toHaveURL(/\/runs\/[^/]+$/);
-  await expect(page.getByText("草稿试运行").first()).toBeVisible();
+  await expect(page.getByText("试运行（未发布版本）").first()).toBeVisible();
   await expect(page.locator(".result-json")).toContainText("草稿：退货");
+});
+
+test("start inputs fold under 高级选项 and carry examples; a required input without a default cannot fold", async ({
+  page,
+  request,
+}) => {
+  const app = await blank(request, page);
+  await nodeButton(page, "开始", "start").click();
+  const input = panel(page).getByRole("group", { name: "输入字段 1" });
+  await input.getByLabel("收进高级选项").check();
+  await save(page);
+  await expect(input.locator(".field-error").last()).toContainText(
+    "必填且没有默认值的输入不能收进高级选项",
+  );
+  await input.getByLabel("收进高级选项").uncheck();
+  await input.getByRole("button", { name: "添加例子" }).click();
+  await input
+    .getByRole("group", { name: "例子 1" })
+    .getByRole("textbox", { name: "例子" })
+    .fill("退货要几天到账？");
+  await save(page);
+  await expect(page.locator(".asset-notice")).toContainText("草稿已保存");
+  let start = (await draftConfig(request, app)).graph.nodes[0];
+  expect(start.type === "start" && start.inputs[0]).toMatchObject({
+    key: "question",
+    examples: ["退货要几天到账？"],
+  });
+  expect(start.type === "start" && "advanced" in start.inputs[0]).toBe(false);
+
+  // Examples are for text only: changing the type drops them before saving.
+  await input.getByLabel("类型", { exact: true }).selectOption("number");
+  await expect(input.getByRole("button", { name: "添加例子" })).toHaveCount(0);
+  await save(page);
+  await expect(page.locator(".asset-notice")).toContainText("草稿已保存");
+  start = (await draftConfig(request, app)).graph.nodes[0];
+  expect(start.type === "start" && "examples" in start.inputs[0]).toBe(false);
 });

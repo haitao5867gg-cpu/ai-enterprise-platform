@@ -30,7 +30,7 @@ test("ETL flow view: design, path, current node and each step's input and output
   );
   const detail = flow.getByRole("region", { name: "节点 确认方案" });
   await expect(detail).toContainText("人工确认");
-  await expect(detail).toContainText("向人提问：请检查 ETL 方案");
+  await expect(detail).toContainText("等待处理：请检查 ETL 方案");
   await expect(detail).toContainText("等人做出决定后才有输出");
 
   await chart.getByRole("button", { name: /^出方案/ }).click();
@@ -44,7 +44,8 @@ test("ETL flow view: design, path, current node and each step's input and output
     "orders_clean",
   );
 
-  await page.getByLabel("驳回意见").fill("改成全量");
+  await page.getByLabel("你的名字").fill("李四");
+  await page.getByLabel("修改意见").fill("改成全量");
   await page.getByRole("button", { name: "驳回", exact: true }).click();
   await expect(path.getByRole("button")).toHaveCount(5);
   await expect(

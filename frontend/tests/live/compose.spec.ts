@@ -41,6 +41,8 @@ test("Compose: create → waiting → approve → done; reload preserves the res
   ).toBe(true);
   await capture(page, "mobile-approval");
   await page.setViewportSize({ width: 1360, height: 960 });
+  // No name was given when starting: the step asks for one.
+  await page.getByLabel("你的名字").fill("韩梅梅");
   await page.getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
   await capture(page, "completed");
@@ -68,7 +70,7 @@ test("Compose: reject with feedback → revised answer → approve → done", as
   ).toBeVisible();
   const id = new URL(page.url()).pathname.split("/").at(-1)!;
   testInfo.annotations.push({ type: "run_id", description: id });
-  await page.getByLabel("驳回意见").fill(comment);
+  await page.getByLabel("修改意见").fill(comment);
   await page.getByRole("button", { name: "驳回", exact: true }).click();
   // Waiting again with the new draft shown above, 运行过程 is folded.
   const summary = page.getByText("运行过程 · 4 条消息", { exact: true });

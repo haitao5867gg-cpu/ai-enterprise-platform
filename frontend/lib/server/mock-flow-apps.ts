@@ -729,6 +729,52 @@ export function flowView(
     ],
   };
 }
+// Like the backend: how the new-run page shows a start input (flow-apps.md).
+function startInputIssues(
+  input: Input,
+  loc: (string | number)[],
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const advanced: unknown = input.advanced ?? false;
+  const blank =
+    input.default === undefined ||
+    input.default === null ||
+    (typeof input.default === "string" && !input.default.trim());
+  if (typeof advanced !== "boolean")
+    issues.push({
+      loc: [...loc, "advanced"],
+      msg: "advanced 必须是 true 或 false",
+    });
+  else if (advanced && input.required === true && blank)
+    issues.push({
+      loc: [...loc, "advanced"],
+      msg: "必填且没有默认值的输入不能收进高级选项",
+    });
+  const examples: unknown = input.examples ?? [];
+  const longest = Math.min(input.max_length ?? 2000, 2000);
+  if (!Array.isArray(examples))
+    issues.push({ loc: [...loc, "examples"], msg: "例子必须是列表" });
+  else if (
+    examples.length &&
+    input.type !== "text" &&
+    input.type !== "textarea"
+  )
+    issues.push({ loc: [...loc, "examples"], msg: "只有文字类型可以写例子" });
+  else if (examples.length > 5)
+    issues.push({ loc: [...loc, "examples"], msg: "例子最多 5 条" });
+  else
+    examples.forEach((example: unknown, i) => {
+      if (typeof example !== "string" || !example.trim())
+        issues.push({ loc: [...loc, "examples", i], msg: "例子不能为空" });
+      else if (example.length > longest)
+        issues.push({
+          loc: [...loc, "examples", i],
+          msg: `例子最多 ${longest} 个字符`,
+        });
+    });
+  return issues;
+}
+
 export function validateFlow(config: unknown): ValidationIssue[] {
   const root = ["body", "config", "graph"];
   if (
@@ -787,6 +833,19 @@ export function validateFlow(config: unknown): ValidationIssue[] {
           msg: "检索问题须为 1–2000 字符",
         });
     }
+    if (node.type === "start")
+      node.inputs.forEach((input, i) =>
+        issues.push(...startInputIssues(input, [...loc, "inputs", i])),
+      );
+    if (node.type === "human" && node.mode === "form")
+      node.fields.forEach((field, i) => {
+        for (const key of ["advanced", "examples"])
+          if (key in field)
+            issues.push({
+              loc: [...loc, "fields", i, key],
+              msg: "只有开始节点的输入可以设",
+            });
+      });
     if (
       node.type === "llm" &&
       node.quiet !== undefined &&

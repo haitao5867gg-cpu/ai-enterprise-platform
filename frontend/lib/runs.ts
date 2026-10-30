@@ -217,7 +217,7 @@ export function runTitle(run: RunSummary): string {
 
 export function versionLabel(run: RunSummary): string {
   return run.draft
-    ? "草稿试运行"
+    ? "试运行（未发布版本）"
     : run.app_version
       ? `v${run.app_version}`
       : "";

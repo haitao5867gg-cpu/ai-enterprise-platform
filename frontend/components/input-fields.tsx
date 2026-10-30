@@ -108,6 +108,28 @@ export function InputFields({
                 }
               />
             )}
+            {(field.type === "text" || field.type === "textarea") &&
+              (field.examples?.length ?? 0) > 0 && (
+                <div
+                  className="input-examples"
+                  role="group"
+                  aria-label="可以直接用的例子"
+                >
+                  <span className="field-hint">点一下用这句：</span>
+                  {field.examples!.map((example, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className="example-chip"
+                      title={example}
+                      disabled={disabled}
+                      onClick={() => change(example)}
+                    >
+                      {example}
+                    </button>
+                  ))}
+                </div>
+              )}
             {field.max_length !== undefined && (
               <span className="field-hint">最多 {field.max_length} 个字符</span>
             )}

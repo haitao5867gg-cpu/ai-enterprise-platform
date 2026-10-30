@@ -141,6 +141,8 @@ export function RunDetail({
   const [comment, setComment] = useState("");
   // On the server there is no storage and "" comes back; the field only renders after loading.
   const [actor, setActor] = useState(savedActor);
+  const [actorError, setActorError] = useState("");
+  const actorInput = useRef<HTMLInputElement>(null);
   const [submitting, setSubmitting] = useState<Decision | null>(null);
   const [rechecking, setRechecking] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -258,17 +260,25 @@ export function RunDetail({
     const submittedValues = { ...initialValues(fields), ...values };
     // An approval's questions have no defaults: each one is answered.
     const asking = run.pending.kind === "approval" && fields.length > 0;
-    if (run.pending.kind === "form") {
-      const issues = validateFields(fields, submittedValues, "values");
-      setValueErrors(
-        Object.fromEntries(issues.map((issue) => [issue.loc[2], issue.msg])),
-      );
-      if (issues.length) return;
-    } else if (asking) {
-      const issues = questionErrors(fields, values);
-      setValueErrors(issues);
-      if (Object.keys(issues).length) return;
+    const issues =
+      run.pending.kind === "form"
+        ? Object.fromEntries(
+            validateFields(fields, submittedValues, "values").map((issue) => [
+              issue.loc[2],
+              issue.msg,
+            ]),
+          )
+        : asking
+          ? questionErrors(fields, values)
+          : {};
+    setValueErrors(issues);
+    // The record says who decided: the page asks for a name (the API does not).
+    const nameless = !actor.trim();
+    if (nameless) {
+      setActorError("先填你的名字再提交，记录里会写是谁处理的。");
+      actorInput.current?.focus();
     }
+    if (nameless || Object.keys(issues).length) return;
     // What the person saw: a step whose content changed since is refused (409).
     const details = run.pending.details;
     const seen =
@@ -880,7 +890,7 @@ export function RunDetail({
                     <dt>应用版本</dt>
                     <dd>
                       {run.draft
-                        ? "草稿试运行"
+                        ? "试运行（未发布版本）"
                         : run.app_version
                           ? `v${run.app_version}`
                           : "—"}
@@ -970,19 +980,36 @@ export function RunDetail({
                         />
                       )}
                       <label htmlFor="approval-actor">
-                        审批人<span className="muted">（浏览器会记住）</span>
+                        你的名字
+                        <span className="muted">（必填，浏览器会记住）</span>
                       </label>
                       <input
                         id="approval-actor"
-                        placeholder="你的姓名"
+                        ref={actorInput}
+                        autoComplete="name"
                         value={actor}
                         maxLength={80}
+                        aria-required
+                        aria-invalid={Boolean(actorError)}
+                        aria-describedby={
+                          actorError ? "approval-actor-error" : undefined
+                        }
                         onChange={(e) => {
                           setActor(e.target.value);
+                          setActorError("");
                           saveActor(e.target.value.trim());
                         }}
                         disabled={controlsDisabled}
                       />
+                      {actorError && (
+                        <p
+                          className="field-error"
+                          id="approval-actor-error"
+                          role="alert"
+                        >
+                          {actorError}
+                        </p>
+                      )}
                       {dropped.length > 0 && (
                         <div className="dropped-questions" role="note">
                           <p>没有问的题</p>
@@ -1049,7 +1076,7 @@ export function RunDetail({
                             {humanDetails &&
                             !run.pending.options.includes("reject")
                               ? "意见"
-                              : "驳回意见"}
+                              : "修改意见"}
                             <span className="muted">
                               {humanDetails
                                 ? requiredOptions.length
