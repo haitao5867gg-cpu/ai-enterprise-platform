@@ -51,6 +51,15 @@ import {
 } from "../lib/input-fields";
 import { ApprovalQuestions } from "./approval-questions";
 import { InputFields } from "./input-fields";
+import {
+  EtlDevReview,
+  EtlPlanReview,
+  readDevReview,
+  readPlanReview,
+} from "./etl-review";
+import { NoteList, NotesScope, type Note } from "./review-notes";
+import { EtlResultView } from "./etl-result";
+import { isV2Result, readAnswer } from "../lib/etl-v2";
 
 // What a person typed is shown as typed; replies are Markdown with [n]
 // citations. A reply that is one JSON object is folded away: LLM nodes with JSON
@@ -128,6 +137,7 @@ export function RunDetail({
   const [values, setValues] = useState<FieldValues>({});
   const [valueErrors, setValueErrors] = useState<Record<string, string>>({});
   const [answersFor, setAnswersFor] = useState("");
+  const [notes, setNotes] = useState<Note[]>([]);
   const [comment, setComment] = useState("");
   // On the server there is no storage and "" comes back; the field only renders after loading.
   const [actor, setActor] = useState(savedActor);
@@ -283,6 +293,9 @@ export function RunDetail({
               ? { values: inputPayload(fields, submittedValues) }
               : {
                   comment: comment.trim(),
+                  ...(notes.length
+                    ? { notes: notes.map(({ item, text }) => ({ item, text })) }
+                    : {}),
                   ...(asking
                     ? {
                         values: Object.fromEntries(
@@ -302,6 +315,7 @@ export function RunDetail({
       setComment("");
       setValues({});
       setValueErrors({});
+      setNotes([]);
       setRun((previous) =>
         previous
           ? {
@@ -393,8 +407,15 @@ export function RunDetail({
     run?.app === "etl" && (run.status === "done" || release)
       ? getEtlResult(run.result)
       : null;
+  // A result of the ETL template's second version has its own page (tabs, answer first).
+  const v2Result =
+    run?.status === "done" && isV2Result(run.result) ? run.result : null;
+  const failedResult =
+    (etlResult && etlFailed(etlResult)) ||
+    (v2Result && run?.outcome === "stopped");
   const hasReport =
     !etlResult &&
+    !v2Result &&
     isRecord(run?.result) &&
     typeof run.result.report === "string";
   // A rejected release sends the code back to be rewritten, so the reason must be given.
@@ -421,13 +442,30 @@ export function RunDetail({
     setAnswersFor(pendingStep);
     setValues({});
     setValueErrors({});
+    setNotes([]);
   }
   // Questions the step was given but could not ask (badly written, past the 20th).
   const dropped =
     run?.status === "waiting" && Array.isArray(humanDetails?.dropped_fields)
       ? humanDetails.dropped_fields.filter(isRecord)
       : [];
-  const remarked = Boolean(comment.trim());
+  // A step whose view the page knows shows what it was given, and takes notes on its items.
+  const view =
+    run?.status === "waiting" && run.pending?.kind === "approval"
+      ? humanDetails?.view
+      : null;
+  const planReview =
+    view === "etl_plan_review" ? readPlanReview(humanDetails?.data) : null;
+  const devReview =
+    view === "etl_dev_review" ? readDevReview(humanDetails?.data) : null;
+  const viewShown = Boolean(planReview || devReview);
+  const round =
+    typeof humanDetails?.round === "number" ? humanDetails.round : null;
+  const unanswered = questions.filter(
+    (question) =>
+      values[question.key] === undefined || values[question.key] === "",
+  ).length;
+  const remarked = Boolean(comment.trim()) || (viewShown && notes.length > 0);
   const answered = answersChanged(questions, values);
   // A changed answer or a remark turns the decision into the step's changed_branch: that
   // is the button then, and the options it would turn are not offered.
@@ -457,12 +495,14 @@ export function RunDetail({
       : "";
   // A flow app's ETL plan, as its result carries it.
   const resultPlan =
-    run?.status === "done" && !etlResult && isRecord(run.result)
+    run?.status === "done" && !etlResult && !v2Result && isRecord(run.result)
       ? readEtlPlan(run.result.plan)
       : null;
   // How the run went is open until there is something else to read.
   const historyDefault = !(
     humanShow ||
+    viewShown ||
+    v2Result ||
     plan ||
     release ||
     etlResult ||
@@ -614,7 +654,53 @@ export function RunDetail({
         run && (
           <div className="detail-grid">
             <div className="run-main">
-              {humanShow && (
+              {planReview && (
+                <NotesScope
+                  notes={notes}
+                  onChange={setNotes}
+                  disabled={controlsDisabled}
+                >
+                  <EtlPlanReview
+                    review={planReview}
+                    title={run.step?.title ?? "确认方案"}
+                    round={round}
+                    questions={questions}
+                    values={values}
+                    onChange={(next) => {
+                      setValues(next);
+                      setValueErrors({});
+                    }}
+                    errors={valueErrors}
+                    disabled={controlsDisabled}
+                  />
+                </NotesScope>
+              )}
+              {devReview && (
+                <NotesScope
+                  notes={notes}
+                  onChange={setNotes}
+                  disabled={controlsDisabled}
+                >
+                  <EtlDevReview
+                    review={devReview}
+                    title={run.step?.title ?? "审核试算结果"}
+                    round={round}
+                    runId={id}
+                  />
+                </NotesScope>
+              )}
+              {v2Result && (
+                <EtlResultView
+                  run={run}
+                  result={v2Result}
+                  traceUrl={
+                    langfuseTraceBaseUrl && run.trace_id
+                      ? `${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`
+                      : null
+                  }
+                />
+              )}
+              {humanShow && !viewShown && (
                 <section
                   className="panel human-show-panel"
                   aria-labelledby="human-show-title"
@@ -637,11 +723,14 @@ export function RunDetail({
               {etlResult && <EtlTrail result={etlResult} />}
               {etlResult && <GeneratedFiles result={etlResult} runId={id} />}
               <RunManual runId={id} />
-              <RunFlow
-                runId={id}
-                version={`${run.status}:${run.messages.length}`}
-                live={run.status === "running"}
-              />
+              {/* A delivered or stopped ETL run keeps it in its developer view. */}
+              {!v2Result && (
+                <RunFlow
+                  runId={id}
+                  version={`${run.status}:${run.messages.length}`}
+                  live={run.status === "running"}
+                />
+              )}
               {resultPlan && <EtlPlanView plan={resultPlan} asResult />}
               {run.status === "done" && hasReport && (
                 <section
@@ -913,7 +1002,35 @@ export function RunDetail({
                           </ul>
                         </div>
                       )}
-                      {questions.length > 0 && (
+                      {planReview && questions.length > 0 && (
+                        <p
+                          className={
+                            unanswered && Object.keys(valueErrors).length
+                              ? "field-error"
+                              : "field-hint"
+                          }
+                          role={
+                            unanswered && Object.keys(valueErrors).length
+                              ? "alert"
+                              : undefined
+                          }
+                        >
+                          {unanswered
+                            ? `还有 ${unanswered} 题没答，`
+                            : `${questions.length} 题都答了，`}
+                          <a href="#questions">去看问题</a>
+                        </p>
+                      )}
+                      {viewShown && (
+                        <NoteList
+                          notes={notes}
+                          onRemove={(item) =>
+                            setNotes(notes.filter((note) => note.item !== item))
+                          }
+                          disabled={controlsDisabled}
+                        />
+                      )}
+                      {!planReview && questions.length > 0 && (
                         <ApprovalQuestions
                           key={`${String(humanDetails?.node)}-${String(humanDetails?.round)}`}
                           questions={questions}
@@ -945,7 +1062,13 @@ export function RunDetail({
                                           `「${optionLabel(option)}」`,
                                       )
                                       .join("")}时必填${
-                                      questions.length ? "，改了答案也算" : ""
+                                      questions.length && viewShown
+                                        ? "，改了答案、挂了意见也算"
+                                        : questions.length
+                                          ? "，改了答案也算"
+                                          : viewShown
+                                            ? "，挂了意见也算"
+                                            : ""
                                     }）`
                                   : "（选填）"
                                 : commentRequired
@@ -1050,17 +1173,18 @@ export function RunDetail({
                   aria-labelledby="result-title"
                 >
                   <span
-                    className={`result-icon ${etlResult && etlFailed(etlResult) ? "failed" : ""}`}
+                    className={`result-icon ${failedResult ? "failed" : ""}`}
                   >
-                    <Icon
-                      name={
-                        etlResult && etlFailed(etlResult) ? "alert" : "check"
-                      }
-                      size={20}
-                    />
+                    <Icon name={failedResult ? "alert" : "check"} size={20} />
                   </span>
                   <h2 id="result-title">运行结果</h2>
-                  {etlResult ? (
+                  {v2Result ? (
+                    <p>
+                      {run.outcome === "stopped"
+                        ? `已终止：${typeof v2Result.reason === "string" && v2Result.reason ? v2Result.reason : "没有写明原因"}`
+                        : `已交付。${readAnswer(v2Result.answer)?.conclusion ?? ""}`}
+                    </p>
+                  ) : etlResult ? (
                     <p>
                       {etlResult.release?.status === "deployed"
                         ? `已上线到 prod（${etlResult.release.catalog}.${etlResult.release.schema}）。`

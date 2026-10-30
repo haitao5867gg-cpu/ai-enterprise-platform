@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { FieldValues } from "../lib/input-fields";
 import type { Question } from "../lib/runs";
 import { InputFields } from "./input-fields";
@@ -17,19 +18,22 @@ function choicesOf(question: Question): Choice[] | null {
 }
 
 // The questions an approval step asks: a person picks every answer; the step's
-// suggestion (what it does now) is marked, with why it is asked.
+// suggestion (what it does now) is marked, with why it is asked. `aside` adds what a page
+// shows under a question (what it affects, a remark on it).
 export function ApprovalQuestions({
   questions,
   values,
   onChange,
   errors,
   disabled,
+  aside,
 }: {
   questions: Question[];
   values: FieldValues;
   onChange: (values: FieldValues) => void;
   errors: Record<string, string>;
   disabled: boolean;
+  aside?: (question: Question) => ReactNode;
 }) {
   return (
     <div className="approval-questions">
@@ -94,6 +98,7 @@ export function ApprovalQuestions({
                 )}
               </>
             )}
+            {aside?.(question)}
             {error && (
               <p className="field-error" id={`${id}-error`} role="alert">
                 {error}

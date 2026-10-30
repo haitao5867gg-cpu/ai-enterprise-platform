@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   deployModeLabels,
   languageLabels,
@@ -137,6 +137,44 @@ function VerificationView({ verification }: { verification: EtlVerification }) {
   );
 }
 
+// A bundle's files: the tree, and the open file's text. `toolbar` adds what the open file
+// offers beside its name.
+export function FileBrowser({
+  files,
+  toolbar,
+}: {
+  files: Record<string, string>;
+  toolbar?: (path: string) => ReactNode;
+}) {
+  const paths = Object.keys(files).sort();
+  const [selection, setSelection] = useState("");
+  const selected = paths.includes(selection)
+    ? selection
+    : paths.find((path) => /(^|\/)pipeline\.(py|sql)$/i.test(path)) ||
+      paths.find((path) => /\.(py|sql)$/i.test(path)) ||
+      paths[0];
+  if (!selected) return <p className="no-files">本次运行未生成文件。</p>;
+  return (
+    <div className="file-browser">
+      <nav className="file-tree" aria-label="生成文件目录">
+        <FileTree
+          nodes={fileTree(paths)}
+          selected={selected}
+          onSelect={setSelection}
+        />
+      </nav>
+      <div className="code-panel">
+        <div className="code-toolbar">
+          <span>{selected}</span>
+          {toolbar?.(selected)}
+          <span>{codeLanguage(selected)}</span>
+        </div>
+        <CodeView path={selected} content={files[selected]} />
+      </div>
+    </div>
+  );
+}
+
 export function GeneratedFiles({
   result,
   runId,
@@ -145,12 +183,6 @@ export function GeneratedFiles({
   runId: string;
 }) {
   const paths = Object.keys(result.files).sort();
-  const [selection, setSelection] = useState("");
-  const selected = paths.includes(selection)
-    ? selection
-    : paths.find((path) => /(^|\/)pipeline\.(py|sql)$/i.test(path)) ||
-      paths.find((path) => /\.(py|sql)$/i.test(path)) ||
-      paths[0];
   return (
     <section className="panel generated-files" aria-labelledby="files-title">
       <div className="section-heading files-heading">
@@ -201,26 +233,7 @@ export function GeneratedFiles({
       {result.verification && (
         <VerificationView verification={result.verification} />
       )}
-      {selected ? (
-        <div className="file-browser">
-          <nav className="file-tree" aria-label="生成文件目录">
-            <FileTree
-              nodes={fileTree(paths)}
-              selected={selected}
-              onSelect={setSelection}
-            />
-          </nav>
-          <div className="code-panel">
-            <div className="code-toolbar">
-              <span>{selected}</span>
-              <span>{codeLanguage(selected)}</span>
-            </div>
-            <CodeView path={selected} content={result.files[selected]} />
-          </div>
-        </div>
-      ) : (
-        <p className="no-files">本次运行未生成文件。</p>
-      )}
+      <FileBrowser files={result.files} />
     </section>
   );
 }
