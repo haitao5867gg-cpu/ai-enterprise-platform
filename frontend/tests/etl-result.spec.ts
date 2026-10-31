@@ -89,8 +89,9 @@ test("a delivered run: the answer first, then the plan with its records, the cod
   await expect(card.locator(".answer-conclusion")).toContainText(
     "上海 · gold 的销售额最高",
   );
-  await expect(card.locator("tfoot")).toContainText(
-    "—（这个指标不能直接相加）",
+  await expect(card.locator("tfoot td").nth(4)).toHaveText("—");
+  await expect(card.locator(".answer-note")).toHaveText(
+    "合计里的「—」：下单客户数不能把各组直接相加。",
   );
   // The side says what the run came to, without the result's JSON.
   await expect(page.locator(".run-sidebar .result-card")).toContainText(
@@ -203,4 +204,64 @@ test("a plan without an answer design, an earlier run and an app of one's own ke
   await expect(page.locator(".result-card")).toContainText("SELECT 1");
   await expect(page.locator(".result-card")).toContainText("一段说明");
   await expect(page.locator(".etl-result")).toHaveCount(0);
+});
+
+test("each bar names its own group, by every dimension when the label columns repeat", async ({
+  page,
+  request,
+}) => {
+  const id = await finished(request);
+  const labels = page.locator(".answer-chart .chart-label");
+  // The design labels the bars by city alone, and 上海 has three member levels.
+  await page.route(`**/api/runs/${id}`, async (route) => {
+    const response = await route.fetch();
+    const run = await response.json();
+    const answer = {
+      ...run.result.answer,
+      chart: { ...run.result.answer.chart, label: ["city"] },
+    };
+    await route.fulfill({
+      response,
+      json: { ...run, result: { ...run.result, answer } },
+    });
+  });
+  await page.goto(`/runs/${id}`);
+  await expect(labels.first()).toHaveText("上海 · gold");
+  await expect(labels).toContainText([
+    "上海 · gold",
+    "北京 · gold",
+    "深圳 · gold",
+    "上海 · silver",
+  ]);
+  await page.unroute(`**/api/runs/${id}`);
+
+  // With one group per city the city alone names it.
+  await page.route(`**/api/runs/${id}`, async (route) => {
+    const response = await route.fetch();
+    const run = await response.json();
+    const before = run.result.answer;
+    const seen = new Set<string>();
+    const rows = before.rows.filter((row: { city: string }) =>
+      seen.has(row.city) ? false : (seen.add(row.city), true),
+    );
+    const answer = {
+      ...before,
+      rows,
+      chart: { ...before.chart, label: ["city"] },
+    };
+    await route.fulfill({
+      response,
+      json: { ...run, result: { ...run.result, answer } },
+    });
+  });
+  await page.goto(`/runs/${id}`);
+  await expect(labels).toHaveText([
+    "上海",
+    "北京",
+    "深圳",
+    "杭州",
+    "广州",
+    "成都",
+    "南京",
+  ]);
 });

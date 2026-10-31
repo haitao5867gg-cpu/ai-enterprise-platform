@@ -353,7 +353,7 @@
 - **分组**：筛出这一期的行，按 `group_by` 分组：`sum` 的列相加；`ratio` 的列等于分子列之和除以分母列之和，分母为 0 或空时为 null；`none` 的列一组只有一行时取它的值，否则为 null。`ratio` 的分子、分母列不在 `measures` 里也照样参与计算。所以答案最好指向粒度正好是“时间列 + `group_by`”的结果表，这时每组只有一行，`none` 的指标也照常显示。没有 `group_by` 时整期算一组。
 - **这一期没有行**（表是空的，或者 `pick` 的列全是空值、`period` 为 null）：`rows` 为 `[]`，`groups` 为 0，`truncated` 为 false，`totals` 和 `mins` 里每个指标为 null。没有 `group_by` 时也一样：Spark 不分组的聚合在零行上会返回一行全是空值，这一行不算一组。
 - **排序和截取**：按 `order_by` 排（空值在后）；`order_by` 的值都相同时，再按 `group_by` 各列从小到大排（空值在前），所以 `rows` 和结论每次都一样，`sql` 的 ORDER BY 也这样写。取前 `top_n` 组放进 `rows`。`groups` 是这一期一共几组，`truncated` 是 `groups` 是否大于 `top_n`。
-- **合计 `totals`**：这一期的全部组，不是前 `top_n` 组：`sum` 相加，`ratio` 用分子、分母的合计重新算，`none` 为 null（页面显示“—（这个指标不能直接相加）”）。
+- **合计 `totals`**：这一期的全部组，不是前 `top_n` 组：`sum` 相加，`ratio` 用分子、分母的合计重新算，`none` 为 null（页面显示“—”）。
 - **最小值 `mins`**：这一期全部组里每个 `sum` 指标的最小值。平台只拿到前 `top_n` 组，看不到其余组的值，靠它判断占比的第二个条件。
 - **列的类型 `columns[].format`**：指标列按集群算出的这一列的类型定：整数类型（TINYINT、SMALLINT、INT、BIGINT，`count` 出来的就是）为 `integer`；其他数字类型（DECIMAL、FLOAT、DOUBLE）为 `decimal`，`ratio` 列一律 `decimal`。维度列和不是数字的指标列为 null。
 - **结论 `conclusion`**：
@@ -724,8 +724,8 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
   - 卡片上方写“开发环境试算 · 已由 {reviewed.actor} 审核 · 尚未上线”（没有名字时写“已审核”）。
   - `status` 为 `error` 时写“答案没算出来：{error}”，下面只有质量说明和技术细节。
   - 结论一句话；表格显示 `rows`，表头取 `columns[].label`，数字按 `columns[].format` 显示（见“答案怎么算”），`truncated` 时注明“共 27 组，显示前 10”。
-  - “{period} 合计”一行显示 `totals`，数字同样按 `format`，`none` 的指标显示“—（这个指标不能直接相加）”。
-  - `chart.type` 为 `bar` 画柱状图、`line` 画折线图（内联 SVG，不加新依赖），`none` 不画。
+  - “{period} 合计”一行显示 `totals`，数字同样按 `format`，`none` 的指标显示“—”，表格下面写一次“合计里的「—」：{这些指标的名称用、连接}不能把各组直接相加。”
+  - `chart.type` 为 `bar` 画柱状图、`line` 画折线图（内联 SVG，不加新依赖），`none` 不画。每个点或柱子用 `chart.label` 的列取值命名（用“ · ”连接）；这样会有两组同名时（比如只写了城市，同一个城市有几个会员等级），改用全部分组列命名。
   - 质量说明 `quality.text`；可以把 `rows` 下载成 CSV（原值）。
   - “技术细节”默认收起：表的位置和复制按钮、Databricks 链接、复制查询 SQL（注明只展示、不会执行）。
 - **方案**：业务说明（`brief`）、确认记录（`confirmed`）和审核记录（`reviewed`），技术方案（`plan`）默认收起。
