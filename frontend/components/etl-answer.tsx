@@ -30,8 +30,17 @@ function AnswerChart({ answer }: { answer: Answer }) {
   const { chart } = answer;
   const measure = answer.columns.find((column) => column.name === chart.value);
   if (chart.type === "none" || !measure || !answer.rows.length) return null;
-  const label = (row: Record<string, unknown>) =>
-    chart.label.map((name) => shown(row[name])).join(" · ") || "合计";
+  const named = (names: string[]) => (row: Record<string, unknown>) =>
+    names.map((name) => shown(row[name])).join(" · ") || "合计";
+  // Each mark names its own group: when the design's label columns leave two groups
+  // alike (the city without the member level), every dimension is named.
+  let label = named(chart.label);
+  if (new Set(answer.rows.map(label)).size < answer.rows.length)
+    label = named(
+      answer.columns
+        .filter((column) => column.role === "dimension")
+        .map((column) => column.name),
+    );
   const points = answer.rows.map((row) => ({
     label: label(row),
     value:
@@ -184,6 +193,10 @@ export function AnswerCard({
     (column) => column.role === "dimension",
   );
   const totalLabel = answer.period ? `${answer.period} 合计` : "合计";
+  // The measures the total cannot add up, said once under the table.
+  const unsummed = answer.columns.filter(
+    (column) => column.role === "metric" && column.agg === "none",
+  );
   return (
     <section className="answer-card" aria-label="答案">
       {heading && <p className="answer-heading">{heading}</p>}
@@ -247,7 +260,7 @@ export function AnswerCard({
                               ? totalLabel
                               : ""
                             : column.agg === "none"
-                              ? "—（这个指标不能直接相加）"
+                              ? "—"
                               : shown(
                                   answer.totals[column.name],
                                   column.format,
@@ -260,6 +273,15 @@ export function AnswerCard({
               </table>
             </div>
           )}
+          {answer.rows.length > 0 &&
+            dimensions.length > 0 &&
+            unsummed.length > 0 && (
+              <p className="muted answer-note">
+                合计里的「—」：
+                {unsummed.map((column) => column.label).join("、")}
+                不能把各组直接相加。
+              </p>
+            )}
           {answer.truncated && answer.groups !== null && (
             <p className="muted">
               共 {answer.groups} 组，显示前 {answer.rows.length}

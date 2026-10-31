@@ -229,7 +229,10 @@ test("data review: a failed dev run has no 通过, a note on a file sends the co
   const totals = table.locator("tfoot tr");
   await expect(totals).toContainText("2026-10 合计");
   await expect(totals).toContainText("6,709,854.12");
-  await expect(totals).toContainText("—（这个指标不能直接相加）");
+  await expect(totals.locator("td").nth(4)).toHaveText("—");
+  await expect(card.locator(".answer-note")).toHaveText(
+    "合计里的「—」：下单客户数不能把各组直接相加。",
+  );
   await expect(card).toContainText("共 27 组，显示前 10");
   await expect(
     card.getByRole("img", { name: /^柱状图：销售额（元）/ }),
