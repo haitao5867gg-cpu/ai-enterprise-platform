@@ -91,6 +91,7 @@ NOTE_KINDS = {
     "question": "问题",
     "column": "列",
     "quality": "质量规则",
+    "check": "数据检查",
     "file": "文件",
 }
 NOTE_KIND = re.compile(r"^[a-z][a-z0-9_]{0,31}$")

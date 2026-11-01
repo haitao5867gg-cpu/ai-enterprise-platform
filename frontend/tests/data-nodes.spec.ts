@@ -790,3 +790,37 @@ test("数据检查节点：只列 Databricks 数据源，检查写成 JSON，和
     panel(page).getByLabel("检查（JSON）", { exact: true }),
   ).toHaveValue(JSON.stringify(checks, null, 2));
 });
+
+test("模板“数据 ETL（湖仓，绑定项目）”：试算后数据检查，“通过”要试算和检查都成立", async ({
+  page,
+  request,
+}) => {
+  const templates = await (await request.get("/api/app-templates")).json();
+  expect(
+    templates.find(
+      (item: { id: string }) => item.id === "etl-lakehouse-project",
+    ),
+  ).toMatchObject({ title: "数据 ETL（湖仓，绑定项目）" });
+  const app = await create(request, { template: "etl-lakehouse-project" });
+  const made = await detail(request, app);
+  const config = (made.draft ?? made.current)?.config as FlowConfig;
+  const edges = config.graph.edges.map(
+    (edge) => `${edge.from}-${edge.branch ?? ""}-${edge.to}`,
+  );
+  expect(edges).toEqual(
+    expect.arrayContaining([
+      "dev_run-passed-checks",
+      "dev_run-failed-checks",
+      "checks-passed-data_review",
+      "checks-failed-data_review",
+    ]),
+  );
+  await listView(page);
+  await page.goto(`/apps/${app}`);
+  await select(page, "data_review");
+  await expect(
+    panel(page).locator(".read-only-setting").filter({ hasText: "显示条件" }),
+  ).toContainText("（都成立时才显示这个选项）");
+  await select(page, "checks");
+  await expect(panel(page)).toContainText("数据检查");
+});

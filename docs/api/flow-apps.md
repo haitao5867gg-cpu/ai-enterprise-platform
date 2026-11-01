@@ -206,7 +206,7 @@
 | 设置 | 模式 | 不写时 | 规则 |
 | --- | --- | --- | --- |
 | `view` | 两种 | null | 写法同节点 id，最多 32 个字符。页面认识的有 `etl_plan_review`、`etl_dev_review`，见 [data-nodes.md](data-nodes.md) 的“两个人工步骤的页面”。null 或页面不认识时，照旧把 `show` 按 Markdown 显示，`data` 不显示 |
-| `data` | 两种 | `{}` | 对象，最多 12 个键，键的写法同节点 id。值可以是字面值或引用：恰好是一个引用时取原始值，其余按文本替换，对象和数组里的引用逐层替换（同工具参数）。只放页面要显示的东西，代码这类大块内容不要放，页面另从 `GET /runs/{id}/flow` 取 |
+| `data` | 两种 | `{}` | 对象，最多 16 个键，键的写法同节点 id。值可以是字面值或引用：恰好是一个引用时取原始值，其余按文本替换，对象和数组里的引用逐层替换（同工具参数）。只放页面要显示的东西，代码这类大块内容不要放，页面另从 `GET /runs/{id}/flow` 取 |
 | `fields` | 确认模式 | 不带题 | 要人回答的题，见下 |
 | `changed_branch` | 确认模式 | null | 必须是某个选项的 key，这个选项不能设 `requires`。提交时改了建议答案、写了意见或挂了意见，就按这个选项处理，见“人工节点在工作台上的样子” |
 | `options[].requires` | 确认模式 | 总是显示 | `true`、`false`、恰好是一个引用（如 `"{{dev_run.ok}}"`），或者（第三批）1–5 个这样的引用组成的列表（如 `["{{dev_run.ok}}", "{{data_check.ok}}"]`）。到这一步暂停时取值，恰好是 `true`（列表时每一个都恰好是 `true`）才显示；`false`、null、文字、数字都算不显示。至少要有一个选项不设 `requires` |
@@ -555,7 +555,7 @@ requires:                 # 方便导入时核对
   3. 都没有时，如果标识在第一个 `.` 处能分成 `外层.内层`：按同样的顺序找 `id`、`key` 或 `name` 等于外层的对象，它里面（任意深度）又有一个对象的 `id`、`key` 或 `name` 等于内层，取第一个这样的。
 
   例如 `metric:m3` 对上 `brief.metrics` 里 `id` 为 `m3` 的指标，而不是 `uncited` 里的 `"m3"`；`column:ads_sales.city` 指方案里 `ads_sales` 这张表的 `city` 列；`file:src/pipeline.py` 指 `data.files` 里的一个文件。
-- 平台不核对类别和找到的东西是否对得上，类别只决定 `feedback` 里怎么称呼：`metric` 指标、`dimension` 维度、`filter` 筛选、`rule` 规则、`question` 问题、`column` 列、`quality` 质量规则、`file` 文件，其他叫“条目”。
+- 平台不核对类别和找到的东西是否对得上，类别只决定 `feedback` 里怎么称呼：`metric` 指标、`dimension` 维度、`filter` 筛选、`rule` 规则、`question` 问题、`column` 列、`quality` 质量规则、`check` 数据检查、`file` 文件，其他叫“条目”。
 - 名称 `label` 由平台定：按第 1 步找到的取那个对象的 `label`、`name`、`text`、`title` 里第一个有的，都没有就用标识；按第 2 步找到的就是这一项本身；按第 3 步找到的就是标识本身。最多 60 个字符，超出的截断加“…”。
 - 每种 `view` 用哪些类别，见 data-nodes.md 的“两个人工步骤的页面”。
 

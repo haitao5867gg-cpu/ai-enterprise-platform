@@ -127,7 +127,7 @@ async def refused(p: Platform, run: dict, **body) -> tuple[int, object]:
 async def test_extended_settings_are_checked_where_they_are():
     config = reviewed(
         view="Plan Review",
-        data={"Brief": 1, **{f"k{i}": i for i in range(12)}},
+        data={"Brief": 1, **{f"k{i}": i for i in range(16)}},
         fields=[{**Q1, "default": "all"}, {**Q2, "suggested": "yes"}, {**BAD}, Q1, "?"],
         changed_branch="pass",
     )
@@ -137,7 +137,7 @@ async def test_extended_settings_are_checked_where_they_are():
     at = ("config", "graph", "nodes", "review")
     assert found == {
         (*at, "view"): "页面样式只能用小写字母、数字和下划线，以字母开头，最多 32 个字符",
-        (*at, "data"): "data 最多 12 个键",
+        (*at, "data"): "data 最多 16 个键",
         (*at, "data", "Brief"): "键名只能用小写字母、数字和下划线，以字母开头，最多 32 个字符",
         (*at, "options", 0, "requires"): REQUIRES,
         (*at, "changed_branch"): "按意见处理的选项不能设 requires",

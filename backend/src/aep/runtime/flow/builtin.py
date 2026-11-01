@@ -671,6 +671,127 @@ def _etl_lakehouse() -> dict[str, Any]:
     }
 
 
+PROJECT_PLAN_PROMPT = PLAN_PROMPT.replace(
+    "期望的代码语言：{{start.language}}\n",
+    "\n项目说明（环境、表名前缀、引用表、运行参数）：\n{{project.brief}}\n",
+)
+PROJECT_CODEGEN_PROMPT = (
+    "项目说明（表名前缀、引用表、运行参数）：\n{{project.brief}}\n\n" + CODEGEN_PROMPT
+)
+
+
+def _etl_lakehouse_project() -> dict[str, Any]:
+    """Template etl-lakehouse version 3 (docs/api/data-nodes.md, 第三批): version 2 for a
+    data team working in a project. The run is bound to a project; the plan follows its
+    table prefix, reference tables and run parameters and says how each table is written
+    and what to check; after the dev run the data is checked through the Databricks
+    source's read-only connector, against the old system's result when one is named."""
+    from aep.etl import plan
+
+    config = _etl_lakehouse()
+    nodes = config["graph"]["nodes"]
+    found = {node["id"]: node for node in nodes}
+    found["start"] |= {
+        "project": "required",
+        "note": "运行时选项目，再选 Databricks 数据源（数据检查也经它读表），用业务语言写需求。"
+        "表范围空着时探查项目的引用表；填了老系统的结果表（catalog.schema.table），"
+        "数据检查时会和它逐行对比。",
+        "inputs": [
+            {"key": "datasource", "label": "数据源", "type": "datasource", "required": True},
+            {"key": "request", "label": "需求", "type": "textarea", "required": True},
+            {"key": "tables", "label": "表范围", "type": "text", "advanced": True},
+            {"key": "golden", "label": "老系统结果表", "type": "text", "advanced": True},
+        ],
+    }
+    found["profile"]["note"] = (
+        "先看真实数据再出方案。表范围空着时探查项目登记的引用表，带读取筛选的表只看筛选后的行；"
+        "平台经只读的 MCP 连接器读每张表的结构、行数、空值率、取值分布和样本行，"
+        "这里没出现的表和列，方案里就不能用。"
+    )
+    found["plan"] |= {
+        "note": "模型按 Skill etl-plan-project 的做法写方案：业务说明、目标表和列映射、规则、"
+        "要人拍板的问题和答案之外，目标表名按项目的表名前缀，每张表写明写表方式（整表覆盖、"
+        "按条件替换某个月、追加或按键合并），并建议试算后要做的数据检查。",
+        "skills": [{"name": "etl-plan-project", "version": 1}],
+        "system": plan.OUTPUT_FORMAT_V3,
+        "prompt": PROJECT_PLAN_PROMPT,
+    }
+    found["check_plan"] |= {
+        "note": "平台逐条对照探查结果校验方案，另外检查表名前缀、写表方式、运行参数"
+        "和建议的数据检查；不过就带着问题让模型重写，连续 3 次不过才停下。",
+        "format": 3,
+    }
+    del found["check_plan"]["language"]
+    found["review"] |= {
+        "note": "人工确认点：看业务说明、技术方案、写表方式、已按口径处理的规则和建议的数据检查，"
+        "回答每道问题。都按建议答、没写意见就确认，开始写代码；改了建议答案或写了意见，"
+        "模型按意见重写方案，再确认一次。确认之前不会写 Databricks 里的任何表。",
+        "prompt": "请检查方案：业务说明（指标、维度、筛选、时间范围）、技术方案、写表方式、"
+        "已按口径处理的规则和建议的数据检查，并回答每道问题。确认后平台写代码，在项目的"
+        "开发环境试算；改了建议答案或写了意见，平台会按意见重写方案，再请你确认一次。",
+    }
+    found["ingest"]["note"] = (
+        "Databricks 上的表直接读，不复制；数据库或上传文件的表才整表复制到 Databricks。"
+    )
+    found["codegen"] |= {
+        "note": "模型按 Skill etl-codegen-project 和开发规范写 PySpark 转换代码：用 source() "
+        "读源表（项目的读取筛选平台自动加上），用 param() 取运行参数。",
+        "skills": [{"name": "etl-codegen-project", "version": 1}],
+        "prompt": PROJECT_CODEGEN_PROMPT,
+    }
+    del found["check_code"]["name"]
+    found["dev_run"]["note"] = (
+        "把 bundle 部署成已有集群上的 Job，在项目的开发环境运行：结果写到环境的 catalog 和 schema，"
+        "只写项目自己的表，按方案的写表方式写。能修的报错带回去重写代码，每轮最多运行 3 次。"
+    )
+    checks = {
+        "id": "checks",
+        "type": "data_check",
+        "title": "数据检查",
+        "note": "试算通过后经 Databricks 只读连接器核对数据：方案建议的检查（对账、键不重复、"
+        "不该有的行），填了老系统结果表时再逐行对比。试算没通过时不检查。",
+        "datasource": "{{start.datasource}}",
+        "include": ["{{check_plan.checks}}"],
+        "golden": {
+            "expected": "{{start.golden}}",
+            "table": "{{check_plan.result_table}}",
+            "keys": "{{check_plan.result_keys}}",
+        },
+        "only_if": "{{dev_run.ok}}",
+        "max_visits": 9,
+        "on_error": _retry(2, 5),
+    }
+    nodes.insert(nodes.index(found["data_review"]), checks)
+    review = found["data_review"]
+    review["note"] = (
+        "人工审核点：看试算结果、数据检查、代码和方案。试算和数据检查都通过才能选“通过”；"
+        "数字或代码不对时选改代码或改方案并写明意见；不做了就终止并写明原因。"
+    )
+    review["prompt"] = (
+        "请看开发环境试算的结果、数据检查、代码和方案。通过后交付；改代码、改方案时写明意见，"
+        "可以挂在某一列、某条质量规则、某条数据检查或某个文件上；终止时写明原因。"
+    )
+    review["show"] = "{{dev_run.report}}\n\n{{checks.report}}"
+    review["data"] |= {"checks": "{{checks.results}}", "checks_summary": "{{checks.summary}}"}
+    review["options"][0]["requires"] = ["{{dev_run.ok}}", "{{checks.ok}}"]
+    for end in (found["end"], found["stopped"]):
+        end["outputs"].append({"key": "checks", "from": ["{{checks.report}}"]})
+    # The dev run goes on to the checks, which go on to the review, in reading order.
+    edges: list[dict[str, Any]] = []
+    for edge in config["graph"]["edges"]:
+        if edge["from"] == "dev_run" and edge["to"] == "data_review":
+            edges.append(edge | {"to": "checks"})
+            if edge.get("branch") == "failed":
+                edges += [
+                    {"from": "checks", "to": "data_review", "branch": "passed"},
+                    {"from": "checks", "to": "data_review", "branch": "failed"},
+                ]
+        else:
+            edges.append(edge)
+    config["graph"]["edges"] = edges
+    return config
+
+
 @dataclass(frozen=True)
 class Template:
     id: str
@@ -731,6 +852,14 @@ TEMPLATES = {
             "探查数据源、按口径知识库出方案，确认方案后抽取到 Databricks，"
             "按开发规范写 PySpark 代码，在开发环境试算并算出答案，审核通过后交付。",
             _etl_lakehouse(),
+            needs=("datasource", "knowledge_base"),
+        ),
+        Template(
+            "etl-lakehouse-project",
+            "数据 ETL（湖仓，绑定项目）",
+            "在数据项目里做 ETL：探查项目的引用表，按口径和开发规范出方案并写明写表方式，"
+            "确认后写代码，在项目的开发环境试算，核对数据（可以和老系统逐行对比），审核通过后交付。",
+            _etl_lakehouse_project(),
             needs=("datasource", "knowledge_base"),
         ),
     )

@@ -38,6 +38,7 @@ import {
   lakehouseConfig,
   simulateDataNode,
 } from "./mock-data-nodes";
+import { etlV3Config } from "./mock-etl-v2";
 import type { Flow, NodeKind } from "../flow";
 import { isRecord, type Question } from "../runs";
 import { mockSkillVersionExists } from "./mock-skills";
@@ -404,6 +405,14 @@ export const mockTemplates: AppTemplate[] = [
       "探查数据源、按口径知识库出方案、经人确认后抽取到 Databricks，按开发规范写 PySpark 代码并在 dev 运行，预览结果数据",
     needs: ["datasource", "knowledge_base"],
     config: lakehouseConfig(),
+  },
+  {
+    id: "etl-lakehouse-project",
+    title: "数据 ETL（湖仓，绑定项目）",
+    summary:
+      "在数据项目里做 ETL：探查项目的引用表，按口径和开发规范出方案并写明写表方式，确认后写代码，在项目的开发环境试算，核对数据（可以和老系统逐行对比），审核通过后交付。",
+    needs: ["datasource", "knowledge_base"],
+    config: etlV3Config(),
   },
   {
     id: "knowledge-agent",

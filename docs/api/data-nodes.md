@@ -762,7 +762,7 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 | 代码读源表、读参数，写到项目环境、只写本项目的表、按方式写表 | 节点（`etl_code_check`、`databricks_dev_run`）和平台的集群程序 |
 | 数据检查 | 新节点 `data_check` |
 | 方案第 3 版 | 节点 `etl_plan_check` 的格式 |
-| 模板 `etl-lakehouse` 第 3 版、Skill 新版本 | 应用 |
+| 模板 `etl-lakehouse` 第 3 版（模板 id `etl-lakehouse-project`）、两个新的内置 Skill | 应用 |
 
 节点从运行的项目快照里取项目信息（环境、前缀、引用表、参数），不用在设置里写；没绑定项目的运行和以前完全一样。
 
@@ -942,18 +942,26 @@ def param(name: str):
 
 ### 应用模板 `etl-lakehouse` 第 3 版（应用层）
 
-模板第 2 版留着（不绑定项目的原型方式）。第 3 版给绑定项目的数据团队用，节点和第 2 版一样，只有这些不同：
+模板第 2 版 `etl-lakehouse` 留着不动（不绑定项目的原型方式）。第 3 版是另一个模板：id `etl-lakehouse-project`，标题“数据 ETL（湖仓，绑定项目）”，说明“在数据项目里做 ETL：探查项目的引用表，按口径和开发规范出方案并写明写表方式，确认后写代码，在项目的开发环境试算，核对数据（可以和老系统逐行对比），审核通过后交付。”，`needs` 同第 2 版。模板没有版本号，用户从模板建的应用各自有版本，所以新写法用新 id，不改第 2 版。
 
-- 开始节点 `project: "required"`；输入：数据源（Databricks 数据源；数据检查也用它）、需求、表范围（高级选项，空着时用项目的引用表）、`golden`（高级选项，老系统结果表的三段式名，可选）。
-- 出方案：Skill `etl-plan-brief` 新版本（版本 2，加写表方式、运行参数、数据检查的写法），`system` 为 `OUTPUT_FORMAT_V3`，提示词加 `{{project.brief}}`。
-- 校验方案：`format: 3`。
-- 写代码：Skill `etl-codegen` 新版本（加 `param()` 和三段式 `source()` 的用法），提示词加 `{{project.brief}}`。
-- 开发环境试算之后加 `data_check`（标题“数据检查”，`datasource: "{{start.datasource}}"`，`include: ["{{check_plan.checks}}"]`，`golden: {"expected": "{{start.golden}}", "table": "{{check_plan.result_table}}", "keys": "{{check_plan.result_keys}}"}`，`only_if: "{{dev_run.ok}}"`）。用户填了老系统结果表时就多一条和老系统的逐行对比，没填时没有：试算的 `passed`、`failed` 都连到它，它的两个分支都到“审核试算结果”。
-- 审核试算结果的 `data` 加 `checks: {{data_check.results}}`，页面加“数据检查”一节；“通过”的 `requires` 改成试算通过并且检查通过（新增的 `requires` 写法：引用列表，全为 true 才能选）。
+给绑定项目的数据团队用，节点和第 2 版一样，只有这些不同：
 
-最后一条要给人工节点的 `requires` 加一种写法：除了一个整段引用，还可以是 1–5 个整段引用的列表，全部为 true 时才能选。这是对人工节点的通用扩展，同步写进 flow-apps.md。
+- 开始节点 `project: "required"`；输入：数据源 `datasource`（必填；Databricks 数据源，数据检查也经它读表）、需求 `request`（必填）、表范围 `tables`（高级选项，空着时探查项目的引用表）、老系统结果表 `golden`（高级选项，三段式名，可选）。不再有 bundle 名 `name`，bundle 用第一张目标表的名字。
+- 确认方案：说明和提示里加上写表方式和建议的数据检查，确认后“写代码，在项目的开发环境试算”（Databricks 上的表不复制）。
+- 出方案：Skill `etl-plan-project`（版本 1），`system` 为 `OUTPUT_FORMAT_V3`，提示词在需求后面加“项目说明（环境、表名前缀、引用表、运行参数）：{{project.brief}}”。
+- 校验方案：`format: 3`，不设 `language`（默认 PySpark，模型可以在方案里写 `sql`）。
+- 写代码：Skill `etl-codegen-project`（版本 1），提示词开头加“项目说明（表名前缀、引用表、运行参数）：{{project.brief}}”。
+- 开发环境试算之后加节点 `checks`（`data_check`，标题“数据检查”，`datasource: "{{start.datasource}}"`，`include: ["{{check_plan.checks}}"]`，`golden: {"expected": "{{start.golden}}", "table": "{{check_plan.result_table}}", "keys": "{{check_plan.result_keys}}"}`，`only_if: "{{dev_run.ok}}"`，`max_visits: 9`，出错重试 2 次）。用户填了老系统结果表时多一条和老系统的逐行对比，没填时没有。试算的 `passed`、`failed` 都连到它，它的两个分支都到“审核试算结果”；试算没通过时它不调连接器，`summary` 为“前一步没有通过，没有做数据检查”。
+- 审核试算结果：`data` 加 `checks: "{{checks.results}}"`、`checks_summary: "{{checks.summary}}"`，`show` 在试算报告后接检查报告；“通过”的 `requires` 是 `["{{dev_run.ok}}", "{{checks.ok}}"]`，试算和检查都通过才显示。意见可以挂在某条检查上（`check:<检查 id>`，`feedback` 里叫“数据检查「名称」”）。
+- 交付和终止的结果都加 `checks`（检查报告）。
 
-上线顺序（每步一个 PR，前面的不依赖后面的）：数据外发策略 → 项目和运行绑定（含 `{{param.*}}`、`{{project.*}}` 和项目页面）→ Databricks 只读连接器和探查、抽取 → 读源表和参数、写到项目环境、写表方式 → `data_check` → 方案第 3 版、模板第 3 版和两个 Skill 新版本。之后用 Table 2 Forecast 的模拟数据试点。
+两个 Skill 是新的内置 Skill，不是 `etl-plan-brief`、`etl-codegen` 的版本 2：内置 Skill 只在名字不存在时登记（见 apps-and-skills.md），公司可能已经发布了自己的版本 2，平台不能占用它的版本号。`etl-plan-project` 在 `etl-plan-brief` 的写法上加项目（前缀、三段式源表、读取筛选自动加、`${param.*}`）、写表方式怎么选和数据检查怎么建议（2–6 条，不写 golden）；`etl-codegen-project` 写 `source()` 读三段式表、`param("key")` 取参数（参数名写字面值）、不写表、`replace_where` 只算要替换的那部分行、`merge` 的键不重复。
+
+人工节点的数据最多 16 个键（原来 12）：审核试算结果多了两项，已经是 14 个。
+
+“通过”的 `requires` 用到人工节点的一种新写法：除了一个整段引用，还可以是 1–5 个整段引用的列表，全部为 true 时才能选。这是对人工节点的通用扩展，同步写进 flow-apps.md。
+
+上线顺序（每步一个 PR，前面的不依赖后面的）：数据外发策略 → 项目和运行绑定（含 `{{param.*}}`、`{{project.*}}` 和项目页面）→ Databricks 只读连接器和探查、抽取 → 读源表和参数、写到项目环境、写表方式 → `data_check` → 方案第 3 版 → 模板第 3 版和两个新 Skill。之后用 Table 2 Forecast 的模拟数据试点。
 
 ## 测试
 
@@ -969,6 +977,6 @@ def param(name: str):
   - 写表：绑定项目时结果写到环境的 catalog 和 schema、用环境的集群；前缀不对时 `input_error`；归属的三种情况（不存在、有项目标记或登记在 `adopted`、别的项目或没有标记）；写完的表属性；四种写表方式各自的 Spark 调用、`merge` 键重复、`tables[].write`（假的 `DESCRIBE HISTORY`）；第 1、2 版方案的 `full`、`incremental` 结果不变。
   - `data_check`：`only_if` 不成立时不调连接器、走 `failed`；五种检查各自调的连接器工具和参数（表名换成三段式、筛选和 `where` 用 AND 连起来、`${param.*}` 换成字面值）、通过和不通过、`tolerance` 和 `relative`、`group_by` 对不上的组、golden 的 missing/extra/different、节点 `golden` 加检查（`expected` 为空时不加、`keys` 为空时 error、已有 id golden 时不加）、键重复时 failed 或 error、`rows` 查出行、不是 Databricks 数据源时 `input_error`、单条出错不影响其他条、`skipped`、`severity` 和 `ok`、表名解析和筛选、id 重复时 `input_error`。
   - 方案第 3 版：写表方式的检查、前缀、`checks` 的检查和产出、没绑定项目时用 `${param.*}` 让模型重写；第 2 版的产出不变。
-  - 模板第 3 版用假模型、假 Databricks 和假的 Databricks 连接器跑通：绑定项目、探查引用表、检查不通过时不能选“通过”。
+  - 模板第 3 版用假模型、假 Databricks 和假的 Databricks 连接器跑通：绑定项目、探查引用表（带读取筛选）、在项目环境试算、检查读环境里的结果表并和老系统对比后交付；检查不通过时不能选“通过”，挂在检查上的意见带给模型；试算失败时不做检查。
 - 不连真实 Databricks 和真实模型；`DevTarget.ingest`、`preview` 用假 HTTP 测请求内容。
 - 前端：类型检查通过；说明书面板和新节点表单有 Playwright 用例（沿用现有的 mock 方式）。第二批另加：确认方案页（每题必答、改了答案后主按钮变化、意见挂在条目上）、审核试算结果页（试算失败时没有“通过”）、结果页（答案卡、合计显示“—”、终止的运行、以前的运行的回退、用户自己建的应用输出叫 `code` 或 `brief` 时照以前显示）；mock 里另加第 2 版的运行（等确认方案、等审核、已交付、已终止），第 1 版的演示运行留作“以前的运行”的样例。

@@ -58,7 +58,7 @@
 | DELETE | `/skills/{name}/draft` | | 204；没有草稿 404 |
 | POST | `/skills/{name}/publish` | `{"note", "actor"?}` | `SkillDetail`；没有草稿 409；`note` 不能为空 |
 
-平台内置的 Skill（`etl-plan`、`etl-codegen`、`etl-plan-brief`）在启动时登记为版本 1，`created_by` 为 null，`note` 为"平台内置"。只登记名字还不存在的，已经有的不覆盖；所以改了内置内容要换一个新名字发布（模板改用新名字），`etl-plan-brief` 就是这样来的，见 data-nodes.md。
+平台内置的 Skill（`etl-plan`、`etl-codegen`、`etl-plan-brief`、`etl-plan-project`、`etl-codegen-project`）在启动时登记为版本 1，`created_by` 为 null，`note` 为"平台内置"。只登记名字还不存在的，已经有的不覆盖；所以改了内置内容要换一个新名字发布（模板改用新名字），`etl-plan-brief` 和第三批的 `etl-plan-project`、`etl-codegen-project` 就是这样来的，见 data-nodes.md。
 
 ## 应用
 

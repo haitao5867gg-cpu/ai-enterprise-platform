@@ -18,7 +18,9 @@ import type { MockSteps } from "./mock-flow";
 // "应用模板 etl-lakehouse 第 2 版"): it waits at 确认方案 and 审核试算结果 with what the two
 // views read, takes answers and notes on items as the backend does, and ends delivered
 // or stopped. What the model and Databricks would give is fixed; a request that says
-// 试算失败 has its first dev run fail.
+// 试算失败 has its first dev run fail. A request that says 数据检查 is done the way
+// template v3 (etl-lakehouse-project) does it: a version 3 plan with data checks, checked
+// after the dev run; 数据检查不通过 has the first round's checks fail.
 export const ETL_V2_APP = "retail-etl-v2";
 
 type Record_ = Record<string, unknown>;
@@ -26,6 +28,8 @@ export type EtlV2State = {
   next: "review" | "data_review" | "delivered" | "stopped";
   rounds: { review: number; data_review: number; dev: number };
   failFirst: boolean;
+  // Template v3's data checks: none (v2), checks that pass, or fail in the first round.
+  checks: "none" | "pass" | "fail";
   confirmed: Record_ | null;
   reviewed: Record_ | null;
   // What people answered so far, by question: answered questions become rules.
@@ -683,6 +687,156 @@ function devRun(failed: boolean) {
   };
 }
 
+// Template v3 (etl-lakehouse-project): version 2 bound to a project, with the data
+// check after the dev run; 通过 needs the dev run and the checks to pass.
+export function etlV3Config(): FlowConfig {
+  const base = etlV2Config();
+  const nodes = base.graph.nodes.flatMap((node): FlowNode[] => {
+    if (node.type === "start")
+      return [
+        {
+          ...node,
+          project: "required",
+          inputs: [
+            ...node.inputs.filter((input) =>
+              ["datasource", "request", "tables"].includes(input.key),
+            ),
+            {
+              key: "golden",
+              label: "老系统结果表",
+              type: "text",
+              advanced: true,
+            },
+          ],
+        },
+      ];
+    if (node.id !== "data_review" || dataReviewNode.mode !== "approval")
+      return [node];
+    return [
+      {
+        id: "checks",
+        type: "data_check",
+        title: "数据检查",
+        datasource: "{{start.datasource}}",
+        checks: [],
+        include: ["{{check_plan.checks}}"],
+        golden: {
+          expected: "{{start.golden}}",
+          table: "{{check_plan.result_table}}",
+          keys: "{{check_plan.result_keys}}",
+        },
+        only_if: "{{dev_run.ok}}",
+      },
+      {
+        ...dataReviewNode,
+        data: {
+          ...dataReviewNode.data,
+          checks: "{{checks.results}}",
+          checks_summary: "{{checks.summary}}",
+        },
+        options: dataReviewNode.options.map((option) =>
+          option.key === "approve"
+            ? { ...option, requires: ["{{dev_run.ok}}", "{{checks.ok}}"] }
+            : option,
+        ),
+      },
+    ];
+  });
+  const edges = base.graph.edges.flatMap((edge) =>
+    edge.from === "dev_run" && edge.to === "data_review"
+      ? [
+          { ...edge, to: "checks" },
+          ...(edge.branch === "failed"
+            ? [
+                { from: "checks", to: "data_review", branch: "passed" },
+                { from: "checks", to: "data_review", branch: "failed" },
+              ]
+            : []),
+        ]
+      : [edge],
+  );
+  return { ...base, graph: { nodes, edges } };
+}
+
+// Template v3: the checks the plan proposes, and what they find after the dev run.
+const planChecks = [
+  {
+    id: "keys",
+    label: "每月每个城市每个等级一行",
+    kind: "unique",
+    table: "ads_sales_city_member_m",
+    columns: ["stat_month", "city", "member_level"],
+    severity: "error",
+  },
+  {
+    id: "amount",
+    label: "销售额和明细对得上",
+    kind: "reconcile",
+    left: { table: "ads_sales_city_member_m", expr: "sum(sales_amount)" },
+    right: { table: "dwd_sales_order_line", expr: "sum(line_amount)" },
+    tolerance: 0.001,
+    relative: true,
+    severity: "error",
+  },
+  {
+    id: "no_negative",
+    label: "没有负的销售额",
+    kind: "rows",
+    table: "ads_sales_city_member_m",
+    where: "sales_amount < 0",
+    severity: "warn",
+  },
+];
+function checkResults(failed: boolean) {
+  const result = (
+    check: (typeof planChecks)[number],
+    status: string,
+    message: string,
+    rows: Record_[] = [],
+  ) => ({
+    id: check.id,
+    label: check.label,
+    kind: check.kind,
+    severity: check.severity,
+    status,
+    actual: null,
+    expected: null,
+    message,
+    rows,
+  });
+  const [keys, amount, negative] = planChecks;
+  const results = [
+    failed
+      ? result(
+          keys,
+          "failed",
+          "按 stat_month、city、member_level 有 1 组重复",
+          [
+            {
+              stat_month: "2025-11",
+              city: "上海",
+              member_level: "gold",
+              count: 2,
+            },
+          ],
+        )
+      : result(keys, "passed", "按 stat_month、city、member_level 没有重复"),
+    result(amount, "passed", "左边 12,840,331.5，右边 12,840,331.5，一致"),
+    result(negative, "passed", "没有满足 sales_amount < 0 的行"),
+  ];
+  const summary = failed
+    ? "3 项检查：2 项通过，1 项不通过"
+    : "3 项检查：3 项通过";
+  const report = `## 数据检查\n\n${summary}\n\n| 结果 | 检查 | 说明 |\n| --- | --- | --- |\n${results
+    .map(
+      (item) =>
+        `| ${item.status === "passed" ? "通过" : "不通过"} | ${item.label} | ${item.message} |`,
+    )
+    .join("\n")}`;
+  return { ok: !failed, results, summary, report };
+}
+const SKIPPED = "前一步没有通过，没有做数据检查";
+
 // The plan the round shows: questions answered in an earlier round are rules now.
 function planFor(state: EtlV2State) {
   const asked = questions.filter(
@@ -694,16 +848,31 @@ function planFor(state: EtlV2State) {
     text: `${answered.actor ? `${answered.actor}已确认` : "已确认"}：${answered.label}——${answered.value}`,
     basis: "confirmed",
   }));
+  const v3 = state.checks !== "none";
   return {
     summary: brief.goal,
     language: "pyspark",
     brief,
-    targets,
+    // Version 3 says how each table is written: the month's rows are replaced.
+    targets: v3
+      ? targets.map((target, i) => ({
+          ...target,
+          load:
+            i === targets.length - 1
+              ? {
+                  mode: "replace_where",
+                  where: "stat_month = ${param.update_month}",
+                  keys: [],
+                }
+              : { mode: "overwrite", keys: [] },
+        }))
+      : targets,
     rules: [...baseRules, ...confirmed],
     questions: asked,
     answer: design,
     assumptions: [],
     references,
+    ...(v3 ? { checks: planChecks } : {}),
   };
 }
 function fieldsOf(plan: ReturnType<typeof planFor>): Question[] {
@@ -784,6 +953,12 @@ export function startEtlV2(input: Record_): EtlV2State {
     rounds: { review: 0, data_review: 0, dev: 0 },
     failFirst:
       typeof input.request === "string" && input.request.includes("试算失败"),
+    checks:
+      typeof input.request !== "string" || !input.request.includes("数据检查")
+        ? "none"
+        : input.request.includes("数据检查不通过")
+          ? "fail"
+          : "pass",
     confirmed: null,
     reviewed: null,
     answered: [],
@@ -801,6 +976,7 @@ const titles: Record<string, string> = {
   codegen: "写代码",
   check_code: "检查并打包",
   dev_run: "开发环境试算",
+  checks: "数据检查",
   data_review: "审核试算结果",
 };
 
@@ -858,6 +1034,18 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
       "dev_run",
       dev.ok ? "dev 运行通过，算出了答案" : "dev 运行失败，请看报错",
     );
+    const checked =
+      state.checks === "none"
+        ? null
+        : dev.ok
+          ? checkResults(
+              state.checks === "fail" && state.rounds.data_review === 1,
+            )
+          : { ok: false, results: [], summary: SKIPPED, report: SKIPPED };
+    if (checked) {
+      step(steps, "checks", checked);
+      say("checks", checked.summary);
+    }
     run.pending = waitAt(
       dataReviewNode,
       {
@@ -873,10 +1061,13 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
         url: dev.url,
         errors: dev.errors,
         files,
+        ...(checked
+          ? { checks: checked.results, checks_summary: checked.summary }
+          : {}),
       },
       state.rounds.data_review,
       [],
-      dev.ok
+      dev.ok && (checked?.ok ?? true)
         ? ["approve", "fix_code", "fix_plan", "stop"]
         : ["fix_code", "fix_plan", "stop"],
     );
@@ -900,6 +1091,9 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
       code: bundle,
       quality,
       dev_url: DEV_URL,
+      ...(state.checks === "none"
+        ? {}
+        : { checks: checkResults(false).report }),
     };
     run.outcome = "delivered";
     run.step = { node: "end", title: "交付" };
@@ -974,6 +1168,7 @@ const kinds: Record<string, string> = {
   question: "问题",
   column: "列",
   quality: "质量规则",
+  check: "数据检查",
   file: "文件",
 };
 
