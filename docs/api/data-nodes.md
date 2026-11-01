@@ -791,6 +791,7 @@ PySpark 管道文件开头由平台写好这几样（模型写的转换函数不
 SOURCE_CATALOG = spark.conf.get("source_catalog")
 SOURCE_FILTERS = {"prev.sales.forecast": "Type = 'Vol.'"}   # 项目登记的读取筛选，平台写入；没有时为 {}
 PARAMS = json.loads(spark.conf.get("aep_params", "{}"))
+WARNINGS = []   # 代码用 warn() 记下的告警
 
 
 def source(name: str):
@@ -801,12 +802,21 @@ def source(name: str):
 def param(name: str):
     """A run parameter of the project: str, int, float, bool or None."""
     return PARAMS.get(name)
+
+
+def warn(message: str) -> None:
+    """A warning about the data for the run report; the run goes on."""
+    WARNINGS.append(str(message))
+    print(f"WARNING: {message}")
 ```
 
 - 筛选写进代码里，代码评审时看得见；改了项目的筛选，要重新生成代码才生效。
 - 生成的代码在集群上读源表是运行管道本身（写的一侧），用平台部署和运行 Job 的身份，和以前一样；试算后读结果表的预览、算答案也照旧在集群上做，读的是这次刚写的表。探查和数据检查读表一律经只读连接器。
 - `param()` 的值按参数类型：`number` 是 int 或 float，`boolean` 是 bool，其余（含 `date`、`month`）是文字，没给值为 None。
 - `etl_code_check` 新加的检查（问题都让模型重写）：`param()` 的参数必须是字符串字面值，并且是项目定义了的参数（没绑定项目时“没有绑定项目，不能用 param()”）；`source()` 的三段式名字同样要在方案的来源里。
+- 函数体能 import 的（试点后新增，原来一律“不要写 import”）：标准库 `re`、`math`、`datetime`、`decimal`、`calendar`（`import re`、`import datetime as dt`、`from decimal import Decimal` 都行），以及 `pyspark.sql` 的 `types`、`functions`、`window`（`from pyspark.sql import types as T`、`from pyspark.sql.functions import col`；`import pyspark.sql.types` 要带 `as`）。别的模块、相对导入、`import *` 检查不过：“不能 import os，能 import 的只有 re、math、datetime、decimal、calendar 和 pyspark.sql 的 types、functions、window”。import 出来的名字不能是平台提供的名字，只有 `from pyspark.sql import functions as F`、`from pyspark.sql import Window` 这种和平台同一个东西的除外。
+- 没有定义的名字：函数体读了一个名字，而它既不是函数体里赋值、import、定义或参数里出现过的，也不是 Python 内置名字或平台提供的名字时，检查不过：“ibf_table2: 用了没有定义的名字 re（能 import 的只有 …；告警用 warn()）”。只查有没有，不查先后。以前这种代码要到 dev 运行时才报 NameError，白跑一次集群。
+- `warn("说明")`：数据有问题但不该停下时用（比如某个月没有数据、分摊比例加起来不是 1），每条进 dev 运行的 `warnings`，写成“代码告警：说明”，最多 20 条，每条最多 500 字；运行照常通过（`cluster`、`job` 模式；`pipeline` 模式只打印在管道日志里）。该停下的问题照旧 `raise ValueError("说明")`，dev 运行失败并带回这句话。`WARNINGS` 由平台读取，代码不能直接用（“不要直接用 WARNINGS，告警用 warn()”）。
 - SQL 方案：源表照旧换成 `${source_catalog}` 加两段名，三段名原样；条件里的 `${param.<key>}` 换成值的 SQL 字面值（同下面写表方式的规则）。读带筛选的引用表时检查不过：“表 … 有读取筛选，SQL 代码暂不支持，请改用 PySpark”。
 
 ### 写到哪里，只写本项目的表
@@ -835,6 +845,7 @@ def param(name: str):
 ```
 
 - `where` 是 Spark SQL 布尔表达式，形状检查同引用表的 `filter`；里面的 `${param.<key>}` 在运行时换成参数值的 SQL 字面值：文字和 `month` 加单引号并转义，`date` 写成 `DATE'2026-10-01'`，数字原样，布尔写 `true`、`false`，空值写 `NULL`。参数不存在时 `etl_plan_check` 让模型重写。
+- 已经加了单引号的参数（`version_id = '${param.version_id}'`，引号正好包住整个参数）也认：换成值的文字字面值，不再套一层引号（以前会变成 `''FY26_06_M''`，Spark 报语法错）。所以 `'${param.x}'` 和 `${param.x}` 对文字参数是一样的；对数字和日期，加了引号的是文字（`'3'`、`'2026-10-01'`），不加的保持类型；空值照样是 `NULL`。只有包住整个参数的引号才算，`'FY_${param.x}'` 这种拼在更长字符串里的不支持。这条规则对用到 `${param.*}` 的所有地方都一样（替换条件、数据检查、SQL 代码）。
 - 集群程序怎么写（Delta）：
   - `overwrite`：同现在（`overwrite`，`overwriteSchema`）。
   - `replace_where`：`mode("overwrite")` 加 `replaceWhere`；结果里有不满足条件的行时 Delta 会拒绝，记写入错误“有行不满足替换条件 …”。
@@ -974,6 +985,7 @@ def param(name: str):
 - 第三批另加：
   - 表名：三段式拆分（带 `-` 的 catalog）、`catalog.schema.*` 展开；Databricks 数据源上 `tables` 为空时用项目引用表、没项目时 `input_error`；引用表的筛选传到 `table_stats`、`sample_rows`；抽取 Databricks 的表不读不写、`copied` 为 false。
   - 代码：`SOURCE_FILTERS` 和 `param()` 写进管道文件；`param()` 参数不是字面值、不是项目参数时检查不过；SQL 读带筛选的表检查不过；`${param.*}` 的字面值（文字转义、日期、数字、布尔、空值）。
+  - 代码（试点后新增）：能 import 的标准库和 pyspark 模块通过，别的模块、相对导入、`import *`、import 成平台的名字检查不过；没有定义的名字检查不过；`warn()` 记下告警，集群带回的告警进 dev 运行的 `warnings`；加了单引号的 `'${param.x}'` 不再套引号（文字、数字、日期、空值）。
   - 写表：绑定项目时结果写到环境的 catalog 和 schema、用环境的集群；前缀不对时 `input_error`；归属的三种情况（不存在、有项目标记或登记在 `adopted`、别的项目或没有标记）；写完的表属性；四种写表方式各自的 Spark 调用、`merge` 键重复、`tables[].write`（假的 `DESCRIBE HISTORY`）；第 1、2 版方案的 `full`、`incremental` 结果不变。
   - `data_check`：`only_if` 不成立时不调连接器、走 `failed`；五种检查各自调的连接器工具和参数（表名换成三段式、筛选和 `where` 用 AND 连起来、`${param.*}` 换成字面值）、通过和不通过、`tolerance` 和 `relative`、`group_by` 对不上的组、golden 的 missing/extra/different、节点 `golden` 加检查（`expected` 为空时不加、`keys` 为空时 error、已有 id golden 时不加）、键重复时 failed 或 error、`rows` 查出行、不是 Databricks 数据源时 `input_error`、单条出错不影响其他条、`skipped`、`severity` 和 `ok`、表名解析和筛选、id 重复时 `input_error`。
   - 方案第 3 版：写表方式的检查、前缀、`checks` 的检查和产出、没绑定项目时用 `${param.*}` 让模型重写；第 2 版的产出不变。

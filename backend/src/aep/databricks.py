@@ -1208,3 +1208,4 @@ def _apply(dev: DevRun, outcome: dict[str, Any]) -> None:
     for table in dev.tables:
         if table.rows == 0:
             dev.warnings.append(f"{table.name} 结果是 0 行")
+    dev.warnings += [f"代码告警：{w}" for w in outcome.get("warnings") or []]

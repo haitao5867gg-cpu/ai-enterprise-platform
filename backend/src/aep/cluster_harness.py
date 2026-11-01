@@ -31,8 +31,13 @@ from typing import Any
 
 MARKER = "AEP_RESULT "
 KINDS = {"expect": "warn", "expect_or_drop": "drop", "expect_or_fail": "fail"}
+# The warnings a pipeline's code may report through warn(): how many, how long each.
+WARNINGS_MAX = 20
+WARNING_CHARS = 500
 # A run parameter in a SQL text: a target's query, a replace_where condition, a check.
 PARAM = re.compile(r"\$\{param\.([a-z][a-z0-9_]{0,31})\}")
+# A parameter, or one already wrapped in single quotes as a whole.
+QUOTED_PARAM = re.compile(r"(')?\$\{param\.([a-z][a-z0-9_]{0,31})\}(?(1)')")
 
 
 def sql_literal(value: Any, kind: str = "text") -> str:
@@ -51,14 +56,20 @@ def sql_literal(value: Any, kind: str = "text") -> str:
 
 def with_params(text: str, values: dict[str, Any], kinds: dict[str, str]) -> str:
     """``text`` with each ``${param.<key>}`` replaced by the value's SQL literal; raises
-    ``ValueError`` for a key the run has no parameter for."""
+    ``ValueError`` for a key the run has no parameter for. One already in single quotes
+    (``'${param.version_id}'``, as people and models often write it) stands for the
+    value as text, so it does not get a second pair of quotes."""
 
     def swap(match: re.Match[str]) -> str:
-        if match[1] not in values:
-            raise ValueError(f"没有运行参数 {match[1]}")
-        return sql_literal(values[match[1]], kinds.get(match[1], "text"))
+        quoted, key = match[1], match[2]
+        if key not in values:
+            raise ValueError(f"没有运行参数 {key}")
+        value = values[key]
+        if quoted and value is not None:
+            return sql_literal(value if isinstance(value, str) else json.dumps(value))
+        return sql_literal(value, kinds.get(key, "text"))
 
-    return PARAM.sub(swap, text)
+    return QUOTED_PARAM.sub(swap, text)
 
 
 # The SQL pipeline as aep.etl.codegen.render_sql writes it.
@@ -326,6 +337,7 @@ def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
     params = spec.get("params") or {}
     kinds = spec.get("param_types") or {}
     conf = {"source_catalog": spec["source_catalog"], "aep_params": json.dumps(params)}
+    namespace: dict[str, Any] = {}
     if spec["language"] == "pyspark":
         dp = types.ModuleType("pyspark.pipelines")
 
@@ -358,7 +370,7 @@ def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
         sys.modules["pyspark.pipelines"] = dp
         pyspark.pipelines = dp  # type: ignore[attr-defined]
         try:
-            namespace = {"spark": _Spark(spark, conf, table)}
+            namespace["spark"] = _Spark(spark, conf, table)
             exec(compile(spec["code"], "pipeline.py", "exec"), namespace)
         except Exception as exc:  # noqa: BLE001
             errors.append(_error("pipeline.py", exc))
@@ -398,6 +410,10 @@ def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
             done[name] = materialize(name)
 
     outcome = {"tables": list(results.values()), "errors": errors, "write_errors": write_errors}
+    # What the generated code passed to warn() (the pipeline file's WARNINGS).
+    warned = namespace.get("WARNINGS")
+    if isinstance(warned, list) and warned:
+        outcome["warnings"] = [str(w)[:WARNING_CHARS] for w in warned[:WARNINGS_MAX]]
     if spec.get("preview"):
         outcome["preview"] = _preview(done, spec["preview"], spec.get("order"))
     if spec.get("answer") and not errors and not write_errors:

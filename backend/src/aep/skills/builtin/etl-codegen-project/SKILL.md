@@ -16,6 +16,11 @@ description: 在数据项目里按已确认的第 3 版 ETL 方案写 Databricks
 - param() 的值：number 是数字，boolean 是 true/false，其余（包括 date、month）是文字，没给值时为 None。
   和列比较时注意类型，比如 F.col("update_month") == param("update_month")。
 
+前置检查：
+- 方案里要求的前置检查（参数格式、关键输入有没有数据）写在函数体开头：
+  不该继续时 raise ValueError("说明")；能继续但要提醒时 warn("说明")，告警会写进运行报告。
+- 需要时可以 import re、math、datetime、decimal、calendar，别的模块都不能用；不要用没定义的名字。
+
 写表方式：
 - 写表由平台按方案的 load 完成，代码只返回要写的 DataFrame，不要自己写表。
 - replace_where 的表：返回的每一行都要满足方案的替换条件（通常是用运行参数筛出这一个月），
