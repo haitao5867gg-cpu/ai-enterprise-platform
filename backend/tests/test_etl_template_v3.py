@@ -403,6 +403,7 @@ async def test_a_failed_dev_run_skips_the_checks(make, monkeypatch):
     failed = {"write_errors": ["ibf_table2: 写表失败：没有权限"]}
     lake = await make([reply(v3_plan()), GOOD_CODE], [failed], [])
     run_id, view = await lake.start()
+    profiled = len(lake.calls)  # The profile counts the filtered reference's rows.
     view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
     pending = view["pending"]
     assert view["step"]["node"] == "data_review", view["error"]
@@ -410,7 +411,8 @@ async def test_a_failed_dev_run_skips_the_checks(make, monkeypatch):
     data = pending["details"]["data"]
     assert (data["status"], data["checks"]) == ("failed", [])
     assert data["checks_summary"] == "前一步没有通过，没有做数据检查"
-    assert not [t for t, _ in lake.calls if t in ("duplicates", "aggregate", "compare")]
+    checked = [t for t, _ in lake.calls[profiled:] if t in ("duplicates", "aggregate", "compare")]
+    assert not checked
 
 
 def test_template_follows_the_contract():

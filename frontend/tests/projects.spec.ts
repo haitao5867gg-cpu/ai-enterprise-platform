@@ -79,6 +79,16 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await param.getByLabel("显示名").fill("统计月");
   await param.getByLabel("类型").selectOption({ label: "月份" });
   await param.getByLabel("必填").check();
+  // A text parameter may have a format; its default must fit it.
+  await form.getByRole("button", { name: "添加运行参数" }).click();
+  const version = form.getByRole("group", { name: "运行参数 2" });
+  await version.getByLabel("标识").fill("version_id");
+  await version.getByLabel("显示名").fill("版本");
+  await version.getByLabel("格式（选填）").fill("FY\\d{2}_\\d{2}_M");
+  await version.getByLabel("默认值（选填）").fill("FY26-06");
+  await expect(version).toContainText("默认值不对：参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
+  await version.getByLabel("默认值（选填）").fill("FY26_06_M");
+  await expect(version).not.toContainText("默认值不对");
   await form.getByLabel("发给模型的数据").selectOption({ label: "只发统计" });
   await expect(form).toContainText("不发样本行和取值分布");
 
@@ -105,6 +115,9 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(page.getByRole("region", { name: "表登记" })).toContainText("Type = 'Vol.'");
   await expect(page.getByRole("region", { name: "表登记" })).toContainText("pt_history");
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText("统计月");
+  await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
+    "文字，格式 FY\\d{2}_\\d{2}_M",
+  );
   await expect(page.getByRole("region", { name: "数据外发策略" })).toContainText("只发统计");
   await expect(page.getByRole("region", { name: "验收检查" })).toContainText("本月有结果");
   await expect(page.getByRole("region", { name: "验收检查" })).toContainText("聚合值");
@@ -176,6 +189,53 @@ test("新建运行时选项目、环境并填参数，运行页显示项目和�
   await expect(header).toContainText("统计月：2026-09");
   await expect(header).toContainText("版本号：1");
   await expect(header).toContainText("只发统计（项目设置）");
+});
+
+test("文本参数可以限定格式，新建运行时填的值不符合就开始不了", async ({ page, request }) => {
+  const id = unique("fmt");
+  const project = {
+    project_id: id,
+    name: `格式 ${id}`,
+    table_prefix: "fm_",
+    environments: [{ key: "dev", label: "开发", catalog: "main", schema: "fm_dev" }],
+    params: [
+      { key: "update_month", label: "统计月", type: "month", default: "2026-09" },
+      { key: "version_id", label: "版本", type: "text", pattern: "FY\\d{2}_\\d{2}_M" },
+    ],
+  };
+  const notText = await request.post("/api/projects", {
+    data: { ...project, params: [{ key: "m", label: "月", type: "month", pattern: "x" }] },
+  });
+  expect(notText.status()).toBe(422);
+  expect((await notText.json()).detail).toContain("参数「月」不是文本，不能写格式");
+  const made = await request.post("/api/projects", { data: project });
+  expect(made.status(), await made.text()).toBe(201);
+
+  const app = await boundApp(request, "required");
+  const wrong = await request.post("/api/runs", {
+    data: {
+      app,
+      input: { question: "多少？" },
+      project: { project_id: id, params: { version_id: "FY26-06" } },
+    },
+  });
+  expect(wrong.status()).toBe(422);
+  expect((await wrong.json()).detail).toBe("参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
+
+  // The run form says the format and checks it before sending.
+  await page.goto(`/runs/new?app=${app}`);
+  const form = page.getByRole("form", { name: "新建运行" });
+  await form.getByLabel("客户问题").fill("这个月的预测是多少？");
+  await form.getByLabel("项目", { exact: true }).selectOption({ label: `格式 ${id}` });
+  const field = form.getByLabel("版本（选填）");
+  await expect(form).toContainText("格式：FY\\d{2}_\\d{2}_M");
+  await field.fill("FY26-06");
+  await form.getByRole("button", { name: "开始运行" }).click();
+  await expect(form).toContainText("参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
+  await field.fill("FY26_06_M");
+  await form.getByRole("button", { name: "开始运行" }).click();
+  await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}$/);
+  await expect(page.getByRole("main")).toContainText("版本：FY26_06_M");
 });
 
 test("开始节点可以设使用项目；没设时引用项目和参数保存不了", async ({ request }) => {

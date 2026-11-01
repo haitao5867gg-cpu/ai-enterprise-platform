@@ -45,7 +45,9 @@ async def profile_tables(
     """Structure, stats and ``sample_rows`` sample rows of each table (``wanted``: names
     as ``split_name`` takes them). ``filters`` (table name: Spark SQL condition, any case)
     limits the stats and the sample of a table to the rows the condition keeps; it goes
-    to the connector as ``where`` (connectors/databricks)."""
+    to the connector as ``where`` (connectors/databricks). A filtered table also gets its
+    whole row count (``unfiltered_row_count``, from the connector's ``aggregate``), so the
+    model sees how much the filter leaves out."""
     url = source.connector_url
 
     def call(tool: str, args: dict[str, Any] | None = None) -> Any:
@@ -69,11 +71,14 @@ async def profile_tables(
         args = {"schema": schema, "table": table}
         where = wheres.get(f"{schema}.{table}".lower())
         rows = {"where": where} if where else {}
-        described, stats, sample = await asyncio.gather(
+        calls = [
             call("describe_table", args),
             call("table_stats", {**args, **rows}),
             call("sample_rows", {**args, **rows, "limit": sample_rows}),
-        )
+        ]
+        if where:
+            calls.append(call("aggregate", {"table": f"{schema}.{table}", "expr": "count(*)"}))
+        described, stats, sample, *whole = await asyncio.gather(*calls)
         return {
             "name": f"{schema}.{table}",
             "comment": described.get("comment"),
@@ -81,6 +86,7 @@ async def profile_tables(
             "columns": [{**c, "comment": c.get("comment")} for c in described["columns"]],
             "foreign_keys": described["foreign_keys"],
             "estimated_row_count": stats.get("estimated_row_count"),
+            "unfiltered_row_count": int(whole[0]["rows"][0]["value"]) if whole else None,
             "sample_row_count": stats.get("sample_row_count"),
             "sample_limit": stats.get("sample_limit"),
             "column_stats": stats["columns"],
@@ -189,7 +195,11 @@ def describe_for_model(
             )
         if t.get("filter"):
             # The stats and the sample were read with it too.
-            lines.append(f"  只读 {t['filter']} 的行（项目登记的读取筛选，统计和样本也只算这些行）")
+            said = "项目登记的读取筛选，统计和样本也只算这些行"
+            kept, whole = t.get("estimated_row_count"), t.get("unfiltered_row_count")
+            if counts and isinstance(kept, int) and isinstance(whole, int):
+                said += f"；全表 {whole} 行，筛掉了 {whole - kept} 行"
+            lines.append(f"  只读 {t['filter']} 的行（{said}）")
         for col in t["columns"]:
             s = stats.get(col["name"], {})
             flags = [col["data_type"]]

@@ -10,6 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from aep.config import Settings
 from aep.datasources import DATA_KINDS, SOURCE_KINDS, MemoryDataSourceStore, tool_seconds
+from aep.etl.profile import describe_for_model
 from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems, Runtime
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
@@ -142,18 +143,25 @@ async def test_profile_reads_the_project_references_with_their_filters():
         "Vol. 是数量，Amt. 是金额",
         None,
     ]
-    # The stats and the sample only count the rows the filter keeps.
+    # The stats and the sample only count the rows the filter keeps; the whole table's
+    # count says how many it leaves out.
     assert forecast["estimated_row_count"] == 2
+    assert (forecast["unfiltered_row_count"], sku["unfiltered_row_count"]) == (3, None)
     assert {r["Type"] for r in forecast["sample"]} == {"Vol."}
     wheres = {(name, args["table"].lower()): args.get("where") for name, args in calls}
     assert wheres[("table_stats", "forecast")] == "Type = 'Vol.'"
     assert wheres[("sample_rows", "forecast")] == "Type = 'Vol.'"
     assert wheres[("table_stats", "sku")] is None
+    assert wheres[("aggregate", "prev.sales.forecast")] is None
+    assert [a["expr"] for n, a in calls if n == "aggregate"] == ["count(*)"]
 
     text = out.outputs["description"]
     assert "表注释：上一期的需求预测" in text
     assert "项目引用表「预测表」：上一期的需求预测，金额和数量各占一半" in text
-    assert "只读 Type = 'Vol.' 的行" in text
+    said = "只读 Type = 'Vol.' 的行（项目登记的读取筛选，统计和样本也只算这些行"
+    assert f"{said}；全表 3 行，筛掉了 1 行）" in text
+    # Without counts (outbound policy "schema") the filter is still said, the rows are not.
+    assert f"{said}）" in describe_for_model(out.outputs["tables"], "schema")
     assert "- sku：string，非空，空值率 0%，不同值 2；说明：物料号" in text
     # Named tables that the project references get their filters too.
     named = state(PROJECT, start={"datasource": lake, "tables": FORECAST})

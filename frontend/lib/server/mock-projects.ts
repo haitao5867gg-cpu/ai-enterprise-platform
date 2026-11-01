@@ -8,6 +8,7 @@ import {
   THREE_PART,
   filterProblem,
   paramProblem,
+  patternRegExp,
   type Environment,
   type Param,
   type ParamValue,
@@ -233,8 +234,17 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       if (repeated(choices.map((choice) => choice.value)).length)
         return `参数「${label}」的选项值重复`;
     } else if (param.choices != null) return `参数「${label}」不是选项，不能写 choices`;
+    let pattern: string | null = null;
+    if (param.pattern != null) {
+      if (typeof param.pattern !== "string" || !param.pattern || param.pattern.length > 200)
+        return `「${at}的格式」的格式、长度或范围不正确`;
+      if (type !== "text") return `参数「${label}」不是文本，不能写格式`;
+      // The backend reads it as RE2; JavaScript is close enough for the mock.
+      if (!patternRegExp(param.pattern)) return `参数「${label}」的格式不是有效的正则表达式`;
+      pattern = param.pattern;
+    }
     const value = (param.default ?? null) as ParamValue;
-    const problem = value !== null && paramProblem({ label, type, choices }, value);
+    const problem = value !== null && paramProblem({ label, type, choices, pattern }, value);
     if (problem) return `默认值不对：${problem}`;
     params.push({
       key: param.key,
@@ -243,6 +253,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       required: param.required === true,
       default: value,
       choices: type === "select" ? choices : null,
+      pattern,
       description: typeof param.description === "string" ? param.description : "",
     });
   }

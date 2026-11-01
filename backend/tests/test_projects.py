@@ -2,13 +2,14 @@
 (docs/api/projects.md)."""
 
 import copy
+import time
 from typing import Any
 
 import pytest
 
 from aep.config import get_settings
 from aep.main import app
-from aep.projects import filter_problem, param_problem
+from aep.projects import filter_problem, param_problem, pattern_problem
 from tests.conftest import SETTINGS
 from tests.test_flow_tools import Platform
 
@@ -87,6 +88,22 @@ def test_parameter_values_follow_their_type():
     assert param_problem(choice, "c") == "参数「版本」要是这些之一：a、b"
 
 
+def test_a_text_parameter_may_have_a_format():
+    version = {"label": "版本", "type": "text", "pattern": r"FY\d{2}_\d{2}_M"}
+    assert param_problem(version, "FY26_06_M") is None
+    # The whole value must match.
+    for value in ("FY26_06_MX", "xFY26_06_M", "FY26-06"):
+        assert param_problem(version, value) == r"参数「版本」要符合格式 FY\d{2}_\d{2}_M"
+    assert param_problem({"label": "字", "type": "text"}, "x") is None  # Saved before formats.
+    assert pattern_problem("(a") == "不是有效的正则表达式（missing ): (a）"
+    assert pattern_problem(r"(a)\1") == r"不是有效的正则表达式（invalid escape sequence: \1）"
+    # RE2 matches in linear time: Python's re would backtrack on this for minutes.
+    started = time.monotonic()
+    slow = {"label": "字", "type": "text", "pattern": r"(\w+)+\w*\w*\w*x"}
+    assert param_problem(slow, "a" * 500) is not None
+    assert time.monotonic() - started < 1
+
+
 # The API
 
 
@@ -152,6 +169,28 @@ async def test_project_crud():
         (
             {"params": [{"key": "v", "label": "版本", "type": "select"}]},
             "参数「版本」是选项，要列出 1–50 个选项",
+        ),
+        (
+            {"params": [{"key": "m", "label": "统计月", "type": "month", "pattern": "x"}]},
+            "参数「统计月」不是文本，不能写格式",
+        ),
+        (
+            {"params": [{"key": "v", "label": "版本", "type": "text", "pattern": "(?<=a)b"}]},
+            "参数「版本」的格式不是有效的正则表达式（invalid perl operator: (?<=）",
+        ),
+        (
+            {
+                "params": [
+                    {
+                        "key": "v",
+                        "label": "版本",
+                        "type": "text",
+                        "pattern": "FY\\d{2}",
+                        "default": "FY2",
+                    }
+                ]
+            },
+            "默认值不对：参数「版本」要符合格式 FY\\d{2}",
         ),
         ({"policy": {"samples": "some"}}, "「数据外发策略的样本级别」的取值不对"),
     ],
@@ -255,6 +294,10 @@ def test_project_checks_in_old_snapshots_and_unbound_runs():
     assert project_value(snap, "checks") == []
     assert "验收检查" not in brief(snap)
     assert project_value(None, "checks") is None
+    # A text parameter's format is in the brief.
+    params = [{"key": "version_id", "label": "版本", "type": "text", "pattern": r"FY\d{2}|x"}]
+    said = brief(snap | {"params": params, "values": {"version_id": "x"}})
+    assert r"| `version_id` | 版本 | text，格式 `FY\d{2}\|x` | x | — |" in said
 
 
 async def test_repeated_keys_and_environment_fields():

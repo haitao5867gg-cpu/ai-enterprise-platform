@@ -24,6 +24,9 @@ export type Param = {
   required: boolean;
   default: ParamValue;
   choices: Choice[] | null;
+  // Only for text: a regular expression the whole value must match (RE2 on the backend;
+  // projects saved before it have no such key).
+  pattern?: string | null;
   description: string;
 };
 // The project's own setting; null parts follow the platform default.
@@ -172,14 +175,26 @@ function validDate(value: string, month: boolean) {
   );
 }
 
+// The text parameter's format as a JavaScript expression for the whole value, or null when
+// JavaScript reads it differently from RE2 (then only the backend checks it).
+export function patternRegExp(pattern: string): RegExp | null {
+  try {
+    return new RegExp(`^(?:${pattern})$`, "u");
+  } catch {
+    return null;
+  }
+}
+
 // Why `value` does not fit the parameter, or null (the backend's param_problem).
 export function paramProblem(
-  param: Pick<Param, "label" | "type" | "choices">,
+  param: Pick<Param, "label" | "type" | "choices" | "pattern">,
   value: unknown,
 ): string | null {
   const { label, type } = param;
   if (type === "text" && !(typeof value === "string" && value.length >= 1 && value.length <= 500))
     return `参数「${label}」要写 1–500 个字`;
+  if (type === "text" && param.pattern && patternRegExp(param.pattern)?.test(String(value)) === false)
+    return `参数「${label}」要符合格式 ${param.pattern}`;
   if (type === "number" && !(typeof value === "number" && Number.isFinite(value)))
     return `参数「${label}」要是数字`;
   if (type === "boolean" && typeof value !== "boolean")

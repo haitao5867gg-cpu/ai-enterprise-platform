@@ -35,6 +35,9 @@ import {
 import { ErrorNotice } from "./ui";
 
 type Issues = Record<string, string[]>;
+
+const PATTERN_HELP =
+  "正则表达式，整个值都要符合，比如 FY\\d{2}_\\d{2}_M。新建运行时填的值不符合就不能开始。";
 const KEY_RULE = "小写字母开头，只用小写字母、数字和下划线，最多 32 个字符";
 
 function add(issues: Issues, where: string, message: string) {
@@ -84,6 +87,7 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
               label: orNull(choice.label),
             }))
           : null,
+      pattern: param.type === "text" && param.pattern ? param.pattern : null,
       description: param.description,
     })),
     checks: input.checks,
@@ -459,6 +463,7 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
             required: false,
             default: null,
             choices: null,
+            pattern: null,
             description: "",
           })}
           onChange={(params) => set("params", params)}
@@ -489,9 +494,19 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
                     type: type as ParamType,
                     default: null,
                     choices: type === "select" ? (param.choices ?? [{ value: "", label: null }]) : null,
+                    pattern: type === "text" ? (param.pattern ?? null) : null,
                   })
                 }
               />
+              {param.type === "text" && (
+                <TextField
+                  label="格式（选填）"
+                  value={param.pattern ?? ""}
+                  maxLength={200}
+                  help={PATTERN_HELP}
+                  onChange={(pattern) => update({ ...param, pattern: pattern || null })}
+                />
+              )}
               <DefaultField
                 param={param}
                 onChange={(value) => update({ ...param, default: value })}

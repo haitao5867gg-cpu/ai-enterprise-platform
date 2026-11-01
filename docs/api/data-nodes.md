@@ -775,9 +775,9 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 
 - `datasource` 可以是 `databricks` 数据源。
 - `tables` 为空时：Databricks 数据源上，运行绑定了项目就探查项目的引用表（`references`，表名按项目里写的原样，超过 20 张时 `input_error`；项目没有登记引用表时 `input_error`“项目「…」没有登记引用表，Databricks 数据源请写要探查的表”），没绑定时 `input_error`“Databricks 数据源请写要探查的表”；其他数据源照旧探查全部表。
-- 读取筛选：探查的表是项目的引用表（表名不分大小写，`tables` 里写明的表也算）、并且带 `filter` 时，`table_stats` 和 `sample_rows` 带上 `where`，样本和统计都只算筛选后的行。只在 Databricks 数据源上用，数据库数据源上的表不受影响。
+- 读取筛选：探查的表是项目的引用表（表名不分大小写，`tables` 里写明的表也算）、并且带 `filter` 时，`table_stats` 和 `sample_rows` 带上 `where`，样本和统计都只算筛选后的行。另外用连接器的 `aggregate`（`count(*)`，不带 `where`）数一遍全表（试点后新增），让模型知道筛选去掉了多少行。只在 Databricks 数据源上用，数据库数据源上的表不受影响。
 - 调 Databricks 数据源的工具时超时用 `AEP_DATABRICKS_TOOL_SECONDS`（[datasources.md](datasources.md)），`tool`、`agent` 节点也一样。
-- 产出的 `tables[]` 每张表多两个键：`filter`（用了的读取筛选，没有为 null）和 `comment`（表注释，没有为 null）；列多 `comment`（没有为 null）。别的数据源同样有这几个键，值为 null（连接器给了注释时照用）；代码应用 `etl` 的探查结果也一样。`description` 里写上表和列的注释、筛选（“只读 Type = 'Vol.' 的行”）和引用表的说明，并按数据外发策略生成（[projects.md](projects.md)“四个级别”）。
+- 产出的 `tables[]` 每张表多三个键：`filter`（用了的读取筛选，没有为 null）、`unfiltered_row_count`（有筛选时全表的行数，没有筛选为 null；`estimated_row_count` 是筛选后的行数）和 `comment`（表注释，没有为 null）；列多 `comment`（没有为 null）。别的数据源同样有这几个键，值为 null（连接器给了注释时照用）；代码应用 `etl` 的探查结果也一样。`description` 里写上表和列的注释、筛选（“只读 Type = 'Vol.' 的行（项目登记的读取筛选，统计和样本也只算这些行；全表 3 行，筛掉了 1 行）”，策略是“只发结构”时不写行数）和引用表的说明，并按数据外发策略生成（[projects.md](projects.md)“四个级别”）。
 
 ### databricks_ingest：Databricks 的表不复制
 
@@ -985,7 +985,7 @@ def warn(message: str) -> None:
   - 模板第 2 版用假模型和假 Databricks 跑通：两次确认后交付；“按我的意见修改方案”；“改代码”后重新从第 1 次数；“改方案”后再确认、表没变时不再抽取（`reuse` 不写时照旧重新抽取）；“终止”走到 `stopped`；试算失败时没有“通过”。
   - 答案：两份集群辅助函数一字不差；答案设计作为数据传过去、列名复核；`aep.etl.answer` 的合计、占比条件（看 `mins`）、`format`、没有行时的结论、结论模板和引号转义；`files.zip` 读 `result.files`、`result.code.files` 和等待中的 bundle，形状不对的跳过。
 - 第三批另加：
-  - 表名：三段式拆分（带 `-` 的 catalog）、`catalog.schema.*` 展开；Databricks 数据源上 `tables` 为空时用项目引用表、没项目时 `input_error`；引用表的筛选传到 `table_stats`、`sample_rows`；抽取 Databricks 的表不读不写、`copied` 为 false。
+  - 表名：三段式拆分（带 `-` 的 catalog）、`catalog.schema.*` 展开；Databricks 数据源上 `tables` 为空时用项目引用表、没项目时 `input_error`；引用表的筛选传到 `table_stats`、`sample_rows`，全表行数不带筛选（`unfiltered_row_count`，`description` 里的“筛掉了 N 行”，“只发结构”时不写）；抽取 Databricks 的表不读不写、`copied` 为 false。
   - 代码：`SOURCE_FILTERS` 和 `param()` 写进管道文件；`param()` 参数不是字面值、不是项目参数时检查不过；SQL 读带筛选的表检查不过；`${param.*}` 的字面值（文字转义、日期、数字、布尔、空值）。
   - 代码（试点后新增）：能 import 的标准库和 pyspark 模块通过，别的模块、相对导入、`import *`、import 成平台的名字检查不过；没有定义的名字检查不过；`warn()` 记下告警，集群带回的告警进 dev 运行的 `warnings`；加了单引号的 `'${param.x}'` 不再套引号（文字、数字、日期、空值）。
   - 写表：绑定项目时结果写到环境的 catalog 和 schema、用环境的集群；前缀不对时 `input_error`；归属的三种情况（不存在、有项目标记或登记在 `adopted`、别的项目或没有标记）；写完的表属性；四种写表方式各自的 Spark 调用、`merge` 键重复、`tables[].write`（假的 `DESCRIBE HISTORY`）；第 1、2 版方案的 `full`、`incremental` 结果不变。
