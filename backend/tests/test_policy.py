@@ -851,3 +851,87 @@ def test_tokens_in_a_json_reply_turn_back_as_json_strings():
     # A value parsed out of JSON already is not escaped again.
     back, _ = policy.unmask({"filter": f"name = '{tok(value)}'"}, data, RUN)
     assert back == {"filter": f"name = '{value}'"}
+
+
+def test_a_quoted_value_cut_short_is_still_scrubbed():
+    value = "a@example.com;" * 200
+    cut = f"cannot cast '{value}' to INT"[:1500]
+    assert policy.scrub(cut, "stats", RUN) == "cannot cast '‹已隐去›'"
+    # Cut to length, the value is closed, so errors joined after it stay as they were.
+    clipped = policy.clip(f"cannot cast '{value}' to INT", 1500)
+    assert clipped.endswith("…'") and len(clipped) == 1502
+    joined = "\n".join([clipped, "cannot cast 'b@example.com' to DATE"])
+    assert policy.scrub(joined, "schema", RUN) == (
+        "cannot cast '‹已隐去›'\ncannot cast '‹已隐去›' to DATE"
+    )
+    assert policy.literals(joined) == [value[:1487] + "…", "b@example.com"]
+    assert policy.clip("short 'x'", 100) == "short 'x'"
+    assert policy.clip("no quotes here", 5) == "no qu"
+    assert policy.clip("cut 'x' after", 9) == "cut 'x' a"
+
+
+async def test_the_etl_app_scrubs_long_dev_run_errors_before_cutting_them():
+    value = "a@example.com;" * 200
+    long = f"[CAST_INVALID_INPUT] The value '{value}' of the type \"STRING\" cannot be cast"
+
+    class Dev:
+        def __init__(self) -> None:
+            self.runs = [
+                DevRun("failed", "run", [], errors=[long], fixable=True),
+                DevRun("passed", "run", []),
+            ]
+
+        async def run(self, bundle: Any) -> DevRun:
+            return self.runs.pop(0)
+
+    code = test_etl.reply({"targets": {"order_facts": test_etl.PYSPARK_BODY}})
+    for samples in ["stats", "masked"]:
+        service, gateway, ds = await test_etl.make_service(
+            [test_etl.reply(test_etl.plan()), code, code],
+            settings=with_policy(data_samples=samples),
+            databricks=Dev(),
+        )
+        run_id = await test_etl.start(
+            service, ds, tables=["sales.orders", "sales.customers"], release=False
+        )
+        await test_etl.decide(service, run_id, "approve")
+        retry = gateway.requests[2]["body"]["messages"][-1]["content"]
+        assert "a@example.com" not in retry, samples
+        assert '"STRING" cannot be cast' in retry, samples
+        if samples == "masked":
+            # The whole value has a token, so the model can copy it back.
+            assert f"The value '{tok(value, run_id)}'" in retry
+
+
+async def test_keyword_search_does_not_count_the_embedding_model():
+    knowledge = MemoryKnowledgeStore()
+    remote = await knowledge.create("远程", embedding_model="company-embed")
+    service = RunService(
+        MemoryRunStore(),
+        InMemorySaver(),
+        default_apps(),
+        AppContext(FakeGateway().client, with_policy(allowed_models="qwen"), knowledge=knowledge),
+    )
+    kb = {
+        "id": "kb",
+        "type": "knowledge",
+        "title": "检索",
+        "knowledge_bases": [remote.kb_id],
+        "query": "{{start.q}}",
+        "retrieval": {"mode": "keyword", "rerank": {"model": "company-rerank", "top_n": 3}},
+    }
+    config = {
+        "graph": {
+            "nodes": [
+                {"id": "start", "type": "start", "title": "开始", "inputs": []},
+                kb,
+                {"id": "end", "type": "end", "title": "结束", "outputs": []},
+            ],
+            "edges": [{"from": "start", "to": "kb"}, {"from": "kb", "to": "end"}],
+        }
+    }
+    used = await service._models("x", config, {})  # noqa: SLF001
+    assert used == [("company-rerank", "检索")]
+    kb["retrieval"] = {"mode": "hybrid"}
+    used = await service._models("x", config, {})  # noqa: SLF001
+    assert used == [("company-embed", "检索")]

@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from aep import llm
+from aep import llm, policy
 from aep.databricks import DatabricksError, DevTarget, Landing, full_name
 from aep.datasources import DATABASE_KINDS, DataSource
 from aep.etl import codegen
@@ -948,7 +948,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         }
         for t in dev.tables
     ]
-    errors = [] if passed else [e[:ERROR_CHARS] for e in dev.errors[:MAX_ERRORS]]
+    # Cut without leaving a quoted value open, so the policy still finds it (aep.policy).
+    errors = [] if passed else [policy.clip(e, ERROR_CHARS) for e in dev.errors[:MAX_ERRORS]]
     quality = dev_quality(tables, plan)
     found = None
     if passed and plan and card:

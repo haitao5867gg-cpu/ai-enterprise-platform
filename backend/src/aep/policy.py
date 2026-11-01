@@ -44,8 +44,9 @@ TOKEN = re.compile(r"‹文本#([0-9a-f]{10})›")
 HIDDEN = "‹已隐去›"
 # Quoted literals in error text (values a failed run or read may quote), however long,
 # across lines, and whatever other quote they hold ("O'Reilly"); a quote right after or
-# before a letter is an apostrophe ("doesn't"), not a quote.
-_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])((?:(?!\1).)+)\1(?![A-Za-z])", re.S)
+# before a letter is an apostrophe ("doesn't"), not a quote. A quote still open at the
+# end of the text (an error cut short) runs to the end.
+_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])((?:(?!\1).)+)(?:\1(?![A-Za-z])|\Z)", re.S)
 # The JSON object a reply may carry, found the way aep.llm.parse_json finds it.
 _FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 # Type names errors quote in double quotes ("STRING", "DECIMAL(10,2)"): not values, kept.
@@ -288,6 +289,20 @@ def literals(value: Any) -> list[str]:
         for m in _QUOTED.finditer(text)
         if not _kept(m.group(1), m.group(2))
     ]
+
+
+def clip(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters without leaving a quoted value open: a value
+    the cut goes through is closed right after it (with "…"), so it still counts as a
+    value when ``scrub`` and ``literals`` read the text, even with more text after it."""
+    if len(text) <= limit:
+        return text
+    for m in _QUOTED.finditer(text):
+        if m.start() >= limit:
+            break
+        if limit < m.end():
+            return text[:limit] + "…" + m.group(1)
+    return text[:limit]
 
 
 def scrub(value: Any, samples: str, run_id: str) -> Any:

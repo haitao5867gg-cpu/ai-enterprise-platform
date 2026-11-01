@@ -674,11 +674,12 @@ def build(ctx: AppContext) -> StateGraph:
             ],
         }
         if retry:
-            errors = [e[:ERROR_CHARS] for e in dev.errors[:10]]
-            # They go to the codegen model: the values they quote as the policy lets them.
+            errors = dev.errors[:10]
+            # They go to the codegen model: the values they quote as the policy lets them,
+            # each whole (a token stands for the whole value), then cut to length.
             samples = rules_for(config).samples
             run_id = config["configurable"]["thread_id"]
-            said = policy.scrub(errors, samples, run_id)
+            said = [policy.clip(e, ERROR_CHARS) for e in policy.scrub(errors, samples, run_id)]
             update["problems"] = ["代码在 Databricks dev 目标上运行失败，报错如下：", *said]
             update["quoted"] = [*(state.get("quoted") or []), *policy.literals(errors)]
             update["attempts"] = 0

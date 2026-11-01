@@ -393,7 +393,10 @@ class RunService:
         and the embedding and rerank models of the knowledge it searches."""
         used: list[tuple[str, str]] = []
 
-        async def bases(kb_ids: Any, title: str) -> None:
+        async def bases(kb_ids: Any, title: str, mode: Any) -> None:
+            # Keyword search embeds nothing; a setting left out is vector search.
+            if mode == "keyword":
+                return
             for kb_id in kb_ids if isinstance(kb_ids, list) else []:
                 base = await self.knowledge.get(kb_id) if isinstance(kb_id, str) else None
                 if base is not None:
@@ -410,7 +413,9 @@ class RunService:
                 title = design.get("title") or name if isinstance(design, dict) else name
                 if options[name].model:
                     used.append((chosen.get(name) or node.model or self.default_model, title))
-                await bases(node.params.get("knowledge_bases"), title)
+                await bases(
+                    node.params.get("knowledge_bases"), title, node.params.get("knowledge_mode")
+                )
             return used
         for node in flowgraph.nodes(config):
             title = node.get("title") or node["id"]
@@ -420,8 +425,9 @@ class RunService:
             if node["type"] == "agent" and isinstance(node.get("knowledge"), dict):
                 search = node["knowledge"]
             if search is not None:
-                await bases(search.get("knowledge_bases"), title)
                 retrieval = search.get("retrieval")
+                mode = retrieval.get("mode") if isinstance(retrieval, dict) else None
+                await bases(search.get("knowledge_bases"), title, mode)
                 rerank = retrieval.get("rerank") if isinstance(retrieval, dict) else None
                 if isinstance(rerank, dict) and isinstance(rerank.get("model"), str):
                     used.append((rerank["model"], title))
