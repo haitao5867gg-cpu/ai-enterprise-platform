@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from aep import llm, policy
 from aep.databricks import DatabricksError, DevTarget, Landing, Placement, full_name
 from aep.datasources import SOURCE_KINDS, DataSource, tool_seconds
-from aep.etl import codegen
+from aep.etl import checks, codegen
 from aep.etl.answer import cluster_design, shown, with_defaults
 from aep.etl.answer import result as answer_result
 from aep.etl.plan import (
@@ -28,14 +28,17 @@ from aep.etl.plan import (
     Confirmed,
     EtlPlan,
     EtlPlanV2,
+    EtlPlanV3,
     PlanError,
     Target,
     answer_names,
     answer_output,
     bare,
+    result_table,
     uncited,
     validate_plan,
     validate_plan_v2,
+    validate_plan_v3,
 )
 from aep.etl.profile import (
     MAX_TABLES,
@@ -330,13 +333,13 @@ async def check_plan_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
     _int(node, "max_attempts", p, "连续不过的次数上限", 1, 5)
     version = node.get("format")
     if version is not None and (
-        not isinstance(version, int) or isinstance(version, bool) or version not in (1, 2)
+        not isinstance(version, int) or isinstance(version, bool) or version not in (1, 2, 3)
     ):
-        p.add(("format",), "方案版本 format 只能是 1 或 2")
+        p.add(("format",), "方案版本 format 只能是 1、2 或 3")
     answered = node.get("answered")
     if answered is not None and answered != "":
-        if version != 2:
-            p.add(("answered",), "只有方案版本 format 为 2 时才能写已答的题")
+        if version not in (2, 3):
+            p.add(("answered",), "只有方案版本 format 为 2 或 3 时才能写已答的题")
         elif not isinstance(answered, str) or refs.whole(answered) is None:
             p.add(("answered",), "已答的题必须恰好是一个变量，如 {{review.record}}")
 
@@ -378,15 +381,28 @@ def _hits(node: dict[str, Any], get: refs.Lookup) -> list[IndexedHit]:
 VIOLATION = {"warn": "只记录", "drop": "丢弃这一行", "fail": "整次运行失败"}
 
 
+def _load_line(t: Target) -> str:
+    """How a target table is written, as a person reads it: versions 1 and 2 of the plan
+    say how it is loaded, version 3 how it is written (docs/api/data-nodes.md, 写表方式)."""
+    load = t.load
+    if load.mode == "incremental":
+        return f"- 加载方式：增量（增量键 `{load.key}`）"
+    if load.mode == "full":
+        return "- 加载方式：全量覆盖"
+    if load.mode == "replace_where":
+        return f"- 写表方式：只替换满足 `{load.where}` 的行"
+    if load.mode == "merge":
+        keys = "、".join(f"`{k}`" for k in load.keys or t.primary_key)
+        return f"- 写表方式：按 {keys} 合并，有的更新，没有的插入"
+    return "- 写表方式：" + ("追加" if load.mode == "append" else "整表覆盖")
+
+
 def _target_lines(n: int, t: Target) -> list[str]:
     """Target table ``n`` of a plan as a person reviews it (Markdown)."""
-    load = "全量覆盖"
-    if t.load.mode == "incremental":
-        load = f"增量（增量键 `{t.load.key}`）"
     lines = ["", f"### 目标表 {n}：`{t.name}`", ""]
     if t.description:
         lines += [t.description, ""]
-    lines.append(f"- 加载方式：{load}")
+    lines.append(_load_line(t))
     lines.append("- 来源：" + "、".join(f"`{s}`" for s in t.sources))
     lines.append(f"- 做法：{t.logic}")
     if t.primary_key:
@@ -480,7 +496,24 @@ def plan_message_v2(plan: EtlPlanV2, answer: dict[str, Any] | None) -> str:
     for n, t in enumerate(plan.targets, 1):
         lines += _target_lines(n, t)
     lines += _reference_lines(plan.references)
+    if isinstance(plan, EtlPlanV3):
+        lines += _check_lines(plan.checks)
     return "\n".join(lines)
+
+
+def _check_lines(found: list[dict[str, Any]]) -> list[str]:
+    """The data checks a version 3 plan proposes (Markdown)."""
+    lines = ["", "### 数据检查", ""]
+    if not found:
+        return lines + ["方案没有建议数据检查。"]
+    lines.append("开发环境试算之后检查（填了老系统结果表时另加一条逐行对比）：")
+    lines.append("")
+    for check in found:
+        level = check.get("severity") or "error"
+        soft = "" if level == "error" else f"（{checks.SEVERITY_TEXT[level]}）"
+        kind = checks.KIND_TEXT[check["kind"]]
+        lines.append(f"- **{check['label']}**{soft}：{kind}，{checks.describe(check)}")
+    return lines
 
 
 def human_fields(plan: EtlPlanV2) -> list[dict[str, Any]]:
@@ -528,6 +561,9 @@ def _no_plan() -> dict[str, Any]:
         "answer": None,
         "uncited": [],
         "cleaned": [],
+        "result_table": "",
+        "result_keys": [],
+        "checks": [],
     }
 
 
@@ -541,9 +577,10 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     # The first time the model sees what the data really holds before its
     # assumptions are taken at their word (as in the code app).
     trust = (state.get("branch") or {}).get(node["id"]) == "retry"
-    v2 = node.get("format") == 2
-    # Version 2 remembers every answer people gave, across rounds: the human node's
-    # record holds only its latest one.
+    version = node.get("format")
+    v2 = version in (2, 3)
+    # Version 2 (and 3) remembers every answer people gave, across rounds: the human
+    # node's record holds only its latest one.
     memory = _answered(node, state, get) if v2 else {}
     raw: Any = None
     plan: EtlPlan | None = None
@@ -555,7 +592,12 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         # The problems go back to the model: they list the actual values only when the
         # run's data outbound policy sends samples as they are.
         shown = rt.data_policy(state).samples == "full"
-        if v2:
+        if version == 3:
+            project = state.get("project") or None
+            plan, cleaned = validate_plan_v3(
+                raw, sources, known, seen_values(profile), trust, hits, memory, shown, project
+            )
+        elif v2:
             plan, cleaned = validate_plan_v2(
                 raw, sources, known, seen_values(profile), trust, hits, memory, shown
             )
@@ -613,6 +655,13 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             "answer": answer,
             "uncited": uncited(plan),
             "cleaned": cleaned,
+        }
+    if isinstance(plan, EtlPlanV3):
+        result = result_table(plan)
+        outputs |= {
+            "result_table": result.name,
+            "result_keys": list(result.primary_key),
+            "checks": dumped["checks"],
         }
     # The whole plan is in ``message``, for the person who reviews it.
     return Outcome(
@@ -1172,6 +1221,9 @@ TYPES: dict[str, NodeType] = {
                 "answer",
                 "uncited",
                 "cleaned",
+                "result_table",
+                "result_keys",
+                "checks",
             ),
             outputs=(
                 ("ok", "是否通过"),
@@ -1187,6 +1239,12 @@ TYPES: dict[str, NodeType] = {
                 ("answer", "答案设计（第 2 版方案）"),
                 ("uncited", "没找到口径依据的指标、维度和筛选（第 2 版方案）"),
                 ("cleaned", "平台自动整理过的地方（第 2 版方案）"),
+                ("result_table", "结果表的表名，给数据检查的 golden 用（第 3 版方案）"),
+                ("result_keys", "结果表的主键（第 3 版方案）"),
+                (
+                    "checks",
+                    "方案建议的数据检查，可以整段给数据检查节点的 include（第 3 版方案）",
+                ),
             ),
             defaults={"reply": "", "profile": "", "hits": [], "language": "", "max_attempts": 3},
             error_handling=True,

@@ -6,7 +6,9 @@ does not exist goes back to the model instead of on to the user.
 
 Version 2 (``validate_plan_v2``, the flow node etl_plan_check with ``format`` 2) adds a
 business brief, rules, questions for a person and an answer design; the platform tidies
-what it can and sends the rest back the same way.
+what it can and sends the rest back the same way. Version 3 (``validate_plan_v3``,
+``format`` 3) adds the ways of writing a table, the project's table prefix and run
+parameters, and the data checks the model proposes.
 """
 
 import json
@@ -19,9 +21,11 @@ from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter, ValidationError, field_validator
 
-from aep.etl import answer
+from aep.cluster_harness import PARAM
+from aep.etl import answer, checks
 from aep.etl.answer import AnswerDesign
 from aep.knowledge.citations import IndexedHit
+from aep.projects import filter_problem
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 # Names the generated pipeline code already uses (see aep.etl.codegen).
@@ -244,6 +248,7 @@ def validate_plan(
     trust_assumptions: bool = True,
     references: list[IndexedHit] | None = None,
     show_values: bool = True,
+    modes: Sequence[str] = PLAN_MODES,
 ) -> EtlPlan:
     """Parse the model's plan and check it against the profiled ``source_tables`` (schema.table)
     and the ``known`` values of their columns (by column name, see ``aep.etl.profile``).
@@ -251,7 +256,7 @@ def validate_plan(
     ``trust_assumptions`` false: a value the data lacks goes back even if the assumptions name
     it, so the model looks at the actual values once before keeping it. ``show_values``
     false: the problems do not list the actual values (the data outbound policy keeps
-    them from the model)."""
+    them from the model). ``modes`` are the plan version's ``load.mode`` values."""
     try:
         if isinstance(raw, dict):
             raw = {**raw, "references": []}
@@ -278,8 +283,8 @@ def validate_plan(
         for key in target.primary_key:
             if key not in column_names:
                 problems.append(f"{target.name} 的主键 {key!r} 不在目标列里")
-        if target.load.mode not in PLAN_MODES:
-            problems.append(f"{target.name} 的 load.mode 只能是 full、incremental")
+        if target.load.mode not in modes:
+            problems.append(f"{target.name} 的 load.mode 只能是 {'、'.join(modes)}")
         if target.load.mode == "incremental" and not target.load.key:
             problems.append(f"{target.name} 是增量加载，需要给出增量键 load.key")
         rule_names = [r.name for r in target.quality_rules]
@@ -523,11 +528,15 @@ def _blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
-def _parse_v2(raw: dict[str, Any]) -> tuple[EtlPlanV2 | None, list[str]]:
-    """The plan, and what is wrong with its structure. Each of ``brief``, ``rules``,
-    ``questions`` and ``answer`` is read on its own: a broken one is left out (and not
-    generated in its place) so the rest can still be checked. The old ``assumptions``
-    become rules with ``basis`` assumption, after the model's own rules."""
+def _parse_v2(
+    raw: dict[str, Any],
+    cls: type[EtlPlanV2] = EtlPlanV2,
+    modes: Sequence[str] = PLAN_MODES,
+) -> tuple[EtlPlanV2 | None, list[str]]:
+    """The plan (a ``cls``), and what is wrong with its structure. Each of ``brief``,
+    ``rules``, ``questions`` and ``answer`` is read on its own: a broken one is left out
+    (and not generated in its place) so the rest can still be checked. The old
+    ``assumptions`` become rules with ``basis`` assumption, after the model's own rules."""
     data = dict(raw)
     found = {key: data.pop(key, None) for key in SECTIONS}
     old = data.pop("assumptions", None)
@@ -538,9 +547,9 @@ def _parse_v2(raw: dict[str, Any]) -> tuple[EtlPlanV2 | None, list[str]]:
     problems: list[str] = []
     plan: EtlPlanV2 | None = None
     try:
-        plan = EtlPlanV2.model_validate({**data, "assumptions": [], "references": []})
+        plan = cls.model_validate({**data, "assumptions": [], "references": []})
     except ValidationError as exc:
-        problems += _structure(exc)
+        problems += _structure(exc, modes=modes)
     assumptions: list[tuple[int, str]] = []
     if old is not None and not isinstance(old, list):
         problems.append("assumptions 应该是列表")
@@ -1197,6 +1206,7 @@ def _version_one_checks(
     known: Mapping[str, KnownValues] | None,
     trust_assumptions: bool,
     show_values: bool = True,
+    modes: Sequence[str] = PLAN_MODES,
 ) -> list[str]:
     problems: list[str] = []
     # Version 1's checks; the texts a value may be explained in are the rules and the
@@ -1207,7 +1217,7 @@ def _version_one_checks(
     projection = plan.model_dump(include={"summary", "language", "targets"})
     projection["assumptions"] = explained
     try:
-        validate_plan(projection, source_tables, known, trust_assumptions, None, show_values)
+        validate_plan(projection, source_tables, known, trust_assumptions, None, show_values, modes)
     except PlanError as exc:
         problems += exc.problems
     return problems
@@ -1270,11 +1280,35 @@ def validate_plan_v2(
     profile.seen_values``), for a dimension's examples; ``answered`` the answers people gave, by
     ``bare`` question text. Returns the plan and what the platform tidied (``cleaned``);
     raises ``PlanError`` with what the model has to rewrite."""
+    return _validated(
+        raw, source_tables, known, seen, trust_assumptions, references, answered, show_values
+    )
+
+
+def _validated(
+    raw: Any,
+    source_tables: Collection[str],
+    known: Mapping[str, KnownValues] | None,
+    seen: Seen | None,
+    trust_assumptions: bool,
+    references: list[IndexedHit] | None,
+    answered: Mapping[str, Confirmed] | None,
+    show_values: bool,
+    version: Literal[2, 3] = 2,
+    project: Mapping[str, Any] | None = None,
+) -> tuple[EtlPlanV2, list[str]]:
+    """Version 2 or 3 of the plan: parsed, tidied and checked (see the two callers)."""
     if not isinstance(raw, dict):
         raise PlanError("方案要是一个 JSON 对象")
     model_brief = raw.get("brief") is not None
     model_answer = raw.get("answer") is not None
-    plan, structure = _parse_v2(raw)
+    modes: Sequence[str] = PLAN_MODES
+    proposed: Any = None
+    if version == 3:
+        modes = WRITE_MODES
+        raw = _overwrite_by_default(raw)
+        proposed = raw.pop("checks", None)
+    plan, structure = _parse_v2(raw, EtlPlanV3 if version == 3 else EtlPlanV2, modes)
     if plan is None:
         raise PlanError("；".join(structure), structure)
     cleaned: list[str] = []
@@ -1294,14 +1328,22 @@ def validate_plan_v2(
     _confirm(plan, answered or {})
     _overflow(plan, cleaned)
     _cite_v2(plan, references or [])
-    problems = _version_one_checks(plan, source_tables, known, trust_assumptions, show_values)
+    problems = _version_one_checks(
+        plan, source_tables, known, trust_assumptions, show_values, modes
+    )
     problems += structure + _blank_texts(plan) + _version_two_checks(plan)
+    kept: list[dict[str, Any]] = []
+    if version == 3:
+        kept, more = _version_three_checks(plan, proposed, project)
+        problems += more
     if problems:
         unique = list(dict.fromkeys(problems))
         raise PlanError("；".join(unique), unique)
     plan.assumptions = []
     if plan.answer is not None:
         plan.answer = answer.with_defaults(plan.answer)
+    if isinstance(plan, EtlPlanV3):
+        plan.checks = kept
     return plan, cleaned
 
 
@@ -1388,3 +1430,299 @@ OUTPUT_FORMAT_V2 = """只输出一个 JSON 对象，不要输出其他文字，�
              "chart": {"type": "bar、line 或 none", "label": ["分组列"], "value": "指标列"}}
 }
 不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。"""
+
+
+# 方案第 3 版: format 3 of the flow node etl_plan_check (docs/api/data-nodes.md, 第三批).
+# Version 2 and: the four ways of writing a table, the run's project (table prefix,
+# reference tables, run parameters) and the data checks the model proposes, in the shape
+# of the node data_check's checks (aep.etl.checks), so they can be included there.
+
+MAX_PLAN_CHECKS = 10
+PLAN_CHECK_KINDS = ("aggregate", "reconcile", "unique", "rows")
+UNBOUND = "这次运行没有绑定项目，不能用运行参数"
+
+
+class EtlPlanV3(EtlPlanV2):
+    """A version 3 plan: ``EtlPlanV2`` and the data checks it proposes (``checks``)."""
+
+    checks: list[dict[str, Any]] = []
+
+
+def validate_plan_v3(
+    raw: Any,
+    source_tables: Collection[str],
+    known: Mapping[str, KnownValues] | None = None,
+    seen: Seen | None = None,
+    trust_assumptions: bool = True,
+    references: list[IndexedHit] | None = None,
+    answered: Mapping[str, Confirmed] | None = None,
+    show_values: bool = True,
+    project: Mapping[str, Any] | None = None,
+) -> tuple[EtlPlanV3, list[str]]:
+    """Parse, tidy and check a version 3 plan: ``validate_plan_v2`` and the version's own
+    rules. ``project`` is the run's project as the run keeps it (``table_prefix``,
+    ``references``, ``params``), None when the run is bound to none."""
+    plan, cleaned = _validated(
+        raw,
+        source_tables,
+        known,
+        seen,
+        trust_assumptions,
+        references,
+        answered,
+        show_values,
+        3,
+        project,
+    )
+    assert isinstance(plan, EtlPlanV3)
+    return plan, cleaned
+
+
+def result_table(plan: EtlPlanV2) -> LabeledTarget:
+    """The plan's result table (the one its answer reads, else the last target)."""
+    return _result(plan)
+
+
+def _overwrite_by_default(raw: dict[str, Any]) -> dict[str, Any]:
+    """``raw`` with ``load.mode`` overwrite where a target leaves it out."""
+    data = dict(raw)
+    targets = data.get("targets")
+    if not isinstance(targets, list):
+        return data
+    written = []
+    for target in targets:
+        if isinstance(target, dict):
+            load = target.get("load")
+            if load is None:
+                target = {**target, "load": {"mode": "overwrite"}}
+            elif isinstance(load, dict) and _blank(load.get("mode")):
+                target = {**target, "load": {**load, "mode": "overwrite"}}
+        written.append(target)
+    data["targets"] = written
+    return data
+
+
+def _param_problems(text: Any, where: str, project: Mapping[str, Any] | None) -> list[str]:
+    """Run parameters in ``text`` the run has none of."""
+    if not isinstance(text, str):
+        return []
+    keys = list(dict.fromkeys(PARAM.findall(text)))
+    if not keys:
+        return []
+    if project is None:
+        return [f"{where} 用了运行参数 ${{param.{keys[0]}}}，{UNBOUND}"]
+    defined = {p.get("key") for p in project.get("params") or [] if isinstance(p, dict)}
+    name = project.get("name") or project.get("id")
+    return [
+        f"{where} 的运行参数 ${{param.{key}}} 不是项目「{name}」定义的参数"
+        for key in keys
+        if key not in defined
+    ]
+
+
+def _condition_problems(text: str, where: str, label: str) -> list[str]:
+    problem = filter_problem(text)
+    if problem is not None:
+        return [f"{where}：{problem.replace('读取筛选', label)}"]
+    if "${" in PARAM.sub("", text):
+        return [f"{where}：运行参数要写成 ${{param.<key>}}（key 是项目参数的标识）"]
+    return []
+
+
+def _load_problems(target: Target, project: Mapping[str, Any] | None) -> list[str]:
+    """How the target is written (docs/api/data-nodes.md, 写表方式)."""
+    load, name = target.load, target.name
+    problems: list[str] = []
+    where = (load.where or "").strip()
+    if load.mode == "replace_where":
+        if not where:
+            problems.append(f"{name} 按条件替换（replace_where），要给出替换条件 load.where")
+        else:
+            problems += _condition_problems(where, f"{name} 的 load.where", "替换条件")
+            problems += _param_problems(where, f"{name} 的 load.where", project)
+    elif where:
+        problems.append(f"{name} 的 load.where 只用在按条件替换（replace_where）")
+    columns = {c.name for c in target.columns}
+    if load.mode == "merge":
+        if not (load.keys or target.primary_key):
+            problems.append(f"{name} 按键合并（merge），要给出合并键 load.keys 或主键 primary_key")
+        for key in dict.fromkeys(load.keys):
+            if key not in columns:
+                problems.append(f"{name} 的合并键 {key!r} 不在目标列里")
+            if load.keys.count(key) > 1:
+                problems.append(f"{name} 的合并键 {key!r} 重复")
+    elif load.keys:
+        problems.append(f"{name} 的 load.keys 只用在按键合并（merge）")
+    if load.key is not None and load.key.strip():
+        problems.append(
+            f"{name} 的 load.key 在这一版不用：按条件替换写 load.where，按键合并写 load.keys"
+        )
+    return problems
+
+
+def _project_problems(plan: EtlPlanV2, project: Mapping[str, Any]) -> list[str]:
+    """The project's table prefix, and no target named like a table it reads."""
+    problems = []
+    prefix = project.get("table_prefix") or ""
+    label = project.get("name") or project.get("id")
+    read = {
+        str(r.get("name") or "").rsplit(".", 1)[-1].lower(): str(r.get("name"))
+        for r in project.get("references") or []
+        if isinstance(r, dict) and r.get("name")
+    }
+    for target in plan.targets:
+        if prefix and not target.name.startswith(prefix):
+            problems.append(f"目标表名 {target.name!r} 要以项目「{label}」的表名前缀 {prefix} 开头")
+        same = read.get(target.name.lower())
+        if same is not None:
+            problems.append(f"目标表名 {target.name!r} 和项目引用的表 {same} 同名，请换一个")
+    return problems
+
+
+def _check_tables(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
+    if "table" in check:
+        yield "table", check["table"]
+    for side in ("left", "right"):
+        if isinstance(check.get(side), dict) and "table" in check[side]:
+            yield f"{side}.table", check[side]["table"]
+
+
+def _check_texts(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
+    for key in ("expr", "where"):
+        if key in check:
+            yield key, check[key]
+    for side in ("left", "right"):
+        if isinstance(check.get(side), dict):
+            for key in ("expr", "where"):
+                if key in check[side]:
+                    yield f"{side}.{key}", check[side][key]
+
+
+def _plan_checks(
+    proposed: Any, plan: EtlPlanV2, project: Mapping[str, Any] | None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The checks the plan proposes, each one valid (with its ``severity``), and what is
+    wrong with them."""
+    if proposed is None:
+        return [], []
+    if not isinstance(proposed, list):
+        return [], ["checks 应该是列表"]
+    problems: list[str] = []
+    if len(proposed) > MAX_PLAN_CHECKS:
+        problems.append(f"checks 最多 {MAX_PLAN_CHECKS} 条，现在有 {len(proposed)} 条")
+    tables = {t.name.lower() for t in plan.targets}
+    tables |= {s.lower() for t in plan.targets for s in t.sources}
+    ids: set[str] = set()
+    kept: list[dict[str, Any]] = []
+    for i, check in enumerate(proposed):
+        at = f"checks[{i}]"
+        found = checks.problems(check)
+        problems += [f"{_path(['checks', i, *map(str, loc)])}：{msg}" for loc, msg in found]
+        if not isinstance(check, dict):
+            continue
+        wrong = bool(found)
+        if check.get("kind") == checks.GOLDEN:
+            wrong = True
+            problems.append(
+                f"{at}.kind：方案里的检查只能是 {'、'.join(PLAN_CHECK_KINDS)}；"
+                "和老系统的逐行对比由数据检查节点加"
+            )
+        cid = check.get("id")
+        if cid == checks.GOLDEN:
+            wrong = True
+            problems.append(f"{at}.id：id golden 留给数据检查节点和老系统的对比，请换一个")
+        elif isinstance(cid, str) and cid in ids:
+            wrong = True
+            problems.append(f"{at}.id：检查 id {cid} 重复")
+        if isinstance(cid, str):
+            ids.add(cid)
+        for where, table in _check_tables(check):
+            if isinstance(table, str) and table.strip() and table.strip().lower() not in tables:
+                wrong = True
+                problems.append(
+                    f"{at}.{where}：{table} 不是方案的目标表或来源，检查只能读方案写的表和读的源表"
+                )
+        for where, text in _check_texts(check):
+            more = _param_problems(text, f"{at}.{where}", project)
+            wrong = wrong or bool(more)
+            problems += more
+        if not wrong:
+            kept.append({**check, "severity": check.get("severity") or "error"})
+    return kept, problems
+
+
+def _version_three_checks(
+    plan: EtlPlanV2, proposed: Any, project: Mapping[str, Any] | None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    problems: list[str] = []
+    for target in plan.targets:
+        problems += _load_problems(target, project)
+    if project is not None:
+        problems += _project_problems(plan, project)
+    kept, more = _plan_checks(proposed, plan, project)
+    return kept, problems + more
+
+
+# The platform's part of the plan node's prompt for version 3: the JSON it parses. How
+# to write such a plan is version 2 of the ``etl-plan-brief`` skill.
+OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，结构如下：
+{
+  "summary": "一两句话说明方案",
+  "language": "pyspark 或 sql",
+  "brief": {
+    "goal": "要统计什么，一两句话",
+    "grain": "结果表一行是什么，如“每个统计月 × 城市一行”",
+    "metrics": [{"id": "m1", "name": "指标名称", "unit": "单位，没有时为 null",
+                 "definition": "怎么算，用文字写", "column": "结果表里的列名"}],
+    "dimensions": [{"id": "d1", "name": "维度名称", "definition": "取自哪里、怎么归一",
+                    "column": "结果表里的列名", "examples": ["数据里真有的取值，最多 5 个"]}],
+    "filters": [{"id": "f1", "text": "筛选条件"}],
+    "time_range": {"text": "时间范围和按哪个时间算", "column": "结果表里的时间列"}
+  },
+  "targets": [
+    {
+      "name": "目标表名（绑定了项目时以项目的表名前缀开头）",
+      "description": "这张表是什么",
+      "sources": ["源表名，照探查结果里的写", "也可以引用前面的目标表名"],
+      "logic": "关联、过滤、聚合、清洗的做法",
+      "columns": [{"name": "列名", "label": "给人看的列名，如“销售额（元）”",
+                   "source": "Spark SQL 表达式", "description": ""}],
+      "primary_key": ["列名"],
+      "load": {"mode": "overwrite、replace_where、append 或 merge",
+               "where": "replace_where 时替换哪些行（Spark SQL 条件），其他写法为 null",
+               "keys": ["merge 时的合并键，空着时用 primary_key"]},
+      "quality_rules": [{"name": "规则名", "condition": "Spark SQL 布尔表达式",
+                         "on_violation": "warn、drop 或 fail"}]
+    }
+  ],
+  "rules": [{"id": "r1", "text": "已经定下的处理，一条一句",
+             "basis": "knowledge、request、data、assumption 或 confirmed"}],
+  "questions": [{"id": "q1", "text": "要人拍板的问题，最多 50 个字", "why": "为什么问",
+                 "options": [{"value": "选项值", "label": "选项名称"}],
+                 "suggested": "方案现在按哪个选项写（选项的 value）", "affects": ["m1"]}],
+  "answer": {"target": "结果表名", "filter": [{"column": "时间列", "pick": "latest"}],
+             "group_by": ["分组列，最多 3 个"], "measures": ["指标列，1–8 个"],
+             "order_by": [{"column": "排序列", "desc": true}], "top_n": 10,
+             "chart": {"type": "bar、line 或 none", "label": ["分组列"], "value": "指标列"}},
+  "checks": [{"id": "c1", "label": "检查名称，给人看",
+              "kind": "aggregate、reconcile、unique 或 rows",
+              "severity": "error、warn 或 info", "其余字段": "按检查的种类，见下"}]
+}
+不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。
+load.mode：overwrite 整表覆盖；replace_where 只替换满足 where 的行（如一个月、一个版本）；
+append 追加；merge 按键合并（有的更新，没有的插入）。
+checks 是建议在开发环境试算后做的数据检查，最多 10 条，没有就给空数组；
+表名只能是上面的目标表名和 sources 里的源表。各种检查的其余字段：
+- aggregate（一个聚合值和期望比）：
+  {"table": "表名", "expr": "一个聚合表达式，如 sum(qty)", "where": "条件或 null",
+   "group_by": ["可选：按组算，每组都要满足"], "op": "eq、ne、gt、ge、lt、le 或 between",
+   "value": 比较的值, "max": "between 时的上限，其他为 null", "tolerance": 0}
+- reconcile（两张表的聚合值对账）：
+  {"left": {"table": "表名", "expr": "sum(qty)", "where": null},
+   "right": {"table": "表名", "expr": "sum(volume)", "where": null},
+   "group_by": ["可选，两边同名的分组列"], "tolerance": 0.005, "relative": true}
+- unique（键不重复）：{"table": "表名", "columns": ["键列"], "where": null}
+- rows（满足条件的行必须没有）：{"table": "表名", "where": "不该出现的行满足的条件"}
+load.where 和检查的 where、expr 里可以用 ${param.参数标识} 引用项目的运行参数，
+运行时换成参数值；没绑定项目时不能用。
+和老系统结果的逐行对比由数据检查节点自动加，不要写在 checks 里。"""

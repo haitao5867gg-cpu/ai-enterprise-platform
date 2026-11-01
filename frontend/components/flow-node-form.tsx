@@ -1029,8 +1029,14 @@ function HumanFields({
                     label="显示条件"
                     issues={issuesUnder(issues, `options.${i}.requires`)}
                   >
-                    {settingText(option.requires)}
-                    <span className="muted">（成立时才显示这个选项）</span>
+                    {Array.isArray(option.requires)
+                      ? option.requires.map(settingText).join("、")
+                      : settingText(option.requires)}
+                    <span className="muted">
+                      {Array.isArray(option.requires)
+                        ? "（都成立时才显示这个选项）"
+                        : "（成立时才显示这个选项）"}
+                    </span>
                   </ReadOnlySetting>
                 )}
                 <CheckField

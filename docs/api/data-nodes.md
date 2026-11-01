@@ -64,13 +64,13 @@
  "hits": ["{{glossary.hits}}"],       // 0–5 个整段引用，知识检索节点（或 agent）的 hits；用来把 [n] 换成依据
  "language": "{{start.language}}",    // 可选；值为 pyspark 或 sql 时覆盖方案里的 language
  "max_attempts": 3,                   // 1–5
- "format": 2,                         // 可选，第二批新增：1 第 1 版方案（不写时），2 第 2 版方案
- "answered": "{{review.record}}"}     // 可选，第二批新增，只用于 format 2：人已经答过的题，整段引用人工节点的 record
+ "format": 2,                         // 可选，第二批新增：1 第 1 版方案（不写时），2 第 2 版方案；第三批加 3 第 3 版方案
+ "answered": "{{review.record}}"}     // 可选，第二批新增，只用于 format 2、3：人已经答过的题，整段引用人工节点的 record
 ```
 
 - 执行：解析 `reply`，用 `aep.etl.plan.validate_plan` 校验，`source_tables` 是 `profile` 的表名，`known` 是 `known_values(profile)`，`references` 是 `hits` 合起来（按 `index` 去重）。`trust_assumptions`：这个节点上一次是 `retry` 时为 true，否则为 false（同代码应用：第一次让模型先看一眼真实取值）。`format` 为 2 时另有一套检查和整理，见下面的“方案第 2 版”。
 - 解析失败或校验不过走 `retry`；**连续** `max_attempts` 次不过时节点失败，`error_type` 为 `output_format`，`error_message` 是最后一次的问题。走过一次 `ok` 后连续次数清零（比如人驳回后重写）。
-- `format` 只能是 1 或 2；`answered` 必须恰好是一个引用，只有 `format` 为 2 时能写。不合格时保存报错，`loc` 指到这个设置。以前的配置没有这两个键，照第 1 版运行；下表里新加的产出，只有标了“两版都有”的有值，其余按第 1 版的写法为空。
+- `format` 只能是 1、2 或 3（“方案版本 format 只能是 1、2 或 3”）；`answered` 必须恰好是一个引用，只有 `format` 为 2 或 3 时能写（“只有方案版本 format 为 2 或 3 时才能写已答的题”）。不合格时保存报错，`loc` 指到这个设置。以前的配置没有这两个键，照第 1 版运行；下表里新加的产出，只有标了“两版都有”的有值，其余按第 1 版的写法为空。
 
 产出：
 
@@ -89,8 +89,11 @@
 | `answer` | 第 2 版：答案设计，见“答案设计和可加性”；没有设计时和第 1 版都为 null |
 | `uncited` | 第 2 版：说明里没有有效 `[n]` 的指标、维度和筛选的 id，页面标“没找到口径文档，按需求理解”；第 1 版为 `[]` |
 | `cleaned` | 第 2 版：平台自动整理过的地方，一条一句，如 `去掉了 4 条规则开头的英文前缀“advance:”`；第 1 版为 `[]` |
+| `result_table` | 第 3 版（第三批）：结果表的表名，见“方案第 3 版”；第 1、2 版为 `""` |
+| `result_keys` | 第 3 版：结果表的 `primary_key`；第 1、2 版为 `[]` |
+| `checks` | 第 3 版：方案建议的数据检查；第 1、2 版为 `[]` |
 
-不通过时新加的这些字段都为空：`references`、`questions`、`uncited`、`cleaned` 为 `[]`，`brief`、`answer` 为 null，`summary` 为 `""`。
+不通过时新加的这些字段都为空：`references`、`questions`、`uncited`、`cleaned`、`result_keys`、`checks` 为 `[]`，`brief`、`answer` 为 null，`summary`、`result_table` 为 `""`。
 
 分支：`ok`（通过）、`retry`（重写）。
 
@@ -920,14 +923,22 @@ def param(name: str):
 
 ### 方案第 3 版（`etl_plan_check` 的 `format: 3`）
 
-在第 2 版上加这些，第 2 版的规则、整理和产出全部照旧：
+在第 2 版上加这些，第 2 版的规则、整理和产出全部照旧（`aep.etl.plan.validate_plan_v3`，解析出的方案是 `EtlPlanV3`，比第 2 版多 `checks`，代码检查和试算照样当第 1 版方案读）。不合格的地方都让模型重写，问题的写法如下：
 
-- 目标表的 `load` 按上面的写表方式；检查 `mode` 的取值、`replace_where` 要有 `where`、`merge` 的 `keys`（或 `primary_key`）都是这张表的列、`${param.*}` 是项目的参数。
-- 运行绑定了项目时目标表名要以 `table_prefix` 开头，不能和项目引用表的表名一样。
-- 新产出 `result_table`（结果表的表名，同第 2 版“结果表”的定义）和 `result_keys`（它的 `primary_key`，没写时为 `[]`），给 `data_check` 的 `golden` 用；没通过校验时为 `""` 和 `[]`。
-- 新字段 `checks`：模型建议的数据检查（`aggregate`、`reconcile`、`unique`、`rows`，最多 10 条；和老系统的对比由 `data_check` 的 `golden` 加），格式同 `data_check` 的 Check；表名只能是方案的目标表和来源，id 不能用 `golden`（留给节点自动加的对比）。不合格的检查让模型重写。新产出 `checks`（整理后的列表，可以整段给 `data_check` 的 `include`；第 1、2 版为 `[]`）。
-- 没绑定项目时也能用：不查前缀，用了 `${param.*}` 时让模型重写（“这次运行没有绑定项目，不能用运行参数”）。
-- 模型按 `aep.etl.plan.OUTPUT_FORMAT_V3` 回答（新增，前两个不动）。`message` 的技术方案里每张表多写一行写表方式，最后加“数据检查”一节。
+- **写表方式**：目标表的 `load` 按上面的写表方式；没写 `load` 或 `load.mode` 时是 `overwrite`。
+  - `mode` 只能是 `overwrite`、`replace_where`、`append`、`merge`（第 1、2 版的 `full`、`incremental` 也不行）：“city_daily 的 load.mode 只能是 overwrite、replace_where、append、merge”。
+  - `replace_where` 要有 `where`（“… 按条件替换（replace_where），要给出替换条件 load.where”），形状检查同读取筛选（“… 的 load.where：替换条件不能有分号”），`${param.*}` 要写对、是项目定义了的参数。
+  - `merge` 要有 `keys` 或 `primary_key`，`keys` 是这张表的列、不重复。
+  - `where` 只用在 `replace_where`、`keys` 只用在 `merge`；第 1、2 版增量的 `key` 这一版不用，写了也让模型重写。
+- **项目**：运行绑定了项目时，目标表名要以 `table_prefix` 开头（“目标表名 'x' 要以项目「…」的表名前缀 ibf_ 开头”），不能和项目引用表的表名（三段式名的最后一段，不分大小写）一样（“目标表名 'forecast' 和项目引用的表 prev.sales.Forecast 同名，请换一个”）。
+- **运行参数**：`load.where` 和检查里的 `where`、`expr` 用到的 `${param.<key>}` 要是项目定义了的参数（“… 的运行参数 ${param.month} 不是项目「…」定义的参数”）；没绑定项目时不能用（“… 用了运行参数 ${param.update_month}，这次运行没有绑定项目，不能用运行参数”），也不查前缀。
+- **`checks`**：模型建议的数据检查，格式同 `data_check` 的 Check，按 `aep.etl.checks.problems` 检查（问题写成 `checks[2].where：…`）。另外：
+  - 最多 10 条；种类只能是 `aggregate`、`reconcile`、`unique`、`rows`，和老系统的逐行对比由 `data_check` 的 `golden` 加；
+  - id 不能用 `golden`、不能重复；
+  - 表名（含 `reconcile` 两边的）只能是方案的目标表名和各目标表的 `sources`，不分大小写（“checks[4].table：sales.refunds 不是方案的目标表或来源，检查只能读方案写的表和读的源表”）。不带点的目标表名到 `data_check` 里就是本次运行的结果表，源表名照探查结果写。
+- **产出**：`result_table` 是结果表的表名（同第 2 版“结果表”：`answer.target`，没有答案设计时最后一张目标表），`result_keys` 是它的 `primary_key`（没写时为 `[]`），给 `data_check` 的 `golden` 用；`checks` 是整理后的检查（没写 `severity` 的补上 `error`），同 `plan.checks`，可以整段给 `data_check` 的 `include`。没通过校验时三项为 `""`、`[]`、`[]`；第 1、2 版也是。
+- **提示词**：模型按 `aep.etl.plan.OUTPUT_FORMAT_V3` 回答（新增，前两个不动）。
+- **`message`**：技术方案里每张表的“加载方式”一行换成“写表方式”（整表覆盖、只替换满足 `…` 的行、追加、按 `…` 合并），最后加“数据检查”一节，每条一行：名称（不是 `error` 的标出“警告”“提示”）、种类和一句话说明，如“**每天每个城市一行**（警告）：键不重复，`city_daily` 按 `stat_day`、`city` 没有重复的行”；没有检查时写“方案没有建议数据检查。”
 
 ### 应用模板 `etl-lakehouse` 第 3 版（应用层）
 

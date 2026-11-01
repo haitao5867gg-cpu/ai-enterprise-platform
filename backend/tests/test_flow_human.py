@@ -107,6 +107,12 @@ def reviewed(**settings) -> dict:
     )
 
 
+REQUIRES = (
+    "requires 只能是 true、false、恰好是一个变量（如 {{dev_run.ok}}），"
+    "或 1–5 个这样的变量组成的列表"
+)
+
+
 async def refused(p: Platform, run: dict, **body) -> tuple[int, object]:
     resp = await p.api.post(f"/runs/{run['run_id']}/resume", json=body)
     detail = resp.json()["detail"]
@@ -133,9 +139,7 @@ async def test_extended_settings_are_checked_where_they_are():
         (*at, "view"): "页面样式只能用小写字母、数字和下划线，以字母开头，最多 32 个字符",
         (*at, "data"): "data 最多 12 个键",
         (*at, "data", "Brief"): "键名只能用小写字母、数字和下划线，以字母开头，最多 32 个字符",
-        (*at, "options", 0, "requires"): (
-            "requires 只能是 true、false，或恰好是一个变量，如 {{dev_run.ok}}"
-        ),
+        (*at, "options", 0, "requires"): REQUIRES,
         (*at, "changed_branch"): "按意见处理的选项不能设 requires",
         (*at, "fields", 0, "default"): "题不能有默认值，每题都要人来答",
         (*at, "fields", 1, "suggested"): "建议的答案不是这题能填的值",
@@ -165,6 +169,34 @@ async def test_extended_settings_are_checked_where_they_are():
         (*at, "fields"): "节点 ask 没有产出 questionz",
         (*at, "options", 2, "requires"): "节点 ask 没有产出 okay",
     }
+
+
+async def test_an_option_can_need_several_values_to_be_true():
+    config = reviewed()
+    node(config, "ask")["output"]["fields"].append(
+        {"key": "ready", "type": "boolean", "description": "数据检查是否通过"}
+    )
+    options = node(config, "review")["options"]
+    at = ("config", "graph", "nodes", "review", "options", 2, "requires")
+    for wrong in ([], ["{{ask.ok}}", "开"], ["{{ask.ok}}"] * 6, [True], "{{ask.ok}} 且"):
+        options[2]["requires"] = wrong
+        assert await problems(config) == {at: REQUIRES}
+    options[2]["requires"] = ["{{ask.ok}}", "{{ask.okay}}"]
+    assert await problems(config) == {(*at, 1): "节点 ask 没有产出 okay"}
+
+    options[2]["requires"] = ["{{ask.ok}}", "{{ask.ready}}"]
+    answers = [
+        json.dumps({"questions": [], "brief": BRIEF, "ok": ok, "ready": ready})
+        for ok, ready in ((True, False), (True, True), (None, True))
+    ]
+    async with Platform(answers) as p:
+        await p.new_app("plan", config)
+        offered = []
+        for _ in answers:
+            run = await p.run("plan", {"question": "统计客单价"})
+            offered.append("pass" in run["pending"]["options"])
+        # Offered only when every one of them is exactly true.
+        assert offered == [False, True, False]
 
 
 async def test_only_an_approval_can_turn_or_hide_options():

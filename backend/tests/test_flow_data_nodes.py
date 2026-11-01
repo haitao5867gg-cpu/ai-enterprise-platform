@@ -1513,13 +1513,13 @@ async def test_plan_check_format_and_answered_are_checked(lake):
         assert resp.status_code == 422, resp.text
         return {tuple(p["loc"][4:]): p["msg"] for p in resp.json()["detail"]}
 
-    for version in (3, 0, "2", True, 2.0):
+    for version in (4, 0, "2", True, 2.0):
         assert await saved(format=version) == {
-            ("check_plan", "format"): "方案版本 format 只能是 1 或 2"
+            ("check_plan", "format"): "方案版本 format 只能是 1、2 或 3"
         }
     for settings in ({}, {"format": 1}):
         assert await saved(answered="{{review.decision}}", **settings) == {
-            ("check_plan", "answered"): "只有方案版本 format 为 2 时才能写已答的题"
+            ("check_plan", "answered"): "只有方案版本 format 为 2 或 3 时才能写已答的题"
         }
     for value in ("{{review.decision}} 和别的", ["{{review.decision}}"], 3):
         assert await saved(format=2, answered=value) == {
@@ -1534,6 +1534,7 @@ async def test_plan_check_format_and_answered_are_checked(lake):
         # A whole reference, to what the node is meant for or to anything else.
         {"format": 2, "answered": "{{review.record}}"},
         {"format": 2, "answered": "{{review.decision}}"},
+        {"format": 3, "answered": "{{review.record}}"},
     ):
         assert await saved(**settings) == {}, settings
     assert await saved(format=2, answered="{{review.records}}") == {
@@ -1606,6 +1607,7 @@ async def test_node_types_list_the_data_group():
     assert all(types[k]["error_handling"] for k in data)
     plan_check = types["etl_plan_check"]
     added = ["references", "summary", "brief", "questions", "answer", "uncited", "cleaned"]
+    added += ["result_table", "result_keys", "checks"]
     keys = ["ok", "plan", "problems", "message", "sources", "targets", *added]
     assert [o["key"] for o in plan_check["outputs"]] == keys
     assert TYPES["etl_plan_check"].produces({}) == keys
