@@ -154,13 +154,18 @@ def _copies(column: TargetColumn) -> bool:
 
 
 def _value_problems(
-    plan: EtlPlan, known: Mapping[str, KnownValues], trust_assumptions: bool
+    plan: EtlPlan,
+    known: Mapping[str, KnownValues],
+    trust_assumptions: bool,
+    show_values: bool = True,
 ) -> list[str]:
     """Literals the plan compares a column with that the profile never saw in it.
 
-    Such a value is usually made up, so it goes back to the model with the actual values.
-    It can still be right (rare, or only in a part of the table the sample missed, or the
-    user said so), so once ``trust_assumptions`` is set a value the assumptions name stays.
+    Such a value is usually made up, so it goes back to the model with the actual values
+    (without them when ``show_values`` is false: the data outbound policy keeps them from
+    the model, aep.policy). It can still be right (rare, or only in a part of the table
+    the sample missed, or the user said so), so once ``trust_assumptions`` is set a value
+    the assumptions name stays.
     """
     explained = " ".join(plan.assumptions).lower()
     targets = {t.name: t for t in plan.targets}
@@ -201,11 +206,15 @@ def _value_problems(
                 continue
             if trust_assumptions and _normal(literal) in explained:
                 continue
-            actual = "、".join(sorted(seen.values)) or "（全是空值）"
             where = "整张表" if seen.complete else "样本"
+            if show_values:
+                actual = "、".join(sorted(seen.values)) or "（全是空值）"
+                found = f"但{where}里 {column} 的取值只有 {actual}"
+            else:
+                found = f"但{where}里 {column} 没有这个取值（按数据外发策略不列出实际取值）"
             problems.append(
-                f"{target.name} 拿 {column} 和 '{literal}' 比较，但{where}里 {column} 的取值只有 "
-                f"{actual}。需求说的取值对应其中某个时请改用实际取值；数据里确实没有时，"
+                f"{target.name} 拿 {column} 和 '{literal}' 比较，{found}。"
+                "需求说的取值对应其中某个时请改用实际取值；数据里确实没有时，"
                 "不要编造取值，做不了的指标去掉或给 null，并在 assumptions 里说明；"
                 f"确定要用 '{literal}'（比如用户指定了）就在 assumptions 里写明原因"
             )
@@ -218,12 +227,15 @@ def validate_plan(
     known: Mapping[str, KnownValues] | None = None,
     trust_assumptions: bool = True,
     references: list[IndexedHit] | None = None,
+    show_values: bool = True,
 ) -> EtlPlan:
     """Parse the model's plan and check it against the profiled ``source_tables`` (schema.table)
     and the ``known`` values of their columns (by column name, see ``aep.etl.profile``).
 
     ``trust_assumptions`` false: a value the data lacks goes back even if the assumptions name
-    it, so the model looks at the actual values once before keeping it."""
+    it, so the model looks at the actual values once before keeping it. ``show_values``
+    false: the problems do not list the actual values (the data outbound policy keeps
+    them from the model)."""
     try:
         if isinstance(raw, dict):
             raw = {**raw, "references": []}
@@ -265,7 +277,7 @@ def validate_plan(
                     f"（{quality.condition}）；质量规则逐行判断，不能用聚合，"
                     "唯一性请用 primary_key 表达"
                 )
-    problems += _value_problems(plan, known or {}, trust_assumptions)
+    problems += _value_problems(plan, known or {}, trust_assumptions, show_values)
     if problems:
         unique = list(dict.fromkeys(problems))
         raise PlanError("；".join(unique), unique)
@@ -1159,6 +1171,7 @@ def _version_one_checks(
     source_tables: Collection[str],
     known: Mapping[str, KnownValues] | None,
     trust_assumptions: bool,
+    show_values: bool = True,
 ) -> list[str]:
     problems: list[str] = []
     # Version 1's checks; the texts a value may be explained in are the rules and the
@@ -1169,7 +1182,7 @@ def _version_one_checks(
     projection = plan.model_dump(include={"summary", "language", "targets"})
     projection["assumptions"] = explained
     try:
-        validate_plan(projection, source_tables, known, trust_assumptions)
+        validate_plan(projection, source_tables, known, trust_assumptions, None, show_values)
     except PlanError as exc:
         problems += exc.problems
     return problems
@@ -1224,6 +1237,7 @@ def validate_plan_v2(
     trust_assumptions: bool = True,
     references: list[IndexedHit] | None = None,
     answered: Mapping[str, Confirmed] | None = None,
+    show_values: bool = True,
 ) -> tuple[EtlPlanV2, list[str]]:
     """Parse and tidy a version 2 plan, then check it like ``validate_plan`` and more.
 
@@ -1255,7 +1269,7 @@ def validate_plan_v2(
     _confirm(plan, answered or {})
     _overflow(plan, cleaned)
     _cite_v2(plan, references or [])
-    problems = _version_one_checks(plan, source_tables, known, trust_assumptions)
+    problems = _version_one_checks(plan, source_tables, known, trust_assumptions, show_values)
     problems += structure + _blank_texts(plan) + _version_two_checks(plan)
     if problems:
         unique = list(dict.fromkeys(problems))

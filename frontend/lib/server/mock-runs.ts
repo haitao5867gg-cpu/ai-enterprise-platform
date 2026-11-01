@@ -301,6 +301,7 @@ const summaryKeys: (keyof RunSummary)[] = [
   "cancelled_by",
   "rerun_of",
   "outcome",
+  "policy",
   "created_at",
   "updated_at",
   "finished_at",
@@ -839,6 +840,7 @@ function create(
     input,
     rerun_of: copy?.rerunOf ?? null,
     cancelled_by: null,
+    policy: { samples: "full", models: null },
     // Like the backend: the first text input that was filled in.
     title: isEtl
       ? runTitle(input.request)

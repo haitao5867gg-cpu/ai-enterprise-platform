@@ -16,6 +16,7 @@ import {
   isFinished,
   isRecord,
   jsonObject,
+  policyText,
   retryRun,
   readReceipt,
   readRun,
@@ -909,6 +910,12 @@ export function RunDetail({
                     <dt>提出人</dt>
                     <dd>{run.created_by || "—"}</dd>
                   </div>
+                  {policyText(run.policy) && (
+                    <div>
+                      <dt>发给模型的数据</dt>
+                      <dd>{policyText(run.policy)}</dd>
+                    </div>
+                  )}
                   {run.rerun_of && (
                     <div>
                       <dt>复制自</dt>

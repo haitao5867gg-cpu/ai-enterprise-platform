@@ -57,6 +57,7 @@ async def test_run_metadata_is_kept():
         assert waiting.step == {"node": "review", "title": "确认"}
         assert waiting.waiting_since is not None
         assert waiting.wait_seconds == 0
+        assert waiting.policy == {"samples": "full", "models": None}
 
         async with service._store._pool.connection() as conn:
             await conn.execute(

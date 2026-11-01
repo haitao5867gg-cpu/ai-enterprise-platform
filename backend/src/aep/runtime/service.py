@@ -44,7 +44,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
-from aep import tracing
+from aep import policy, tracing
 from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
 from aep.runtime import appconfig, design, human
@@ -91,6 +91,10 @@ class ContentChanged(Exception):
 
 class UnknownVersion(Exception):
     pass
+
+
+class ModelNotAllowed(Exception):
+    """The run would use a model the data outbound policy does not allow (aep.policy)."""
 
 
 class NoDraftToRun(Exception):
@@ -377,7 +381,51 @@ class RunService:
             knowledge=self.knowledge,
             settings=self._ctx.settings,
             databricks=self._ctx.databricks,
+            people=frozenset(
+                n["id"] for n in flowgraph.nodes(config) if n["type"] in ("start", "human")
+            ),
         )
+
+    async def _models(
+        self, app: str, config: dict[str, Any], input: dict[str, Any]
+    ) -> list[tuple[str, str]]:
+        """Every model the run may call, with the title of the node that calls it: models,
+        and the embedding and rerank models of the knowledge it searches."""
+        used: list[tuple[str, str]] = []
+
+        async def bases(kb_ids: Any, title: str) -> None:
+            for kb_id in kb_ids if isinstance(kb_ids, list) else []:
+                base = await self.knowledge.get(kb_id) if isinstance(kb_id, str) else None
+                if base is not None:
+                    used.append((base.embedding_model, title))
+
+        if app in self._graphs:
+            options = self.options[app]
+            nodes = await appconfig.load(config, options, self.skills)
+            chosen = input.get("models") if isinstance(input.get("models"), dict) else {}
+            drawn = self._graphs[app].get_graph().nodes
+            for name, node in nodes.items():
+                found = drawn.get(name)
+                design = (found.metadata or {}).get("design") if found else None
+                title = design.get("title") or name if isinstance(design, dict) else name
+                if options[name].model:
+                    used.append((chosen.get(name) or node.model or self.default_model, title))
+                await bases(node.params.get("knowledge_bases"), title)
+            return used
+        for node in flowgraph.nodes(config):
+            title = node.get("title") or node["id"]
+            if node["type"] in ("llm", "classifier", "agent"):
+                used.append((node.get("model") or self.default_model, title))
+            search = node if node["type"] == "knowledge" else None
+            if node["type"] == "agent" and isinstance(node.get("knowledge"), dict):
+                search = node["knowledge"]
+            if search is not None:
+                await bases(search.get("knowledge_bases"), title)
+                retrieval = search.get("retrieval")
+                rerank = retrieval.get("rerank") if isinstance(retrieval, dict) else None
+                if isinstance(rerank, dict) and isinstance(rerank.get("model"), str):
+                    used.append((rerank["model"], title))
+        return used
 
     async def _graph(self, record: RunRecord) -> CompiledStateGraph:
         if record.app in self._graphs:
@@ -442,7 +490,15 @@ class RunService:
             _, problems = flownodes.answers(flowgraph.inputs(config), input)
             if problems:
                 raise InvalidValues(problems)
-        record = await self._store.create(app, input, app_version, config, requester, rerun_of)
+        rules = policy.platform_default(self._ctx.settings)
+        if rules.models is not None:
+            for model, where in await self._models(app, config, input):
+                problem = policy.model_problem(rules, model, where)
+                if problem:
+                    raise ModelNotAllowed(problem)
+        record = await self._store.create(
+            app, input, app_version, config, requester, rerun_of, rules.as_dict()
+        )
         self._spawn(record, {"input": input}, "start", input)
         return record
 
@@ -742,6 +798,8 @@ class RunService:
                         appconfig.CONFIG_KEY: nodes,
                         # Who asked for the run: a flow app's start message is theirs.
                         "requester": record.created_by,
+                        # What of the data may go to which models (aep.policy).
+                        "policy": record.policy,
                     },
                     "callbacks": [*segment.callbacks, StepTracker(self._store, record.run_id)],
                 }

@@ -5,9 +5,13 @@ how often it ran (``visits``) and, if it has branches, which one it took
 (``branch``); conditional edges follow that. A node may also keep something for
 its own next run (``private``, e.g. how often its check failed in a row). The
 end node writes the run's ``result``. ``on_error`` is applied here, around the
-node type's ``run``, which also sees the run's id as ``state["run_id"]`` and who
-asked for it as ``state["requester"]``. What a node says goes into the run's
-``messages`` tagged here with the node, its title and the time.
+node type's ``run``, which also sees the run's id as ``state["run_id"]``, who
+asked for it as ``state["requester"]`` and the run's data outbound policy as
+``state["policy"]``. Which outputs hold data values (``data``) or error text that may
+quote them (``quoted``), and the tokens turned back into values (``restored``), are
+kept for that policy (aep.policy). What a node
+says goes into the run's ``messages`` tagged here with the node, its title and the
+time.
 """
 
 import asyncio
@@ -54,6 +58,9 @@ class FlowState(TypedDict, total=False):
     citations: Annotated[dict[str, int], _merge]
     sources: Annotated[dict[str, dict[str, Any]], _merge]
     private: Annotated[dict[str, dict[str, Any]], _merge]
+    data: Annotated[dict[str, list[str]], _merge]
+    quoted: Annotated[dict[str, list[str]], _merge]
+    restored: Annotated[dict[str, str], _merge]
 
 
 class FlowError(Exception):
@@ -124,10 +131,12 @@ async def execute(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
     if then == "stop":
         raise FlowError(node, failure.message, failure.type)
     error = {"error_type": failure.type, "error_message": failure.message}
+    # The error text may quote data values (aep.policy).
     if then == "default":
         produced = {key: None for key in spec.produces(node)}
-        return Outcome({**produced, **(on_error.get("default") or {}), **error})
-    return Outcome(error, ERROR)
+        outputs = {**produced, **(on_error.get("default") or {}), **error}
+        return Outcome(outputs, quoted=["error_message"])
+    return Outcome(error, ERROR, quoted=["error_message"])
 
 
 def design(node: dict[str, Any], rt: Runtime | None = None) -> NodeDesign:
@@ -168,8 +177,11 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
         configurable = (config or {}).get("configurable") or {}
         run_id = configurable.get("thread_id")
         requester = configurable.get("requester")
+        extra = {"run_id": run_id, "requester": requester}
+        if configurable.get("policy") is not None:
+            extra["policy"] = configurable["policy"]
         try:
-            outcome = await execute(node, {**state, "run_id": run_id, "requester": requester}, rt)
+            outcome = await execute(node, {**state, **extra}, rt)
         except (GraphBubbleUp, FlowError):
             raise
         except Exception as exc:
@@ -178,6 +190,8 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
             "vars": {node_id: outcome.outputs},
             "visits": {node_id: visits + 1},
             "branch": {node_id: outcome.branch or NEXT},
+            "data": {node_id: outcome.data},
+            "quoted": {node_id: outcome.quoted},
         }
         if outcome.messages:
             at = datetime.now(UTC).isoformat()
@@ -194,6 +208,8 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
             update["sources"] = outcome.sources
         if outcome.private is not None:
             update["private"] = {node_id: outcome.private}
+        if outcome.restored:
+            update["restored"] = outcome.restored
         return update
 
     return run
