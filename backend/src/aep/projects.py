@@ -14,8 +14,10 @@ the project later does not change the run. Nodes read the snapshot through
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Annotated, Any, Literal, Protocol
 
+import re2
 from psycopg import errors
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -51,6 +53,11 @@ FIELDS = (
     "brief",
 )
 MAX_CHECKS = 50
+MAX_PATTERN = 200
+# A text parameter's format is RE2: matching takes linear time, so whatever a project
+# writes there cannot stall the API on a value (Python's re can backtrack for minutes).
+PATTERN_OPTIONS = re2.Options()
+PATTERN_OPTIONS.log_errors = False
 
 
 def _text(low: int, high: int) -> Any:
@@ -101,11 +108,31 @@ def _parse(value: str, form: str) -> bool:
     return True
 
 
+@lru_cache(maxsize=256)
+def _pattern(pattern: str) -> Any:
+    return re2.compile(pattern, PATTERN_OPTIONS)
+
+
+def pattern_problem(pattern: str) -> str | None:
+    """Why ``pattern`` cannot be a text parameter's format, or None."""
+    try:
+        _pattern(pattern)
+    except re2.error as exc:
+        said = exc.args[0] if exc.args else ""
+        said = said.decode(errors="replace") if isinstance(said, bytes) else str(said)
+        return f"不是有效的正则表达式（{said}）"
+    return None
+
+
 def param_problem(param: dict[str, Any], value: Any) -> str | None:
-    """Why ``value`` does not fit the parameter, or None."""
+    """Why ``value`` does not fit the parameter, or None. A text parameter's ``pattern``
+    must match the whole value."""
     label, kind = param["label"], param["type"]
     if kind == "text" and not (isinstance(value, str) and 1 <= len(value) <= 500):
         return f"参数「{label}」要写 1–500 个字"
+    pattern = param.get("pattern")
+    if kind == "text" and pattern and _pattern(pattern).fullmatch(value) is None:
+        return f"参数「{label}」要符合格式 {pattern}"
     if kind == "number" and (isinstance(value, bool) or not isinstance(value, int | float)):
         return f"参数「{label}」要是数字"
     if kind == "boolean" and not isinstance(value, bool):
@@ -175,10 +202,20 @@ class Param(_Model):
     required: bool = False
     default: Any = None
     choices: list[Choice] | None = None
+    # Only for text: a regular expression (RE2) the whole value must match.
+    pattern: (
+        Annotated[str, StringConstraints(min_length=1, max_length=MAX_PATTERN, pattern=NO_NUL)]
+        | None
+    ) = None
     description: Annotated[str, StringConstraints(max_length=500, pattern=NO_NUL)] = ""
 
     @model_validator(mode="after")
     def valid(self) -> "Param":
+        if self.pattern is not None:
+            if self.type != "text":
+                raise ValueError(f"参数「{self.label}」不是文本，不能写格式")
+            if problem := pattern_problem(self.pattern):
+                raise ValueError(f"参数「{self.label}」的格式{problem}")
         if self.type == "select":
             if not self.choices or not 1 <= len(self.choices) <= 50:
                 raise ValueError(f"参数「{self.label}」是选项，要列出 1–50 个选项")
@@ -567,6 +604,11 @@ def _cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+def _kind(param: dict[str, Any]) -> str:
+    pattern = param.get("pattern")
+    return param["type"] + (f"，格式 `{_cell(pattern)}`" if pattern else "")
+
+
 def brief(project: dict[str, Any]) -> str:
     """What a model is told about the project the run is bound to (Markdown)."""
     env = project["environment"]
@@ -601,7 +643,7 @@ def brief(project: dict[str, Any]) -> str:
             "| --- | --- | --- | --- | --- |",
         ]
         lines += [
-            f"| `{p['key']}` | {_cell(p['label'])} | {p['type']} "
+            f"| `{p['key']}` | {_cell(p['label'])} | {_kind(p)} "
             f"| {_cell(project['values'].get(p['key']))} | {_cell(p.get('description') or None)} |"
             for p in project["params"]
         ]

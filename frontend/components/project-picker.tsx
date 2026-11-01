@@ -76,7 +76,9 @@ function ParamInput({
       {!param.required && <span className="muted">（选填）</span>}
     </label>
   );
-  const described = [param.description && `${id}-hint`, error && `${id}-error`]
+  const pattern = param.type === "text" ? param.pattern : null;
+  const hint = [param.description, pattern && `格式：${pattern}`].filter(Boolean).join("；");
+  const described = [hint && `${id}-hint`, error && `${id}-error`]
     .filter(Boolean)
     .join(" ");
   const common = {
@@ -146,9 +148,9 @@ function ParamInput({
     <div className="asset-field">
       {label}
       {control}
-      {param.description && (
+      {hint && (
         <small className="muted" id={`${id}-hint`}>
-          {param.description}
+          {hint}
         </small>
       )}
       {error && (
