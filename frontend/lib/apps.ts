@@ -222,6 +222,22 @@ export type DatabricksDevRunNode = NodeBase &
     max_runs: number;
     preview_rows: number;
   };
+// Checks are written as docs/api/data-nodes.md ("data_check") describes; the editor
+// edits them as JSON and the backend checks them when the draft is saved.
+export type DataCheckGolden = {
+  expected?: string;
+  table?: string;
+  keys?: string | string[];
+};
+export type DataCheckNode = NodeBase &
+  Fallible & {
+    type: "data_check";
+    datasource: string;
+    checks: Record<string, unknown>[];
+    include: string[];
+    golden?: DataCheckGolden;
+    only_if?: string;
+  };
 export type FlowNode =
   | StartNode
   | LlmNode
@@ -238,6 +254,7 @@ export type FlowNode =
   | DatabricksIngestNode
   | EtlCodeCheckNode
   | DatabricksDevRunNode
+  | DataCheckNode
   | EndNode;
 export type Edge = { from: string; to: string; branch?: string | null };
 export type FlowConfig = {

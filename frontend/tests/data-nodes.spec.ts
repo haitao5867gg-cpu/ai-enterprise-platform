@@ -657,3 +657,136 @@ test("numeric limits, no-preview output and Markdown code/links retain their beh
     flow.getByRole("region", { name: "结果表预览", exact: true }),
   ).toHaveCount(0);
 });
+
+test("数据检查节点：只列 Databricks 数据源，检查写成 JSON，和老系统对比与执行条件保存后保留", async ({
+  page,
+  request,
+}) => {
+  const registered = await request.post("/api/datasources", {
+    data: {
+      name: `数据湖-${id()}`,
+      description: "",
+      kind: "databricks",
+      connector_url: "http://lake.connector.test:8005/mcp",
+    },
+  });
+  expect(registered.status()).toBe(201);
+  const lake = await registered.json();
+  const app = await create(request);
+  await listView(page);
+  await page.goto(`/apps/${app}`);
+  await page.getByRole("button", { name: "添加节点", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "添加节点" })
+    .getByRole("region", { name: "数据工程" })
+    .getByRole("button", { name: "数据检查", exact: true })
+    .click();
+  await expect(
+    panel(page).getByRole("heading", { name: "试跑这个节点" }),
+  ).toHaveCount(0);
+  // Wired first: the variables offered are those of the nodes before it.
+  await select(page, "answer");
+  await next(page, "下一步", "data_check");
+  await select(page, "data_check");
+  await next(page, "通过", "end");
+  await next(page, "不通过", "end");
+
+  // Only Databricks data sources can be read for checks.
+  const picker = panel(page).getByLabel("数据源", { exact: true });
+  await expect(
+    picker.getByRole("option", { name: `${lake.name} · Databricks` }),
+  ).toBeAttached();
+  await expect(
+    picker.getByRole("option", { name: "MySQL 示例库 · MySQL" }),
+  ).toHaveCount(0);
+  await picker.selectOption(lake.datasource_id);
+
+  const checks = [
+    {
+      id: "neg",
+      label: "没有负数",
+      kind: "rows",
+      table: "ibf_table2",
+      where: "qty < 0",
+    },
+    {
+      id: "total",
+      label: "总数量和预测表一致",
+      kind: "reconcile",
+      left: { table: "ibf_table2", expr: "sum(qty)" },
+      right: { table: "prev.sales.forecast", expr: "sum(value)" },
+      tolerance: 0.005,
+      relative: true,
+    },
+  ];
+  const box = panel(page).getByLabel("检查（JSON）", { exact: true });
+  await box.fill("[{");
+  await expect(panel(page)).toContainText(
+    "不是合法的 JSON，改好之前不会保存这里的修改",
+  );
+  await box.fill('{"id": "neg"}');
+  await expect(panel(page)).toContainText("要写成检查的列表：[{...}, {...}]");
+  await box.fill(JSON.stringify(checks));
+  await expect(
+    panel(page).getByRole("list", { name: "已写的检查" }).getByRole("listitem"),
+  ).toHaveText(["没有负数（rows）", "总数量和预测表一致（reconcile）"]);
+
+  await panel(page)
+    .getByRole("button", { name: "添加引用的检查", exact: true })
+    .click();
+  await insert(page, "检查列表", "{{answer.text}}");
+  const golden = panel(page).getByRole("group", { name: "和老系统对比" });
+  await golden
+    .getByLabel("老系统结果表", { exact: true })
+    .fill("old.jade.table2");
+  await golden.getByLabel("结果表", { exact: true }).fill("ibf_table2");
+  await golden.getByLabel("主键", { exact: true }).fill("sku, month");
+  await insert(page, "只在这个值为 true 时检查", "{{answer.text}}");
+
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "草稿已保存" }),
+  ).toBeVisible();
+  const saved = (await detail(request, app)).draft!.config as FlowConfig;
+  expect(
+    saved.graph.nodes.find((node) => node.id === "data_check"),
+  ).toMatchObject({
+    datasource: lake.datasource_id,
+    checks,
+    include: ["{{answer.text}}"],
+    golden: {
+      expected: "old.jade.table2",
+      table: "ibf_table2",
+      keys: ["sku", "month"],
+    },
+    only_if: "{{answer.text}}",
+  });
+  expect(saved.graph.edges).toEqual(
+    expect.arrayContaining([
+      { from: "data_check", to: "end", branch: "passed" },
+      { from: "data_check", to: "end", branch: "failed" },
+    ]),
+  );
+
+  // Cleared settings go away rather than stay empty.
+  await golden.getByLabel("老系统结果表", { exact: true }).fill("");
+  await golden.getByLabel("结果表", { exact: true }).fill("");
+  await golden.getByLabel("主键", { exact: true }).fill("");
+  await panel(page)
+    .getByLabel("只在这个值为 true 时检查", { exact: true })
+    .fill("");
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "草稿已保存" }),
+  ).toBeVisible();
+  const cleared = (await detail(request, app)).draft!.config as FlowConfig;
+  const node = cleared.graph.nodes.find((item) => item.id === "data_check");
+  expect(node).not.toHaveProperty("golden");
+  expect(node).not.toHaveProperty("only_if");
+
+  await page.reload();
+  await select(page, "data_check");
+  await expect(
+    panel(page).getByLabel("检查（JSON）", { exact: true }),
+  ).toHaveValue(JSON.stringify(checks, null, 2));
+});

@@ -79,6 +79,24 @@ export type DatabricksDevRunOutput = {
   report: string;
 };
 
+export type DataCheckResult = {
+  id: string;
+  label: string;
+  kind: "aggregate" | "reconcile" | "unique" | "golden" | "rows";
+  severity: "error" | "warn" | "info";
+  status: "passed" | "failed" | "error" | "skipped";
+  actual: unknown;
+  expected: unknown;
+  message: string;
+  rows: Record<string, unknown>[];
+};
+export type DataCheckOutput = {
+  ok: boolean;
+  results: DataCheckResult[];
+  summary: string;
+  report: string;
+};
+
 export function dataNodeIssues(config: FlowConfig): ValidationIssue[] {
   return config.graph.nodes.flatMap((node) => {
     const issues: ValidationIssue[] = [];
@@ -110,6 +128,12 @@ export function dataNodeIssues(config: FlowConfig): ValidationIssue[] {
     if (node.type === "databricks_dev_run") {
       integer("max_runs", node.max_runs, 1, 3);
       integer("preview_rows", node.preview_rows, 0, 100);
+    }
+    if (node.type === "data_check") {
+      if (!Array.isArray(node.checks) || node.checks.length > 50)
+        add("checks", "最多 50 条检查");
+      if (!Array.isArray(node.include) || node.include.length > 5)
+        add("include", "最多 5 个引用");
     }
     return issues;
   });

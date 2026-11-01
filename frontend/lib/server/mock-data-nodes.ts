@@ -63,6 +63,14 @@ export const dataDefaults: FlowNode[] = [
     max_runs: 3,
     preview_rows: 20,
   },
+  {
+    id: "data_check",
+    type: "data_check",
+    title: "数据检查",
+    datasource: "",
+    checks: [],
+    include: [],
+  },
 ];
 export const dataDescriptions: Record<string, string> = {
   etl_profile: "读取源表结构、统计和少量样本，为 ETL 方案提供依据。",
@@ -71,6 +79,8 @@ export const dataDescriptions: Record<string, string> = {
   databricks_ingest: "从只读数据源抽取表数据，写入 Databricks 湖仓的源表。",
   etl_code_check: "检查模型生成的转换代码，并打包为 Databricks bundle。",
   databricks_dev_run: "在 Databricks dev 运行 bundle，检查质量并预览结果数据。",
+  data_check:
+    "经 Databricks 只读连接器核对结果数据：总数、和源表对账、键是否重复、不该有的行、和老系统逐行对比",
 };
 
 export function lakehouseConfig(ready = false): FlowConfig {
@@ -368,10 +378,65 @@ export function demoPlanOutput(): EtlPlanCheckOutput {
     targets: demoPreview.map((preview) => preview.table),
   };
 }
+// The mock's data checks all pass; only_if and the data source kind work as in the
+// backend (docs/api/data-nodes.md, "data_check").
+function simulateDataCheck(rendered: Record<string, unknown>) {
+  if ("only_if" in rendered && rendered.only_if !== true) {
+    const said = "前一步没有通过，没有做数据检查";
+    return {
+      outputs: { ok: false, results: [], summary: said, report: said },
+      branch: "failed",
+    };
+  }
+  const source = allMockSources().find(
+    (item) => item.datasource_id === rendered.datasource,
+  );
+  if (!source || source.kind !== "databricks")
+    throw new MockNodeFailure("input_error", "数据检查要用 Databricks 数据源");
+  const listed = [
+    ...(Array.isArray(rendered.checks) ? rendered.checks : []),
+    ...(Array.isArray(rendered.include) ? rendered.include : []).flatMap(
+      (item: unknown) => (Array.isArray(item) ? item : []),
+    ),
+  ] as Record<string, unknown>[];
+  const golden = (rendered.golden ?? {}) as Record<string, unknown>;
+  if (typeof golden.expected === "string" && golden.expected.trim())
+    listed.push({ id: "golden", label: "和老系统的结果一致", kind: "golden" });
+  const results = listed.map((check) => ({
+    id: check.id,
+    label: check.label,
+    kind: check.kind,
+    severity: check.severity ?? "error",
+    status: "passed",
+    actual: null,
+    expected: null,
+    message: "模拟检查，按通过处理",
+    rows: [],
+  }));
+  const summary = results.length
+    ? `${results.length} 项检查：${results.length} 项通过`
+    : "没有数据检查";
+  const report = [
+    "## 数据检查",
+    "",
+    summary,
+    ...(results.length
+      ? [
+          "",
+          "| 结果 | 检查 | 说明 |",
+          "| --- | --- | --- |",
+          ...results.map((r) => `| 通过 | ${String(r.label)} | ${r.message} |`),
+        ]
+      : []),
+  ].join("\n");
+  return { outputs: { ok: true, results, summary, report }, branch: "passed" };
+}
+
 export function simulateDataNode(
   node: FlowNode,
   rendered: Record<string, unknown>,
 ) {
+  if (node.type === "data_check") return simulateDataCheck(rendered);
   if (node.type === "etl_profile" || node.type === "databricks_ingest") {
     // Like the backend: a tool service picked at run time cannot be read from.
     const service = mockToolService(rendered.datasource);
@@ -453,7 +518,11 @@ export function dataNodeSaid(
   outputs: Record<string, unknown>,
   branch: string | null,
 ): string | null {
-  if (node.type === "etl_profile" || node.type === "databricks_ingest")
+  if (
+    node.type === "etl_profile" ||
+    node.type === "databricks_ingest" ||
+    node.type === "data_check"
+  )
     return typeof outputs.summary === "string" ? outputs.summary : null;
   if (node.type === "etl_plan_check" && branch === "ok") {
     const { plan } = outputs as EtlPlanCheckOutput;
