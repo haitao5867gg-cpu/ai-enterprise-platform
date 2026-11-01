@@ -5,7 +5,7 @@
 ## 概念
 
 - **连接器**：一个 MCP 服务（Streamable HTTP）。平台只保存它的地址。数据库账号密码配在连接器上（本地放 `.env`，Azure 放 Key Vault），平台不保存。
-- **数据源**：给 ETL 和数据节点读数据用的连接器，类型是 `postgres`、`mysql`、`sqlserver` 或 `file`（上传的 CSV、XLSX，由平台的文件连接器提供）。数据源必须提供 ETL 需要的 6 个工具：`list_schemas`、`list_tables`、`describe_table`、`table_stats`、`sample_rows`、`read_rows`，参数和返回同 `connectors/postgres`。
+- **数据源**：给 ETL 和数据节点读数据用的连接器，类型是 `postgres`、`mysql`、`sqlserver`、`file`（上传的 CSV、XLSX，由平台的文件连接器提供）或 `databricks`（Databricks 上已有的表，见“Databricks 数据源”）。数据源必须提供 ETL 需要的 6 个工具：`list_schemas`、`list_tables`、`describe_table`、`table_stats`、`sample_rows`、`read_rows`，参数和返回同 `connectors/postgres`。
 - **工具服务**：新类型 `mcp`。它只提供工具，不用于 ETL，比如查工单、查 CRM。工具名不限，但至少要有一个。工具服务只能用在编排应用的 `tool`（调用工具）节点和 `agent`（智能体）节点里；`etl_profile`、`databricks_ingest` 和 `etl` 应用都不接受它。
 - **只读标记**：工具的 `read_only` 取自连接器自报的 `annotations.readOnlyHint`，没报就是 `false`。它只用来展示，不是安全边界（代码沙箱的 `run_python` 也自称只读）。
 - **第一阶段只支持只读工具**：数据源连接器都是只读的；登记工具服务的人要确认它的工具不会修改数据。平台不核实 `read_only`，也不拦没声明只读的工具，所以第一阶段不提供「试一下工具」。
@@ -17,7 +17,7 @@
 {
   "datasource_id": "uuid",
   "name": "MySQL 示例库",               // 1–100 字符，去掉首尾空白；不能和别的数据源、工具服务重名
-  "kind": "postgres" | "mysql" | "sqlserver" | "file" | "mcp",
+  "kind": "postgres" | "mysql" | "sqlserver" | "file" | "databricks" | "mcp",
   "connector_url": "http://connector-mysql:8002/mcp",
                                         // 旧数据里如果带账号或敏感参数，返回时这部分换成 ***，库里存的不变
   "description": "本地 MySQL 示例源库……",  // 最多 2000 字符
@@ -117,7 +117,7 @@ JSON 列表，每一项是下面一种写法：
 | `[fd00::5]:8001` | IPv6 地址 |
 | `*.connectors.svc.cluster.local:*` | 这个后缀下的子域名，不含后缀本身；端口写法同上 |
 
-不接受单独一个 `*`，也不接受 `*:8001` 这样主机只有 `*` 的写法；写法不对时平台启动失败。默认值是 `["connector-postgres:8001", "connector-mysql:8002", "connector-files:8003"]`，也就是本地编排里的三个连接器。不用 docker 单独开发后端时，按需加上本机连接器的地址：`localhost:*` 这类写法对回环地址不起作用，要写明端口，例如 `localhost:8001`；不要写平台自己的端口（如 `localhost:8000`）。
+不接受单独一个 `*`，也不接受 `*:8001` 这样主机只有 `*` 的写法；写法不对时平台启动失败。默认值是 `["connector-postgres:8001", "connector-mysql:8002", "connector-files:8003", "connector-databricks:8005"]`，也就是本地编排里的四个数据源连接器。不用 docker 单独开发后端时，按需加上本机连接器的地址：`localhost:*` 这类写法对回环地址不起作用，要写明端口，例如 `localhost:8001`；不要写平台自己的端口（如 `localhost:8000`）。
 
 后缀写法不要盖住平台自己所在的命名空间。平台只认得出第 4 条里那些名字的服务；部署时改过名的服务（比如 Helm 加了前缀的平台接口）认不出来，会被后缀写法放进来。
 
@@ -189,6 +189,41 @@ JSON 列表，每一项是下面一种写法：
 - `etl_profile`、`databricks_ingest` 写死的 id 是工具服务，保存时报「「{name}」是工具服务，这里要选数据库或上传文件的数据源」；
 - 运行时（比如 `{{start.datasource}}`）选到工具服务，节点以 `input_error` 失败：「「{name}」是工具服务，不能用来探查或抽取数据，请选数据库或上传文件的数据源」；
 - `etl` 应用的 `datasource_id` 是工具服务时，运行失败：「「{name}」是工具服务，ETL 要选数据库或上传文件的数据源」。
+
+## Databricks 数据源（第三批）
+
+改造方案第一期新增，落在**连接器**这一层：Databricks 上已有的表（可以跨 catalog）登记成一个数据源，探查、引用和数据检查都经它只读访问，不复制数据。设计见 [projects.md](projects.md) 开头的设计文档。
+
+### 连接器 `connectors/databricks`
+
+独立的只读 MCP 连接器，和 postgres 连接器一样是一个 uv 包，本地编排里叫 `connector-databricks`，端口 8005，地址 `http://connector-databricks:8005/mcp`。
+
+- 提供同样的 6 个工具，参数和返回同 postgres 连接器，只有这些不同：
+  - `schema` 一律写成 `catalog.schema` 两段（比如 `icsd-ace-dev.sales`），`list_schemas` 返回允许的 catalog 下的这种两段名字；表名是 `table`。所以平台和节点里 Databricks 的表一律是三段式 `catalog.schema.table`。
+  - `table_stats`、`sample_rows`、`read_rows` 多一个可选参数 `where`：一个 Spark SQL 布尔表达式，只读满足它的行。形状检查同项目引用表的 `filter`（[projects.md](projects.md) 的取值规则），连接器自己再查一遍，不合格时工具报错“读取条件写法不对”。它会原样放进 `WHERE (…)`。
+  - `describe_table` 的列另有 `comment`（列注释，没有为 null），返回另有表的 `comment`；类型是 Databricks 的写法（`string`、`decimal(18,2)`、`timestamp`）。`primary_key` 和 `foreign_keys` 取 Unity Catalog 里登记的约束（只是信息，Databricks 不强制），没登记时为 false 和 `[]`。
+  - `table_stats` 的 `estimated_row_count` 是带 `where` 的精确行数；空值率、不同值个数和 `top_values` 在最多 `AEP_DATABRICKS_READ_STATS_SAMPLE`（默认 1000）行的样本上算，同 postgres 连接器。
+  - `read_rows` 按主键排序（没登记主键时按全部列），用 `LIMIT … OFFSET …` 分页。
+- 另有 3 个只读的分析工具（`databricks` 类型才有，登记时不要求，`data_check` 节点用；`tool`、`agent` 节点也能用）。表名一律是三段式 `table`（`catalog.schema.table`），`where`、`expected_where`、`expr` 的形状检查同上，最多返回 `limit` 行（1–1000，默认 20）：
+  - `aggregate`：`{"table", "expr", "where"?, "group_by"?: [列], "limit"?}`，返回 `{"rows": [{分组列…, "value": 值}], "groups": 组数}`；不分组时 `rows` 只有一行。`limit` 不分组时不起作用，分组时最多 10000。`groups` 是满足条件的全部组数，可能比 `rows` 多：`rows` 按分组列排序，取前 `limit` 组。
+  - `duplicates`：`{"table", "columns": [列], "where"?, "limit"?}`，返回 `{"groups": 重复的组数, "rows": [{列…, "count": 次数}]}`（按次数从多到少）。
+  - `compare`：`{"table", "expected", "keys": [列], "columns"?: [列], "where"?, "expected_where"?, "tolerance"?, "limit"?}`：先数两边按 `keys` 重复的组数，返回里的 `duplicates` 是 `{"table": 组数, "expected": 组数}`；任何一边有重复时不再比较（`missing`、`extra`、`different` 为 null，`rows` 是重复的键和次数，带 `"kind": "duplicate"` 和 `"side": "table" | "expected"`），因为有重复键时连接会把多出来的行算成一致。都不重复时按 `keys` 全外连接两张表，返回 `{"duplicates": {"table": 0, "expected": 0}, "missing": expected 有而 table 没有的行数, "extra": 反过来, "different": 键相同而某列不同的行数, "columns": 比较了哪些列, "rows": [例子，带 "kind": "missing" | "extra" | "different" 和两边的值]}`。数字列差的绝对值不超过 `tolerance`（默认 0）算相同，两边都是空值算相同。两边的条件分开：`where` 只用在 `table` 上，`expected_where` 只用在 `expected` 上（两张表的列常常不一样，一边的条件放到另一边可能报错或筛错行），各自先筛再数重复、再连接。
+- 在哪里执行：设了 `AEP_DATABRICKS_READ_WAREHOUSE_ID` 时用 SQL warehouse（Statement Execution API），否则用 `AEP_DATABRICKS_READ_CLUSTER_ID` 指定的已有集群（命令执行接口，SQL 上下文）；两个都没设时工具报错“连接器没有配置在哪里执行查询”。集群没在运行时报错“集群 … 没有在运行，请先在 Databricks 上启动它”，连接器不替你启动集群。
+- 只读：
+  - 连接器只执行自己拼好的 `SELECT`、`DESCRIBE`、`SHOW` 语句，没有执行任意 SQL 的工具；标识符一律校验后加反引号，`limit`、`offset` 校验成整数后再写进语句；`where`、`expr` 这类表达式只在形状检查通过后放进括号里。
+  - 只能读 `AEP_DATABRICKS_READ_CATALOGS`（JSON 列表，必填，空列表时所有工具报错）里的 catalog，别的 catalog 一律报“没有允许读 catalog …”。
+  - 真正的边界是令牌的权限：`AEP_DATABRICKS_READ_TOKEN` 要用只有 `USE CATALOG`、`USE SCHEMA`、`SELECT` 权限的身份（服务主体或个人令牌），部署说明里写明。令牌只配在连接器上，平台不保存。
+- 设置（都在连接器自己的环境里）：`AEP_DATABRICKS_READ_HOST`（工作区地址）、`AEP_DATABRICKS_READ_TOKEN`、`AEP_DATABRICKS_READ_CLUSTER_ID` 或 `AEP_DATABRICKS_READ_WAREHOUSE_ID`、`AEP_DATABRICKS_READ_CATALOGS`、`AEP_DATABRICKS_READ_TIMEOUT_SECONDS`（每条语句，默认 150）、`AEP_DATABRICKS_READ_STATS_SAMPLE`，以及 MCP 的 `AEP_DATABRICKS_MCP_HOST`、`AEP_DATABRICKS_MCP_PORT`、`AEP_DATABRICKS_MCP_ALLOWED_HOSTS`。本地编排默认把平台的 `AEP_DATABRICKS_HOST`、`AEP_DATABRICKS_TOKEN`、`AEP_DATABRICKS_CLUSTER_ID` 传给前三项，方便开发；生产要单独配只读身份。
+- `GET /healthz`：配好了而且能执行 `SELECT 1` 时 200，否则 503，说明缺哪项配置或连不上（不带令牌和原始报错）。
+- 没配工作区时连接器照样启动，工具调用报“连接器没有配置 Databricks 工作区”；`AEP_DEFAULT_DATASOURCES` 默认不登记它，要用时在“数据源和工具”页面登记（类型选 Databricks）。
+
+### 平台这边
+
+- 登记、测试连接、连通状态和上面一样：类型 `databricks`，要有 6 个工具。
+- 平台调 `databricks` 数据源的工具时，超时用 `AEP_DATABRICKS_TOOL_SECONDS`（默认 180，要比连接器的语句超时长），其他类型照旧。
+- 能用在 `tool`、`agent`、`etl_profile`、`databricks_ingest`、`data_check` 节点上（`data_check` 只接受这种类型）；`etl` 代码应用不接受（“「…」是 Databricks 数据源，ETL 应用要选数据库或上传文件的数据源，Databricks 的表请用编排应用 etl-lakehouse 第 3 版”）。
+- 探查、抽取怎么对待它见 [data-nodes.md](data-nodes.md) 第三批；数据外发策略把它的工具结果算作数据值（[projects.md](projects.md)）。
+- 测试和 CI 不连真实的 Databricks：连接器的测试用假的执行接口，平台用 `tests/fake_connector.py` 加一个 `databricks` 版本。
 
 ## 存储
 

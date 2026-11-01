@@ -5,7 +5,10 @@
 left out) or ``draft`` (run the app's draft), and ``requester``: who asks for
 the run (up to 100 characters; until sign-in exists the client says so). A flow
 app's input must fit its start node's inputs (422 with ``loc``
-``["body", "input", key]``); see docs/api/flow-apps.md for flow apps.
+``["body", "input", key]``); see docs/api/flow-apps.md for flow apps. It also takes
+``project`` (``project_id``, optional ``environment`` and ``params``): the project the
+run works in, for an app whose start node sets ``project``; the checks, their order and
+messages, and the snapshot the run keeps are in docs/api/projects.md.
 
 ``GET /runs`` lists the latest runs (``limit``, at most 200), newest first. Every
 run record (in the list and in ``GET /runs/{id}``) has:
@@ -36,6 +39,11 @@ run record (in the list and in ``GET /runs/{id}``) has:
   before waits were counted.
 - ``cancelled_by``: who cancelled it (a cancelled run's ``error`` is the reason
   given, or null); ``rerun_of``: the run it was copied from, or null.
+- ``project``: the project the run is bound to (``project_id``, ``name``,
+  ``environment``, ``environment_label`` and the ``params`` it runs with), or null;
+  ``policy``: the data outbound policy in force for the run (``samples`` and
+  ``models``), the platform's default when it has no project. See
+  docs/api/projects.md.
 
 ``GET /runs/{id}`` also has the run's ``input``; ``inputs``: what a copy of the run
 asks for, the start node's inputs (as in docs/api/flow-apps.md) of the configuration
