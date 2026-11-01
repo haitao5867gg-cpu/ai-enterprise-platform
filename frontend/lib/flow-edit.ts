@@ -140,6 +140,9 @@ export function ownOutputs(node: FlowNode): string[] {
         "answer",
         "uncited",
         "cleaned",
+        "result_table",
+        "result_keys",
+        "checks",
       ];
     case "databricks_ingest":
       return ["catalog", "tables", "summary", "reused"];

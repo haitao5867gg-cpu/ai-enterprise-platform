@@ -388,6 +388,59 @@ def condition(check: dict[str, Any]) -> str:
     return text
 
 
+KIND_TEXT = {
+    "aggregate": "聚合值",
+    "reconcile": "对账",
+    "unique": "键不重复",
+    "golden": "和老系统对比",
+    "rows": "不该有的行",
+}
+
+
+def describe(check: dict[str, Any]) -> str:
+    """What a valid check checks, in one sentence of Markdown for a person (a plan shows
+    the checks it proposes this way)."""
+    kind = check["kind"]
+
+    def code(text: str) -> str:
+        return f"`{text}`"
+
+    def under(where: Any) -> str:
+        return f"（条件 {code(where)}）" if where else ""
+
+    def by() -> str:
+        columns = check.get("group_by") or []
+        return f"按 {'、'.join(map(code, columns))} 分组，" if columns else ""
+
+    if kind == "aggregate":
+        each = "每组" if check.get("group_by") else ""
+        return (
+            f"{code(check['table'])} {by()}{each}{code(check['expr'])} {condition(check)}"
+            + under(check.get("where"))
+        )
+    if kind == "reconcile":
+        left, right = check["left"], check["right"]
+        tolerance = check.get("tolerance", 0)
+        allowed = ""
+        if tolerance:
+            shown = f"{fmt(tolerance * 100)}%" if check.get("relative") else fmt(tolerance)
+            allowed = f"（容差 {shown}）"
+        return (
+            f"{by()}{code(left['table'])} 的 {code(left['expr'])}{under(left.get('where'))}"
+            f"和 {code(right['table'])} 的 {code(right['expr'])}{under(right.get('where'))}"
+            f"一致{allowed}"
+        )
+    if kind == "unique":
+        columns = "、".join(map(code, check["columns"]))
+        return f"{code(check['table'])} 按 {columns} 没有重复的行" + under(check.get("where"))
+    if kind == "golden":
+        keys = "、".join(map(code, check.get("keys") or []))
+        expected = check.get("expected")
+        old = f"老系统的 {code(expected)}" if expected else "老系统的结果表"
+        return f"{code(check['table'])} 和{old}按 {keys} 逐行一致"
+    return f"{code(check['table'])} 里没有满足 {code(check['where'])} 的行"
+
+
 async def _aggregate(
     check: dict[str, Any], scope: Scope, call: Call, expected: str | None
 ) -> dict[str, Any]:

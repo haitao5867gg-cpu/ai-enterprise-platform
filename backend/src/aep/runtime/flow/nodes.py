@@ -969,12 +969,25 @@ def _check_questions(node: dict[str, Any], p: Problems) -> None:
             keys.add(key)
 
 
+MAX_REQUIRES = 5
+
+
 def _requires_problem(value: Any) -> str | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, str) and refs.whole(value) is not None:
         return None
-    return "requires 只能是 true、false，或恰好是一个变量，如 {{dev_run.ok}}"
+    # A list: every one of them must be true (docs/api/flow-apps.md, 第三批).
+    if (
+        isinstance(value, list)
+        and 1 <= len(value) <= MAX_REQUIRES
+        and all(isinstance(v, str) and refs.whole(v) is not None for v in value)
+    ):
+        return None
+    return (
+        "requires 只能是 true、false、恰好是一个变量（如 {{dev_run.ok}}），"
+        f"或 1–{MAX_REQUIRES} 个这样的变量组成的列表"
+    )
 
 
 async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
@@ -1089,10 +1102,13 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
 
 
 def _shown(option: dict[str, Any], get: refs.Lookup) -> bool:
-    """Whether an option is offered: it has no ``requires``, or it is exactly true now."""
+    """Whether an option is offered: it has no ``requires``, or it (each of them, for a
+    list) is exactly true now."""
     requires = option.get("requires")
     if requires is None:
         return True
+    if isinstance(requires, list):
+        return all(refs.resolve(item, get) is True for item in requires)
     return (refs.resolve(requires, get) if isinstance(requires, str) else requires) is True
 
 
