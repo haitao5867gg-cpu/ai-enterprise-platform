@@ -14,16 +14,19 @@
 
 ## 已定的架构决定（改动前先在 PR 里说明理由）
 
+- 平台优先：应用缺能力时补平台，不在应用里硬做。新能力做成通用的连接器（MCP）、节点类型、平台资源或平台策略，先想清楚别的应用怎么用；应用里只放流程模板、Skill、知识库内容和配置。设计文档和 PR 里写明每项改动落在哪一层。
 - 编排内核：LangGraph（只用核心库，不依赖 LangSmith）。状态用 Postgres checkpointer，人工确认用 `interrupt`。
-- 工具接入：一律做成 MCP Server。数据源连接器只读。数据源在平台里登记（`/datasources`，只存名称、类型和连接器地址，凭据留在连接器那边），节点通过 `AppContext.tools`（`aep.tools.mcp`）调用连接器的工具。
+- 工具接入：一律做成 MCP Server。数据源连接器只读。数据源在平台里登记（`/datasources`，只存名称、类型和连接器地址，凭据留在连接器那边），节点通过 `AppContext.tools`（`aep.tools.mcp`）调用连接器的工具。代码仓库也走连接器：Git 连接器（MCP）支持 GitHub 和 Bitbucket Data Center，PR 是普通差异，提交信息可以带工单号；现在直连 GitHub 的 `aep.assets` 以后迁到它上面。
 - 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
+- 数据外发：发给模型的数据受数据外发策略约束：允许哪些模型别名，数据样本按什么级别外发（完整、脱敏、只发统计、只发结构）。策略有平台默认值，项目可以另设；由平台在调模型前统一执行，节点不各自处理。
+- 项目：平台资源，不属于某个应用。一个项目绑定代码仓库、工程布局、环境（每个环境的 catalog、schema、表名前缀、集群、运行身份、Workspace 根目录）、表登记（自己写的表和只读引用的表）、运行参数和检查规则。运行可以绑定一个项目，节点按项目配置读写，只能写登记为本项目所有的表。契约见 `docs/api/projects.md`（随第一期契约加上）。
 - 平台应用分两种，都在 `aep.runtime.registry.default_apps` 或 `apps` 表里登记，运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`：
   - 编排应用（flow）：节点和连线写在带版本的应用配置里，由 `aep.runtime.flow` 编译成 LangGraph 图；页面上可以新建、增删节点、导入导出。内置的 `hello` 和用户新建的应用都是这种。配置格式和接口见 `docs/api/flow-apps.md`，改格式先改这份契约。
   - 代码应用（code）：`backend/src/aep/runtime/apps/` 下手写的一张 LangGraph 图，页面上只能调节点设置。现有 `etl`。
   - 节点里调模型只能用 `AppContext.llm_client`（编排应用的节点经 `aep.runtime.flow.nodes.Runtime`）。
-- 代码节点：用户写的 Python 只在沙箱连接器 `connectors/sandbox`（MCP，工具 `run_python`）里运行，绝不在 API 进程里执行。沙箱独自在内部网络上，API 经 `sandbox-relay` 访问它。
+- 代码节点：用户写的 Python 只在沙箱连接器 `connectors/sandbox`（MCP，工具 `run_python`）里运行，绝不在 API 进程里执行。沙箱独自在内部网络上，API 经 `sandbox-relay` 访问它。编码 Agent 节点只在这次运行的项目仓库副本里读写文件，测试命令在沙箱里跑；代码只经“提交 PR”节点离开平台，Agent 自己不推送。
 - 观测：Langfuse 自托管（`make up-full` 启动）。一次 run 对应一条 trace（id 由 run_id 推出），每次执行（开始、确认后恢复、重启后恢复）是其中一段，节点由 LangGraph 回调上报，模型调用由网关上报，见 `aep.tracing`。新应用不用写追踪代码。没配 Langfuse Key 时追踪关闭，什么都不发出。
-- Databricks：查询走托管 MCP（dbsql），部署走 Declarative Automation Bundles（原 Asset Bundles），分 dev / prod 目标。
+- Databricks：读表走平台的 Databricks 只读连接器（MCP）：三段式表名，可以跨 catalog，只执行只读语句，在指定的集群或 SQL warehouse 上执行，不复制数据（客户环境可能不能用 Serverless，所以不依赖托管的 dbsql MCP）。写表和部署由数据工程节点经 Databricks REST API 或 Declarative Automation Bundles（原 Asset Bundles）完成，按环境部署（默认 dev / prod，项目可以配更多），只写项目登记的表。
 - 部署：本地 `docker compose`，生产 Azure（AKS + Helm，Terraform 建环境，Entra ID 登录）。本地和 Azure 用同一套镜像，差异只在配置。
 - 第一版单租户、两个角色（使用者、审批者），但业务表都预留 `tenant_id` 列。
 - 可视化画布放第二版。
