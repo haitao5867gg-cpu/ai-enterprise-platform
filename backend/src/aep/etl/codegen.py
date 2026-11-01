@@ -11,21 +11,28 @@ rules, how sources are read, the bundle) comes from templates here, and
 
 Sources are read through a Unity Catalog foreign catalog (Lakehouse Federation)
 named by the bundle variable ``source_catalog``, so database credentials stay in
-Databricks and never appear in the code.
+Databricks and never appear in the code; tables already on Databricks are named
+``catalog.schema.table`` and read as they are.
+
+A run bound to a project (docs/api/data-nodes.md, "第三批") also gets the read filters
+of the project's reference tables written into the code, its run parameters through
+``param()``, its environment as the dev target's defaults, and each table's write mode;
+the cluster program (``aep.cluster_harness``) keeps it to the project's tables.
 """
 
 import ast
 import json
 import re
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from aep import cluster_harness
 from aep.config import Settings
-from aep.etl.plan import EtlPlan, QualityRule, Target
+from aep.etl.plan import PLAN_MODES, EtlPlan, QualityRule, Target
 
 PIPELINE_PY = "src/pipeline.py"
 PIPELINE_SQL = "src/pipeline.sql"
@@ -76,8 +83,12 @@ def compute_for(settings: Settings) -> Compute | None:
 
 @dataclass(frozen=True)
 class Bundle:
+    """A bundle's files; ``settings`` are what the cluster program needs besides them when
+    the code runs without being deployed (``run_settings``), empty when it needs nothing."""
+
     name: str
     files: dict[str, str]
+    settings: dict[str, Any] = field(default_factory=dict)
 
 
 class CodeError(ValueError):
@@ -91,32 +102,86 @@ def _rule_decorator(rule: QualityRule) -> str:
 
 def _target_header(target: Target) -> list[str]:
     lines = [f"{target.name}: {target.description}".rstrip(": "), f"做法：{target.logic}"]
-    if target.load.mode == "incremental":
+    load = target.load
+    if load.mode == "incremental":
         lines.append(
             f"增量键：{target.load.key}（部署成 Lakeflow 管道时，物化视图会尽量只处理新增和变更的"
             "数据；Job 模式每次整表重算）"
         )
+    elif load.mode == "replace_where":
+        lines.append(f"写表方式：只替换满足 {load.where} 的行")
+    elif load.mode == "append":
+        lines.append("写表方式：追加")
+    elif load.mode == "merge":
+        keys = "、".join(load.keys or target.primary_key)
+        lines.append(f"写表方式：按 {keys} 合并，有的更新，没有的插入")
     return lines
 
 
-def render_pyspark(plan: EtlPlan, bodies: dict[str, str]) -> str:
+def source_filters(plan: EtlPlan, project: dict[str, Any] | None) -> dict[str, str]:
+    """The read filters of the project's reference tables that the plan reads, by the
+    name the plan gives the table (reference names are not case sensitive)."""
+    filters = {
+        r["name"].lower(): r["filter"]
+        for r in (project or {}).get("references") or []
+        if r.get("filter")
+    }
+    sources = dict.fromkeys(s for t in plan.targets for s in t.sources)
+    return {s: filters[s.lower()] for s in sources if s.lower() in filters}
+
+
+def run_settings(plan: EtlPlan, project: dict[str, Any] | None) -> dict[str, Any]:
+    """What the cluster program needs besides the code: each table's write mode
+    (``loads``), in a run bound to a project the parameters' types (``param_types``),
+    and whether the code reads through the source catalog (``source_catalog``). Empty
+    when every table is overwritten and no project is bound."""
+    plain = all(t.load.mode in PLAN_MODES for t in plan.targets)
+    if project is None and plain:
+        return {}
+    loads = {t.name: t.load.stored(t.primary_key) for t in plan.targets}
+    kinds = {p["key"]: p["type"] for p in (project or {}).get("params") or []}
+    # Whether the code reads through the source catalog (a schema.table) at all.
+    catalog = any(s.count(".") == 1 for t in plan.targets for s in t.sources)
+    return {"loads": loads, "param_types": kinds, "source_catalog": catalog}
+
+
+def render_pyspark(
+    plan: EtlPlan, bodies: dict[str, str], filters: dict[str, str] | None = None
+) -> str:
+    shown = json.dumps(filters or {}, ensure_ascii=False)
     parts = [
         '"""Lakeflow declarative pipeline, generated from a confirmed ETL plan.',
         "",
         *textwrap.wrap(plan.summary, 96),
         '"""',
         "",
+        "import json",
+        "",
         "from pyspark import pipelines as dp",
         "from pyspark.sql import Window",
         "from pyspark.sql import functions as F",
         "",
         'SOURCE_CATALOG = spark.conf.get("source_catalog")',
+        "# The read filters the project gives its reference tables.",
+        f"SOURCE_FILTERS = {shown}",
+        'PARAMS = json.loads(spark.conf.get("aep_params", "{}"))',
         "",
         "",
         "def source(name: str):",
-        '    """A source table (schema.table), read through the source catalog."""',
-        '    parts = [SOURCE_CATALOG, *name.split(".")]',
-        '    return spark.read.table(".".join(f"`{part}`" for part in parts))',
+        '    """A source table: schema.table through the source catalog, or',
+        '    catalog.schema.table as is."""',
+        '    parts = name.split(".")',
+        "    if len(parts) == 2:",
+        "        parts = [SOURCE_CATALOG, *parts]",
+        '    table = spark.read.table(".".join(f"`{part}`" for part in parts))',
+        "    if name in SOURCE_FILTERS:",
+        "        table = table.where(SOURCE_FILTERS[name])",
+        "    return table",
+        "",
+        "",
+        "def param(name: str):",
+        '    """A run parameter of the project: str, int, float, bool or None."""',
+        "    return PARAMS.get(name)",
     ]
     for target in plan.targets:
         parts += ["", ""]
@@ -134,17 +199,33 @@ def _sql_constraint(rule: QualityRule) -> str:
     return f"  CONSTRAINT {rule.name} EXPECT ({rule.condition}){action[rule.on_violation]}"
 
 
+PLAIN_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def sql_name(*parts: str) -> str:
+    """A table's name as SQL takes it, parts quoted only where they need it."""
+    return ".".join(p if PLAIN_NAME.match(p) else "`" + p.replace("`", "``") + "`" for p in parts)
+
+
 def render_sql(plan: EtlPlan, queries: dict[str, str]) -> str:
     sources = sorted(
         {s for t in plan.targets for s in t.sources if "." in s}, key=len, reverse=True
     )
+    # A schema.table goes through the source catalog; a catalog.schema.table stays, quoted
+    # where it needs it (a catalog like icsd-ace-dev).
+    names = {
+        s: f"`${{source_catalog}}`.{s}" if s.count(".") == 1 else sql_name(*s.split("."))
+        for s in sources
+    }
     parts = ["-- Lakeflow declarative pipeline, generated from a confirmed ETL plan."]
     parts += [f"-- {line}" for line in textwrap.wrap(plan.summary, 96)]
     for target in plan.targets:
         query = queries[target.name].strip().rstrip(";")
         for name in sources:
             query = re.sub(
-                rf"(?<![\w.`$]){re.escape(name)}\b", f"`${{source_catalog}}`.{name}", query
+                rf"(?<![\w.`$-]){re.escape(name)}(?![\w-])",
+                lambda _, name=name: names[name],
+                query,
             )
         parts += ["", *[f"-- {line}" for line in _target_header(target)]]
         head = f"CREATE OR REFRESH MATERIALIZED VIEW {target.name}"
@@ -190,7 +271,39 @@ def _pipeline(name: str, library: str, compute: Compute | None) -> dict[str, obj
     return pipeline
 
 
-def _job(name: str) -> dict[str, object]:
+# The job's settings for a run bound to a project (the notebook's widgets, bundle
+# variables of the same names).
+PROJECT_VARIABLES = {
+    "project": "Project id: only the project's tables are written",
+    "project_name": "Project name, for messages",
+    "table_prefix": "Prefix every table the job writes starts with",
+    "adopted": "Existing tables the project adopted (JSON list of names)",
+    "params": "Run parameter values (JSON object)",
+}
+
+
+def project_values(project: dict[str, Any]) -> dict[str, str]:
+    """The job's settings for a run bound to ``project`` (the run's snapshot)."""
+    return {
+        "project": project["project_id"],
+        "project_name": project["name"],
+        "table_prefix": project["table_prefix"],
+        "adopted": json.dumps(project["adopted"], ensure_ascii=False),
+        "params": json.dumps(project["values"], ensure_ascii=False),
+    }
+
+
+def _job(name: str, bound: bool = False) -> dict[str, object]:
+    parameters = {
+        "catalog": "${var.catalog}",
+        "schema": "${var.schema}",
+        "source_catalog": "${var.source_catalog}",
+    }
+    if bound:
+        parameters |= {key: f"${{var.{key}}}" for key in PROJECT_VARIABLES}
+        # Marks the tables it writes; the platform passes its own run id when it runs
+        # the job, a scheduled run marks them with the job run's id.
+        parameters["run_id"] = "{{job.run_id}}"
     return {
         "name": name,
         "max_concurrent_runs": 1,
@@ -200,11 +313,7 @@ def _job(name: str) -> dict[str, object]:
                 "existing_cluster_id": "${var.cluster_id}",
                 "notebook_task": {
                     "notebook_path": JOB_NOTEBOOK,
-                    "base_parameters": {
-                        "catalog": "${var.catalog}",
-                        "schema": "${var.schema}",
-                        "source_catalog": "${var.source_catalog}",
-                    },
+                    "base_parameters": parameters,
                 },
                 "max_retries": 1,
                 "min_retry_interval_millis": 60000,
@@ -213,7 +322,11 @@ def _job(name: str) -> dict[str, object]:
     }
 
 
-def _job_notebook(library: str) -> str:
+def _job_notebook(library: str, settings: dict[str, Any] | None = None) -> str:
+    call = f'run_notebook(spark, dbutils, "{library.removeprefix("src/")}")'
+    if settings:
+        # Each table's write mode and the run parameters' types.
+        call = call.removesuffix(")") + f", {settings!r})"
     return "\n".join(
         [
             "# Databricks notebook source",
@@ -223,7 +336,7 @@ def _job_notebook(library: str) -> str:
             "# given as job parameters; a table that fails fails the run.",
             "from aep_harness import run_notebook",
             "",
-            f'run_notebook(spark, dbutils, "{library.removeprefix("src/")}")',
+            call,
             "",
         ]
     )
@@ -235,10 +348,14 @@ def render_bundle(
     source_name: str,
     compute: Compute | None = None,
     job: bool = False,
+    project: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """The bundle around the pipeline file: a Lakeflow pipeline, or with ``job`` a
-    notebook job on an existing cluster (``aep.cluster_harness`` runs the file)."""
+    notebook job on an existing cluster (``aep.cluster_harness`` runs the file). A job of
+    a run bound to ``project`` (a run's snapshot) writes to the project's environment by
+    default and only the project's tables."""
     library = PIPELINE_PY if plan.language == "pyspark" else PIPELINE_SQL
+    bound = job and project is not None
     variables: dict[str, object] = {
         "catalog": {
             "description": "Unity Catalog catalog for the target tables",
@@ -263,7 +380,7 @@ def render_bundle(
     }
     if job:
         variables["cluster_id"] = {"description": "Existing cluster the job runs on"}
-        resources: dict[str, object] = {"jobs": {name: _job(name)}}
+        resources: dict[str, object] = {"jobs": {name: _job(name, bound)}}
         # Only prod runs on a schedule; dev runs when the platform runs it.
         prod_jobs: dict[str, object] = {name: {"schedule": schedule}}
     else:
@@ -279,6 +396,24 @@ def render_bundle(
             ],
         }
         prod_jobs = {f"{name}_refresh": refresh}
+    dev: dict[str, object] = {"schema": f"${{workspace.current_user.short_name}}_{name}"}
+    note = ""
+    if bound and project is not None:
+        values = project_values(project)
+        variables |= {
+            key: {"description": text, "default": values[key]}
+            for key, text in PROJECT_VARIABLES.items()
+        }
+        env = project["environment"]
+        dev = {"catalog": env["catalog"], "schema": env["schema"]}
+        if env.get("cluster_id"):
+            dev["cluster_id"] = env["cluster_id"]
+        note = (
+            f"\n这次运行绑定了项目「{project['name']}」（{project['project_id']}）：dev 目标写到"
+            f" `{env['catalog']}.{env['schema']}`，只写以 `{project['table_prefix']}` 开头、"
+            "属于这个项目的表（表属性 `aep.project`，或登记在项目的“已有的表”里）；"
+            "运行参数在 `params` 变量里。\n"
+        )
     config = {
         "bundle": {"name": name},
         "variables": variables,
@@ -287,7 +422,7 @@ def render_bundle(
             "dev": {
                 "mode": "development",
                 "default": True,
-                "variables": {"schema": f"${{workspace.current_user.short_name}}_{name}"},
+                "variables": dev,
             },
             "prod": {
                 "mode": "production",
@@ -325,17 +460,19 @@ def render_bundle(
             "",
         ]
     )
+    settings = run_settings(plan, project)
     if job:
+        how = "按方案的写表方式写入目标表" if settings else "整表覆盖写入目标表"
         readme += (
             "\n这个 bundle 部署成一个 Job，跑在已有的集群上：`src/run.py` 用"
-            f" `src/aep_harness.py` 执行 `{library}`，\n按质量规则检查后整表覆盖写入目标表。\n"
+            f" `src/aep_harness.py` 执行 `{library}`，\n按质量规则检查后{how}。\n"
         )
     files = {
         "databricks.yml": yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
-        "README.md": readme,
+        "README.md": readme + note,
     }
     if job:
-        files[JOB_NOTEBOOK] = _job_notebook(library)
+        files[JOB_NOTEBOOK] = _job_notebook(library, settings)
         files[JOB_HARNESS] = Path(cluster_harness.__file__).read_text()
     return files
 
@@ -347,19 +484,29 @@ def render(
     source_name: str,
     compute: Compute | None = None,
     job: bool = False,
+    project: dict[str, Any] | None = None,
 ) -> Bundle:
-    files = render_bundle(name, plan, source_name, compute, job)
+    """The bundle for ``code``; ``project`` is the snapshot of the project the run is
+    bound to, if any."""
+    files = render_bundle(name, plan, source_name, compute, job, project)
     if plan.language == "pyspark":
-        files[PIPELINE_PY] = render_pyspark(plan, code)
+        files[PIPELINE_PY] = render_pyspark(plan, code, source_filters(plan, project))
     else:
         files[PIPELINE_SQL] = render_sql(plan, code)
-    return Bundle(name, files)
+    return Bundle(name, files, run_settings(plan, project))
 
 
 FORBIDDEN_ATTRS = {
     "write", "writeStream", "save", "saveAsTable", "insertInto", "sql", "collect", "toPandas",
 }  # fmt: skip
 FORBIDDEN_NAMES = {"dbutils", "os", "sys", "subprocess", "open", "eval", "exec", "__import__"}
+# What the platform's part of the pipeline file defines; a body must not redefine them,
+# and reads parameters and filtered sources only through param() and source().
+PLATFORM_NAMES = {
+    "source", "param", "spark", "json", "dp", "F", "Window",
+    "SOURCE_CATALOG", "SOURCE_FILTERS", "PARAMS",
+}  # fmt: skip
+HIDDEN_NAMES = {"SOURCE_FILTERS", "PARAMS"}
 FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY)\b", re.I
 )
@@ -372,7 +519,19 @@ def _string_arg(call: ast.Call) -> str | None:
     return None
 
 
-def _check_pyspark_body(target: Target, body: str, targets: set[str]) -> list[str]:
+def _param_problems(name: str, key: str | None, project: dict[str, Any] | None) -> list[str]:
+    if project is None:
+        return [f"{name}: 没有绑定项目，不能用 param()"]
+    if key is None:
+        return [f'{name}: param() 的参数要写成字符串，如 param("update_month")']
+    if key not in {p["key"] for p in project["params"]}:
+        return [f"{name}: param({key!r}) 不是项目定义的参数"]
+    return []
+
+
+def _check_pyspark_body(
+    target: Target, body: str, targets: set[str], project: dict[str, Any] | None = None
+) -> list[str]:
     name = target.name
     try:
         tree = ast.parse(
@@ -390,12 +549,26 @@ def _check_pyspark_body(target: Target, body: str, targets: set[str]) -> list[st
             problems.append(f"{name}: 不允许使用 .{node.attr}")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
             problems.append(f"{name}: 不允许使用 {node.id}")
+        elif isinstance(node, ast.Name) and node.id in PLATFORM_NAMES:
+            if not isinstance(node.ctx, ast.Load):
+                problems.append(f"{name}: 不要重新定义平台提供的 {node.id}")
+            elif node.id in HIDDEN_NAMES:
+                problems.append(
+                    f"{name}: 不要直接用 {node.id}，读参数用 param()，读源表用 source()"
+                )
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            if node.name in PLATFORM_NAMES:
+                problems.append(f"{name}: 不要重新定义平台提供的 {node.name}")
+        elif isinstance(node, ast.Global | ast.Nonlocal):
+            problems.append(f"{name}: 不要写 global 或 nonlocal")
         elif isinstance(node, ast.Call):
             arg = _string_arg(node)
             func = node.func
             if isinstance(func, ast.Name) and func.id == "source":
                 if arg not in target.sources:
                     problems.append(f"{name}: source({arg!r}) 不在方案列出的来源里")
+            elif isinstance(func, ast.Name) and func.id == "param":
+                problems += _param_problems(name, arg, project)
             elif isinstance(func, ast.Attribute) and func.attr == "table":
                 if arg not in targets - {name}:
                     problems.append(
@@ -405,9 +578,22 @@ def _check_pyspark_body(target: Target, body: str, targets: set[str]) -> list[st
     return problems
 
 
-def _check_sql_query(target: Target, query: str) -> list[str]:
+def _check_sql_query(
+    target: Target,
+    query: str,
+    project: dict[str, Any] | None = None,
+    filters: dict[str, str] | None = None,
+) -> list[str]:
     q = query.strip().rstrip(";").strip()
     problems = []
+    for key in dict.fromkeys(cluster_harness.PARAM.findall(q)):
+        if project is None:
+            problems.append(f"{target.name}: 没有绑定项目，不能用 ${{param.{key}}}")
+        elif key not in {p["key"] for p in project["params"]}:
+            problems.append(f"{target.name}: ${{param.{key}}} 不是项目定义的参数")
+    for source in target.sources:
+        if source in (filters or {}):
+            problems.append(f"表 {source} 有读取筛选，SQL 代码暂不支持，请改用 PySpark")
     if not re.match(r"(?is)^(SELECT|WITH)\b", q):
         problems.append(f"{target.name}: SQL 必须是一条 SELECT（可以用 WITH 开头）")
     if ";" in q:
@@ -417,18 +603,23 @@ def _check_sql_query(target: Target, query: str) -> list[str]:
     return problems
 
 
-def check_code(plan: EtlPlan, code: dict[str, str]) -> list[str]:
-    """Problems in the model's code for ``plan``; empty when it may be rendered."""
+def check_code(
+    plan: EtlPlan, code: dict[str, str], project: dict[str, Any] | None = None
+) -> list[str]:
+    """Problems in the model's code for ``plan``; empty when it may be rendered.
+    ``project`` is the snapshot of the project the run is bound to: its parameters are
+    the ones the code may read."""
     names = {t.name for t in plan.targets}
     problems = [f"缺少目标表 {n} 的代码" for n in sorted(names - set(code))]
+    filters = source_filters(plan, project)
     for target in plan.targets:
         body = code.get(target.name)
         if not isinstance(body, str) or not body.strip():
             continue
         if plan.language == "pyspark":
-            problems += _check_pyspark_body(target, body, names)
+            problems += _check_pyspark_body(target, body, names, project)
         else:
-            problems += _check_sql_query(target, body)
+            problems += _check_sql_query(target, body, project, filters)
     return list(dict.fromkeys(problems))
 
 

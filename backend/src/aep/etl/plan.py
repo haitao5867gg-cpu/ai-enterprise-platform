@@ -25,7 +25,7 @@ from aep.knowledge.citations import IndexedHit
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 # Names the generated pipeline code already uses (see aep.etl.codegen).
-RESERVED = {"source", "spark", "dp", "f", "window", "source_catalog"}
+RESERVED = {"source", "spark", "dp", "f", "window", "source_catalog", "param", "json"}
 
 Language = Literal["pyspark", "sql"]
 
@@ -42,9 +42,25 @@ class QualityRule(BaseModel):
     on_violation: Literal["warn", "drop", "fail"] = "warn"
 
 
+# How a target table is written. Versions 1 and 2 of the plan have full and incremental,
+# both stored by overwriting the table; version 3 has the four ways of
+# docs/api/data-nodes.md "写表方式".
+LoadMode = Literal["full", "incremental", "overwrite", "replace_where", "append", "merge"]
+PLAN_MODES = ("full", "incremental")
+WRITE_MODES = ("overwrite", "replace_where", "append", "merge")
+
+
 class Load(BaseModel):
-    mode: Literal["full", "incremental"] = "full"
+    mode: LoadMode = "full"
     key: str | None = Field(None, description="Column that orders changes, for incremental")
+    where: str | None = Field(None, description="replace_where: the rows to replace (Spark SQL)")
+    keys: list[str] = Field([], description="merge: the key columns; empty: the primary key")
+
+    def stored(self, primary_key: Sequence[str]) -> dict[str, Any]:
+        """How the cluster program writes the table: ``mode`` (one of ``WRITE_MODES``,
+        full and incremental overwrite), ``where`` and ``keys``."""
+        mode = "overwrite" if self.mode in PLAN_MODES else self.mode
+        return {"mode": mode, "where": self.where, "keys": list(self.keys or primary_key)}
 
 
 class Target(BaseModel):
@@ -262,6 +278,8 @@ def validate_plan(
         for key in target.primary_key:
             if key not in column_names:
                 problems.append(f"{target.name} 的主键 {key!r} 不在目标列里")
+        if target.load.mode not in PLAN_MODES:
+            problems.append(f"{target.name} 的 load.mode 只能是 full、incremental")
         if target.load.mode == "incremental" and not target.load.key:
             problems.append(f"{target.name} 是增量加载，需要给出增量键 load.key")
         rule_names = [r.name for r in target.quality_rules]
@@ -469,14 +487,21 @@ def _path(loc: Sequence[str | int]) -> str:
     return out
 
 
-def _structure(exc: ValidationError, where: str = "") -> list[str]:
+def _structure(
+    exc: ValidationError, where: str = "", modes: Sequence[str] = PLAN_MODES
+) -> list[str]:
+    """What pydantic found wrong, in words; ``modes`` are the plan version's ``load.mode``
+    values."""
     problems = []
     for error in exc.errors(include_url=False):
         kind, ctx = error["type"], error.get("ctx") or {}
         if kind == "missing" or error.get("input", "") is None:
             what = "不能为空"
         elif kind == "literal_error":
-            what = "只能是 " + "、".join(re.findall(r"'([^']*)'", str(ctx.get("expected"))))
+            choices = re.findall(r"'([^']*)'", str(ctx.get("expected")))
+            if tuple(error["loc"][-2:]) == ("load", "mode"):
+                choices = list(modes)
+            what = "只能是 " + "、".join(choices)
         elif kind == "too_short":
             what = f"至少要有 {ctx.get('min_length', 1)} 项"
         else:

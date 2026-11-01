@@ -17,7 +17,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from aep import llm, policy
-from aep.databricks import DatabricksError, DevTarget, Landing, full_name
+from aep.databricks import DatabricksError, DevTarget, Landing, Placement, full_name
 from aep.datasources import SOURCE_KINDS, DataSource, tool_seconds
 from aep.etl import codegen
 from aep.etl.answer import cluster_design, shown, with_defaults
@@ -746,6 +746,7 @@ async def check_code_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
 
 async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     get = rt.lookup(state)
+    project = state.get("project")
     try:
         plan = EtlPlan.model_validate(refs.resolve(node["plan"], get))
     except ValidationError as exc:
@@ -756,7 +757,7 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         code = data.get("targets") if isinstance(data, dict) else None
         if not isinstance(code, dict):
             raise ValueError("要有 targets 对象")
-        problems = codegen.check_code(plan, code)
+        problems = codegen.check_code(plan, code, project)
     except ValueError as exc:
         code, problems = _last(state, node).get("code") or {}, [f"回复不是要求的 JSON：{exc}"]
         not_json = True
@@ -776,10 +777,13 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             source_name or "数据源",
             codegen.compute_for(s),
             s.databricks_deploy_mode == "job",
+            project,
         )
         problems = codegen.check_bundle(built)
         if not problems:
             bundle = {"name": name, "language": plan.language, "files": built.files}
+            if built.settings:
+                bundle["settings"] = built.settings
     failures = _failures(state, node, bundle is not None, "代码", problems)
     if bundle is None:
         summary = "代码没有通过检查，带着问题让模型重写：\n" + "\n".join(f"- {p}" for p in problems)
@@ -845,6 +849,7 @@ def dev_report(
         lines.append(f"- Databricks 上的这次运行：[打开]({dev.url})")
     if tables:
         written = "得到行数" if dev.mode == "cluster" else "写入行数"
+        stored = any(t.get("write") for t in tables)
         rows = []
         for t in tables:
             rules = "；".join(
@@ -852,9 +857,11 @@ def dev_report(
                 for e in t["expectations"]
             )
             count = "未知" if t["rows"] is None else t["rows"]
-            rows.append([_code(t["target"]), count, t["dropped"], rules or "无"])
+            row = [_code(t["target"]), count, t["dropped"], rules or "无"]
+            rows.append([*row, write_text(t.get("write"))] if stored else row)
         lines += ["", "### 结果表", ""]
-        lines += _table(["表", written, "质量规则丢弃", "质量规则"], rows)
+        head = ["表", written, "质量规则丢弃", "质量规则"]
+        lines += _table([*head, "写表"] if stored else head, rows)
     if found is not None:
         lines += _answer_lines(found)
     for p in dev.preview:
@@ -871,6 +878,27 @@ def dev_report(
         lines += ["", "### 注意", ""]
         lines += [f"- {w}" for w in dev.warnings]
     return "\n".join(lines)
+
+
+WRITE_MODES = {
+    "overwrite": "整表覆盖",
+    "replace_where": "按条件替换",
+    "append": "追加",
+    "merge": "按键合并",
+}
+
+
+def write_text(write: dict[str, Any] | None) -> str:
+    """What writing a table did, in short: the mode, the table's new version and the
+    rows Delta counted."""
+    if not write:
+        return "—"
+    parts = [WRITE_MODES.get(write.get("mode") or "", str(write.get("mode")))]
+    if write.get("version") is not None:
+        parts.append(f"版本 {write['version']}")
+    counts = (("rows_written", "写入"), ("rows_updated", "更新"), ("rows_deleted", "删除"))
+    parts += [f"{label} {write[key]} 行" for key, label in counts if write.get(key) is not None]
+    return "，".join(parts)
 
 
 def dev_quality(tables: list[dict[str, Any]], plan: EtlPlan | None) -> dict[str, Any] | None:
@@ -970,6 +998,33 @@ def dev_said(
     return f"{head}，不再重试"
 
 
+def _placement(
+    state: dict[str, Any],
+    databricks: DevTarget,
+    settings: dict[str, Any],
+    plan: EtlPlan | None,
+) -> Placement | None:
+    """Where a run bound to a project runs and writes (None unbound), checked before
+    anything is deployed: not as a Lakeflow pipeline, and only tables named with the
+    project's prefix."""
+    project = state.get("project")
+    if not project:
+        return None
+    if databricks.settings.databricks_deploy_mode == "pipeline":
+        raise NodeFailure(
+            INPUT_ERROR, "绑定项目的运行请用 job 或 cluster 方式（AEP_DATABRICKS_DEPLOY）"
+        )
+    names = list(settings.get("loads") or {}) or ([t.name for t in plan.targets] if plan else [])
+    prefix = project["table_prefix"]
+    wrong = [name for name in names if not name.startswith(prefix)]
+    if wrong:
+        raise NodeFailure(
+            INPUT_ERROR,
+            f"目标表 {'、'.join(wrong)} 不以项目「{project['name']}」的表名前缀 {prefix} 开头",
+        )
+    return Placement.of(project, state.get("run_id") or "")
+
+
 async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     databricks = _databricks(rt)
     get = rt.lookup(state)
@@ -981,6 +1036,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     ):
         raise NodeFailure(INPUT_ERROR, "bundle 要引用检查并打包节点的 bundle（代码通过检查后才有）")
     plan, warning = _dev_plan(node, get)
+    settings = bundle.get("settings") if isinstance(bundle.get("settings"), dict) else {}
+    placement = _placement(state, databricks, settings, plan)
     order = {t.name: list(t.primary_key) for t in plan.targets} if plan else None
     card = answer_output(plan) if plan else None
     # Runs in this round: going back to rewrite the code with the errors and coming back
@@ -990,10 +1047,11 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     attempt = mine.get("attempts", (state.get("visits") or {}).get(node["id"], 0)) + 1
     try:
         dev = await databricks.run(
-            codegen.Bundle(bundle["name"], bundle["files"]),
+            codegen.Bundle(bundle["name"], bundle["files"], settings),
             node.get("preview_rows", 20),
             order,
             cluster_design(card) if card else None,
+            placement,
         )
     except DatabricksError as exc:
         raise NodeFailure("databricks_error", str(exc)) from exc
@@ -1015,6 +1073,7 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
             "dropped": t.dropped,
             "expectations": t.expectations,
         }
+        | ({"write": t.write} if t.write is not None else {})
         for t in dev.tables
     ]
     # Cut without leaving a quoted value open, so the policy still finds it (aep.policy).

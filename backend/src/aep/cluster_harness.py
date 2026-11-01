@@ -15,6 +15,12 @@ call to ``main`` appended, to check the code without writing anything. And a
 bundle deployed as a job carries it as ``aep_harness.py`` next to the pipeline
 file; the job's notebook calls ``run_notebook``, which writes each table that
 passed its quality rules and fails the run when any table failed.
+
+A run bound to a project (docs/api/data-nodes.md, "写到哪里，只写本项目的表" and
+"写表方式") writes each table the way the plan says (overwrite, replace_where, append
+or merge), only tables of the project: named with its prefix, and either new, marked
+with the project (table property ``aep.project``) or adopted by it. The run parameters
+reach PySpark code as ``spark.conf.get("aep_params")`` and SQL as ``${param.<key>}``.
 """
 
 import json
@@ -25,6 +31,35 @@ from typing import Any
 
 MARKER = "AEP_RESULT "
 KINDS = {"expect": "warn", "expect_or_drop": "drop", "expect_or_fail": "fail"}
+# A run parameter in a SQL text: a target's query, a replace_where condition, a check.
+PARAM = re.compile(r"\$\{param\.([a-z][a-z0-9_]{0,31})\}")
+
+
+def sql_literal(value: Any, kind: str = "text") -> str:
+    """A run parameter's value as a Spark SQL literal: text quoted and escaped, a ``date``
+    as ``DATE'2026-10-01'``, numbers as they are, ``true``, ``false`` and ``NULL``."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return repr(value)
+    text = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    # Spark reads backslash escapes in string literals; '' would be two literals joined.
+    return f"DATE'{text}'" if kind == "date" else f"'{text}'"
+
+
+def with_params(text: str, values: dict[str, Any], kinds: dict[str, str]) -> str:
+    """``text`` with each ``${param.<key>}`` replaced by the value's SQL literal; raises
+    ``ValueError`` for a key the run has no parameter for."""
+
+    def swap(match: re.Match[str]) -> str:
+        if match[1] not in values:
+            raise ValueError(f"没有运行参数 {match[1]}")
+        return sql_literal(values[match[1]], kinds.get(match[1], "text"))
+
+    return PARAM.sub(swap, text)
+
 
 # The SQL pipeline as aep.etl.codegen.render_sql writes it.
 _SQL_TARGET = re.compile(
@@ -101,6 +136,106 @@ def _quote(*parts: str) -> str:
     return ".".join("`" + part.replace("`", "``") + "`" for part in parts)
 
 
+class _Refused(Exception):
+    """A table the run must not write, or a result its write mode cannot store."""
+
+
+def _metric(metrics: dict[str, Any], *names: str) -> int | None:
+    for name in names:
+        try:
+            return int(metrics[name])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _history(spark: Any, stored: str, mode: str) -> dict[str, Any]:
+    """What the write just made of the table, from its Delta history."""
+    found: dict[str, Any] = {"mode": mode, "version": None, "operation": None}
+    try:
+        row = spark.sql(f"DESCRIBE HISTORY {stored} LIMIT 1").collect()[0]
+        metrics = dict(row["operationMetrics"] or {})
+        found |= {"version": int(row["version"]), "operation": row["operation"]}
+    except Exception:  # noqa: BLE001 - the history says how much was written, nothing more
+        metrics = {}
+    merged = found["operation"] == "MERGE"
+    return found | {
+        "rows_written": _metric(metrics, "numTargetRowsInserted" if merged else "numOutputRows"),
+        "rows_updated": _metric(metrics, "numTargetRowsUpdated"),
+        "rows_deleted": _metric(metrics, "numTargetRowsDeleted", "numDeletedRows"),
+    }
+
+
+def _store(spark: Any, df: Any, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """Writes ``df`` to table ``name`` in ``spec["write"]`` (catalog, schema) the way
+    ``spec["loads"]`` says (overwrite when it says nothing) and returns its Delta history.
+    With ``spec["project"]`` only a table of the project is written, and the table is
+    marked with the project and ``spec["run_id"]``. Raises ``_Refused`` with the reason
+    when the table is not written."""
+    write = spec["write"]
+    stored = _quote(write["catalog"], write["schema"], name)
+    shown = f"{write['catalog']}.{write['schema']}.{name}"
+    load = (spec.get("loads") or {}).get(name) or {"mode": "overwrite"}
+    mode = load["mode"]
+    project = spec.get("project")
+    if project and not name.startswith(project["table_prefix"]):
+        raise _Refused(f"表 {shown} 不以项目的表名前缀 {project['table_prefix']} 开头，没有写")
+    exists = spark.catalog.tableExists(stored)
+    if project and exists:
+        rows = spark.sql(f"SHOW TBLPROPERTIES {stored}").collect()
+        mark = {row["key"]: row["value"] for row in rows}.get("aep.project")
+        if mark != project["id"] and name not in project["adopted"]:
+            why = (
+                f"项目标记是另一个项目 {mark}" if mark else "没有项目标记，也没有登记在“已有的表”里"
+            )
+            raise _Refused(f"表 {shown} 已经存在，不属于项目「{project['name']}」（{why}），没有写")
+    if mode == "replace_where":
+        condition = with_params(
+            load["where"], spec.get("params") or {}, spec.get("param_types") or {}
+        )
+        outside = df.filter(f"NOT coalesce(({condition}), false)").count()
+        if outside:
+            raise _Refused(f"{name}: 有 {outside} 行不满足替换条件 {condition}，没有写")
+        writer = df.write.mode("overwrite")
+        if exists:
+            writer = writer.option("replaceWhere", condition).option("mergeSchema", "true")
+        writer.saveAsTable(stored)
+    elif mode == "append":
+        df.write.mode("append").option("mergeSchema", "true").saveAsTable(stored)
+    elif mode == "merge":
+        keys = list(load["keys"])
+        repeated = df.groupBy(*keys).count().filter("count > 1").count()
+        if repeated:
+            raise _Refused(f"{name}: 合并键 {'、'.join(keys)} 有 {repeated} 组重复，没有写")
+        if not exists:
+            df.write.saveAsTable(stored)
+        else:
+            have = {c.lower() for c in spark.read.table(stored).columns}
+            added = [f for f in df.schema.fields if f.name.lower() not in have]
+            if added:
+                columns = ", ".join(f"{_quote(f.name)} {f.dataType.simpleString()}" for f in added)
+                spark.sql(f"ALTER TABLE {stored} ADD COLUMNS ({columns})")
+            view = f"aep_merge_{name}"
+            df.createOrReplaceTempView(view)
+            on = " AND ".join(f"t.{_quote(k)} <=> s.{_quote(k)}" for k in keys)
+            spark.sql(
+                f"MERGE INTO {stored} AS t USING {view} AS s ON {on} "
+                "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
+            )
+            spark.catalog.dropTempView(view)
+    else:
+        df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(stored)
+    found = _history(spark, stored, mode)
+    if project:
+        marks = f"'aep.project' = {sql_literal(project['id'])}, "
+        marks += f"'aep.run_id' = {sql_literal(spec.get('run_id') or '')}"
+        try:
+            spark.sql(f"ALTER TABLE {stored} SET TBLPROPERTIES ({marks})")
+        except Exception as exc:  # noqa: BLE001
+            raise _Refused(_error(name, exc) + "（数据已经写入，但没能打上项目标记）") from exc
+    return found
+
+
 def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
     """Evaluates every target; with ``spec["write"]`` (catalog, schema) also stores them.
 
@@ -173,18 +308,24 @@ def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
             return None
         kept = df.filter(keep)
         if write:
-            stored = _quote(write["catalog"], write["schema"], name)
             try:
-                kept.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(stored)
+                result["write"] = _store(spark, kept, name, spec)
+            except _Refused as exc:
+                write_errors.append(str(exc))
+                return None
             except Exception as exc:  # noqa: BLE001
                 write_errors.append(_error(name, exc))
                 return None
-            kept = spark.read.table(stored)
+            # What later tables read is the table as stored (with the rows of earlier
+            # runs that replace_where, append and merge keep).
+            kept = spark.read.table(_quote(write["catalog"], write["schema"], name))
         result["status"] = "COMPLETED"
         result["rows"] = total - result["dropped"]
         return kept
 
-    conf = {"source_catalog": spec["source_catalog"]}
+    params = spec.get("params") or {}
+    kinds = spec.get("param_types") or {}
+    conf = {"source_catalog": spec["source_catalog"], "aep_params": json.dumps(params)}
     if spec["language"] == "pyspark":
         dp = types.ModuleType("pyspark.pipelines")
 
@@ -248,7 +389,7 @@ def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
             def build(query: str = query, upstream: list[str] = upstream) -> Any:
                 for other in upstream:
                     table(other).createOrReplaceTempView(other)
-                return spark.sql(query)
+                return spark.sql(with_params(query, params, kinds))
 
             defs[target["name"]] = (build, rules)
 
@@ -424,19 +565,42 @@ def _answer(df: Any, design: dict[str, Any]) -> dict[str, Any]:
 # --- End of the part both programs carry.
 
 
-def run_notebook(spark: Any, dbutils: Any, library: str) -> None:
+def run_notebook(
+    spark: Any, dbutils: Any, library: str, settings: dict[str, Any] | None = None
+) -> None:
     """The job notebook's body: runs ``library`` (a path next to the notebook).
 
-    The notebook's widgets name the source catalog and where the tables go. A
-    failed table fails the run, with the outcome in the error message.
+    The notebook's widgets name the source catalog and where the tables go, and for a
+    run bound to a project the project (``project``, ``project_name``, ``table_prefix``,
+    ``adopted``), the run parameters (``params``) and the run (``run_id``). ``settings``
+    are what the bundle fixed: each table's write mode (``loads``) and the parameters'
+    types (``param_types``). A failed table fails the run, with the outcome in the
+    error message.
     """
-    arg = dbutils.widgets.get
+
+    def arg(name: str) -> str:
+        try:
+            return dbutils.widgets.get(name) or ""
+        except Exception:  # noqa: BLE001 - a job deployed before the widget existed
+            return ""
+
     with open(library, encoding="utf-8") as f:  # notebooks run in their own folder
         code = f.read()
     spec: dict[str, Any] = {
         "source_catalog": arg("source_catalog"),
         "write": {"catalog": arg("catalog"), "schema": arg("schema")},
+        "loads": (settings or {}).get("loads") or {},
+        "param_types": (settings or {}).get("param_types") or {},
+        "params": json.loads(arg("params") or "{}"),
+        "run_id": arg("run_id"),
     }
+    if arg("project"):
+        spec["project"] = {
+            "id": arg("project"),
+            "name": arg("project_name") or arg("project"),
+            "table_prefix": arg("table_prefix"),
+            "adopted": json.loads(arg("adopted") or "[]"),
+        }
     if library.endswith(".sql"):
         spec |= {"language": "sql", "targets": parse_sql(code)}
     else:

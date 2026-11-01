@@ -27,6 +27,10 @@ JSON Lines in a volume through the Files API, then loaded on the existing
 cluster), and ``preview`` reads the first rows of result tables there and works out
 the answer a plan designs (``aep.cluster_tasks``).
 
+A run bound to a project (``Placement``) runs on its environment's cluster and, in
+``job`` mode, writes to its environment's catalog and schema, only the project's
+tables, each the way the plan says (docs/api/data-nodes.md, "第三批").
+
 Off unless ``AEP_DATABRICKS_HOST`` and ``AEP_DATABRICKS_TOKEN`` are set.
 """
 
@@ -50,7 +54,14 @@ import yaml
 
 from aep import cluster_harness, cluster_tasks
 from aep.config import Settings
-from aep.etl.codegen import PIPELINE_PY, PIPELINE_SQL, Bundle, CodeError, parse_sql
+from aep.etl.codegen import (
+    PIPELINE_PY,
+    PIPELINE_SQL,
+    Bundle,
+    CodeError,
+    parse_sql,
+    project_values,
+)
 
 TARGET = "dev"
 PROD = "prod"
@@ -78,11 +89,41 @@ class Step:
 
 @dataclass
 class TableResult:
+    """One target's outcome; ``write`` is what writing it did (its Delta history: mode,
+    version, operation and row counts) when it was written."""
+
     name: str
     status: str
     rows: int | None = None
     dropped: int = 0
     expectations: list[dict[str, Any]] = field(default_factory=list)
+    write: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where a run bound to a project runs and writes: its environment's ``catalog``,
+    ``schema`` and ``cluster_id`` (empty: ``AEP_DATABRICKS_CLUSTER_ID``), and what the job
+    is told about the project (``values``, the bundle variables of
+    ``aep.etl.codegen.PROJECT_VARIABLES``) and the run (``run_id``, marking the tables)."""
+
+    catalog: str
+    schema: str
+    cluster_id: str
+    values: dict[str, str]
+    run_id: str
+
+    @classmethod
+    def of(cls, project: dict[str, Any], run_id: str) -> "Placement":
+        """The placement of a run bound to ``project`` (the run's snapshot)."""
+        env = project["environment"]
+        return cls(
+            env["catalog"],
+            env["schema"],
+            env.get("cluster_id") or "",
+            project_values(project),
+            run_id,
+        )
 
 
 @dataclass
@@ -396,24 +437,31 @@ class DevTarget:
         events = await self._get(f"/api/2.0/pipelines/{pipeline_id}/events", max_results=EVENT_PAGE)
         return updates[0].get("update_id"), events.get("events") or []
 
+    def _cluster(self, placement: Placement | None) -> str:
+        """The cluster a run uses: its environment's, else the platform's."""
+        return (placement.cluster_id if placement else "") or self._settings.databricks_cluster_id
+
     async def run(
         self,
         bundle: Bundle,
         preview_rows: int = 0,
         order: dict[str, list[str]] | None = None,
         answer: dict[str, Any] | None = None,
+        placement: Placement | None = None,
     ) -> DevRun:
         """Deploys and runs ``bundle`` on the dev target; when it passes and
         ``preview_rows`` is set, ``preview`` has that many rows of each table, sorted by
         each table's primary key in ``order`` (table name to key) when given. With an
-        ``answer`` design, a run that passes has ``answer`` worked out on the cluster."""
+        ``answer`` design, a run that passes has ``answer`` worked out on the cluster.
+        A run bound to a project runs and writes where its ``placement`` says (``job`` and
+        ``cluster`` modes; the caller refuses ``pipeline``)."""
         # The preview is read under the lock too: a later run of the same bundle
         # would otherwise rewrite the tables before this one has read them.
         async with self._dev_locks[bundle.name]:
-            dev = await self._run_dev(bundle, preview_rows, order, answer)
+            dev = await self._run_dev(bundle, preview_rows, order, answer, placement)
             wanted = preview_rows or answer
             if dev.status == "passed" and wanted and dev.mode != "cluster":
-                await self._preview_run(dev, preview_rows, order, answer)
+                await self._preview_run(dev, preview_rows, order, answer, placement)
         if order is not None:
             dev.warnings += _unsorted(dev.preview, order)
         return dev
@@ -424,14 +472,16 @@ class DevTarget:
         rows: int,
         order: dict[str, list[str]] | None,
         answer: dict[str, Any] | None,
+        placement: Placement | None = None,
     ) -> None:
         """The first rows of the tables a job or pipeline wrote, and the answer, read on
         the cluster. Whatever keeps the tables from being read leaves the answer an error
         saying why; the preview only says so in ``warnings``."""
-        if not (self._settings.databricks_cluster_id and dev.catalog and dev.schema):
+        cluster_id = self._cluster(placement)
+        if not (cluster_id and dev.catalog and dev.schema):
             reason = (
                 "不知道结果表写在哪个 catalog 和 schema"
-                if self._settings.databricks_cluster_id
+                if cluster_id
                 else "没有配置集群（AEP_DATABRICKS_CLUSTER_ID）"
             )
             if rows:
@@ -443,7 +493,7 @@ class DevTarget:
         targets = [(*where, t.name) for t in dev.tables if t.status != "FAILED"] if rows else []
         design = None if answer is None else answer | {"table": [*where, answer["target"]]}
         try:
-            found, warnings, worked = await self.preview(targets, rows, order, design)
+            found, warnings, worked = await self.preview(targets, rows, order, design, cluster_id)
         except DatabricksError as exc:
             if rows:
                 dev.warnings.append(f"读取结果数据预览失败：{exc}")
@@ -460,12 +510,13 @@ class DevTarget:
         preview_rows: int = 0,
         order: dict[str, list[str]] | None = None,
         answer: dict[str, Any] | None = None,
+        placement: Placement | None = None,
     ) -> DevRun:
         mode = self._settings.databricks_deploy_mode
         if mode == "cluster":
-            return await self._run_on_cluster(bundle, preview_rows, order, answer)
+            return await self._run_on_cluster(bundle, preview_rows, order, answer, placement)
         if mode == "job":
-            return await self._run_job(bundle)
+            return await self._run_job(bundle, placement)
         with tempfile.TemporaryDirectory(prefix="aep-bundle-") as scratch:
             root = Path(scratch) / bundle.name
             home = Path(scratch) / "home"
@@ -535,6 +586,7 @@ class DevTarget:
         preview_rows: int = 0,
         order: dict[str, list[str]] | None = None,
         answer: dict[str, Any] | None = None,
+        placement: Placement | None = None,
     ) -> dict[str, Any]:
         source_catalog = self._settings.databricks_source_catalog
         extra: dict[str, Any] = {"preview": preview_rows} if preview_rows else {}
@@ -542,6 +594,10 @@ class DevTarget:
             extra["order"] = order
         if answer:
             extra["answer"] = answer | {"table": answer["target"]}
+        if placement is not None:
+            # Nothing is written here, so only the parameters matter.
+            extra["params"] = json.loads(placement.values["params"])
+            extra["param_types"] = bundle.settings.get("param_types") or {}
         if PIPELINE_PY in bundle.files:
             return {
                 "language": "pyspark",
@@ -620,8 +676,9 @@ class DevTarget:
         preview_rows: int = 0,
         order: dict[str, list[str]] | None = None,
         answer: dict[str, Any] | None = None,
+        placement: Placement | None = None,
     ) -> DevRun:
-        cluster_id = self._settings.databricks_cluster_id
+        cluster_id = self._cluster(placement)
         dev = DevRun(
             "failed",
             "run",
@@ -630,13 +687,13 @@ class DevTarget:
             cluster_id=cluster_id,
             url=f"{self._host}/compute/clusters/{cluster_id}",
         )
-        if not self._settings.databricks_source_catalog:
+        if not self._settings.databricks_source_catalog and _reads_catalog(bundle):
             dev.errors = [
                 "在集群上试跑需要设置 AEP_DATABRICKS_SOURCE_CATALOG（源表所在的 catalog）"
             ]
             return dev
         try:
-            spec = self._harness_spec(bundle, preview_rows, order, answer)
+            spec = self._harness_spec(bundle, preview_rows, order, answer, placement)
         except CodeError as exc:
             dev.errors = [str(exc)]
             return dev
@@ -686,8 +743,10 @@ class DevTarget:
         root: str,
         target: str = TARGET,
         schedule: str | None = None,
+        placement: Placement | None = None,
     ) -> dict[str, Any]:
-        """The bundle's job as ``target`` deploys it, its variables filled in."""
+        """The bundle's job as ``target`` deploys it, its variables filled in; a run's
+        ``placement`` wins over the platform's settings."""
         values = {k: str(v.get("default", "")) for k, v in config["variables"].items()}
         overrides = config["targets"].get(target) or {}
         values |= {
@@ -695,6 +754,9 @@ class DevTarget:
             for k, v in (overrides.get("variables") or {}).items()
         }
         values |= {k: v for k, v in self._values(target, schedule).items() if v}
+        if placement is not None:
+            values |= {"catalog": placement.catalog, "schema": placement.schema}
+            values |= {"cluster_id": self._cluster(placement)} | placement.values
 
         def fill(node: Any) -> Any:
             if isinstance(node, dict):
@@ -769,10 +831,12 @@ class DevTarget:
                 raise DatabricksError(f"Job 运行超过 {limit:g} 秒没有结束，已取消")
             await asyncio.sleep(CLUSTER_POLL_SECONDS)
 
-    async def _run_job(self, bundle: Bundle) -> DevRun:
-        cluster_id = self._settings.databricks_cluster_id
+    async def _run_job(self, bundle: Bundle, placement: Placement | None = None) -> DevRun:
+        cluster_id = self._cluster(placement)
         dev = DevRun("failed", "deploy", [], mode="job", cluster_id=cluster_id or None)
-        if not cluster_id or not self._settings.databricks_source_catalog:
+        if not cluster_id or (
+            not self._settings.databricks_source_catalog and _reads_catalog(bundle)
+        ):
             dev.errors = [
                 "部署成 Job 需要设置 AEP_DATABRICKS_CLUSTER_ID（Job 跑在哪台集群上）和"
                 " AEP_DATABRICKS_SOURCE_CATALOG（源表所在的 catalog）"
@@ -788,7 +852,9 @@ class DevTarget:
             user = (await self._get("/api/2.0/preview/scim/v2/Me"))["userName"]
             short_name = re.sub(r"[^a-z0-9]+", "_", user.split("@")[0].lower()).strip("_")
             root = f"/Users/{user}/.bundle/{bundle.name}/{TARGET}/files"
-            settings = self._job_settings(config, bundle.name, short_name, root)
+            settings = self._job_settings(
+                config, bundle.name, short_name, root, placement=placement
+            )
             task = (settings.get("tasks") or [{}])[0]
             written = (task.get("notebook_task") or {}).get("base_parameters") or {}
             dev.catalog, dev.schema = written.get("catalog"), written.get("schema")
@@ -801,10 +867,12 @@ class DevTarget:
             return dev
         dev.steps.append(Step("deploy", True, f"job {dev.job_id}，文件在 {root}"))
         dev.stage = "run"
+        now: dict[str, Any] = {"job_id": dev.job_id}
+        if placement is not None:
+            # The tables it writes are marked with the platform's run.
+            now["notebook_params"] = {"run_id": placement.run_id}
         try:
-            dev.run_id = int(
-                (await self._post("/api/2.1/jobs/run-now", {"job_id": dev.job_id}))["run_id"]
-            )
+            dev.run_id = int((await self._post("/api/2.1/jobs/run-now", now))["run_id"])
             run = await self._wait_run(dev.run_id)
             dev.url = run.get("run_page_url")
             tasks = sorted(run.get("tasks") or [], key=lambda t: t.get("attempt_number", 0))
@@ -865,9 +933,12 @@ class DevTarget:
                 left.append(f"{path}（HTTP {resp.status_code}）")
         return [f"抽取的落地文件没能删除：{'、'.join(left)}"] if left else []
 
-    async def _task(self, name: str, spec: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-        """Runs ``aep.cluster_tasks.<name>`` on the cluster; its outcome and warnings."""
-        cluster_id = self._settings.databricks_cluster_id
+    async def _task(
+        self, name: str, spec: dict[str, Any], cluster_id: str = ""
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Runs ``aep.cluster_tasks.<name>`` on ``cluster_id`` (default the platform's
+        cluster); its outcome and warnings."""
+        cluster_id = cluster_id or self._settings.databricks_cluster_id
         warnings: list[str] = []
         await self._cluster_running(cluster_id, warnings)
         command = "\n".join(
@@ -970,18 +1041,21 @@ class DevTarget:
         rows: int,
         order: dict[str, list[str]] | None = None,
         answer: dict[str, Any] | None = None,
+        cluster_id: str = "",
     ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
         """The first ``rows`` rows of each table (catalog, schema, table), read on the
-        cluster: ``{"table", "target", "columns", "rows"}`` each (and ``sorted_by`` when
-        ``order`` gives table names' primary keys), warnings, and the answer worked out
-        for an ``answer`` design whose ``table`` is catalog, schema, table."""
-        self._needs("预览结果数据", "AEP_DATABRICKS_CLUSTER_ID")
+        cluster (``cluster_id``, default the platform's): ``{"table", "target", "columns",
+        "rows"}`` each (and ``sorted_by`` when ``order`` gives table names' primary keys),
+        warnings, and the answer worked out for an ``answer`` design whose ``table`` is
+        catalog, schema, table."""
+        if not cluster_id:
+            self._needs("预览结果数据", "AEP_DATABRICKS_CLUSTER_ID")
         spec: dict[str, Any] = {"tables": [list(t) for t in tables], "rows": rows}
         if order is not None:
             spec["order"] = order
         if answer:
             spec["answer"] = answer
-        outcome, warnings = await self._task("preview", spec)
+        outcome, warnings = await self._task("preview", spec, cluster_id)
         warnings += [f"读取结果数据失败：{e}" for e in outcome.get("errors", [])]
         found = []
         for t in outcome.get("tables", []):
@@ -1088,6 +1162,12 @@ class DevTarget:
             release.errors = ["部署后找不到管道的 id"]
             return
         release.status = "deployed"
+
+
+def _reads_catalog(bundle: Bundle) -> bool:
+    """Whether ``bundle``'s code reads tables through the source catalog: not when every
+    source is a catalog.schema.table already on Databricks."""
+    return bool(bundle.settings.get("source_catalog", True))
 
 
 def _outcome(text: str) -> dict[str, Any] | None:
