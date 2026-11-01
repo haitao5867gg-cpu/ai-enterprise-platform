@@ -719,7 +719,7 @@ export function etlV3Config(): FlowConfig {
         title: "数据检查",
         datasource: "{{start.datasource}}",
         checks: [],
-        include: ["{{check_plan.checks}}"],
+        include: ["{{project.checks}}", "{{check_plan.checks}}"],
         golden: {
           expected: "{{start.golden}}",
           table: "{{check_plan.result_table}}",

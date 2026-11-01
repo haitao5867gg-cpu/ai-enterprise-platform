@@ -428,6 +428,35 @@ async def test_the_node_adds_the_comparison_with_the_old_system():
     assert found["message"] == "结果表没有主键，不能逐行对比；请在方案里给结果表写 primary_key"
 
 
+async def test_the_node_s_comparison_may_allow_a_tolerance_and_only_warn():
+    rt, lake, _, calls = await env()
+    plan = {"result_table": "ibf_table2", "result_keys": ["sku", "month"], "tol": 0.01}
+    golden = {
+        "expected": "old.jade.table2",
+        "table": "{{plan.result_table}}",
+        "keys": "{{plan.result_keys}}",
+        "tolerance": "{{plan.tol}}",
+        "severity": "warn",
+    }
+    out = await run(node(golden=golden), state(lake, plan=plan), rt)
+    (found,) = out.outputs["results"]
+    assert (found["id"], found["severity"], found["status"]) == ("golden", "warn", "failed")
+    assert calls[0][0] == "compare" and calls[0][1]["tolerance"] == 0.01
+    # Only a warning: the node still passes.
+    assert out.outputs["ok"] is True and out.branch == "passed"
+
+    # Without them: no tolerance, an error.
+    del golden["tolerance"], golden["severity"]
+    out = await run(node(golden=golden), state(lake, plan=plan), rt)
+    assert out.outputs["results"][0]["severity"] == "error" and out.outputs["ok"] is False
+    assert not calls[-1][1].get("tolerance")
+
+    # A tolerance that is not a number makes the comparison an error.
+    golden["tolerance"] = "{{plan.result_table}}"
+    (found,) = (await run(node(golden=golden), state(lake, plan=plan), rt)).outputs["results"]
+    assert (found["status"], found["message"]) == ("error", "tolerance 要是不小于 0 的数")
+
+
 async def test_a_golden_check_uses_the_node_s_old_table_or_is_skipped():
     rt, lake, _, calls = await env()
     c = check("mine", "golden", table="ibf_table2", keys=["sku", "month"], severity="info")
@@ -661,7 +690,13 @@ async def test_saving_checks_the_settings():
             ),  # fmt: skip
         ],
         include=["{{plan.checks}}"],
-        golden={"expected": "{{start.golden}}", "table": "t", "keys": "{{plan.result_keys}}"},
+        golden={
+            "expected": "{{start.golden}}",
+            "table": "t",
+            "keys": "{{plan.result_keys}}",
+            "tolerance": 0.001,
+            "severity": "{{start.level}}",
+        },  # fmt: skip
         only_if="{{dev_run.ok}}",
     )
     assert await problems(good) == []
@@ -679,7 +714,7 @@ async def test_saving_checks_the_settings():
                 check("c", "rows", table="t"),
             ],
             include=["{{plan.checks}}", "plan.checks"],
-            golden={"expected": 1, "keys": "a", "other": 1},
+            golden={"expected": 1, "keys": "a", "other": 1, "tolerance": -1, "severity": "bad"},
             only_if="true",
         )
     )
@@ -691,6 +726,8 @@ async def test_saving_checks_the_settings():
         (["golden", "other"], "golden 没有 other 这一项"),
         (["golden", "expected"], "golden 的 expected 要是文字或一个变量"),
         (["golden", "keys"], "golden 的 keys 要是列名列表或一个变量"),
+        (["golden", "tolerance"], "golden 的 tolerance 要是不小于 0 的数或一个变量"),
+        (["golden", "severity"], "golden 的 severity 只能是 error、warn、info"),
         (["only_if"], "only_if 必须恰好是一个变量，如 {{dev_run.ok}}"),
     ]
     many = node(checks=[check(f"c{i}", "rows", table="t", where="x") for i in range(51)])

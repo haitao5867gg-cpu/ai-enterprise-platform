@@ -3,7 +3,8 @@
 A project says where its runs write in Databricks (environments: catalog, schema,
 cluster), which prefix its tables carry, which tables it only reads (``references``,
 each with an optional read filter) and which existing tables are its own
-(``adopted``), the run parameters its runs fill in, and its data outbound policy.
+(``adopted``), the run parameters its runs fill in, its acceptance checks (``checks``,
+in the format of the ``data_check`` node) and its data outbound policy.
 
 A run that binds a project keeps a snapshot of it (``snapshot``): changing or deleting
 the project later does not change the run. Nodes read the snapshot through
@@ -20,6 +21,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from aep.cluster_harness import PARAM
 from aep.policy import LEVELS, DataPolicy
 from aep.runtime.store import DEFAULT_TENANT
 
@@ -45,8 +47,10 @@ FIELDS = (
     "schema",
     "references",
     "params",
+    "checks",
     "brief",
 )
+MAX_CHECKS = 50
 
 
 def _text(low: int, high: int) -> Any:
@@ -206,6 +210,8 @@ class ProjectBody(_Model):
         default_factory=list, max_length=200
     )
     params: list[Param] = Field(default_factory=list, max_length=20)
+    # The project's acceptance checks: Check of the data_check node.
+    checks: list[Any] = Field(default_factory=list, max_length=MAX_CHECKS)
     policy: Policy = Field(default_factory=Policy)
 
     @model_validator(mode="after")
@@ -226,11 +232,46 @@ class ProjectBody(_Model):
                 raise ValueError(f"表名 {table} 只能用小写字母、数字和下划线，不含 catalog、schema")
             if not table.startswith(self.table_prefix):
                 raise ValueError(f"归本项目的表 {table} 要以表名前缀 {self.table_prefix} 开头")
+        if problem := checks_problem(self.checks, self.table_prefix, {p.key for p in self.params}):
+            raise ValueError(problem)
         return self
 
     def body(self) -> dict[str, Any]:
         """As stored and returned (environments with ``schema``)."""
         return self.model_dump(by_alias=True)
+
+
+def checks_problem(found: list[Any], prefix: str, params: set[str]) -> str | None:
+    """The first thing wrong with a project's acceptance checks: one the data_check node
+    would refuse, a repeated id or ``golden``, a run parameter the project lacks, or a
+    result table (a name without dots) without the table prefix."""
+    # aep.etl.checks reads filter_problem from this module.
+    from aep.etl import checks
+
+    seen: set[str] = set()
+    for n, check in enumerate(found, start=1):
+        cid = check.get("id") if isinstance(check, dict) else None
+        named = f"验收检查 {cid}" if isinstance(cid, str) and cid else f"第 {n} 条验收检查"
+        if wrong := checks.problems(check):
+            loc, message = wrong[0]
+            where = ".".join(str(x) for x in loc)
+            return f"{named}{f'（{where}）' if where else ''}：{message}"
+        if cid == checks.GOLDEN:
+            return "验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比"
+        if cid in seen:
+            return f"验收检查 id {cid} 重复"
+        seen.add(cid)  # type: ignore[arg-type]
+        for where, text in checks.texts(check):
+            for key in PARAM.findall(text) if isinstance(text, str) else []:
+                if key not in params:
+                    return f"{named}（{where}）用的运行参数 ${{param.{key}}} 不是本项目定义的参数"
+        for where, table in checks.tables(check):
+            if isinstance(table, str) and "." not in table and not table.startswith(prefix):
+                return (
+                    f"{named}（{where}）：不带 catalog、schema 的 {table} 是本项目在运行环境里的"
+                    f"表，要以表名前缀 {prefix} 开头"
+                )
+    return None
 
 
 # Stored projects
@@ -454,6 +495,7 @@ def snapshot(project: Project, environment: str | None, given: Any) -> dict[str,
         "adopted": body["adopted"],
         "params": body["params"],
         "values": values,
+        "checks": body.get("checks") or [],
         "policy": body["policy"],
     }
 
@@ -509,6 +551,9 @@ def project_value(project: dict[str, Any] | None, name: str) -> Any:
         ]
     if name == "brief":
         return brief(project)
+    if name == "checks":
+        # Snapshots taken before projects had checks have none.
+        return project.get("checks") or []
     if name in ("project_id", "name", "description", "table_prefix", "references"):
         return project[name]
     return None
@@ -563,5 +608,24 @@ def brief(project: dict[str, Any]) -> str:
         lines += [
             "",
             '生成的代码用 `param("标识")` 读参数；方案和检查里的条件用 `${param.标识}` 写。',
+        ]
+    if project.get("checks"):
+        from aep.etl import checks
+
+        lines += [
+            "",
+            "### 验收检查（项目已经写好，每次数据检查都会跑）",
+            "",
+            "| id | 名称 | 级别 | 检查什么 |",
+            "| --- | --- | --- | --- |",
+        ]
+        lines += [
+            f"| `{c['id']}` | {_cell(c['label'])} | {c.get('severity') or 'error'} "
+            f"| {_cell(checks.describe(c))} |"
+            for c in project["checks"]
+        ]
+        lines += [
+            "",
+            "方案里建议的数据检查不要重复这些，id 也不能和它们相同。",
         ]
     return "\n".join(lines)

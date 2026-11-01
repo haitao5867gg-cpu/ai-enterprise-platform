@@ -1570,32 +1570,25 @@ def _project_problems(plan: EtlPlanV2, project: Mapping[str, Any]) -> list[str]:
         for r in project.get("references") or []
         if isinstance(r, dict) and r.get("name")
     }
+    filtered = {
+        str(r.get("name")).lower()
+        for r in project.get("references") or []
+        if isinstance(r, dict) and r.get("name") and r.get("filter")
+    }
     for target in plan.targets:
         if prefix and not target.name.startswith(prefix):
             problems.append(f"目标表名 {target.name!r} 要以项目「{label}」的表名前缀 {prefix} 开头")
         same = read.get(target.name.lower())
         if same is not None:
             problems.append(f"目标表名 {target.name!r} 和项目引用的表 {same} 同名，请换一个")
+        if plan.language == "sql":
+            for source in target.sources:
+                if source.lower() in filtered:
+                    problems.append(
+                        f"{target.name} 的来源 {source} 有项目的读取筛选，SQL 代码暂不支持；"
+                        "请把 language 改成 pyspark"
+                    )
     return problems
-
-
-def _check_tables(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
-    if "table" in check:
-        yield "table", check["table"]
-    for side in ("left", "right"):
-        if isinstance(check.get(side), dict) and "table" in check[side]:
-            yield f"{side}.table", check[side]["table"]
-
-
-def _check_texts(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
-    for key in ("expr", "where"):
-        if key in check:
-            yield key, check[key]
-    for side in ("left", "right"):
-        if isinstance(check.get(side), dict):
-            for key in ("expr", "where"):
-                if key in check[side]:
-                    yield f"{side}.{key}", check[side][key]
 
 
 def _plan_checks(
@@ -1612,6 +1605,9 @@ def _plan_checks(
         problems.append(f"checks 最多 {MAX_PLAN_CHECKS} 条，现在有 {len(proposed)} 条")
     tables = {t.name.lower() for t in plan.targets}
     tables |= {s.lower() for t in plan.targets for s in t.sources}
+    # The project's acceptance checks run in every data check (include
+    # {{project.checks}}); a plan check with the same id would clash there.
+    owned = {c.get("id") for c in (project or {}).get("checks") or [] if isinstance(c, dict)}
     ids: set[str] = set()
     kept: list[dict[str, Any]] = []
     for i, check in enumerate(proposed):
@@ -1634,15 +1630,23 @@ def _plan_checks(
         elif isinstance(cid, str) and cid in ids:
             wrong = True
             problems.append(f"{at}.id：检查 id {cid} 重复")
+        elif isinstance(cid, str) and cid in owned:
+            wrong = True
+            problems.append(
+                f"{at}.id：{cid} 是项目的验收检查，数据检查时会自动跑，方案里不用再写；"
+                "要另加检查请换一个 id"
+            )
         if isinstance(cid, str):
             ids.add(cid)
-        for where, table in _check_tables(check):
+        for where, table in checks.tables(check):
+            if where == "expected":
+                continue  # golden, refused above
             if isinstance(table, str) and table.strip() and table.strip().lower() not in tables:
                 wrong = True
                 problems.append(
                     f"{at}.{where}：{table} 不是方案的目标表或来源，检查只能读方案写的表和读的源表"
                 )
-        for where, text in _check_texts(check):
+        for where, text in checks.texts(check):
             more = _param_problems(text, f"{at}.{where}", project)
             wrong = wrong or bool(more)
             problems += more

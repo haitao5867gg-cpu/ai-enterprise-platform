@@ -21,6 +21,19 @@ import { Icon } from "./icons";
 import { ProjectForm } from "./project-form";
 import { ErrorNotice } from "./ui";
 
+const checkKinds: Record<string, string> = {
+  aggregate: "聚合值",
+  reconcile: "对账",
+  unique: "键不重复",
+  golden: "和老系统对比",
+  rows: "不该有的行",
+};
+const severityLabels: Record<string, string> = {
+  error: "算错误",
+  warn: "警告",
+  info: "提示",
+};
+
 function useOptions() {
   const [options, setOptions] = useState<ProjectOptions | null>(null);
   useEffect(() => {
@@ -182,6 +195,22 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
           />
         ) : (
           <p className="muted">没有运行参数。</p>
+        )}
+      </section>
+      <section className="panel asset-section" aria-labelledby="project-checks">
+        <h2 id="project-checks">验收检查</h2>
+        {project.checks?.length ? (
+          <Rows
+            headings={["id", "名称", "种类", "不通过时"]}
+            rows={project.checks.map((check) => [
+              String(check.id ?? ""),
+              String(check.label ?? ""),
+              checkKinds[String(check.kind)] ?? String(check.kind ?? ""),
+              severityLabels[String(check.severity ?? "error")] ?? String(check.severity),
+            ])}
+          />
+        ) : (
+          <p className="muted">没有。绑定这个项目的运行只跑方案建议的检查。</p>
         )}
       </section>
       <section className="panel asset-section" aria-labelledby="project-policy">

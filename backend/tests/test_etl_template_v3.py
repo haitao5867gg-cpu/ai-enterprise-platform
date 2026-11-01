@@ -443,7 +443,7 @@ def test_template_follows_the_contract():
     assert (checks["type"], checks["only_if"], checks["include"]) == (
         "data_check",
         "{{dev_run.ok}}",
-        ["{{check_plan.checks}}"],
+        ["{{project.checks}}", "{{check_plan.checks}}"],
     )
     review = nodes["data_review"]
     assert review["options"][0]["requires"] == ["{{dev_run.ok}}", "{{checks.ok}}"]

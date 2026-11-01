@@ -29,6 +29,7 @@ LABELS = {
     "references": "引用表",
     "adopted": "归本项目的表",
     "params": "参数",
+    "checks": "验收检查",
     "policy": "数据外发策略",
     "key": "标识",
     "label": "显示名",
