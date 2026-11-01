@@ -50,7 +50,9 @@ echo "$DEPLOY_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-$DEPLOY_USER"
 chmod 440 "/etc/sudoers.d/90-$DEPLOY_USER"
 
 echo "== SSH：只允许密钥登录"
+# 显式打开公钥登录：有的镜像在 sshd_config 里关掉了它，只关密码会把人锁在外面。
 cat > /etc/ssh/sshd_config.d/10-aep.conf <<'CONF'
+PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin prohibit-password
@@ -61,6 +63,7 @@ grep -qE '^Include /etc/ssh/sshd_config.d/' /etc/ssh/sshd_config \
 sshd -t
 systemctl reload ssh
 sshd -T | grep -qi '^passwordauthentication no' || echo "! 密码登录没有关掉，请检查 /etc/ssh/sshd_config"
+sshd -T | grep -qi '^pubkeyauthentication yes' || { echo "✗ 公钥登录没有打开，先别退出当前会话，检查 /etc/ssh/sshd_config"; exit 1; }
 
 echo "== 防火墙：22、80、443"
 ufw default deny incoming
