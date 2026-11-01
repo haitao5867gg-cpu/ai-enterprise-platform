@@ -1342,15 +1342,37 @@ export function NodeSettings({
       );
     case "start":
       return (
-        <InputList
-          label="输入字段"
-          inputs={node.inputs}
-          prefix="inputs"
-          issues={issues}
-          allowDatasource
-          start
-          onChange={(inputs) => change({ ...node, inputs })}
-        />
+        <>
+          <SelectField
+            label="使用项目"
+            value={node.project ?? ""}
+            choices={[
+              { value: "", label: "不用项目" },
+              { value: "optional", label: "可以选项目（选填）" },
+              { value: "required", label: "必须选一个项目" },
+            ]}
+            issues={at("project")}
+            help="用项目时，新建运行要选项目、环境并填运行参数；节点里可以引用 {{project.字段}} 和 {{param.参数标识}}。"
+            onChange={(value) => {
+              const { project: _old, ...rest } = node;
+              void _old;
+              change(
+                value === "required" || value === "optional"
+                  ? { ...rest, project: value }
+                  : rest,
+              );
+            }}
+          />
+          <InputList
+            label="输入字段"
+            inputs={node.inputs}
+            prefix="inputs"
+            issues={issues}
+            allowDatasource
+            start
+            onChange={(inputs) => change({ ...node, inputs })}
+          />
+        </>
       );
     case "knowledge":
       return (

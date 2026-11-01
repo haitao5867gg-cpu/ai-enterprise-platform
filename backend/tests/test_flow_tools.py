@@ -12,6 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from aep.config import Settings
 from aep.datasources import MemoryDataSourceStore
 from aep.main import app
+from aep.projects import MemoryProjectStore
 from aep.runtime.catalog import AppCatalog
 from aep.runtime.flow import builtin
 from aep.runtime.registry import AppContext, default_apps
@@ -52,6 +53,7 @@ class Platform:
         self.sources = MemoryDataSourceStore()
         servers = {fake_connector.URL: fake_connector.build(), CRM_URL: crm(), **(servers or {})}
         self.skills = MemorySkillStore()
+        self.projects = MemoryProjectStore()
         self.service = RunService(
             MemoryRunStore(),
             InMemorySaver(),
@@ -61,6 +63,7 @@ class Platform:
                 settings,
                 datasources=self.sources,
                 tools=McpTools(5, resolve=lambda url: servers[url]),
+                projects=self.projects,
             ),
             skills=self.skills,
         )
@@ -78,6 +81,7 @@ class Platform:
         app.state.catalog = self.catalog
         app.state.skills = self.skills
         app.state.datasources = self.sources
+        app.state.projects = self.projects
         self._client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         )

@@ -4913,3 +4913,46 @@ a.asset-card:hover,
   border-color: var(--purple);
   background: #f1edfd;
 }
+
+/* Projects (docs/api/projects.md) */
+.project-form-section {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+}
+fieldset.project-form-section > legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2f2342;
+}
+fieldset.project-form-section > legend + * {
+  clear: both;
+}
+.project-form-section > .field-hint {
+  margin: 0;
+}
+.project-tables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding-left: 18px;
+}
+.run-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.project-picker .project-params {
+  margin-top: 8px;
+}
+.project-form .list-row-fields > .asset-field {
+  align-content: start;
+}
+.project-picker label[for="project-environment"] {
+  margin-top: 14px;
+}

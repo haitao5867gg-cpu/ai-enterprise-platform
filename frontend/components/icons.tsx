@@ -12,7 +12,8 @@ type IconName =
   | "refresh"
   | "download"
   | "alert"
-  | "plug";
+  | "plug"
+  | "folder";
 const paths: Record<IconName, string> = {
   grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   runs: "M5 4h14v16H5z M9 8h6 M9 12h6 M9 16h3",
@@ -27,6 +28,7 @@ const paths: Record<IconName, string> = {
   alert: "M12 3 2 21h20z M12 9v5 M12 17v1",
   download: "M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5",
   plug: "M9 3v5 M15 3v5 M6 8h12v4a6 6 0 0 1-12 0z M12 18v3",
+  folder: "M3 6h6l2 2h10v11H3z",
 };
 
 export function Icon({

@@ -60,7 +60,13 @@ export type NodeBase = {
 };
 type ModelSettings = { model: string | null; skills: SkillRef[] };
 type Fallible = { on_error?: OnError };
-export type StartNode = NodeBase & { type: "start"; inputs: Input[] };
+// Whether the app's runs bind a project (docs/api/projects.md); left out: they do not.
+export type ProjectUse = "required" | "optional";
+export type StartNode = NodeBase & {
+  type: "start";
+  inputs: Input[];
+  project?: ProjectUse;
+};
 export type LlmNode = NodeBase &
   ModelSettings &
   Fallible & {
@@ -371,6 +377,8 @@ export type AppDetail = AppSummary & {
   current: AppVersion;
   draft: AppVersion | null;
   inputs: Input[] | null;
+  // Whether the app's runs bind a project; null for code apps and apps that do not.
+  project?: ProjectUse | null;
   secrets: { name: string; set: boolean; updated_at: string | null }[];
   options: {
     knowledge_bases: KnowledgeOption[];

@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import apps, assets, datasources, flows, knowledge, runs, skills
+from aep.api import apps, assets, datasources, flows, knowledge, projects, runs, skills
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
 from aep.connector_check import ConnectorCheck
@@ -24,6 +24,7 @@ from aep.health import check_llm_gateway, check_postgres, check_redis, demo_chec
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
+from aep.projects import PostgresProjectStore
 from aep.runtime.catalog import AppCatalog, GatewayModels
 from aep.runtime.flow.store import PostgresFlowAppStore, PostgresSecretStore
 from aep.runtime.registry import AppContext, default_apps
@@ -95,6 +96,8 @@ def create_app() -> FastAPI:
         await flow_store.setup()
         secret_store = PostgresSecretStore(pool)
         await secret_store.setup()
+        project_store = PostgresProjectStore(pool)
+        await project_store.setup()
         asset_repo = AssetRepo.from_settings(settings)
         tools = McpTools(settings.tool_timeout_seconds)
         tracer = tracing.Tracer.from_settings(settings)
@@ -112,6 +115,7 @@ def create_app() -> FastAPI:
                 assets=asset_repo,
                 asset_store=asset_store,
                 knowledge=knowledge_store,
+                projects=project_store,
             ),
             tracer,
             versions=version_store,
@@ -136,6 +140,7 @@ def create_app() -> FastAPI:
         app.state.catalog = catalog
         app.state.skills = skill_store
         app.state.datasources = sources
+        app.state.projects = project_store
         app.state.asset_store = asset_store
         app.state.mcp_tools = tools
         app.state.databricks = databricks
@@ -166,6 +171,7 @@ def create_app() -> FastAPI:
     app.state.connector_check = ConnectorCheck()
     app.include_router(runs.router)
     app.include_router(datasources.router)
+    app.include_router(projects.router)
     app.include_router(assets.router)
     app.include_router(apps.router)
     app.include_router(flows.router)

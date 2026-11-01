@@ -44,13 +44,15 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
-from aep import policy, tracing
+from aep import policy, projects, tracing
 from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
 from aep.runtime import appconfig, design, human
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import nodes as flownodes
+from aep.runtime.flow import refs
 from aep.runtime.flow.builtin import BuiltinFlow
+from aep.runtime.flow.check import NOT_SETTINGS
 from aep.runtime.flow.store import (
     FlowAppStore,
     MemoryFlowAppStore,
@@ -95,6 +97,11 @@ class UnknownVersion(Exception):
 
 class ModelNotAllowed(Exception):
     """The run would use a model the data outbound policy does not allow (aep.policy)."""
+
+
+class ProjectProblem(Exception):
+    """The run cannot bind the project as asked (docs/api/projects.md); the message is
+    for people."""
 
 
 class NoDraftToRun(Exception):
@@ -471,11 +478,13 @@ class RunService:
         draft: bool = False,
         requester: str | None = None,
         rerun_of: str | None = None,
+        project: dict[str, Any] | None = None,
     ) -> RunRecord:
         """Start a run of the app's current version, or of ``app_version``; with ``config``
         (a draft's configuration, for its eval) or ``draft`` (the draft as it is now) the
         run belongs to no version. A flow app's input must fit its start node's inputs.
-        ``requester`` is who asks for it, as they say."""
+        ``requester`` is who asks for it, as they say; ``project`` the project it binds
+        (``project_id``, ``environment``, ``params``; docs/api/projects.md)."""
         kind = await self.kind(app)
         if kind is None:
             raise UnknownApp(app)
@@ -496,17 +505,58 @@ class RunService:
             _, problems = flownodes.answers(flowgraph.inputs(config), input)
             if problems:
                 raise InvalidValues(problems)
-        rules = policy.platform_default(self._ctx.settings)
+        bound = await self._bind(app, kind, config, project)
+        platform = policy.platform_default(self._ctx.settings)
+        rules = projects.effective_policy(bound, platform)
         if rules.models is not None:
+            # The project is named when its own policy limits the models.
+            named = bound["name"] if bound and (bound["policy"] or {}).get("models") else None
             for model, where in await self._models(app, config, input):
-                problem = policy.model_problem(rules, model, where)
+                problem = policy.model_problem(rules, model, where, named)
                 if problem:
                     raise ModelNotAllowed(problem)
         record = await self._store.create(
-            app, input, app_version, config, requester, rerun_of, rules.as_dict()
+            app, input, app_version, config, requester, rerun_of, rules.as_dict(), bound
         )
         self._spawn(record, {"input": input}, "start", input)
         return record
+
+    async def _bind(
+        self, app: str, kind: str, config: dict[str, Any], asked: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """The snapshot of the project the run binds, checked (docs/api/projects.md,
+        "新建运行"); None when it binds none."""
+        start = (
+            next((n for n in flowgraph.nodes(config) if n["type"] == "start"), {})
+            if kind == "flow"
+            else {}
+        )
+        uses = start.get("project")
+        title = (await self.app_titles()).get(app, app)
+        if asked is None:
+            if uses == "required":
+                raise ProjectProblem(f"应用「{title}」需要选择一个项目")
+            return None
+        if uses is None:
+            raise ProjectProblem(f"应用「{title}」不使用项目")
+        found = await self._ctx.projects.get(str(asked.get("project_id") or ""))
+        if found is None:
+            raise ProjectProblem(f"没有项目 {asked.get('project_id')}")
+        try:
+            snapshot = projects.snapshot(found, asked.get("environment"), asked.get("params"))
+        except projects.BindError as exc:
+            raise ProjectProblem(str(exc)) from exc
+        defined = {p["key"] for p in snapshot["params"]}
+        for node in flowgraph.nodes(config):
+            skip = NOT_SETTINGS | flownodes.TYPES[node["type"]].verbatim
+            settings = {k: v for k, v in node.items() if k not in skip}
+            for _, text in refs.strings(settings):
+                for target, name in refs.find(text):
+                    if target == refs.PARAM and name not in defined:
+                        raise ProjectProblem(
+                            f"应用用到了参数 {name}，项目「{found.name}」没有定义它"
+                        )
+        return snapshot
 
     async def node_configs(self, record: RunRecord) -> dict[str, appconfig.NodeConfig]:
         """The configuration the run uses, skills loaded (a code app's; a flow app's
@@ -739,11 +789,22 @@ class RunService:
     ) -> RunRecord:
         """A new run of the same app version as this one, with its input or ``input``.
         A draft's run copies the configuration it ran with; a run from before versions
-        uses the current version."""
+        uses the current version. A run that bound a project binds its current settings,
+        with the same environment and parameter values."""
         source = await self._store.get(run_id)
         if source is None:
             raise RunNotFound(run_id)
         draft = source.app_version is None and source.config is not None
+        project = None
+        if source.project:
+            project_id = source.project["project_id"]
+            if await self._ctx.projects.get(project_id) is None:
+                raise ProjectProblem(f"项目 {project_id} 已经删除，不能重新运行")
+            project = {
+                "project_id": project_id,
+                "environment": source.project["environment"]["key"],
+                "params": {k: v for k, v in source.project["values"].items() if v is not None},
+            }
         return await self.create(
             source.app,
             source.input if input is None else input,
@@ -751,6 +812,7 @@ class RunService:
             config=source.config if draft else None,
             requester=requester,
             rerun_of=source.run_id,
+            project=project,
         )
 
     async def can_rerun(self, record: RunRecord) -> bool:
@@ -804,8 +866,10 @@ class RunService:
                         appconfig.CONFIG_KEY: nodes,
                         # Who asked for the run: a flow app's start message is theirs.
                         "requester": record.created_by,
-                        # What of the data may go to which models (aep.policy).
+                        # What of the data may go to which models (aep.policy), and
+                        # the snapshot of the project the run binds.
                         "policy": record.policy,
+                        "project": record.project,
                     },
                     "callbacks": [*segment.callbacks, StepTracker(self._store, record.run_id)],
                 }

@@ -6,12 +6,12 @@ how often it ran (``visits``) and, if it has branches, which one it took
 its own next run (``private``, e.g. how often its check failed in a row). The
 end node writes the run's ``result``. ``on_error`` is applied here, around the
 node type's ``run``, which also sees the run's id as ``state["run_id"]``, who
-asked for it as ``state["requester"]`` and the run's data outbound policy as
-``state["policy"]``. Which outputs hold data values (``data``) or error text that may
-quote them (``quoted``), and the tokens turned back into values (``restored``), are
-kept for that policy (aep.policy). What a node
-says goes into the run's ``messages`` tagged here with the node, its title and the
-time.
+asked for it as ``state["requester"]``, the run's data outbound policy as
+``state["policy"]`` and the snapshot of the project it binds as
+``state["project"]``. Which outputs hold data values (``data``) or error text that
+may quote them (``quoted``), and the tokens turned back into values (``restored``),
+are kept for that policy (aep.policy). What a node says goes into the run's
+``messages`` tagged here with the node, its title and the time.
 """
 
 import asyncio
@@ -178,8 +178,10 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
         run_id = configurable.get("thread_id")
         requester = configurable.get("requester")
         extra = {"run_id": run_id, "requester": requester}
-        if configurable.get("policy") is not None:
-            extra["policy"] = configurable["policy"]
+        # The run's data outbound policy and its project's snapshot (docs/api/projects.md).
+        for key in ("policy", "project"):
+            if configurable.get(key) is not None:
+                extra[key] = configurable[key]
         try:
             outcome = await execute(node, {**state, **extra}, rt)
         except (GraphBubbleUp, FlowError):

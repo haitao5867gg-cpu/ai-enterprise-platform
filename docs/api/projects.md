@@ -22,7 +22,7 @@
 ```jsonc
 // Project
 {
-  "project_id": "jade-ibf",              // 2–40 个字符：小写字母开头，小写字母、数字和 -；建好后不能改
+  "project_id": "jade-ibf",              // 2–40 个字符：小写字母开头，小写字母、数字和 -；不能是 new（页面地址用了它）；建好后不能改
   "name": "IBF 入库运费",                 // 1–100 字符，去掉首尾空白；不能和别的项目重名
   "description": "……",                    // 可选，最多 2000 字符，默认 ""
   "table_prefix": "ibf_",                 // 2–30 个字符：小写字母开头，小写字母、数字和 _
@@ -37,7 +37,7 @@
 
 // Environment
 {
-  "key": "dev",                           // 规则同编排应用的节点 id：小写字母开头，小写字母、数字和 _，1–40
+  "key": "dev",                           // 规则同编排应用的节点 id：小写字母开头，小写字母、数字和 _，1–32 个字符
   "label": "开发",                         // 1–50 字符
   "catalog": "icsd-ace-dev",              // 1–255 字符，Unity Catalog 名，原样保存（带 - 的名字由平台加反引号）
   "schema": "jade_dev",                   // 1–255 字符
@@ -136,11 +136,13 @@
 ```jsonc
 "project": {"project_id": "jade-ibf", "name": "IBF 入库运费",
             "environment": "dev", "environment_label": "开发",
-            "params": {"update_month": "2026-09"}} | null,
+            "params": {"update_month": "2026-09"},
+            "param_labels": {"update_month": "统计月"},                // 参数的显示名，页面用
+            "policy": {"samples": "stats", "models": null}} | null,   // 项目自己的策略设置，null 的项用平台默认
 "policy": {"samples": "stats", "models": ["company"] | null}     // 这次运行的有效策略，没绑定项目时是平台默认
 ```
 
-运行页的标题下面显示项目、环境和参数值；有效策略不是 `full` 时显示一句“发给模型的数据：只发统计（项目设置）”。
+运行页的标题下面显示项目、环境和参数值；有效策略不是 `full` 或限定了模型时显示一句“发给模型的数据：只发统计（项目设置）”，括号里按 `project.policy` 写这一项来自项目设置还是平台设置。
 
 ### 变量引用 `{{param.<key>}}` 和 `{{project.<字段>}}`
 
@@ -159,6 +161,7 @@
 | `brief` | 给模型看的一段 Markdown，由平台按快照写：项目名称和说明；写到哪里（`catalog.schema`）和表名前缀；“只能写以前缀开头、属于本项目的表”；引用表（全名、名称、读取筛选、说明）；运行参数（标识、名称、类型、这次的值、说明），以及生成的代码用 `param("标识")` 读、方案和检查里的条件用 `${param.标识}` 写 |
 
 - 没绑定项目的运行里（只有 `optional` 的应用会这样）两种引用都是 null，`brief` 是 `""`，节点要自己处理空值。
+- 单节点试跑（`POST /apps/{app}/nodes/{node}/test`）的测试值可以给 `param.<key>`、`project.<字段>`，没给的按没绑定项目算。
 - 这些都是人配的项目信息，不算数据值，不受数据外发策略的样本级别影响。
 
 ## 数据外发策略

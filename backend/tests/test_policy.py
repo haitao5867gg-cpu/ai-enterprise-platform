@@ -453,7 +453,8 @@ async def test_the_platform_checks_the_model_again_before_calling_it():
     gateway = FakeGateway(["不会发出"])
     rt = Runtime(gateway.client, "mock", {}, {})
     node = {"id": "ask", "title": "写条件", "model": None}
-    state = {"policy": {"samples": "full", "models": ["qwen"]}, "project": {"name": "IBF"}}
+    project = {"name": "IBF", "policy": {"samples": None, "models": ["qwen"]}}
+    state = {"policy": {"samples": "full", "models": ["qwen"]}, "project": project}
     with pytest.raises(NodeFailure) as found:
         await rt.chat(node, [{"role": "user", "content": "hi"}], state)
     assert found.value.type == INPUT_ERROR

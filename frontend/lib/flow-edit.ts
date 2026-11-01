@@ -5,6 +5,7 @@ import type { FlowEdge, FlowNode as DiagramNode, NodeKind } from "./flow";
 import type { ValidationIssue } from "./runs";
 import type { RerankModel } from "./knowledge";
 import { retrievalProblems } from "./retrieval";
+import { PROJECT_FIELDS } from "./projects";
 
 export const REF_PATTERN =
   /\{\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}\}/g;
@@ -325,6 +326,14 @@ export function variablesFor(
       group: "常量",
       field: item.key,
     })),
+    // Parameters depend on the project a run binds, so only the project's fields are listed.
+    ...(config.graph.nodes.some((node) => node.type === "start" && node.project)
+      ? PROJECT_FIELDS.map((field) => ({
+          ref: `{{project.${field}}}`,
+          group: "项目",
+          field,
+        }))
+      : []),
     ...(withSecrets
       ? config.env.secrets.map((name) => ({
           ref: `{{secret.${name}}}`,

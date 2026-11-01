@@ -29,6 +29,7 @@ from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import search
 from aep.knowledge.store import Hit, KnowledgeStore
 from aep.policy import DataPolicy
+from aep.projects import project_value
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.skills import SkillContent, SkillStore
@@ -141,11 +142,21 @@ class Runtime:
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
 
+        project = state.get("project")
+
         def get(node: str, name: str) -> Any:
             if node == refs.ENV:
                 return self.env.get(name)
             if node == refs.SECRET:
                 raise NodeFailure(INPUT_ERROR, "密钥只能用在工具参数里")
+            # A single-node test gives test values for these as ``param.x`` / ``project.x``
+            # (no node can have these ids, so only a test sets them).
+            if node in (refs.PARAM, refs.PROJECT) and node in values:
+                return values[node].get(name)
+            if node == refs.PARAM:
+                return ((project or {}).get("values") or {}).get(name)
+            if node == refs.PROJECT:
+                return project_value(project, name)
             return (values.get(node) or {}).get(name)
 
         return get
@@ -171,7 +182,8 @@ class Runtime:
             value = get(node, name)
             if name in (data.get(node) or ()):
                 return policy.for_model(value, samples, run_id)
-            if restored and node != refs.ENV and node not in self.people:
+            # What people wrote, constants and the project's settings stay as they are.
+            if restored and node not in refs.RESERVED and node not in self.people:
                 value = policy.remask(value, restored)
             if name in (quoted.get(node) or ()):
                 return policy.scrub(value, samples, run_id)
@@ -218,7 +230,9 @@ class Runtime:
     def model_check(self, node: dict[str, Any], state: dict[str, Any]) -> Callable[[str], None]:
         """Raises ``input_error`` for a model the run's policy does not allow, before any
         request goes to it (``llm.chat``, embedding, rerank)."""
-        project = (state.get("project") or {}).get("name")
+        # The project is named when its own policy limits the models.
+        bound = state.get("project") or {}
+        project = bound.get("name") if (bound.get("policy") or {}).get("models") else None
         title = node.get("title") or node.get("id") or ""
         rules = self.data_policy(state)
 
@@ -595,6 +609,9 @@ def _keys(items: Any) -> list[str]:
 
 async def check_start(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     check_fields(node, "inputs", p, start=True)
+    # Whether runs bind a project (docs/api/projects.md); absent: the app uses none.
+    if node.get("project") not in (None, "required", "optional"):
+        p.add(("project",), "使用项目只能是 required（必须选）或 optional（可以不选）")
 
 
 async def run_start(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:

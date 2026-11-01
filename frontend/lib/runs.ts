@@ -82,8 +82,20 @@ export type RunSummary = {
   // What a done flow run came to: the outcome of the end step it ended at
   // ("delivered", "stopped" or another word the app chose); null otherwise.
   outcome?: string | null;
+  // The project the run binds, as its snapshot has it (docs/api/projects.md).
+  project?: RunProject | null;
   // The data outbound policy in force for the run (docs/api/projects.md).
   policy?: RunPolicy;
+};
+export type RunProject = {
+  project_id: string;
+  name: string;
+  environment: string;
+  environment_label: string;
+  params: Record<string, string | number | boolean | null>;
+  param_labels: Record<string, string>;
+  // The project's own policy setting; null parts follow the platform default.
+  policy: { samples: SampleLevel | null; models: string[] | null };
 };
 export type SampleLevel = "full" | "masked" | "stats" | "schema";
 export type RunPolicy = {
@@ -100,13 +112,26 @@ export const sampleLabels: Record<SampleLevel, string> = {
 };
 
 // One line on what of the data goes to models, or null when the policy is the
-// default one (everything, any model).
-export function policyText(policy: RunPolicy | undefined): string | null {
+// default one (everything, any model). Each part says whether the run's project or the
+// platform set it.
+export function policyText(
+  policy: RunPolicy | undefined,
+  project?: RunProject | null,
+): string | null {
   if (!policy) return null;
-  const parts: string[] = [];
-  if (policy.samples !== "full") parts.push(sampleLabels[policy.samples]);
-  if (policy.models?.length) parts.push(`只用模型 ${policy.models.join("、")}`);
-  return parts.length ? `${parts.join("；")}（平台设置）` : null;
+  const parts: [string, string][] = [];
+  const origin = (own: unknown) => (own != null ? "项目设置" : "平台设置");
+  if (policy.samples !== "full")
+    parts.push([sampleLabels[policy.samples], origin(project?.policy.samples)]);
+  if (policy.models?.length)
+    parts.push([
+      `只用模型 ${policy.models.join("、")}`,
+      origin(project?.policy.models),
+    ]);
+  if (!parts.length) return null;
+  return parts.every(([, from]) => from === parts[0][1])
+    ? `${parts.map(([text]) => text).join("；")}（${parts[0][1]}）`
+    : parts.map(([text, from]) => `${text}（${from}）`).join("；");
 }
 export type RunFailure = {
   node: string | null;
@@ -435,7 +460,8 @@ export async function requestJson(
       detail &&
       ((creating && response.status === 409) ||
         path.startsWith("/knowledge-bases") ||
-        path.startsWith("/datasources"))
+        path.startsWith("/datasources") ||
+        path.startsWith("/projects"))
         ? detail
         : detail
           ? `${message} ${detail}`
@@ -513,6 +539,12 @@ export type CreateRunInput = {
   app_version?: number;
   draft?: boolean;
   requester?: string;
+  // The project the run binds (docs/api/projects.md).
+  project?: {
+    project_id: string;
+    environment?: string;
+    params?: Record<string, string | number | boolean | null>;
+  };
 };
 export type ResumeInput = {
   decision: string;
