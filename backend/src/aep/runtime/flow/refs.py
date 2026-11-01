@@ -1,7 +1,9 @@
 """Variable references in a flow app's settings: ``{{node.field}}``.
 
 A reference names a node's output (``{{draft.text}}``), a constant
-(``{{env.refund_limit}}``) or a secret (``{{secret.crm_token}}``). In text a
+(``{{env.refund_limit}}``), a secret (``{{secret.crm_token}}``), a run parameter
+(``{{param.update_month}}``) or what the run's project says (``{{project.brief}}``;
+docs/api/projects.md). In text a
 reference is replaced by its value as text; a setting that is exactly one
 reference (a tool argument, a code input) gets the value itself.
 """
@@ -17,6 +19,9 @@ WHOLE = re.compile(r"^\s*\{\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}\}\s*$"
 # Node ids a reference may name besides the app's nodes.
 ENV = "env"
 SECRET = "secret"
+PARAM = "param"
+PROJECT = "project"
+RESERVED = (ENV, SECRET, PARAM, PROJECT)
 
 Lookup = Callable[[str, str], Any]
 

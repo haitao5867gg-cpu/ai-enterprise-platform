@@ -34,7 +34,14 @@ import {
   type FieldValues,
 } from "../lib/input-fields";
 import { InputFields } from "./input-fields";
+import {
+  ProjectPicker,
+  projectChoice,
+  type PickedProject,
+} from "./project-picker";
 import { savedActor, saveActor } from "../lib/actor";
+
+const NO_PROJECT: PickedProject = { project: null, environment: "", values: {} };
 
 export function NewRun({ from }: { from?: string } = {}) {
   const router = useRouter();
@@ -43,6 +50,10 @@ export function NewRun({ from }: { from?: string } = {}) {
   const [apps, setApps] = useState<AppSummary[]>([]);
   const [detail, setDetail] = useState<AppDetail | null>(null);
   const [values, setValues] = useState<FieldValues>({});
+  const [picked, setPicked] = useState<PickedProject>(NO_PROJECT);
+  const [projectErrors, setProjectErrors] = useState<Record<string, string>>(
+    {},
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [appsRevision, setAppsRevision] = useState(0);
@@ -214,7 +225,11 @@ export function NewRun({ from }: { from?: string } = {}) {
     showErrors(
       Object.fromEntries(issues.map((issue) => [issue.loc[2], issue.msg])),
     );
-    if (issues.length) return;
+    // A copy binds the copied run's project again (the backend does it).
+    const bound =
+      !from && detail.project ? projectChoice(detail.project, picked) : null;
+    setProjectErrors(bound?.problems ?? {});
+    if (issues.length || Object.keys(bound?.problems ?? {}).length) return;
     busy.current = true;
     setSubmitting(true);
     setError("");
@@ -245,7 +260,12 @@ export function NewRun({ from }: { from?: string } = {}) {
       const who = name ? { requester: name } : {};
       const receipt = from
         ? await rerunRun(from, { input, ...who })
-        : await createRun({ app, input, ...who });
+        : await createRun({
+            app,
+            input,
+            ...who,
+            ...(bound?.choice ? { project: bound.choice } : {}),
+          });
       router.push(`/runs/${encodeURIComponent(receipt.run_id)}`);
     } catch (err) {
       setError(errorMessage(err));
@@ -311,6 +331,8 @@ export function NewRun({ from }: { from?: string } = {}) {
               onChange={(event) => {
                 setApp(event.target.value);
                 setDetail(null);
+                setPicked(NO_PROJECT);
+                setProjectErrors({});
                 setErrors({});
                 setError("");
                 setAdvancedOpen(false);
@@ -350,6 +372,27 @@ export function NewRun({ from }: { from?: string } = {}) {
               message={appsError}
               onRetry={() => setAppsRevision((value) => value + 1)}
             />
+          )}
+          {!from && detail?.app === app && detail.project && (
+            <ProjectPicker
+              uses={detail.project}
+              picked={picked}
+              errors={projectErrors}
+              disabled={submitting || uploading}
+              onChange={(next) => {
+                setPicked(next);
+                setProjectErrors({});
+              }}
+            />
+          )}
+          {from && source?.project && (
+            <div className="form-section">
+              <span>项目</span>
+              <p className="field-hint" role="status">
+                沿用原运行的项目「{source.project.name}」、环境「
+                {source.project.environment_label}」和参数值；项目的其他设置按现在的。
+              </p>
+            </div>
           )}
           {app === "etl" && (
             <div className="form-section">

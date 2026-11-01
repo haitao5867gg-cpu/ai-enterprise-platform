@@ -98,6 +98,13 @@ export function AppShell({
             数据源与工具
           </Link>
           <Link
+            href="/projects"
+            className={`nav-link ${pathname.startsWith("/projects") ? "active" : ""}`}
+          >
+            <Icon name="folder" />
+            项目
+          </Link>
+          <Link
             href="/runs/new"
             className={`nav-link ${pathname === "/runs/new" ? "active" : ""}`}
           >
@@ -123,7 +130,9 @@ export function AppShell({
                       ? "Skill"
                       : pathname.startsWith("/datasources")
                         ? "数据源与工具"
-                        : "运行详情"}
+                        : pathname.startsWith("/projects")
+                          ? "项目"
+                          : "运行详情"}
           </span>
           <BackendHealth />
         </header>

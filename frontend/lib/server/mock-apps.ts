@@ -285,6 +285,11 @@ function refresh(entry: StoredApp) {
     item.score = evaluation.score;
   });
 }
+function startProject(config: FlowConfig) {
+  const start = config.graph.nodes.find((node) => node.type === "start");
+  return start?.type === "start" ? (start.project ?? null) : null;
+}
+
 function detail(entry: StoredApp): AppDetail {
   refresh(entry);
   const config = current(entry).config;
@@ -309,6 +314,7 @@ function detail(entry: StoredApp): AppDetail {
     inputs: isFlowConfig(config)
       ? (config.graph.nodes.find((node) => node.type === "start")?.inputs ?? [])
       : null,
+    project: isFlowConfig(config) ? startProject(config) : null,
     secrets: [
       ...new Set([
         ...Object.keys(entry.secrets),

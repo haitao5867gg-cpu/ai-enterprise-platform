@@ -22,6 +22,10 @@ async function handle(request: Request, context: Context) {
     [/^datasources\/(files|test)$/, ["POST"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage)$/, ["GET"]],
+    // `options` comes before the id rule: the first match wins.
+    [/^projects$/, ["GET", "POST"]],
+    [/^projects\/options$/, ["GET"]],
+    [/^projects\/[a-z][a-z0-9-]{1,39}$/, ["GET", "PUT", "DELETE"]],
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow|manual))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/(resume|cancel|retry|rerun)$/, ["POST"]],
@@ -98,6 +102,12 @@ async function handle(request: Request, context: Context) {
         "../../../lib/server/mock-knowledge"
       );
       return mockKnowledge(request, path);
+    }
+    if (path[0] === "projects") {
+      const { mockProjects } = await import(
+        "../../../lib/server/mock-projects"
+      );
+      return mockProjects(request, path);
     }
     if (path[0] === "skills") {
       const { mockSkills } = await import("../../../lib/server/mock-skills");

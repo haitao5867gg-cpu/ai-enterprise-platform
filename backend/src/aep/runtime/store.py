@@ -55,6 +55,8 @@ class RunRecord:
     # The data outbound policy in force for the run (aep.policy), fixed when it starts;
     # None for runs from before policies existed (they sent everything).
     policy: dict[str, Any] | None = None
+    # The snapshot of the project the run binds (aep.projects.snapshot), or None.
+    project: dict[str, Any] | None = None
 
 
 class RunStore(Protocol):
@@ -68,6 +70,7 @@ class RunStore(Protocol):
         created_by: str | None = None,
         rerun_of: str | None = None,
         policy: dict[str, Any] | None = None,
+        project: dict[str, Any] | None = None,
     ) -> RunRecord: ...
     async def get(self, run_id: str) -> RunRecord | None: ...
     async def recent(self, limit: int = 50) -> list[RunRecord]: ...
@@ -113,6 +116,7 @@ class MemoryRunStore:
         created_by: str | None = None,
         rerun_of: str | None = None,
         policy: dict[str, Any] | None = None,
+        project: dict[str, Any] | None = None,
     ) -> RunRecord:
         record = RunRecord(
             run_id=str(uuid.uuid4()),
@@ -124,6 +128,7 @@ class MemoryRunStore:
             created_by=created_by,
             rerun_of=rerun_of,
             policy=policy,
+            project=project,
         )
         self._runs[record.run_id] = record
         return record
@@ -203,12 +208,13 @@ CREATE TABLE IF NOT EXISTS runs (
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS rerun_of uuid",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS outcome text",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS policy jsonb",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS project jsonb",
 ]
 
 COLUMNS = (
     "run_id::text, app, status, input, tenant_id, error, app_version, config, created_at,"
     " updated_at, created_by, step, waiting_since, wait_seconds, error_type, cancelled_by,"
-    " rerun_of::text, outcome, policy"
+    " rerun_of::text, outcome, policy, project"
 )
 
 
@@ -236,12 +242,13 @@ class PostgresRunStore:
         created_by: str | None = None,
         rerun_of: str | None = None,
         policy: dict[str, Any] | None = None,
+        project: dict[str, Any] | None = None,
     ) -> RunRecord:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 "INSERT INTO runs (run_id, app, status, input, app_version, config, created_by,"
-                " wait_seconds, rerun_of, policy)"
-                f" VALUES (%s, %s, 'running', %s, %s, %s, %s, 0, %s, %s) RETURNING {COLUMNS}",
+                " wait_seconds, rerun_of, policy, project)"
+                f" VALUES (%s, %s, 'running', %s, %s, %s, %s, 0, %s, %s, %s) RETURNING {COLUMNS}",
                 (
                     uuid.uuid4(),
                     app,
@@ -251,6 +258,7 @@ class PostgresRunStore:
                     created_by,
                     uuid.UUID(rerun_of) if rerun_of else None,
                     Jsonb(policy) if policy is not None else None,
+                    Jsonb(project) if project is not None else None,
                 ),
             )
             return _record(await cur.fetchone())

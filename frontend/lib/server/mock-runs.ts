@@ -44,6 +44,13 @@ import {
   type VariablePool,
 } from "./mock-flow-apps";
 import { invalid } from "./mock-assets";
+import {
+  bindMockProject,
+  mockProject,
+  projectPolicy,
+  projectValues,
+  runProject,
+} from "./mock-projects";
 import type { AppManual } from "../app-manual";
 import { buildMockManual } from "./mock-manual";
 import {
@@ -301,6 +308,7 @@ const summaryKeys: (keyof RunSummary)[] = [
   "cancelled_by",
   "rerun_of",
   "outcome",
+  "project",
   "policy",
   "created_at",
   "updated_at",
@@ -805,6 +813,20 @@ function create(
         });
     if (issues.length) return invalid(issues);
   }
+  const startNode = flow?.graph.nodes.find((node) => node.type === "start");
+  const bound = bindMockProject(
+    snapshot.title,
+    startNode?.type === "start" ? startNode.project : null,
+    body.project,
+    flow
+      ? [
+          ...JSON.stringify(flow.graph.nodes).matchAll(
+            /\{\{\s*param\.([a-z][a-z0-9_]*)\s*\}\}/g,
+          ),
+        ].map((match) => match[1])
+      : [],
+  );
+  if (typeof bound === "string") return json({ detail: bound }, 422);
   const isEtl = body.app === "etl";
   // Like the backend: a flow app's run starts with the first text filled in.
   const text = isEtl
@@ -840,7 +862,8 @@ function create(
     input,
     rerun_of: copy?.rerunOf ?? null,
     cancelled_by: null,
-    policy: { samples: "full", models: null },
+    project: runProject(bound),
+    policy: projectPolicy(bound),
     // Like the backend: the first text input that was filled in.
     title: isEtl
       ? runTitle(input.request)
@@ -896,6 +919,8 @@ function create(
             secret: Object.fromEntries(
               snapshot.secrets.map((name) => [name, "******"]),
             ),
+            param: bound?.values ?? {},
+            project: projectValues(bound),
           },
           next: start!.id,
           visits: {},
@@ -1009,11 +1034,30 @@ export async function mockRuns(request: Request, path: string[]) {
     )
       return json({ detail: "Invalid input or requester" }, 422);
     if (!mockAppSnapshot(run.app)) return json({ detail: "应用不存在" }, 404);
+    // Like the backend: the same project, environment and values, as the project is now.
+    if (run.project && !mockProject(run.project.project_id))
+      return json(
+        { detail: `项目 ${run.project.project_id} 已经删除，不能重新运行` },
+        422,
+      );
     return create(
       {
         app: run.app,
         input: isRecord(body.input) ? body.input : run.input,
         requester: body.requester ?? undefined,
+        ...(run.project
+          ? {
+              project: {
+                project_id: run.project.project_id,
+                environment: run.project.environment,
+                params: Object.fromEntries(
+                  Object.entries(run.project.params).filter(
+                    ([, value]) => value !== null,
+                  ),
+                ),
+              },
+            }
+          : {}),
         ...(run.draft || run.app_version == null
           ? {}
           : { app_version: run.app_version }),

@@ -226,6 +226,8 @@ class AppCatalog:
                 "skills_text": d.skills if d else "",
             }
             inputs = None
+            # Code apps bind no project (docs/api/projects.md).
+            uses_project = None
         else:
             config = self._runs.flow_config(app, current.config)
             options = {}
@@ -236,6 +238,8 @@ class AppCatalog:
                 "skills_text": flowgraph.DESIGN["skills"],
             }
             inputs = flowgraph.inputs(config)
+            start = next((n for n in flowgraph.nodes(config) if n["type"] == "start"), {})
+            uses_project = start.get("project")
         skills: list[Skill] = await self._runs.skills.all()
         models = await self.models()
         default = self._runs.default_model
@@ -244,6 +248,7 @@ class AppCatalog:
             | texts
             | {
                 "inputs": inputs,
+                "project": uses_project,
                 "nodes": [
                     {
                         "id": n["id"],

@@ -29,6 +29,7 @@ import {
   type Run,
 } from "../lib/runs";
 import { Icon } from "./icons";
+import { paramText } from "../lib/projects";
 import { ErrorNotice, StatusBadge } from "./ui";
 import {
   etlFailed,
@@ -910,10 +911,42 @@ export function RunDetail({
                     <dt>提出人</dt>
                     <dd>{run.created_by || "—"}</dd>
                   </div>
-                  {policyText(run.policy) && (
+                  {run.project && (
+                    <div>
+                      <dt>项目</dt>
+                      <dd>
+                        <Link
+                          className="text-button"
+                          href={`/projects/${encodeURIComponent(run.project.project_id)}`}
+                        >
+                          {run.project.name}
+                        </Link>
+                        <span className="run-step">
+                          环境：{run.project.environment_label}
+                        </span>
+                      </dd>
+                    </div>
+                  )}
+                  {run.project &&
+                    Object.keys(run.project.params).length > 0 && (
+                      <div>
+                        <dt>运行参数</dt>
+                        <dd className="run-params">
+                          {Object.entries(run.project.params).map(
+                            ([key, value]) => (
+                              <span key={key}>
+                                {run.project!.param_labels[key] ?? key}：
+                                {paramText(undefined, value)}
+                              </span>
+                            ),
+                          )}
+                        </dd>
+                      </div>
+                    )}
+                  {policyText(run.policy, run.project) && (
                     <div>
                       <dt>发给模型的数据</dt>
-                      <dd>{policyText(run.policy)}</dd>
+                      <dd>{policyText(run.policy, run.project)}</dd>
                     </div>
                   )}
                   {run.rerun_of && (

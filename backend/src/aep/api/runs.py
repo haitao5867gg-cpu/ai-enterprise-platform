@@ -203,6 +203,7 @@ from pydantic import BaseModel, Field
 
 from aep.knowledge.citations import CitedSource
 from aep.policy import DataPolicy
+from aep.projects import run_summary
 from aep.runtime.service import (
     CommentRequired,
     ContentChanged,
@@ -215,6 +216,7 @@ from aep.runtime.service import (
     NotFailed,
     NotRetryable,
     NotWaiting,
+    ProjectProblem,
     RunNotFound,
     RunService,
     RunView,
@@ -234,6 +236,16 @@ def get_run_service(request: Request) -> RunService:
 Service = Annotated[RunService, Depends(get_run_service)]
 
 
+class ProjectChoice(BaseModel):
+    """The project a new run binds (docs/api/projects.md)."""
+
+    project_id: str = Field(max_length=40)
+    # None: the project's first environment.
+    environment: str | None = Field(default=None, max_length=40)
+    # Values of the project's parameters; the others take their defaults.
+    params: dict[str, Any] | None = None
+
+
 class CreateRun(BaseModel):
     app: str
     input: dict[str, Any] = {}
@@ -242,6 +254,7 @@ class CreateRun(BaseModel):
     draft: bool = False
     # Who asks for the run. Until sign-in exists (M4) the client says so.
     requester: str | None = Field(default=None, max_length=100)
+    project: ProjectChoice | None = None
 
 
 class Note(BaseModel):
@@ -289,6 +302,19 @@ class Step(BaseModel):
     title: str
 
 
+class RunProject(BaseModel):
+    """The project a run binds, as its snapshot has it (docs/api/projects.md)."""
+
+    project_id: str
+    name: str
+    environment: str
+    environment_label: str
+    params: dict[str, Any]
+    param_labels: dict[str, str]
+    # The project's own policy setting; null parts follow the platform default.
+    policy: dict[str, Any]
+
+
 class RunPolicy(BaseModel):
     """The data outbound policy in force for a run (docs/api/projects.md)."""
 
@@ -314,6 +340,7 @@ class RunSummary(BaseModel):
     cancelled_by: str | None
     rerun_of: str | None
     outcome: str | None
+    project: RunProject | None
     policy: RunPolicy
 
 
@@ -427,6 +454,7 @@ def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> d
         "cancelled_by": r.cancelled_by,
         "rerun_of": r.rerun_of,
         "outcome": r.outcome if r.status == "done" else None,
+        "project": run_summary(r.project),
         "policy": DataPolicy.from_dict(r.policy).as_dict(),
     }
 
@@ -471,6 +499,7 @@ async def create_run(body: CreateRun, service: Service) -> RunRef:
             body.app_version,
             draft=body.draft,
             requester=(body.requester or "").strip() or None,
+            project=body.project.model_dump() if body.project else None,
         )
     except UnknownApp as exc:
         raise HTTPException(404, f"没有应用 {body.app}") from exc
@@ -480,7 +509,7 @@ async def create_run(body: CreateRun, service: Service) -> RunRef:
         raise HTTPException(409, f"应用 {body.app} 没有草稿") from exc
     except InvalidValues as exc:
         raise _invalid_values("input", exc) from exc
-    except ModelNotAllowed as exc:
+    except (ModelNotAllowed, ProjectProblem) as exc:
         raise HTTPException(422, str(exc)) from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
@@ -601,7 +630,7 @@ async def rerun_run(run_id: str, service: Service, body: Rerun | None = None) ->
         raise HTTPException(404, "这次运行用的应用或版本已经不在了") from exc
     except InvalidValues as exc:
         raise _invalid_values("input", exc) from exc
-    except ModelNotAllowed as exc:
+    except (ModelNotAllowed, ProjectProblem) as exc:
         raise HTTPException(422, str(exc)) from exc
     return RunRef(run_id=record.run_id, status=record.status)
 

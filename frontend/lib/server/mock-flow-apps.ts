@@ -42,6 +42,7 @@ import type { Flow, NodeKind } from "../flow";
 import { isRecord, type Question } from "../runs";
 import { mockSkillVersionExists } from "./mock-skills";
 import { allMockSources } from "./mock-datasources";
+import { PROJECT_FIELDS } from "../projects";
 import type { ValidationIssue } from "./mock-assets";
 
 export const mockModels = [
@@ -794,7 +795,7 @@ export function validateFlow(config: unknown): ValidationIssue[] {
       (node) =>
         isRecord(node) &&
         NODE_ID_PATTERN.test(node.id) &&
-        !["env", "secret"].includes(node.id) &&
+        !["env", "secret", "param", "project"].includes(node.id) &&
         defaults.some((item) => item.type === node.type) &&
         typeof node.title === "string" &&
         node.title.trim(),
@@ -833,10 +834,16 @@ export function validateFlow(config: unknown): ValidationIssue[] {
           msg: "检索问题须为 1–2000 字符",
         });
     }
-    if (node.type === "start")
+    if (node.type === "start") {
       node.inputs.forEach((input, i) =>
         issues.push(...startInputIssues(input, [...loc, "inputs", i])),
       );
+      if (![undefined, null, "required", "optional"].includes(node.project))
+        issues.push({
+          loc: [...loc, "project"],
+          msg: "使用项目只能是 required（必须选）或 optional（可以不选）",
+        });
+    }
     if (node.type === "human" && node.mode === "form")
       node.fields.forEach((field, i) => {
         for (const key of ["advanced", "examples"])
@@ -907,6 +914,18 @@ export function validateFlow(config: unknown): ValidationIssue[] {
         if (id === "env") {
           if (!flow.env.vars.some((item) => item.key === field))
             issues.push({ ...at, msg: `没有常量 ${field}` });
+        } else if (id === "param" || id === "project") {
+          // Parameter names are checked when a run binds a project.
+          if (start.type !== "start" || !start.project)
+            issues.push({
+              ...at,
+              msg: "开始节点没有设置使用项目，不能引用项目和运行参数",
+            });
+          else if (id === "project" && !PROJECT_FIELDS.includes(field))
+            issues.push({
+              ...at,
+              msg: `项目没有 ${field} 这一项，可以用 ${PROJECT_FIELDS.join("、")}`,
+            });
         } else if (id === "secret") {
           if (node.type !== "tool" || path[0] !== "args")
             issues.push({ ...at, msg: "密钥只能用在工具参数里" });

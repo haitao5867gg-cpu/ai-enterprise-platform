@@ -13,6 +13,7 @@ from aep.config import Settings
 from aep.databricks import DevTarget
 from aep.datasources import DataSourceStore, MemoryDataSourceStore
 from aep.knowledge.store import KnowledgeStore, MemoryKnowledgeStore
+from aep.projects import MemoryProjectStore, ProjectStore
 from aep.tools.mcp import McpTools
 
 
@@ -24,7 +25,8 @@ class AppContext:
     their connectors with ``tools`` (look the connector up in ``datasources``).
     ``databricks`` is the workspace's dev target, or None when none is configured;
     ``assets`` is the assets repository (None when not configured) and
-    ``asset_store`` the index of what went there.
+    ``asset_store`` the index of what went there; ``projects`` the projects runs may
+    bind (aep.projects).
     """
 
     llm_client: AsyncOpenAI
@@ -35,6 +37,7 @@ class AppContext:
     assets: AssetRepo | None = None
     asset_store: AssetStore = field(default_factory=MemoryAssetStore)
     knowledge: KnowledgeStore = field(default_factory=MemoryKnowledgeStore)
+    projects: ProjectStore = field(default_factory=MemoryProjectStore)
 
 
 AppBuilder = Callable[[AppContext], StateGraph]

@@ -9,6 +9,7 @@ import copy
 from collections import defaultdict
 from typing import Any
 
+from aep.projects import FIELDS as PROJECT_FIELDS
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
@@ -243,7 +244,7 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
                 "标识只能用小写字母、数字和下划线，以字母开头，最多 32 个字符",
             )
             continue
-        if node_id in (refs.ENV, refs.SECRET):
+        if node_id in refs.RESERVED:
             add(["graph", "nodes", node_id, "id"], f"{node_id} 是保留的标识")
             continue
         if node_id in by_id:
@@ -372,6 +373,13 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
                         add(where, "密钥只能写在工具节点的参数里")
                     elif name not in environment["secrets"]:
                         add(where, f"没有声明密钥 {name}，请先在应用的密钥里添加")
+                elif target in (refs.PARAM, refs.PROJECT):
+                    # Which project a run binds is known only then: parameter names are
+                    # checked when the run starts (docs/api/projects.md).
+                    if by_id[start].get("project") is None:
+                        add(where, "开始节点没有设置使用项目，不能引用项目和运行参数")
+                    elif target == refs.PROJECT and name not in PROJECT_FIELDS:
+                        add(where, f"项目没有 {name} 这一项，可以用 {'、'.join(PROJECT_FIELDS)}")
                 elif target not in by_id:
                     add(where, f"没有节点 {target}")
                 else:
