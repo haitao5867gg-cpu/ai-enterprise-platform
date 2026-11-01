@@ -82,7 +82,32 @@ export type RunSummary = {
   // What a done flow run came to: the outcome of the end step it ended at
   // ("delivered", "stopped" or another word the app chose); null otherwise.
   outcome?: string | null;
+  // The data outbound policy in force for the run (docs/api/projects.md).
+  policy?: RunPolicy;
 };
+export type SampleLevel = "full" | "masked" | "stats" | "schema";
+export type RunPolicy = {
+  // How much of the data read from data sources goes to models.
+  samples: SampleLevel;
+  // The model aliases the run may use; null: any.
+  models: string[] | null;
+};
+export const sampleLabels: Record<SampleLevel, string> = {
+  full: "完整样本",
+  masked: "脱敏样本",
+  stats: "只发统计",
+  schema: "只发结构",
+};
+
+// One line on what of the data goes to models, or null when the policy is the
+// default one (everything, any model).
+export function policyText(policy: RunPolicy | undefined): string | null {
+  if (!policy) return null;
+  const parts: string[] = [];
+  if (policy.samples !== "full") parts.push(sampleLabels[policy.samples]);
+  if (policy.models?.length) parts.push(`只用模型 ${policy.models.join("、")}`);
+  return parts.length ? `${parts.join("；")}（平台设置）` : null;
+}
 export type RunFailure = {
   node: string | null;
   title: string | null;

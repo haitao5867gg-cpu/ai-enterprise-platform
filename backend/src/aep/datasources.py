@@ -22,6 +22,8 @@ from aep.runtime.store import DEFAULT_TENANT
 DataSourceKind = Literal["postgres", "mysql", "sqlserver", "file", "mcp"]
 # The kinds ETL reads from; each must offer ETL_TOOLS. The other kind, mcp, is a tool service.
 DATABASE_KINDS: tuple[str, ...] = ("postgres", "mysql", "sqlserver", "file")
+# The kinds whose tools return data values, which the data outbound policy covers (aep.policy).
+DATA_KINDS: tuple[str, ...] = DATABASE_KINDS
 # What ETL reads through a data source's connector (connectors/postgres and the others).
 ETL_TOOLS = (
     "list_schemas",

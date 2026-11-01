@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     default_embedding_model: str = "mock-embed"
     rerank_models: list[str] = ["mock-rerank"]
     knowledge_dir: Path = Path("/data/knowledge")
+    # The platform's data outbound policy (aep.policy; docs/api/projects.md): how much of
+    # the data read from data sources goes to models, and which model aliases runs may
+    # use (comma separated; empty: any). A project may set its own.
+    data_samples: Literal["full", "masked", "stats", "schema"] = "full"
+    allowed_models: str = ""
     # Each call to a connector (MCP server) tool.
     tool_timeout_seconds: float = 30.0
     # Data sources registered at startup when no source of that name exists yet,

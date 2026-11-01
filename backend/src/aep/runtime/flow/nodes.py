@@ -19,15 +19,16 @@ import openai
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from aep import llm
+from aep import llm, policy
 from aep.config import Settings
 from aep.databricks import DevTarget
-from aep.datasources import DATABASE_KINDS, DataSource, DataSourceStore
+from aep.datasources import DATA_KINDS, DATABASE_KINDS, DataSource, DataSourceStore
 from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import search
 from aep.knowledge.store import Hit, KnowledgeStore
+from aep.policy import DataPolicy
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.skills import SkillContent, SkillStore
@@ -102,13 +103,27 @@ class CheckEnv:
     )
 
 
+def _refers(outputs: dict[str, Any], setting: Any) -> bool:
+    return any(
+        name in (outputs.get(node) or ())
+        for _, text in refs.strings(setting)
+        for node, name in refs.find(text)
+    )
+
+
 @dataclass
 class Runtime:
     """What running a node needs. ``skills`` holds the text of every skill version the
     app uses, loaded before the run; ``env`` the app's constants; ``secret`` reads
     one of the app's secrets when a tool needs it; ``sandbox_url`` is where code
     nodes run; ``knowledge`` holds the bases and chunks retrieval searches;
-    ``databricks`` is the workspace data-engineering nodes use (None: not set up)."""
+    ``databricks`` is the workspace data-engineering nodes use (None: not set up);
+    ``people`` the ids of the nodes whose outputs people wrote (start and human).
+
+    The data outbound policy (aep.policy) is the run's (``state["policy"]``), or the
+    platform's when there is no run. ``state["data"]`` names the outputs that hold data
+    values, ``state["restored"]`` the tokens a model wrote that were turned back into
+    values; ``model_lookup`` is how settings are read into content bound for a model."""
 
     llm_client: AsyncOpenAI
     default_model: str
@@ -121,6 +136,7 @@ class Runtime:
     knowledge: KnowledgeStore | None = None
     settings: Settings = field(default_factory=Settings)
     databricks: DevTarget | None = None
+    people: frozenset[str] = frozenset()
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -134,13 +150,99 @@ class Runtime:
 
         return get
 
+    def data_policy(self, state: dict[str, Any]) -> DataPolicy:
+        stored = state.get("policy")
+        if stored is None:
+            return policy.platform_default(self.settings)
+        return DataPolicy.from_dict(stored)
+
+    def model_lookup(self, state: dict[str, Any]) -> refs.Lookup:
+        """References read into content bound for a model: data values as the policy lets
+        them go, and values turned back from tokens made tokens again (not in what people
+        wrote, nor in constants)."""
+        get = self.lookup(state)
+        samples = self.data_policy(state).samples
+        data = state.get("data") or {}
+        quoted = state.get("quoted") or {}
+        restored = state.get("restored") or {}
+        run_id = str(state.get("run_id") or "")
+
+        def model_get(node: str, name: str) -> Any:
+            value = get(node, name)
+            if name in (data.get(node) or ()):
+                return policy.for_model(value, samples, run_id)
+            if restored and node != refs.ENV and node not in self.people:
+                value = policy.remask(value, restored)
+            if name in (quoted.get(node) or ()):
+                return policy.scrub(value, samples, run_id)
+            return value
+
+        return model_get
+
+    def holds_data(self, state: dict[str, Any], setting: Any) -> bool:
+        """Whether a setting refers to a data value."""
+        return _refers(state.get("data") or {}, setting)
+
+    def classify(self, state: dict[str, Any], setting: Any, keys: list[str]) -> dict[str, Any]:
+        """How outputs made from a setting are classified (aep.policy): data values when it
+        refers to one, error text that may quote them when it refers to such text, so
+        reformatting a value never takes it past the policy."""
+        if self.holds_data(state, setting):
+            return {"data": keys}
+        if _refers(state.get("quoted") or {}, setting):
+            return {"quoted": keys}
+        return {}
+
+    def unmask(
+        self, value: Any, state: dict[str, Any], extra: list[Any] | None = None
+    ) -> tuple[Any, dict[str, str]]:
+        """A model's reply with its tokens turned back into the run's data values, and which
+        tokens were; as it is unless the run's data goes out masked."""
+        if self.data_policy(state).samples != "masked":
+            return value, {}
+        values = state.get("vars") or {}
+        found = [
+            (values.get(node) or {}).get(name)
+            for node, names in (state.get("data") or {}).items()
+            for name in names
+        ]
+        quoted = [
+            policy.literals((values.get(node) or {}).get(name))
+            for node, names in (state.get("quoted") or {}).items()
+            for name in names
+        ]
+        restored = list((state.get("restored") or {}).values())
+        known = [*found, *quoted, *(extra or []), restored]
+        return policy.unmask(value, known, str(state.get("run_id") or ""))
+
+    def model_check(self, node: dict[str, Any], state: dict[str, Any]) -> Callable[[str], None]:
+        """Raises ``input_error`` for a model the run's policy does not allow, before any
+        request goes to it (``llm.chat``, embedding, rerank)."""
+        project = (state.get("project") or {}).get("name")
+        title = node.get("title") or node.get("id") or ""
+        rules = self.data_policy(state)
+
+        def check(model: str) -> None:
+            problem = policy.model_problem(rules, model, title, project)
+            if problem:
+                raise NodeFailure(INPUT_ERROR, problem)
+
+        return check
+
     def system(self, node: dict[str, Any], *extra: str) -> str:
         parts = [self.skills[(s["name"], s["version"])].text() for s in node.get("skills") or []]
         parts += [e.strip() for e in extra if e and e.strip()]
         return "\n\n".join(parts)
 
-    async def chat(self, node: dict[str, Any], messages: list[dict[str, str]]) -> str:
+    async def chat(
+        self,
+        node: dict[str, Any],
+        messages: list[dict[str, str]],
+        state: dict[str, Any] | None = None,
+    ) -> str:
         model = node.get("model") or self.default_model
+        state = state or {}
+        self.model_check(node, state)(model)
         try:
             reply = await llm.chat(self.llm_client, messages, model=model)
         except (TimeoutError, openai.APITimeoutError) as exc:
@@ -214,6 +316,11 @@ class Outcome:
     # What the node keeps for its own next run (``state["private"][node id]``), not
     # a variable other nodes can read; None leaves what it kept before.
     private: dict[str, Any] | None = None
+    # Which of its outputs hold data values (aep.policy), which are error text that may
+    # quote them, and the tokens in a model's reply it turned back into values.
+    data: list[str] = field(default_factory=list)
+    quoted: list[str] = field(default_factory=list)
+    restored: dict[str, str] = field(default_factory=dict)
 
 
 Check = Callable[[dict[str, Any], Problems, CheckEnv], Awaitable[None]]
@@ -547,11 +654,13 @@ async def _ask_json(
     node: dict[str, Any],
     messages: list[dict[str, str]],
     valid: Callable[[Any], str | None],
+    state: dict[str, Any],
 ) -> dict[str, Any]:
-    """The model's JSON reply; asked again once when it is not valid."""
+    """The model's JSON reply (tokens as the model wrote them); asked again once when it
+    is not valid."""
     problem = ""
     for _ in range(2):
-        text = await rt.chat(node, messages)
+        text = await rt.chat(node, messages, state)
         try:
             data = llm.parse_json(text)
         except ValueError as exc:
@@ -569,7 +678,7 @@ async def _ask_json(
 
 
 async def run_llm(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
-    get = rt.lookup(state)
+    get = rt.model_lookup(state)
     fields = _json_fields(node)
     instruction = ""
     if fields is not None:
@@ -579,10 +688,10 @@ async def run_llm(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
     messages = [{"role": "system", "content": system}] if system else []
     messages.append({"role": "user", "content": refs.render(node["prompt"], get)})
     if fields is None:
-        text = await rt.chat(node, messages)
+        text, restored = rt.unmask(await rt.chat(node, messages, state), state)
         # A quiet node's answer is only for later nodes: it stays out of the run's messages.
         said = [] if node.get("quiet") else [{"role": "assistant", "content": text}]
-        return Outcome({"text": text}, messages=said)
+        return Outcome({"text": text}, messages=said, restored=restored)
 
     def valid(data: Any) -> str | None:
         if not isinstance(data, dict):
@@ -594,10 +703,10 @@ async def run_llm(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
                 return f"字段 {f['key']} 应该是 {f['type']}"
         return None
 
-    data = await _ask_json(rt, node, messages, valid)
+    data, restored = rt.unmask(await _ask_json(rt, node, messages, valid, state), state)
     # JSON output is data for later nodes, not a reply: it stays out of the conversation
     # (the flow view shows it as the node's output).
-    return Outcome({f["key"]: data[f["key"]] for f in fields})
+    return Outcome({f["key"]: data[f["key"]] for f in fields}, restored=restored)
 
 
 # classifier
@@ -619,7 +728,7 @@ def _classes(node: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def run_classifier(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
-    get = rt.lookup(state)
+    get = rt.model_lookup(state)
     classes = _classes(node)
     lines = [f"- {c['key']}：{c.get('label', '')}（{c.get('description', '')}）" for c in classes]
     task = (
@@ -639,7 +748,7 @@ async def run_classifier(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             None if isinstance(data, dict) and isinstance(data.get("class"), str) else "缺少 class"
         )
 
-    data = await _ask_json(rt, node, messages, valid)
+    data = await _ask_json(rt, node, messages, valid, state)
     chosen = next((c for c in classes if c["key"] == data["class"]), None)
     key = chosen["key"] if chosen else OTHER
     return Outcome({"class": key, "label": chosen.get("label", key) if chosen else "都不是"}, key)
@@ -1111,7 +1220,8 @@ async def check_template(node: dict[str, Any], p: Problems, env: CheckEnv) -> No
 
 
 async def run_template(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
-    return Outcome({"text": refs.render(node["template"], rt.lookup(state))})
+    text = refs.render(node["template"], rt.lookup(state))
+    return Outcome({"text": text}, **rt.classify(state, node["template"], ["text"]))
 
 
 # code
@@ -1165,7 +1275,10 @@ async def run_code(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
         value = result[f["key"]]
         if value is not None and not JSON_CHECK[f["type"]](value):
             raise NodeFailure("code_error", f"main 返回的 {f['key']} 应该是 {f['type']}")
-    return Outcome({f["key"]: result[f["key"]] for f in fields})
+    keys = [f["key"] for f in fields]
+    return Outcome(
+        {key: result[key] for key in keys}, **rt.classify(state, node.get("inputs"), keys)
+    )
 
 
 # end
@@ -1258,7 +1371,7 @@ def _index_knowledge_hits(
 
 
 async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
-    query = refs.render(node["query"], rt.lookup(state)).strip()
+    query = refs.render(node["query"], rt.model_lookup(state)).strip()
     if not query:
         return Outcome({"hits": [], "context": ""})
     try:
@@ -1273,7 +1386,10 @@ async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime
             node.get("min_score", 0.3),
             node.get("retrieval"),
             settings=rt.settings,
+            check=rt.model_check(node, state),
         )
+    except NodeFailure:
+        raise
     except Exception as exc:  # noqa: BLE001 - retrieval failures use the node's on_error
         raise NodeFailure("knowledge_error", f"知识库检索失败：{exc}") from exc
     citations = dict(state.get("citations") or {})
@@ -1356,7 +1472,7 @@ async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
 
     source = await rt.source(refs.resolve(node["datasource"], get))
     result = await rt.call(source, node["tool"], refs.resolve(args, lookup))
-    return Outcome({"result": result})
+    return Outcome({"result": result}, data=["result"] if source.kind in DATA_KINDS else [])
 
 
 async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
@@ -1445,7 +1561,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         parts.append("可以读取的 Skill（需要时用 read_skill 读全文）：\n" + listed)
     messages = [
         {"role": "system", "content": "\n\n".join(parts)},
-        {"role": "user", "content": refs.render(node["task"], get)},
+        {"role": "user", "content": refs.render(node["task"], rt.model_lookup(state))},
     ]
 
     def valid(data: Any) -> str | None:
@@ -1480,16 +1596,26 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     sources: dict[str, dict[str, Any]] = {}
     hits: dict[int, IndexedHit] = {}
     forced = False
+    # What the data sources' tools returned (data values): the model saw them as the data
+    # outbound policy lets them go, and the tokens it writes back are turned into them.
+    found: list[Any] = []
+    restored: dict[str, str] = {}
+    samples = rt.data_policy(state).samples
+    run_id = str(state.get("run_id") or "")
     while True:
-        data = await _ask_json(rt, node, messages, valid)
+        data = await _ask_json(rt, node, messages, valid, state)
         said = {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)}
         if data["action"] == "answer":
-            text = data["text"]
+            text, back = rt.unmask(data["text"], state, found)
+            restored |= back
             return Outcome(
                 {"text": text, "steps": steps, "hits": [asdict(hits[i]) for i in sorted(hits)]},
                 messages=[{"role": "assistant", "content": text}],
                 citations=citations,
                 sources=sources,
+                # Its steps keep the tools' errors, which may quote the data.
+                quoted=["steps"],
+                restored=restored,
             )
         if len(steps) >= limit:
             if forced:
@@ -1536,7 +1662,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             try:
                 if rt.knowledge is None:
                     raise ValueError("平台没有配置知识库")
-                found = await search(
+                kb_hits = await search(
                     rt.knowledge,
                     rt.llm_client,
                     kb_ids,
@@ -1545,17 +1671,23 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                     knowledge.get("min_score", 0.3),
                     knowledge.get("retrieval"),
                     settings=rt.settings,
+                    check=rt.model_check(node, state),
                 )
-                indexed, latest = _index_knowledge_hits(found, citations, node)
+                indexed, latest = _index_knowledge_hits(kb_hits, citations, node)
                 hits.update((hit.index, hit) for hit in indexed)
                 sources.update(latest)
                 step["hits"] = len(indexed)
                 reply = context(indexed)[:MAX_TOOL_RESULT] if indexed else "没有找到相关资料"
+            except NodeFailure:
+                # A model the policy does not allow fails the node, as for its own model.
+                raise
             except Exception as exc:  # noqa: BLE001 - tool errors go back to the model
                 step["error"] = f"知识库检索失败：{exc}"
                 reply = f"出错了：{step['error']}"
         else:
             source, tool = offered[data["tool"]]
+            args, back = rt.unmask(args, state, found)
+            restored |= back
             step = {
                 "tool": tool.name,
                 "datasource": source.datasource_id,
@@ -1564,10 +1696,18 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             }
             try:
                 result = await rt.call(source, tool.name, args)
+                if source.kind in DATA_KINDS:
+                    found.append(result)
+                    result = policy.for_model(result, samples, run_id)
                 reply = json.dumps(result, ensure_ascii=False, default=str)[:MAX_TOOL_RESULT]
             except NodeFailure as exc:
                 step["error"] = exc.message
-                reply = f"出错了：{exc.message}"
+                said_error = exc.message
+                if source.kind in DATA_KINDS:
+                    # The error may quote the data (aep.policy).
+                    found.append(policy.literals(exc.message))
+                    said_error = policy.scrub(exc.message, samples, run_id)
+                reply = f"出错了：{said_error}"
         steps.append(step)
         messages += [said, {"role": "user", "content": f"工具 {data['tool']} 返回：\n{reply}"}]
 

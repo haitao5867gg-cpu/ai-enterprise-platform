@@ -6,6 +6,7 @@ from typing import Any
 
 from aep.datasources import DataSource
 from aep.etl.plan import KnownValues
+from aep.policy import LABELS, mask
 from aep.tools.mcp import McpTools
 
 MAX_TABLES = 20
@@ -115,9 +116,28 @@ def _short(value: Any) -> Any:
     return value
 
 
-def describe_for_model(tables: list[dict[str, Any]]) -> str:
-    """A compact text view of the profile for the planning prompt."""
+def describe_for_model(
+    tables: list[dict[str, Any]], samples: str = "full", run_id: str = ""
+) -> str:
+    """A compact text view of the profile for the planning prompt, with as much of the
+    data as the data outbound policy's ``samples`` level lets go to a model (aep.policy):
+    ``masked`` masks the sample rows and value counts, ``stats`` leaves them out,
+    ``schema`` also leaves out row counts, null fractions and distinct counts."""
+    values = samples in ("full", "masked")
+    counts = samples != "schema"
+
+    def shown(value: Any) -> Any:
+        return mask(value, run_id) if samples == "masked" else value
+
     parts = []
+    if samples != "full":
+        left = {
+            "masked": "样本和取值分布已脱敏：文字换成了记号 ‹文本#…›，"
+            "数字只留一位有效数字，日期只留到月；写条件时照抄记号，平台会换回原值",
+            "stats": "没有样本和取值分布",
+            "schema": "只有表结构，没有行数、统计、样本和取值分布",
+        }[samples]
+        parts.append(f"（按数据外发策略「{LABELS[samples]}」：{left}）")
     for t in tables:
         stats = {c["name"]: c for c in t["column_stats"]}
         head = f"约 {t['estimated_row_count']} 行"
@@ -125,7 +145,7 @@ def describe_for_model(tables: list[dict[str, Any]]) -> str:
         if isinstance(rows, int) and isinstance(limit, int) and rows >= limit:
             # Otherwise a column's distinct count reads like the table's row count.
             head += f"；空值率、不同值和取值分布只统计了 {rows} 行样本"
-        lines = [f"表 {t['name']}（{head}）"]
+        lines = [f"表 {t['name']}（{head}）" if counts else f"表 {t['name']}"]
         for col in t["columns"]:
             s = stats.get(col["name"], {})
             flags = [col["data_type"]]
@@ -133,22 +153,27 @@ def describe_for_model(tables: list[dict[str, Any]]) -> str:
                 flags.append("主键")
             if not col.get("nullable", True):
                 flags.append("非空")
-            if s:
+            if s and counts:
                 flags.append(f"空值率 {s.get('null_fraction') or 0:.0%}")
                 flags.append(f"不同值 {s.get('distinct_count')}")
             lines.append(f"  - {col['name']}：{'，'.join(flags)}")
-            if s.get("top_values"):
-                values = "，".join(
-                    f"{json.dumps(v['value'], ensure_ascii=False)}"
+            if s.get("top_values") and values:
+                listed = "，".join(
+                    f"{json.dumps(shown(v['value']), ensure_ascii=False)}"
                     f"{'…（已截断，不能当作取值使用）' if v.get('truncated') else ''} {v['count']}"
                     for v in s["top_values"]
                 )
-                lines.append(f"    取值分布（样本）：{values}")
+                lines.append(f"    取值分布（样本）：{listed}")
         for fk in t["foreign_keys"]:
             ref = f"{fk['referenced_schema']}.{fk['referenced_table']}"
             cols, ref_cols = ", ".join(fk["columns"]), ", ".join(fk["referenced_columns"])
             lines.append(f"  外键 ({cols}) → {ref} ({ref_cols})")
-        sample = [{k: _short(v) for k, v in row.items()} for row in t["sample"]]
-        lines.append(f"  样本：{json.dumps(sample, ensure_ascii=False, default=str)}")
+        if values:
+            # A token stands for the whole value, so the model can copy it back.
+            sample = [
+                {k: shown(v) if samples == "masked" else _short(v) for k, v in row.items()}
+                for row in t["sample"]
+            ]
+            lines.append(f"  样本：{json.dumps(sample, ensure_ascii=False, default=str)}")
         parts.append("\n".join(lines))
     return "\n\n".join(parts)

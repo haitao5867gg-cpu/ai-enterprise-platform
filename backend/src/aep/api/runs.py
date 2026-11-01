@@ -202,12 +202,14 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from aep.knowledge.citations import CitedSource
+from aep.policy import DataPolicy
 from aep.runtime.service import (
     CommentRequired,
     ContentChanged,
     InvalidDecision,
     InvalidNotes,
     InvalidValues,
+    ModelNotAllowed,
     NoDraftToRun,
     NotCancellable,
     NotFailed,
@@ -287,6 +289,13 @@ class Step(BaseModel):
     title: str
 
 
+class RunPolicy(BaseModel):
+    """The data outbound policy in force for a run (docs/api/projects.md)."""
+
+    samples: Literal["full", "masked", "stats", "schema"]
+    models: list[str] | None
+
+
 class RunSummary(BaseModel):
     run_id: str
     app: str
@@ -305,6 +314,7 @@ class RunSummary(BaseModel):
     cancelled_by: str | None
     rerun_of: str | None
     outcome: str | None
+    policy: RunPolicy
 
 
 class Message(BaseModel):
@@ -417,6 +427,7 @@ def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> d
         "cancelled_by": r.cancelled_by,
         "rerun_of": r.rerun_of,
         "outcome": r.outcome if r.status == "done" else None,
+        "policy": DataPolicy.from_dict(r.policy).as_dict(),
     }
 
 
@@ -469,6 +480,8 @@ async def create_run(body: CreateRun, service: Service) -> RunRef:
         raise HTTPException(409, f"应用 {body.app} 没有草稿") from exc
     except InvalidValues as exc:
         raise _invalid_values("input", exc) from exc
+    except ModelNotAllowed as exc:
+        raise HTTPException(422, str(exc)) from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 
@@ -588,6 +601,8 @@ async def rerun_run(run_id: str, service: Service, body: Rerun | None = None) ->
         raise HTTPException(404, "这次运行用的应用或版本已经不在了") from exc
     except InvalidValues as exc:
         raise _invalid_values("input", exc) from exc
+    except ModelNotAllowed as exc:
+        raise HTTPException(422, str(exc)) from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 

@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from aep import llm
+from aep import llm, policy
 from aep.databricks import DatabricksError, DevTarget, Landing, full_name
 from aep.datasources import DATABASE_KINDS, DataSource
 from aep.etl import codegen
@@ -259,10 +259,14 @@ async def run_profile(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
             "source_name": source.name,
             "tables": tables,
             "names": listed,
-            "description": describe_for_model(tables),
+            # Written for models: as the run's data outbound policy lets the data go.
+            "description": describe_for_model(
+                tables, rt.data_policy(state).samples, str(state.get("run_id") or "")
+            ),
             "summary": summary,
         },
         messages=[{"role": "assistant", "content": summary}],
+        data=["tables"],
     )
 
 
@@ -505,12 +509,15 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     try:
         raw = llm.parse_json(refs.render(node["reply"], get))
         known, hits = known_values(profile), _hits(node, get)
+        # The problems go back to the model: they list the actual values only when the
+        # run's data outbound policy sends samples as they are.
+        shown = rt.data_policy(state).samples == "full"
         if v2:
             plan, cleaned = validate_plan_v2(
-                raw, sources, known, seen_values(profile), trust, hits, memory
+                raw, sources, known, seen_values(profile), trust, hits, memory, shown
             )
         else:
-            plan = validate_plan(raw, sources, known, trust, hits)
+            plan = validate_plan(raw, sources, known, trust, hits, shown)
         problems: list[str] = []
     except PlanError as exc:
         problems = exc.problems
@@ -941,7 +948,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         }
         for t in dev.tables
     ]
-    errors = [] if passed else [e[:ERROR_CHARS] for e in dev.errors[:MAX_ERRORS]]
+    # Cut without leaving a quoted value open, so the policy still finds it (aep.policy).
+    errors = [] if passed else [policy.clip(e, ERROR_CHARS) for e in dev.errors[:MAX_ERRORS]]
     quality = dev_quality(tables, plan)
     found = None
     if passed and plan and card:
@@ -975,6 +983,9 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         branch,
         messages=[{"role": "assistant", "content": said}],
         private={"attempts": attempt if branch == "retry" else 0},
+        data=["preview", "answer", "report"],
+        # The run's details keep the errors too.
+        quoted=["errors", "run"],
     )
 
 

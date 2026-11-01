@@ -1,6 +1,7 @@
 """Candidate retrieval, combined scoring and optional global reranking."""
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -24,7 +25,10 @@ async def search(
     retrieval: Retrieval | dict[str, Any] | None = None,
     *,
     settings: Settings | None = None,
+    check: Callable[[str], None] | None = None,
 ) -> list[Hit]:
+    """The best hits for ``query``. ``check`` is called with each model alias before a
+    request goes to it, and raises when the model may not be used (aep.policy)."""
     config = Retrieval.model_validate(
         retrieval.model_dump()
         if isinstance(retrieval, Retrieval)
@@ -45,6 +49,8 @@ async def search(
         candidates: list[str] = []
         if config.mode != "keyword":
             if base.embedding_model not in vectors:
+                if check is not None:
+                    check(base.embedding_model)
                 vectors[base.embedding_model] = (
                     await llm.embed(client, [query], base.embedding_model)
                 )[0]
@@ -64,6 +70,8 @@ async def search(
     hits.sort(key=lambda hit: (-hit.score, hit.chunk_id))
     if config.rerank:
         model = config.rerank.model
+        if check is not None:
+            check(model)
         kind = "rerank" if model in (settings or Settings()).rerank_models else "llm"
         hits = await rerank(client, query, hits[: config.rerank.candidates], model, kind)
         hits.sort(key=lambda hit: (-hit.score, hit.chunk_id))

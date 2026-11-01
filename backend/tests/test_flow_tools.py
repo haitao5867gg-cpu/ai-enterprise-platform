@@ -9,6 +9,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from aep.config import Settings
 from aep.datasources import MemoryDataSourceStore
 from aep.main import app
 from aep.runtime.catalog import AppCatalog
@@ -41,7 +42,12 @@ def crm() -> MCPServer:
 
 
 class Platform:
-    def __init__(self, replies: list[str], servers: dict[str, MCPServer] | None = None) -> None:
+    def __init__(
+        self,
+        replies: list[str],
+        servers: dict[str, MCPServer] | None = None,
+        settings: Settings = SETTINGS,
+    ) -> None:
         self.gateway = FakeGateway(replies)
         self.sources = MemoryDataSourceStore()
         servers = {fake_connector.URL: fake_connector.build(), CRM_URL: crm(), **(servers or {})}
@@ -52,13 +58,13 @@ class Platform:
             default_apps(),
             AppContext(
                 self.gateway.client,
-                SETTINGS,
+                settings,
                 datasources=self.sources,
                 tools=McpTools(5, resolve=lambda url: servers[url]),
             ),
             skills=self.skills,
         )
-        self.catalog = AppCatalog(self.service, self.sources, SETTINGS, models=self.models)
+        self.catalog = AppCatalog(self.service, self.sources, settings, models=self.models)
 
     async def models(self) -> list[str]:
         return ["mock", "qwen"]

@@ -30,13 +30,14 @@ and how many times the model and the dev run are tried.
 import hashlib
 import json
 import operator
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from aep import llm, tracing
+from aep import llm, policy, tracing
 from aep.assets import AssetRepoError, AssetStatus
 from aep.databricks import DevRun, Release
 from aep.datasources import DATABASE_KINDS
@@ -256,6 +257,10 @@ class EtlState(TypedDict, total=False):
     approvals: Annotated[list[dict[str, Any]], operator.add]
     result: dict[str, Any] | None
     warnings: list[str]
+    # Tokens in the models' replies turned back into the values they stand for, and the
+    # values dev-run errors quoted (aep.policy).
+    restored: dict[str, str]
+    quoted: list[str]
 
 
 def _plan_message(plan: EtlPlan) -> str:
@@ -384,6 +389,47 @@ def build(ctx: AppContext) -> StateGraph:
     def configured(config: RunnableConfig, node: str) -> NodeConfig:
         return node_config(config, node, CONFIG)
 
+    def rules_for(config: RunnableConfig) -> policy.DataPolicy:
+        """The run's data outbound policy, kept on the run when it was created (so a
+        restart with other platform settings does not change it); the platform's for a
+        graph run outside the run service."""
+        stored = (config.get("configurable") or {}).get("policy")
+        if stored is None:
+            return policy.platform_default(ctx.settings)
+        return policy.DataPolicy.from_dict(stored)
+
+    def model_check(config: RunnableConfig, step: str) -> Callable[[str], None]:
+        """Raises before any request goes to a model the run's policy does not allow."""
+        rules = rules_for(config)
+
+        def check(model: str) -> None:
+            problem = policy.model_problem(rules, model, NODES[step].title)
+            if problem:
+                raise InputError(problem)
+
+        return check
+
+    async def ask(
+        state: EtlState,
+        config: RunnableConfig,
+        step: str,
+        node: NodeConfig,
+        messages: list[dict[str, str]],
+    ) -> llm.ChatResult:
+        """The model's reply, when the run's data outbound policy allows the model."""
+        model = model_for(state, step, node)
+        model_check(config, step)(model)
+        return await llm.chat(ctx.llm_client, messages, model=model)
+
+    def unmask(state: EtlState, config: RunnableConfig, value: Any) -> tuple[Any, dict[str, str]]:
+        """A reply's tokens turned back into the profiled values (masked samples only)."""
+        if rules_for(config).samples != "masked":
+            return value, {}
+        run_id = config["configurable"]["thread_id"]
+        restored = list((state.get("restored") or {}).values())
+        known = [state["profile"], restored, state.get("quoted") or []]
+        return policy.unmask(value, known, run_id)
+
     async def profile(state: EtlState, config: RunnableConfig) -> dict[str, Any]:
         inp = state["input"]
         source = await ctx.datasources.get(str(inp.get("datasource_id", "")))
@@ -413,9 +459,11 @@ def build(ctx: AppContext) -> StateGraph:
         attempts = node.params["max_attempts"]
         inp = state["input"]
         language = inp.get("language") or "pyspark"
-        ask = (
+        run_id = config["configurable"]["thread_id"]
+        rules = rules_for(config)
+        request = (
             f"需求：{inp['request']}\n期望的代码语言：{language}\n\n"
-            f"源表（只能使用这些）：\n{describe_for_model(state['profile'])}"
+            "源表（只能使用这些）：\n" + describe_for_model(state["profile"], rules.samples, run_id)
         )
         references: list[IndexedHit] = []
         warnings = []
@@ -432,50 +480,63 @@ def build(ctx: AppContext) -> StateGraph:
                         "vector_weight": 0.7,
                         "rerank": None,
                     },
+                    check=model_check(config, "plan"),
                 )
                 references = [IndexedHit(**asdict(hit), index=i) for i, hit in enumerate(hits, 1)]
+            except InputError:
+                # A model the policy does not allow stops the run, as for the plan's model.
+                raise
             except Exception as exc:  # noqa: BLE001 - reference material is optional
                 warnings.append(f"知识库检索失败，继续生成方案：{exc}")
             if references:
-                ask += (
+                request += (
                     "\n\n参考资料：\n"
                     + context(references)
                     + "\n\n可以在 summary、assumptions、目标表和字段说明里用 [n] 标注依据；"
                     "没有资料依据的内容不要编号。"
                 )
-        prompt = [{"role": "system", "content": node.prompt()}, {"role": "user", "content": ask}]
+        prompt = [
+            {"role": "system", "content": node.prompt()},
+            {"role": "user", "content": request},
+        ]
+        restored = dict(state.get("restored") or {})
         if state.get("feedback"):
+            earlier = {k: v for k, v in state["plan"].items() if k != "references"}
             prompt.append(
                 {
                     "role": "assistant",
-                    "content": json.dumps(
-                        {k: v for k, v in state["plan"].items() if k != "references"},
-                        ensure_ascii=False,
-                    ),
+                    "content": json.dumps(policy.remask(earlier, restored), ensure_ascii=False),
                 }
             )
             prompt.append({"role": "user", "content": f"用户的修改意见：{state['feedback']}"})
         sources = [t["name"] for t in state["profile"]]
         known = known_values(state["profile"])
         for attempt in range(attempts):
-            reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "plan", node))
+            reply = await ask(state, config, "plan", node, prompt)
             try:
+                parsed, back = unmask(state, config, llm.parse_json(reply.text))
+                restored |= back
                 result = validate_plan(
-                    llm.parse_json(reply.text), sources, known, attempt > 0, references
+                    parsed, sources, known, attempt > 0, references, rules.samples == "full"
                 )
                 break
             except (ValueError, PlanError) as exc:
                 if attempt == attempts - 1:
                     raise PlanError(f"模型给出的方案不可用：{exc}") from exc
                 prompt.append({"role": "assistant", "content": reply.text})
+                problem = policy.remask(str(exc), restored)
                 prompt.append(
-                    {"role": "user", "content": f"这个方案有问题，请修正后重新输出完整 JSON：{exc}"}
+                    {
+                        "role": "user",
+                        "content": f"这个方案有问题，请修正后重新输出完整 JSON：{problem}",
+                    }
                 )
         if inp.get("language") in ("pyspark", "sql"):
             result.language = inp["language"]
         return {
             "plan": result.model_dump(),
             "feedback": None,
+            "restored": restored,
             "warnings": warnings,
             "messages": [{"role": "assistant", "content": _plan_message(result)}],
         }
@@ -506,35 +567,41 @@ def build(ctx: AppContext) -> StateGraph:
             t["name"]: [f"{c['name']} {c['data_type']}" for c in t["columns"]]
             for t in state["profile"]
         }
-        ask = (
-            f"已确认的方案：\n{json.dumps(state['plan'], ensure_ascii=False, indent=1)}\n\n"
+        # Values turned back from tokens go to the model as tokens again (aep.policy).
+        restored = dict(state.get("restored") or {})
+        plan = policy.remask(state["plan"], restored)
+        request = (
+            f"已确认的方案：\n{json.dumps(plan, ensure_ascii=False, indent=1)}\n\n"
             f"源表的列：\n{json.dumps(columns, ensure_ascii=False)}"
         )
         prompt = [
             {"role": "system", "content": node.prompt()},
-            {"role": "user", "content": ask},
+            {"role": "user", "content": request},
         ]
         if state.get("problems"):
-            prompt.append(
-                {
-                    "role": "assistant",
-                    "content": json.dumps({"targets": state["code"]}, ensure_ascii=False),
-                }
-            )
+            earlier = policy.remask({"targets": state["code"]}, restored)
+            prompt.append({"role": "assistant", "content": json.dumps(earlier, ensure_ascii=False)})
             prompt.append(
                 {
                     "role": "user",
                     "content": "这些问题需要修正，请输出完整 JSON：\n"
-                    + "\n".join(state["problems"]),
+                    + "\n".join(policy.remask(state["problems"], restored)),
                 }
             )
-        reply = await llm.chat(ctx.llm_client, prompt, model=model_for(state, "codegen", node))
+        reply = await ask(state, config, "codegen", node, prompt)
         try:
-            code = llm.parse_json(reply.text).get("targets") or {}
+            parsed, back = unmask(state, config, llm.parse_json(reply.text))
+            restored |= back
+            code = parsed.get("targets") or {}
             problems = codegen.check_code(confirmed, code)
         except (ValueError, AttributeError) as exc:
             code, problems = state.get("code", {}), [f"回复不是要求的 JSON：{exc}"]
-        return {"code": code, "problems": problems, "attempts": state.get("attempts", 0) + 1}
+        return {
+            "code": code,
+            "problems": problems,
+            "attempts": state.get("attempts", 0) + 1,
+            "restored": restored,
+        }
 
     def after_code(state: EtlState, config: RunnableConfig) -> str:
         if (
@@ -607,8 +674,14 @@ def build(ctx: AppContext) -> StateGraph:
             ],
         }
         if retry:
-            errors = [e[:ERROR_CHARS] for e in dev.errors[:10]]
-            update["problems"] = ["代码在 Databricks dev 目标上运行失败，报错如下：", *errors]
+            errors = dev.errors[:10]
+            # They go to the codegen model: the values they quote as the policy lets them,
+            # each whole (a token stands for the whole value), then cut to length.
+            samples = rules_for(config).samples
+            run_id = config["configurable"]["thread_id"]
+            said = [policy.clip(e, ERROR_CHARS) for e in policy.scrub(errors, samples, run_id)]
+            update["problems"] = ["代码在 Databricks dev 目标上运行失败，报错如下：", *said]
+            update["quoted"] = [*(state.get("quoted") or []), *policy.literals(errors)]
             update["attempts"] = 0
         elif dev.status != "passed":
             result["release"] = {"status": "skipped", "reason": "dev 试跑没有通过，不能上线"}
