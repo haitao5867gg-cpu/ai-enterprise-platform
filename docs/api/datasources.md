@@ -205,7 +205,7 @@ JSON 列表，每一项是下面一种写法：
   - `table_stats` 的 `estimated_row_count` 是带 `where` 的精确行数；空值率、不同值个数和 `top_values` 在最多 `AEP_DATABRICKS_READ_STATS_SAMPLE`（默认 1000）行的样本上算，同 postgres 连接器。
   - `read_rows` 按主键排序（没登记主键时按全部列），用 `LIMIT … OFFSET …` 分页。
 - 另有 3 个只读的分析工具（`databricks` 类型才有，登记时不要求，`data_check` 节点用；`tool`、`agent` 节点也能用）。表名一律是三段式 `table`（`catalog.schema.table`），`where`、`expr` 的形状检查同上，最多返回 `limit` 行（1–1000，默认 20）：
-  - `aggregate`：`{"table", "expr", "where"?, "group_by"?: [列], "limit"?}`，返回 `{"rows": [{分组列…, "value": 值}], "groups": 组数}`；不分组时 `rows` 只有一行。`limit` 不分组时不起作用，分组时最多 10000。
+  - `aggregate`：`{"table", "expr", "where"?, "group_by"?: [列], "limit"?}`，返回 `{"rows": [{分组列…, "value": 值}], "groups": 组数}`；不分组时 `rows` 只有一行。`limit` 不分组时不起作用，分组时最多 10000。`groups` 是满足条件的全部组数，可能比 `rows` 多：`rows` 按分组列排序，取前 `limit` 组。
   - `duplicates`：`{"table", "columns": [列], "where"?, "limit"?}`，返回 `{"groups": 重复的组数, "rows": [{列…, "count": 次数}]}`（按次数从多到少）。
   - `compare`：`{"table", "expected", "keys": [列], "columns"?: [列], "where"?, "tolerance"?, "limit"?}`：按 `keys` 全外连接两张表，返回 `{"missing": expected 有而 table 没有的行数, "extra": 反过来, "different": 键相同而某列不同的行数, "columns": 比较了哪些列, "rows": [例子，带 "kind": "missing" | "extra" | "different" 和两边的值]}`。数字列差的绝对值不超过 `tolerance`（默认 0）算相同，两边都是空值算相同。`where` 两边都用。
 - 在哪里执行：设了 `AEP_DATABRICKS_READ_WAREHOUSE_ID` 时用 SQL warehouse（Statement Execution API），否则用 `AEP_DATABRICKS_READ_CLUSTER_ID` 指定的已有集群（命令执行接口，SQL 上下文）；两个都没设时工具报错“连接器没有配置在哪里执行查询”。集群没在运行时报错“集群 … 没有在运行，请先在 Databricks 上启动它”，连接器不替你启动集群。
