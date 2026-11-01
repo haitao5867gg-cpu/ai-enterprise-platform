@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from aep import policy
+from aep import llm, policy
 from aep.databricks import DevRun
 from aep.etl.plan import KnownValues, PlanError, validate_plan
 from aep.etl.profile import describe_for_model
@@ -811,3 +811,33 @@ def test_long_sample_values_are_masked_whole_so_their_tokens_turn_back():
     back, _ = policy.unmask(f"city = '{tok(long)}'", [tables], RUN)
     assert back == f"city = '{long}'"
     assert long[:80] + "…" in describe_for_model(tables, "full", RUN)
+
+
+def test_quoted_values_holding_the_other_quote_are_scrubbed():
+    text = """cannot cast "O'Reilly" to INT; 'say "hi"' is not a date; it doesn't parse"""
+    assert policy.scrub(text, "stats", RUN) == (
+        "cannot cast \"‹已隐去›\" to INT; '‹已隐去›' is not a date; it doesn't parse"
+    )
+    assert policy.scrub(text, "masked", RUN) == (
+        f"cannot cast \"{tok("O'Reilly")}\" to INT; '{tok('say "hi"')}' is not a date; "
+        "it doesn't parse"
+    )
+    assert policy.literals(text) == ["O'Reilly", 'say "hi"']
+
+
+def test_tokens_in_a_json_reply_turn_back_as_json_strings():
+    value = 'O"Re\\illy\n二楼'
+    data = [[{"name": value}]]
+    for reply in [
+        f'{{"filter": "name = \'{tok(value)}\'"}}',
+        f'方案如下：\n```json\n{{"filter": "name = \'{tok(value)}\'"}}\n```\n请确认。',
+    ]:
+        back, restored = policy.unmask(reply, data, RUN)
+        assert restored == {tok(value): value}
+        assert llm.parse_json(back) == {"filter": f"name = '{value}'"}
+    # Text that is not a JSON object gets the value as it is.
+    back, _ = policy.unmask(f"name = '{tok(value)}'", data, RUN)
+    assert back == f"name = '{value}'"
+    # A value parsed out of JSON already is not escaped again.
+    back, _ = policy.unmask({"filter": f"name = '{tok(value)}'"}, data, RUN)
+    assert back == {"filter": f"name = '{value}'"}

@@ -12,6 +12,7 @@ stand for before the reply is used, so plans and code name the real values.
 """
 
 import hashlib
+import json
 import math
 import re
 from collections.abc import Iterable
@@ -41,9 +42,12 @@ LOCAL_MODELS = frozenset({"mock-embed", "mock-rerank"})
 TOKEN = re.compile(r"‹文本#([0-9a-f]{10})›")
 # What a quoted value in error text becomes when the policy sends no data values.
 HIDDEN = "‹已隐去›"
-# Quoted literals in error text (values a failed run or read may quote), however long;
-# a quote right after or before a letter is an apostrophe ("doesn't"), not a quote.
-_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])([^'\"\n]+)\1(?![A-Za-z])")
+# Quoted literals in error text (values a failed run or read may quote), however long and
+# whatever other quote they hold ("O'Reilly"); a quote right after or before a letter is
+# an apostrophe ("doesn't"), not a quote.
+_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])((?:(?!\1)[^\n])+)\1(?![A-Za-z])")
+# The JSON object a reply may carry, found the way aep.llm.parse_json finds it.
+_FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 # Type names errors quote in double quotes ("STRING", "DECIMAL(10,2)"): not values, kept.
 _TYPE_NAME = re.compile(r"[A-Z][A-Z0-9_ ]*(\([0-9, ]*\))?")
 # Dates and times as connectors write them: kept to the month when masked.
@@ -194,16 +198,25 @@ def unmask(value: Any, data: Iterable[Any], run_id: str) -> tuple[Any, dict[str,
             originals[key] = text if originals.get(key, text) == text else None
     restored: dict[str, str] = {}
 
-    def swap(m: re.Match[str]) -> str:
+    def swap(m: re.Match[str], escaped: bool = False) -> str:
         found = originals.get(m.group(0))
         if found is None:
             return m.group(0)
         restored[m.group(0)] = found
-        return found
+        # Inside a JSON string the text keeps its quotes, backslashes and newlines escaped.
+        return json.dumps(found, ensure_ascii=False)[1:-1] if escaped else found
+
+    def text(v: str) -> str:
+        span = _json_span(v)
+        if span is None:
+            return TOKEN.sub(swap, v)
+        start, end = span
+        inner = TOKEN.sub(lambda m: swap(m, True), v[start:end])
+        return TOKEN.sub(swap, v[:start]) + inner + TOKEN.sub(swap, v[end:])
 
     def back(v: Any) -> Any:
         if isinstance(v, str):
-            return TOKEN.sub(swap, v)
+            return text(v)
         if isinstance(v, list):
             return [back(x) for x in v]
         if isinstance(v, dict):
@@ -211,6 +224,22 @@ def unmask(value: Any, data: Iterable[Any], run_id: str) -> tuple[Any, dict[str,
         return v
 
     return back(value), restored
+
+
+def _json_span(text: str) -> tuple[int, int] | None:
+    """Where the JSON object in a reply is, when there is a valid one (tokens in it are
+    inside JSON strings: a token is not JSON syntax)."""
+    fenced = _FENCED.search(text)
+    base = fenced.start(1) if fenced else 0
+    candidate = fenced.group(1) if fenced else text
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start == -1 or end < start:
+        return None
+    try:
+        json.loads(candidate[start : end + 1])
+    except ValueError:
+        return None
+    return base + start, base + end + 1
 
 
 def remask(value: Any, restored: dict[str, str]) -> Any:
