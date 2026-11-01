@@ -116,6 +116,31 @@ services:
       timeout: 3s
       retries: 20
 
+  # Read-only Databricks tables (docs/api/datasources.md, "Databricks 数据源"). Not
+  # registered by default: once configured, register it on the data sources page with
+  # http://connector-databricks:8005/mcp. For development it falls back to the
+  # platform's workspace, token and cluster; production uses a read-only identity.
+  connector-databricks:
+    build: ./connectors/databricks
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AEP_DATABRICKS_READ_HOST: ${AEP_DATABRICKS_READ_HOST:-${AEP_DATABRICKS_HOST:-}}
+      AEP_DATABRICKS_READ_TOKEN: ${AEP_DATABRICKS_READ_TOKEN:-${AEP_DATABRICKS_TOKEN:-}}
+      AEP_DATABRICKS_READ_CLUSTER_ID: ${AEP_DATABRICKS_READ_CLUSTER_ID:-${AEP_DATABRICKS_CLUSTER_ID:-}}
+      AEP_DATABRICKS_MCP_HOST: 0.0.0.0
+      AEP_DATABRICKS_MCP_PORT: 8005
+    ports:
+      - "127.0.0.1:8005:8005"
+    # /healthz does not reach Databricks (a statement every few seconds would keep a
+    # warehouse or cluster from stopping); /healthz?probe=1 runs SELECT 1.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # Runs code-node Python. Alone on the internal "sandbox" network: no internet, no
   # database, no API. The API reaches it through sandbox-relay, the only container on
   # both networks. See connectors/sandbox/README.md.
