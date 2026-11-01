@@ -169,7 +169,11 @@ def describe_for_model(
             cols, ref_cols = ", ".join(fk["columns"]), ", ".join(fk["referenced_columns"])
             lines.append(f"  外键 ({cols}) → {ref} ({ref_cols})")
         if values:
-            sample = [{k: shown(_short(v)) for k, v in row.items()} for row in t["sample"]]
+            # A token stands for the whole value, so the model can copy it back.
+            sample = [
+                {k: shown(v) if samples == "masked" else _short(v) for k, v in row.items()}
+                for row in t["sample"]
+            ]
             lines.append(f"  样本：{json.dumps(sample, ensure_ascii=False, default=str)}")
         parts.append("\n".join(lines))
     return "\n\n".join(parts)

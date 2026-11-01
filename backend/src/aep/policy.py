@@ -41,9 +41,9 @@ LOCAL_MODELS = frozenset({"mock-embed", "mock-rerank"})
 TOKEN = re.compile(r"‹文本#([0-9a-f]{10})›")
 # What a quoted value in error text becomes when the policy sends no data values.
 HIDDEN = "‹已隐去›"
-# Quoted literals in error text (values a failed run or read may quote); a quote right
-# after or before a letter is an apostrophe ("doesn't"), not a quote.
-_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])([^'\"\n]{1,200})\1(?![A-Za-z])")
+# Quoted literals in error text (values a failed run or read may quote), however long;
+# a quote right after or before a letter is an apostrophe ("doesn't"), not a quote.
+_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])([^'\"\n]+)\1(?![A-Za-z])")
 # Type names errors quote in double quotes ("STRING", "DECIMAL(10,2)"): not values, kept.
 _TYPE_NAME = re.compile(r"[A-Z][A-Z0-9_ ]*(\([0-9, ]*\))?")
 # Dates and times as connectors write them: kept to the month when masked.

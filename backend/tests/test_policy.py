@@ -792,3 +792,22 @@ async def test_the_etl_app_keeps_the_policy_the_run_was_created_with():
     assert view.record.policy == {"samples": "stats", "models": None}
     retry = gateway.requests[2]["body"]["messages"][-1]["content"]
     assert "a@example.com" not in retry and "The value '‹已隐去›'" in retry
+
+
+def test_long_quoted_values_are_scrubbed_too():
+    value = "x" * 250
+    text = f"cannot cast '{value}' to INT"
+    assert policy.scrub(text, "stats", RUN) == "cannot cast '‹已隐去›' to INT"
+    assert policy.scrub(text, "masked", RUN) == f"cannot cast '{tok(value)}' to INT"
+    assert policy.literals(text) == [value]
+
+
+def test_long_sample_values_are_masked_whole_so_their_tokens_turn_back():
+    long = "备注" * 60
+    tables = _profiled()
+    tables[0]["sample"][0]["city"] = long
+    sent = describe_for_model(tables, "masked", RUN)
+    assert tok(long) in sent
+    back, _ = policy.unmask(f"city = '{tok(long)}'", [tables], RUN)
+    assert back == f"city = '{long}'"
+    assert long[:80] + "…" in describe_for_model(tables, "full", RUN)

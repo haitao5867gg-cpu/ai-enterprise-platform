@@ -1089,6 +1089,8 @@ async def test_dev_run_sends_fixable_errors_back_until_its_last_run(tmp_path):
     assert "## dev 运行失败，带着报错回去重写代码" in first.outputs["report"]
     assert first.outputs["preview"] == [] and ws.commands == []
     assert first.messages[0]["content"] == "dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）"
+    # The errors, also kept in the run's details, may quote the data (aep.policy).
+    assert first.quoted == ["errors", "run"]
 
     last = await run(dev_node(), dev_state(visits=2), rt)
     assert last.branch == "failed" and last.outputs["run"]["attempt"] == 3

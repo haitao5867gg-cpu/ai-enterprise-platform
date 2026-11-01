@@ -983,7 +983,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         messages=[{"role": "assistant", "content": said}],
         private={"attempts": attempt if branch == "retry" else 0},
         data=["preview", "answer", "report"],
-        quoted=["errors"],
+        # The run's details keep the errors too.
+        quoted=["errors", "run"],
     )
 
 
