@@ -1053,14 +1053,14 @@ async def test_a_later_run_of_the_bundle_waits_for_the_preview(tmp_path, monkeyp
     steps: list[str] = []
     run_job, preview = target._run_job, target.preview
 
-    async def logged_run(bundle):
+    async def logged_run(bundle, placement=None):
         steps.append("run")
-        return await run_job(bundle)
+        return await run_job(bundle, placement)
 
-    async def logged_preview(tables, rows, order, answer):
+    async def logged_preview(tables, rows, order, answer, cluster_id=""):
         steps.append("preview")
         await asyncio.sleep(0)  # the other run would start here without the lock
-        found = await preview(tables, rows, order, answer)
+        found = await preview(tables, rows, order, answer, cluster_id)
         steps.append("previewed")
         return found
 

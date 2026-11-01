@@ -114,6 +114,7 @@ def test_sources_are_quoted_for_hyphenated_catalogs():
 
     namespace["spark"] = Spark
     namespace["SOURCE_CATALOG"] = "icsd-ace-dev"
+    namespace["SOURCE_FILTERS"] = {}
     exec(helper, namespace)
     namespace["source"]("sales.orders")
     assert read == ["`icsd-ace-dev`.`sales`.`orders`"]

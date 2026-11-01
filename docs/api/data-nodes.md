@@ -816,9 +816,9 @@ def param(name: str):
 - **归属**：集群程序写每张表之前查它是否存在：
   - 不存在：建表。
   - 存在并且表属性 `aep.project` 等于项目 id，或者表名登记在项目的 `adopted` 里：照常写。
-  - 其他：不写，记一条写入错误“表 … 已经存在，不属于项目「…」（没有项目标记，也没有登记在“已有的表”里），没有写”，这次运行按失败处理（同现有的 `write_errors`，不让模型重写代码）。
+  - 其他：不写，记一条写入错误“表 … 已经存在，不属于项目「…」（没有项目标记，也没有登记在“已有的表”里），没有写”（标记是别的项目时括号里写“项目标记是另一个项目 …”），这次运行按失败处理（同现有的 `write_errors`，不让模型重写代码）。集群程序写表前也再查一遍前缀，不合格时写入错误“表 … 不以项目的表名前缀 … 开头，没有写”。
   - 写完后设表属性 `aep.project`（项目 id）和 `aep.run_id`（部署成 Job 后由 Job 自己跑时是 Job 运行的 id）。
-- **传给集群程序的设置**：`run_notebook` 的 widget 新增 `project`（项目 id，没绑定为空）、`table_prefix`、`adopted`（JSON 列表）、`params`（参数值的 JSON 对象），bundle 变量同名，默认值取这次运行的快照；`cluster` 模式由平台直接放进 spec。没绑定项目时这些为空，不查前缀和归属。
+- **传给集群程序的设置**：`run_notebook` 的 widget 新增 `project`（项目 id，没绑定为空）、`project_name`（报错里用）、`table_prefix`、`adopted`（JSON 列表）、`params`（参数值的 JSON 对象）和 `run_id`，bundle 变量同名（`run_id` 除外，它的默认值是 `{{job.run_id}}`，平台运行时传自己的运行 id），默认值取这次运行的快照；`cluster` 模式由平台直接放进 spec。没绑定项目时这些为空，不查前缀和归属。每张表的写表方式和参数的类型在生成代码时就定了，平台写进 Job 的 notebook（`run.py` 调 `run_notebook` 时带上）；`etl_code_check` 的 `bundle` 另有 `settings`（`loads` 每张表的写表方式、`param_types`、`source_catalog` 代码是否经源表 catalog 读表），`cluster` 模式用它，只在绑定项目或用了第 3 版写表方式时有。源表全是 Databricks 上的三段式表时，dev 运行不需要 `AEP_DATABRICKS_SOURCE_CATALOG`。
 
 ### 写表方式
 
@@ -838,7 +838,7 @@ def param(name: str):
   - `append`：`mode("append")`。
   - `merge`：先查结果在 `keys` 上不重复，重复时记写入错误“合并键 order_id 有 3 组重复”；再 `MERGE INTO … WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *`。源里没有的行不删。
   - 后三种在表不存在时直接建表；表已存在、结果多了新列时自动加列（`mergeSchema`，`merge` 先 `ALTER TABLE … ADD COLUMNS`）；列的类型变了时写入失败，报错原样带回。
-- 写完读一次 `DESCRIBE HISTORY … LIMIT 1`，`databricks_dev_run` 的 `tables[]` 新增 `write`：`{"mode": "replace_where", "version": 12, "operation": "WRITE", "rows_written": 1200, "rows_updated": null, "rows_deleted": 340}`（取 Delta 的操作指标，没有的为 null）；`cluster` 模式不落表，没有 `write`。
+- 写完（打项目标记之前）读一次 `DESCRIBE HISTORY … LIMIT 1`，`databricks_dev_run` 的 `tables[]` 新增 `write`：`{"mode": "replace_where", "version": 12, "operation": "WRITE", "rows_written": 1200, "rows_updated": null, "rows_deleted": 340}`（取 Delta 的操作指标，没有的为 null；`merge` 的 `rows_written` 是插入的行数）；没写的表（`cluster` 模式不落表、写入失败）没有这一项。运行报告的结果表多一列“写表”。
 - 方案第 1、2 版的 `full` 当作 `overwrite`，`incremental` 照旧只写进方案说明、按整表覆盖执行，结果不变。
 
 ### data_check 数据检查（新节点）
