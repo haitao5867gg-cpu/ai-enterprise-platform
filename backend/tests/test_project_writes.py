@@ -157,6 +157,86 @@ def test_good_code_passes_and_json_may_be_read():
     assert codegen.check_code(lake_plan(), {"ibf_table2": reads}, PROJECT) == []
 
 
+SKU = 'return source("prev.sales.sku")'
+
+
+@pytest.mark.parametrize(
+    "body, problem",
+    [
+        (f"import os\n{SKU}", "不能 import os，能 import 的只有 re、math"),
+        (f"import re, subprocess\n{SKU}", "不能 import subprocess"),
+        (f"from os import path\n{SKU}", "不能从 os import"),
+        (f"from . import helpers\n{SKU}", "不能从 . import"),
+        (f"from pyspark.sql import SparkSession\n{SKU}", "不能从 pyspark.sql import"),
+        (f"import pyspark.sql.types\n{SKU}", "要写成 import pyspark.sql.types as 别名"),
+        (f"from re import *\n{SKU}", "不要写 import *"),
+        (f"from math import floor as param\n{SKU}", "不要重新定义平台提供的 param"),
+        (f"import pyspark.sql.window as F\n{SKU}", "不要重新定义平台提供的 F"),
+        (
+            'return source("prev.sales.sku").where(F.col("m") == update_month)',
+            "用了没有定义的名字 update_month（能 import 的只有",
+        ),
+        (f"x = re.sub('a', 'b', 'c')\n{SKU}", "用了没有定义的名字 re"),
+        (f"WARNINGS.append('x')\n{SKU}", "不要直接用 WARNINGS，告警用 warn()"),
+        (f"warn = print\n{SKU}", "不要重新定义平台提供的 warn"),
+    ],
+)
+def test_imports_and_undefined_names(body, problem):
+    problems = codegen.check_code(lake_plan(), {"ibf_table2": body}, PROJECT)
+    assert any(problem in p for p in problems), problems
+
+
+def test_a_few_safe_imports_and_warnings_pass():
+    body = """
+import re
+import datetime as dt
+from decimal import Decimal, ROUND_HALF_UP
+from calendar import monthrange
+import math
+from pyspark.sql import functions as F, types
+from pyspark.sql.window import Window
+import pyspark.sql.types as T
+
+month = param("update_month")
+if not re.fullmatch(r"\\d{4}-\\d{2}", month or ""):
+    raise ValueError(f"统计月格式不对：{month}")
+year, mm = (int(p) for p in month.split("-"))
+days = monthrange(year, mm)[1]
+start = dt.date(year, mm, 1)
+try:
+    factor = Decimal(str(param("scale"))).quantize(Decimal("0.01"), ROUND_HALF_UP)
+except ArithmeticError as exc:
+    warn(f"系数不对，按 1 算：{exc}")
+    factor = Decimal(1)
+
+
+def weight(n):
+    return math.floor(n * float(factor))
+
+
+rows = [r for r in range(days) if r]
+match month:
+    case str() as text:
+        warn(f"统计月 {text}，从 {start} 起")
+w = Window.partitionBy("sku")
+return (
+    source("prev.sales.sku")
+    .withColumn("d", F.lit(len(rows)).cast(T.IntegerType()))
+    .withColumn("n", F.row_number().over(w))
+    .withColumn("t", F.lit(weight(2)).cast(types.LongType()))
+)
+"""
+    assert codegen.check_code(lake_plan(), {"ibf_table2": body}, PROJECT) == []
+
+
+def test_warn_collects_what_the_code_reports():
+    pipeline = codegen.render_pyspark(lake_plan(), {"ibf_table2": BODY})
+    namespace = preamble(pipeline, {"source_catalog": "lake"})
+    namespace["warn"]("Table 1 没有 2026-09 的数据")
+    namespace["warn"](3)
+    assert namespace["WARNINGS"] == ["Table 1 没有 2026-09 的数据", "3"]
+
+
 def test_sql_names_parameters_and_filtered_references():
     raw = plan(language="sql")
     raw["targets"][0] |= {"name": "ibf_sku", "sources": ["icsd-ace-dev.sales.orders", "sales.x"]}
@@ -401,6 +481,28 @@ def test_parameters_become_sql_literals():
     )
     with pytest.raises(ValueError, match="没有运行参数 nope"):
         cluster_harness.with_params("${param.nope}", values, kinds)
+
+
+def test_a_quoted_parameter_is_the_value_as_text():
+    values = {"version_id": "FY26_06_M", "n": 3, "cutoff": "2026-10-01", "gone": None, "q": "it's"}
+    kinds = {"version_id": "text", "n": "number", "cutoff": "date", "gone": "text", "q": "text"}
+
+    def swap(text: str) -> str:
+        return cluster_harness.with_params(text, values, kinds)
+
+    # Written either way, the condition compares with the same literal.
+    assert swap("version_id = '${param.version_id}'") == "version_id = 'FY26_06_M'"
+    assert swap("version_id = ${param.version_id}") == "version_id = 'FY26_06_M'"
+    assert swap("label = '${param.q}'") == swap("label = ${param.q}") == "label = 'it\\'s'"
+    # Quoted, a number or date is text; bare, it keeps its type.
+    assert swap("'${param.n}'") == "'3'"
+    assert swap("${param.n}") == "3"
+    assert swap("d = '${param.cutoff}'") == "d = '2026-10-01'"
+    assert swap("d = ${param.cutoff}") == "d = DATE'2026-10-01'"
+    # Quoted NULL stays NULL, not the text 'None'.
+    assert swap("'${param.gone}'") == "NULL"
+    # Only quotes around the whole parameter count.
+    assert swap("x = 'a' AND y = ${param.n}") == "x = 'a' AND y = 3"
 
 
 def test_a_new_table_is_created_marked_and_its_history_read():
@@ -687,6 +789,20 @@ async def test_a_bound_run_on_the_cluster_gets_the_parameters(tmp_path):
     assert spec["params"] == PROJECT["values"]
     assert spec["param_types"]["update_month"] == "month"
     assert "write" not in spec and "project" not in spec  # nothing is written here
+
+
+async def test_what_the_code_warns_goes_into_the_dev_run(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.cluster_outputs = [
+        {"tables": PASSED["tables"][:1], "warnings": ["Table 1 没有 FY26_06_M 的数据"]}
+    ]
+    target = workspace.target(databricks_cluster_id="9999-other", databricks_deploy="cluster",
+                              databricks_source_catalog="")  # fmt: skip
+
+    dev = await target.run(bound_bundle(job=False), placement=Placement.of(PROJECT, "run-7"))
+
+    assert dev.status == "passed", dev.errors
+    assert "代码告警：Table 1 没有 FY26_06_M 的数据" in dev.warnings
 
 
 def runtime(workspace: fake_databricks.FakeWorkspace, **settings: Any) -> Runtime:

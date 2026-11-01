@@ -21,6 +21,7 @@ the cluster program (``aep.cluster_harness``) keeps it to the project's tables.
 """
 
 import ast
+import builtins
 import json
 import re
 import textwrap
@@ -47,7 +48,10 @@ OUTPUT_FORMAT = """只输出一个 JSON 对象：{"targets": {"目标表名": "�
 
 language 是 pyspark 时，代码是一个 Python 函数体（不含 def 那一行），最后 return 一个 DataFrame：
 - 读源表只能用 source("schema.table")；读本管道里的其他目标表用 spark.read.table("目标表名")。
-- 可以直接用 F（pyspark.sql.functions）和 Window，不要写 import。
+- 可以直接用 F（pyspark.sql.functions）和 Window；要用标准库时只能 import re、math、datetime、\
+decimal、calendar，pyspark 只能 import pyspark.sql 的 types、functions、window，别的都不要 import。
+- 数据有问题但不该停下时用 warn("说明") 记一条告警（写进运行报告，运行继续）；\
+该停下时 raise ValueError("说明")。
 - 只读和转换：不要写表、不要 collect / toPandas、不要调用 spark.sql、dbutils 或文件系统。
 - 质量规则由平台按方案生成，函数体里不用再写。
 
@@ -165,6 +169,8 @@ def render_pyspark(
         "# The read filters the project gives its reference tables.",
         f"SOURCE_FILTERS = {shown}",
         'PARAMS = json.loads(spark.conf.get("aep_params", "{}"))',
+        "# What the code reports through warn(); the run report lists them.",
+        "WARNINGS = []",
         "",
         "",
         "def source(name: str):",
@@ -182,6 +188,12 @@ def render_pyspark(
         "def param(name: str):",
         '    """A run parameter of the project: str, int, float, bool or None."""',
         "    return PARAMS.get(name)",
+        "",
+        "",
+        "def warn(message: str) -> None:",
+        '    """A warning about the data for the run report; the run goes on."""',
+        "    WARNINGS.append(str(message))",
+        '    print(f"WARNING: {message}")',
     ]
     for target in plan.targets:
         parts += ["", ""]
@@ -503,10 +515,22 @@ FORBIDDEN_NAMES = {"dbutils", "os", "sys", "subprocess", "open", "eval", "exec",
 # What the platform's part of the pipeline file defines; a body must not redefine them,
 # and reads parameters and filtered sources only through param() and source().
 PLATFORM_NAMES = {
-    "source", "param", "spark", "json", "dp", "F", "Window",
-    "SOURCE_CATALOG", "SOURCE_FILTERS", "PARAMS",
+    "source", "param", "warn", "spark", "json", "dp", "F", "Window",
+    "SOURCE_CATALOG", "SOURCE_FILTERS", "PARAMS", "WARNINGS",
 }  # fmt: skip
-HIDDEN_NAMES = {"SOURCE_FILTERS", "PARAMS"}
+HIDDEN_NAMES = {"SOURCE_FILTERS", "PARAMS", "WARNINGS"}
+# What a body may import: a few standard modules without side effects (``import re``,
+# ``from datetime import date``) and pyspark's column helpers (``from pyspark.sql import
+# types as T``, ``import pyspark.sql.types as T``).
+STANDARD_IMPORTS = ("re", "math", "datetime", "decimal", "calendar")
+PYSPARK_IMPORTS = ("pyspark.sql.types", "pyspark.sql.functions", "pyspark.sql.window")
+PYSPARK_SQL_NAMES = ("types", "functions", "window", "Window")
+IMPORTS_SAID = "re、math、datetime、decimal、calendar 和 pyspark.sql 的 types、functions、window"
+REIMPORTS = {
+    ("pyspark.sql.functions", "F"),
+    ("pyspark.sql.window.Window", "Window"),
+    ("pyspark.sql.Window", "Window"),
+}
 FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY)\b", re.I
 )
@@ -544,7 +568,7 @@ def _check_pyspark_body(
         problems.append(f"{name}: 函数体最后要 return 一个 DataFrame")
     for node in ast.walk(tree):
         if isinstance(node, ast.Import | ast.ImportFrom):
-            problems.append(f"{name}: 不要写 import")
+            problems += [f"{name}: {p}" for p in _import_problems(node)]
         elif isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRS:
             problems.append(f"{name}: 不允许使用 .{node.attr}")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
@@ -552,6 +576,8 @@ def _check_pyspark_body(
         elif isinstance(node, ast.Name) and node.id in PLATFORM_NAMES:
             if not isinstance(node.ctx, ast.Load):
                 problems.append(f"{name}: 不要重新定义平台提供的 {node.id}")
+            elif node.id == "WARNINGS":
+                problems.append(f"{name}: 不要直接用 WARNINGS，告警用 warn()")
             elif node.id in HIDDEN_NAMES:
                 problems.append(
                     f"{name}: 不要直接用 {node.id}，读参数用 param()，读源表用 source()"
@@ -575,7 +601,68 @@ def _check_pyspark_body(
                         f"{name}: spark.read.table({arg!r}) 只能读本管道的其他目标表，"
                         "源表请用 source()"
                     )
+    missing = _undefined(tree)
+    if missing:
+        problems.append(
+            f"{name}: 用了没有定义的名字 {'、'.join(missing)}"
+            f"（能 import 的只有 {IMPORTS_SAID}；告警用 warn()）"
+        )
     return problems
+
+
+def _import_problems(node: ast.Import | ast.ImportFrom) -> list[str]:
+    """What is wrong with an import in a body: a module off the list, a star, a name of
+    the platform's bound to something else (``from pyspark.sql import functions as F`` is
+    the platform's own F again, so it passes)."""
+    if isinstance(node, ast.Import):
+        bindings = []
+        for alias in node.names:
+            if alias.name in PYSPARK_IMPORTS and alias.asname is None:
+                return [f"要写成 import {alias.name} as 别名"]
+            if alias.name not in STANDARD_IMPORTS + PYSPARK_IMPORTS:
+                return [f"不能 import {alias.name}，能 import 的只有 {IMPORTS_SAID}"]
+            bindings.append((alias.name, alias.asname or alias.name))
+    else:
+        module = node.module or ""
+        allowed = module in STANDARD_IMPORTS + PYSPARK_IMPORTS or (
+            module == "pyspark.sql" and all(a.name in PYSPARK_SQL_NAMES for a in node.names)
+        )
+        if node.level or not allowed:
+            return [f"不能从 {'.' * node.level}{module} import，能 import 的只有 {IMPORTS_SAID}"]
+        if any(a.name == "*" for a in node.names):
+            return ["不要写 import *"]
+        bindings = [(f"{module}.{a.name}", a.asname or a.name) for a in node.names]
+    return [
+        f"不要重新定义平台提供的 {bound}"
+        for full, bound in bindings
+        if bound in PLATFORM_NAMES and (full, bound) not in REIMPORTS
+    ]
+
+
+def _undefined(tree: ast.AST) -> list[str]:
+    """Names a body reads that nothing defines: not assigned, imported or an argument
+    anywhere in it, not a builtin and not the platform's. Order does not count, so a
+    name assigned after its use passes; Python's own errors catch that at run time."""
+    bound = set(PLATFORM_NAMES) | set(dir(builtins))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            bound.add(node.id)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.alias):
+            bound.add(node.asname or node.name.split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchAs | ast.MatchStar) and node.name:
+            bound.add(node.name)
+    used = [
+        n.id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound
+    ]
+    return list(dict.fromkeys(used))
 
 
 def _check_sql_query(
