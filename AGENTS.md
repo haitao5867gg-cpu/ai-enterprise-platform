@@ -18,7 +18,7 @@
 - 编排内核：LangGraph（只用核心库，不依赖 LangSmith）。状态用 Postgres checkpointer，人工确认用 `interrupt`。
 - 工具接入：一律做成 MCP Server。数据源连接器只读。数据源在平台里登记（`/datasources`，只存名称、类型和连接器地址，凭据留在连接器那边），节点通过 `AppContext.tools`（`aep.tools.mcp`）调用连接器的工具。代码仓库也走连接器：Git 连接器（MCP）支持 GitHub 和 Bitbucket Data Center，PR 是普通差异，提交信息可以带工单号；现在直连 GitHub 的 `aep.assets` 以后迁到它上面。
 - 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
-- 数据外发：发给模型的数据受数据外发策略约束：允许哪些模型别名，数据样本按什么级别外发（完整、脱敏、只发统计、只发结构）。策略按项目或应用配置，由平台在调模型前统一执行，节点不各自处理。
+- 数据外发：发给模型的数据受数据外发策略约束：允许哪些模型别名，数据样本按什么级别外发（完整、脱敏、只发统计、只发结构）。策略有平台默认值，项目可以另设；由平台在调模型前统一执行，节点不各自处理。
 - 项目：平台资源，不属于某个应用。一个项目绑定代码仓库、工程布局、环境（每个环境的 catalog、schema、表名前缀、集群、运行身份、Workspace 根目录）、表登记（自己写的表和只读引用的表）、运行参数和检查规则。运行可以绑定一个项目，节点按项目配置读写，只能写登记为本项目所有的表。契约见 `docs/api/projects.md`（随第一期契约加上）。
 - 平台应用分两种，都在 `aep.runtime.registry.default_apps` 或 `apps` 表里登记，运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`：
   - 编排应用（flow）：节点和连线写在带版本的应用配置里，由 `aep.runtime.flow` 编译成 LangGraph 图；页面上可以新建、增删节点、导入导出。内置的 `hello` 和用户新建的应用都是这种。配置格式和接口见 `docs/api/flow-apps.md`，改格式先改这份契约。
