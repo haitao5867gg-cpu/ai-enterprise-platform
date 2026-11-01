@@ -411,7 +411,11 @@ export function DatasourceDetail({ id }: { id: string }) {
         )}
         <p className="field-hint">
           {USAGE_NOTE}
-          {isToolService(source) ? "。" : "，比如「自然语言 ETL 工作流」。"}
+          {isToolService(source)
+            ? "。"
+            : source.kind === "databricks"
+              ? "，比如用模板「数据 ETL（湖仓）」建的编排应用。"
+              : "，比如「自然语言 ETL 工作流」。"}
         </p>
       </section>
       <p className="sr-only" role="status" aria-live="polite">

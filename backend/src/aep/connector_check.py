@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from aep.config import Settings
 from aep.connector_urls import TEXT as ADDRESS_TEXT
 from aep.connector_urls import Rejected, check_url, mask_url
-from aep.datasources import DATABASE_KINDS, ETL_TOOLS, DataSource
+from aep.datasources import ETL_TOOLS, SOURCE_KINDS, DataSource
 from aep.tools.mcp import ConnectionProblem, ConnectorUnavailable, McpTools, ToolError, ToolInfo
 
 log = logging.getLogger(__name__)
@@ -118,11 +118,11 @@ class ConnectorCheck:
         latency = round((time.perf_counter() - started) * 1000)
         names = {t.name for t in listed}
         problems = []
-        missing = [t for t in ETL_TOOLS if t not in names] if kind in DATABASE_KINDS else []
+        missing = [t for t in ETL_TOOLS if t not in names] if kind in SOURCE_KINDS else []
         if missing:
             text = PROBLEM_TEXT["missing_tools"].format(tools="、".join(missing))
             problems.append(Problem("missing_tools", text))
-        if kind not in DATABASE_KINDS and not listed:
+        if kind not in SOURCE_KINDS and not listed:
             problems.append(Problem("no_tools", PROBLEM_TEXT["no_tools"]))
         return TestResult(not problems, latency, listed, missing, problems, normalised)
 

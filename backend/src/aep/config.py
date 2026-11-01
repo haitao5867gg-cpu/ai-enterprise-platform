@@ -34,8 +34,11 @@ class Settings(BaseSettings):
     # use (comma separated; empty: any). A project may set its own.
     data_samples: Literal["full", "masked", "stats", "schema"] = "full"
     allowed_models: str = ""
-    # Each call to a connector (MCP server) tool.
+    # Each call to a connector (MCP server) tool; a Databricks data source's tools get
+    # longer, as their statements may wait for a warehouse or cluster (longer than the
+    # connector's own AEP_DATABRICKS_READ_TIMEOUT_SECONDS).
     tool_timeout_seconds: float = 30.0
+    databricks_tool_seconds: float = Field(180.0, gt=0)
     # Data sources registered at startup when no source of that name exists yet,
     # as JSON: [{"name": ..., "kind": ..., "connector_url": ..., "description": ...}].
     default_datasources: list[dict[str, str]] = []
@@ -47,6 +50,7 @@ class Settings(BaseSettings):
         "connector-postgres:8001",
         "connector-mysql:8002",
         "connector-files:8003",
+        "connector-databricks:8005",
     ]
     # Testing a connector, its health and listing its tools; stays under the web
     # proxy's 10 seconds (frontend/app/api/[...path]/route.ts).

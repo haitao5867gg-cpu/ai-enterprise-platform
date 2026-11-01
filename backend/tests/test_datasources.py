@@ -272,6 +272,11 @@ async def test_database_kinds_need_the_six_etl_tools(platform):
     assert resp.status_code == 422
     assert resp.json()["detail"] == "测试连接没有通过。" + problem["message"]
     assert (await platform.register("工单", url, "mcp"))["kind"] == "mcp"
+    # Tables on Databricks are a data source too: the same six tools.
+    lake = await platform.test(url, "databricks")
+    assert lake["missing_tools"] == ["table_stats", "read_rows"]
+    registered = await platform.register("数据湖", fake_connector.URL, "databricks")
+    assert registered["kind"] == "databricks"
 
 
 async def test_tool_service_needs_a_tool(platform):

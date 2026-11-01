@@ -212,7 +212,7 @@ const problem = (code: string, message = PROBLEMS[code]): Problem => ({
   code,
   message,
 });
-const KINDS = ["postgres", "mysql", "sqlserver", "file", "mcp"];
+const KINDS = ["postgres", "mysql", "sqlserver", "file", "databricks", "mcp"];
 const LABELS: Record<string, string> = {
   name: "名称",
   kind: "类型",
