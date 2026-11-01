@@ -864,7 +864,8 @@ def param(name: str):
 
 // aggregate：一张表上的一个聚合值和期望比
 {"table": "ibf_table2", "expr": "sum(qty)", "where": "update_month = ${param.update_month}",
- "op": "eq" | "ne" | "gt" | "ge" | "lt" | "le" | "between", "value": 0, "max": null, "tolerance": 0}
+ "op": "eq" | "ne" | "gt" | "ge" | "lt" | "le" | "between", "value": 0, "max": null, "tolerance": 0,
+ "group_by": ["month"]}                  // 可选：按组算，每组都要满足
 
 // reconcile：两张表的聚合值对账，可以按组
 {"left": {"table": "ibf_table2", "expr": "sum(qty)", "where": "…"},
@@ -886,14 +887,23 @@ def param(name: str):
 {"table": "ibf_table2", "where": "qty < 0"}
 ```
 
+- **字段**：每种检查只认上面列出的字段，多写的字段算不合格（“rows 检查没有 sql 这一项”）。`aggregate` 的 `op`、`value` 必填：`eq`、`ne` 的 `value` 可以是数字、文字或 true/false，`gt`、`ge`、`lt`、`le` 是数字或文字（文字按字符串比较，适合 ISO 日期），`between` 要数字 `value` 和 `max`（`value` 不大于 `max`），其他 `op` 不写 `max`。`tolerance`（不小于 0，默认 0）用在数字的 `eq`、`ne`、`between` 上：`eq` 是差的绝对值不超过它，`between` 两头各放宽它。聚合值是空值时一律不满足；要和数字比而聚合值不是数字（比如 `NaN`）时这条检查记为 `error`。分组列、`unique` 的 `columns`、`golden` 的 `keys` 最多 10、20、20 列，不能重复；分组列不能叫 `value`，`unique` 的列不能叫 `count`（和结果里的字段重名）。`checks` 和 `include` 合在一起最多 100 条。
 - **表名**：不带点的名字是本次运行的结果表（绑定项目时 `<环境 catalog>.<环境 schema>.<名字>`，否则 `<AEP_DATABRICKS_CATALOG>.<AEP_DATABRICKS_SCHEMA>.<名字>`）；两段名是抽取到 `AEP_DATABRICKS_SOURCE_CATALOG` 下的源表；三段名原样。读项目引用表时带上它的读取筛选，和这张表那一边自己的条件用 AND 连起来，只用在这一边：`reconcile` 的 `left`、`right` 各用各的 `where`，`golden` 的 `table` 用 `where`、`expected` 用 `expected_where`（连接器的 `compare` 两边条件分开传）。表名都由平台换成三段式再交给连接器，所以连接器的 `AEP_DATABRICKS_READ_CATALOGS` 要包括项目环境的 catalog 和老系统结果表所在的 catalog，只读身份要能读它们；读不到时这条检查记为 `error`，`message` 是连接器的报错。`cluster` 方式不落表，读结果表的检查记为 `error`（“cluster 方式不落表，读不到结果表”）。
 - **条件和表达式**：`expr` 是一个 Spark SQL 聚合表达式；`where`、`expected_where`、`expr` 的形状检查同 `filter`，连接器再查一遍。都可以用 `${param.<key>}`，平台按写表方式的规则换成字面值后再交给连接器。没有执行任意 SQL 的检查。
 - **经连接器的哪个工具**：`aggregate`、`reconcile` 用 `aggregate`（`reconcile` 两边各调一次，平台按组对齐、比较）；`unique` 用 `duplicates`；`golden` 用 `compare`；`rows` 用 `aggregate`（`count(*)`）数行、`sample_rows` 取例子。比较、容差和结论都在平台这边算。分组的 `aggregate` 和 `reconcile` 要拿全所有组才下结论：调 `aggregate` 时 `limit` 用 10000，任何一边返回的 `groups` 比 `rows` 多（没拿全）时这条检查记为 `error`（“分组有 12,345 组，超过一次能核对的 10,000 组；请减少分组列或加条件”），不按拿到的那部分判断。工具见 [datasources.md](datasources.md)“Databricks 数据源”。
 - **节点的 `golden`**：三项都可以是整段引用。`expected`（老系统结果表的三段式名）取值后不是空的，节点就加一条检查 `{"id": "golden", "label": "和老系统的结果一致", "kind": "golden", "table": table, "expected": expected, "keys": keys}`，比两边同名的非键列；`expected` 为空（比如用户没填）时不加。`keys` 为空时这条检查记为 `error`（“结果表没有主键，不能逐行对比；请在方案里给结果表写 primary_key”）。id `golden` 只留给这条自动加的检查：`checks` 和 `include` 里有检查用这个 id 时节点 `input_error`（“检查 id golden 是留给和老系统对比的，请换一个”），所以填了老系统结果表就一定有这条对比，不会被别的检查顶掉。别的 id 的 golden 检查可以照常写在 `checks` 里；没写 `expected` 时用节点 `golden.expected`，也没有时记为 `skipped`（“没有指定老系统的结果表”），不算失败。
 - **golden 先查键是否唯一**：`compare` 先数两边按 `keys` 重复的组数（见 datasources.md）。结果表有重复时这条检查 `failed`（“结果表按 sku、month 有 3 组重复的行，不能逐行对比”，`rows` 是重复的键）；老系统的表有重复时记为 `error`（“老系统的结果表按 sku、month 有重复，不能逐行对比；请换一组键”）。都不重复才比 missing、extra、different。
-- **结果** `results[]`：`{"id", "label", "kind", "severity", "status": "passed" | "failed" | "error" | "skipped", "actual", "expected", "message", "rows"}`。`actual`、`expected` 是比较的两个值（`reconcile` 是两边的值，`unique` 是重复的组数，`golden` 是 `{"missing": 3, "extra": 0, "different": 12}`，`rows` 是行数）；`message` 一句话，如“左边 1,385,355.07，右边 1,385,355.07，一致”；`rows` 最多 20 行例子（对不上的组、重复的键、不一致的行、查出的行），没有为 `[]`。执行出错的检查 `status` 为 `error`，`message` 是报错第一行。
+- **结果** `results[]`：`{"id", "label", "kind", "severity", "status": "passed" | "failed" | "error" | "skipped", "actual", "expected", "message", "rows"}`。`actual`、`expected` 是比较的两个值：
+  - `aggregate`：聚合值和 `value`（`between` 时是 `[value, max]`），`message` 如“实际 1,234，要求 ≥ 0，满足”。
+  - 按组的 `aggregate`、`reconcile`：`actual` 是不满足（对不上）的组数，`expected` 是 0，`message` 如“按 month 分 12 组，2 组对不上”；`rows` 是这些组：分组列加 `value`（`aggregate`），或加 `left`、`right`（`reconcile`，一边没有这一组时那边为 null）。
+  - 不分组的 `reconcile`：两边的值，`message` 如“左边 1,385,355.07，右边 1,385,355.07，一致”“左边 13，右边 16，相差 3，超过容差 2”“左边 13，右边 16，相差 18.75%，在容差 20% 内”。
+  - `unique`：重复的组数和 0；`rows`：重复的组数和行数（`rows` 检查）和 0。
+  - `golden`：`actual` 是 `{"missing": 3, "extra": 0, "different": 12, "duplicates": {"table": 0, "expected": 0}}`（有重复键时前三项为 null），`expected` 是老系统结果表的三段式名。
+  
+  `message` 一句话；`rows` 最多 20 行例子（对不上的组、重复的键、不一致的行、查出的行），通过的检查和没有例子时为 `[]`。执行出错的检查 `status` 为 `error`，`message` 是报错第一行（连接器自己的报错，去掉 MCP 加在前面的工具名）。
 - **`only_if`**：到这一步时取值，不是 true 就不调连接器：`ok` 为 false，`results` 为 `[]`，`summary` 为“前一步没有通过，没有做数据检查”，`report` 同 `summary`，走 `failed`。这样试算失败的路径也能经过这个节点，后面的节点可以放心引用它的产出（保存检查要求引用的节点一定跑过）。
-- **节点什么时候失败**：`datasource` 不是 Databricks 数据源时 `input_error`（“数据检查要用 Databricks 数据源”）；连不上连接器时 `tool_error`（同 `tool` 节点）；单条检查出错只记在这条上。
+- **节点什么时候失败**：`datasource` 不是 Databricks 数据源时 `input_error`（“数据检查要用 Databricks 数据源”）；连不上连接器时 `tool_error`（同 `tool` 节点，超时为 `timeout`）；单条检查出错只记在这条上。合在一起的检查不合格、id 重复或用了 `golden` 时 `input_error`，说是哪条（“检查 dup（columns）：列要写 1–20 个列名”）；`include` 的引用取值为 null 时当作空列表，是别的值时 `input_error`（“include 第 1 项（{{check_plan.checks}}）的值不是检查的列表”）。
+- **保存时**：`checks` 每条按上面的规则检查，报错的 `loc` 指到字段（`[..., "checks", 2, "where"]`）；字段的值里有引用（`{{…}}`）时这个字段到运行时取值后再查。`include` 每项、`only_if` 必须恰好是一个引用；`golden` 只有 `expected`、`table`、`keys` 三项，`keys` 是列名列表或一个引用。写死的数据源不是 Databricks 类型时报“数据检查要用 Databricks 数据源”，是的话要有 `aggregate`、`duplicates`、`compare`、`sample_rows` 四个工具（连接器连得上时查）。
 
 产出：
 
@@ -904,7 +914,9 @@ def param(name: str):
 | `summary` | 如“8 项检查：7 项通过，1 项不通过（警告）”；没有检查时“没有数据检查” |
 | `report` | Markdown：每条检查一行（结果、名称、一句话），不通过的附例子表格 |
 
-分支：`passed`（`ok`）、`failed`。不支持单节点试跑（要用运行的项目）。`results`、`report` 算数据值，受数据外发策略约束。
+分支：`passed`（`ok`）、`failed`（编辑页显示“通过”“不通过”）。不支持单节点试跑：`POST /apps/{app}/nodes/{node}/test` 返回 422“数据检查节点要读这次运行的结果表和项目，不能单独试跑”。`results`、`report` 算数据值，受数据外发策略约束。
+
+编辑页：数据源只列 Databricks 数据源（和开始节点的数据源输入）；检查写成 JSON（不合法时提示，不覆盖已保存的内容），下面列出每条的名称和种类；“引用的检查”最多 5 个引用；“和老系统对比”三项（主键用逗号分隔，或一个引用），清空时不写 `golden`；“只在这个值为 true 时检查”清空时不写 `only_if`。
 
 ### 方案第 3 版（`etl_plan_check` 的 `format: 3`）
 

@@ -124,11 +124,13 @@ function datasourceChoices(
   config: FlowConfig,
   options: Options,
   etlOnly = false,
+  databricksOnly = false,
 ) {
   const start = config.graph.nodes.find((node) => node.type === "start");
   return [
     ...options.datasources
       .filter((item) => !etlOnly || !isToolService(item))
+      .filter((item) => !databricksOnly || item.kind === "databricks")
       .map((item) => ({
         value: item.datasource_id,
         label: `${item.name} · ${kindLabel(item.kind)}`,
@@ -149,6 +151,7 @@ function DatasourceField({
   options,
   issues,
   etlOnly = false,
+  databricksOnly = false,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -156,8 +159,10 @@ function DatasourceField({
   options: Options;
   issues: Issues;
   etlOnly?: boolean;
+  // Data checks read through a Databricks data source only.
+  databricksOnly?: boolean;
 }) {
-  const choices = datasourceChoices(config, options, etlOnly);
+  const choices = datasourceChoices(config, options, etlOnly, databricksOnly);
   const registered = options.datasources.find(
     (item) => item.datasource_id === value,
   );
@@ -177,7 +182,7 @@ function DatasourceField({
                 label: value.includes("{{")
                   ? value
                   : registered
-                    ? `${registered.name} · 工具服务（这里不能用）`
+                    ? `${registered.name} · ${isToolService(registered) ? "工具服务" : kindLabel(registered.kind)}（这里不能用）`
                     : `${value}（未登记）`,
               },
             ]
@@ -1161,6 +1166,198 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
   );
 }
 
+const CHECKS_HELP =
+  "每条检查写 id、label、kind（aggregate 聚合值、reconcile 两表对账、unique 键不重复、golden 和老系统逐行对比、rows 不该有的行）和各自的设置；表名写结果表的名字或 catalog.schema.table，条件里可以用 ${param.参数标识}。";
+const isCheck = (item: unknown): item is Record<string, unknown> =>
+  typeof item === "object" && item !== null && !Array.isArray(item);
+
+// The checks as JSON: the text is kept while it does not parse, and follows the node
+// when it changes from outside (undo, an import).
+function ChecksField({
+  value,
+  onChange,
+  issues,
+}: {
+  value: Record<string, unknown>[];
+  onChange: (value: Record<string, unknown>[]) => void;
+  issues: string[];
+}) {
+  const id = useId();
+  const [draft, setDraft] = useState(() => JSON.stringify(value, null, 2));
+  const [problem, setProblem] = useState("");
+  const [shown, setShown] = useState(value);
+  if (shown !== value) {
+    // The node changed: keep the text when it already says the same checks.
+    setShown(value);
+    let same = false;
+    try {
+      same =
+        JSON.stringify(JSON.parse(draft || "[]")) === JSON.stringify(value);
+    } catch {
+      same = false;
+    }
+    if (!same) {
+      setDraft(JSON.stringify(value, null, 2));
+      setProblem("");
+    }
+  }
+  const messages = problem ? [problem, ...issues] : issues;
+  return (
+    <div className="asset-field">
+      <label htmlFor={id}>检查（JSON）</label>
+      <textarea
+        id={id}
+        className="code-input"
+        rows={12}
+        spellCheck={false}
+        value={draft}
+        aria-invalid={messages.length > 0}
+        aria-describedby={messages.length ? `${id}-issues` : undefined}
+        onChange={(event) => {
+          const text = event.target.value;
+          setDraft(text);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(text.trim() || "[]");
+          } catch {
+            setProblem("不是合法的 JSON，改好之前不会保存这里的修改");
+            return;
+          }
+          if (!Array.isArray(parsed) || !parsed.every(isCheck)) {
+            setProblem("要写成检查的列表：[{...}, {...}]");
+            return;
+          }
+          setProblem("");
+          onChange(parsed);
+        }}
+      />
+      <small className="muted">{CHECKS_HELP}</small>
+      {value.length > 0 && (
+        <ul className="muted" aria-label="已写的检查">
+          {value.map((item, i) => (
+            <li key={i}>
+              {String(item.label ?? item.id ?? `第 ${i + 1} 条`)}
+              {item.kind ? `（${String(item.kind)}）` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+      <FieldIssues id={`${id}-issues`} messages={messages} />
+    </div>
+  );
+}
+
+function DataCheckFields({
+  node,
+  config,
+  options,
+  change,
+  issues,
+}: {
+  node: Extract<FlowNode, { type: "data_check" }>;
+  config: FlowConfig;
+  options: Options;
+  change: Change;
+  issues: Issues;
+}) {
+  const variables = variablesFor(config, node.id);
+  const at = (path: string) => issuesUnder(issues, path);
+  const golden = node.golden ?? {};
+  const keys = Array.isArray(golden.keys)
+    ? golden.keys.join(", ")
+    : (golden.keys ?? "");
+  function setGolden(key: "expected" | "table" | "keys", value: string) {
+    const next: Record<string, unknown> = { ...golden };
+    if (!value.trim()) delete next[key];
+    else if (key === "keys" && !value.includes("{{"))
+      next.keys = value.split(/[,，、\s]+/).filter(Boolean);
+    else next[key] = value;
+    const rest = { ...node };
+    delete rest.golden;
+    change(Object.keys(next).length ? { ...rest, golden: next } : rest);
+  }
+  return (
+    <>
+      <DatasourceField
+        config={config}
+        options={options}
+        value={node.datasource}
+        issues={issues}
+        databricksOnly
+        onChange={(datasource) => change({ ...node, datasource })}
+      />
+      <ChecksField
+        value={node.checks ?? []}
+        issues={at("checks")}
+        onChange={(checks) => change({ ...node, checks })}
+      />
+      <ListEditor
+        label="引用的检查"
+        items={node.include ?? []}
+        max={5}
+        make={() => ""}
+        issues={(i) => at(`include.${i}`)}
+        onChange={(include) => change({ ...node, include })}
+        render={(value, _i, update) => (
+          <RefField
+            label="检查列表"
+            value={value}
+            variables={variables}
+            help="引用一个检查列表，比如方案里的 {{check_plan.checks}}。"
+            onChange={update}
+          />
+        )}
+      />
+      {at("include").map((msg) => (
+        <p className="field-error" key={msg}>
+          {msg}
+        </p>
+      ))}
+      <fieldset className="list-editor" aria-label="和老系统对比">
+        <legend>和老系统对比</legend>
+        <small className="muted">
+          填了老系统结果表时，自动加一条按主键逐行对比的检查；运行时值为空就不加。
+        </small>
+        <RefField
+          label="老系统结果表"
+          value={golden.expected ?? ""}
+          variables={variables}
+          issues={at("golden.expected")}
+          help="catalog.schema.table，或引用开始节点的输入。"
+          onChange={(value) => setGolden("expected", value)}
+        />
+        <RefField
+          label="结果表"
+          value={golden.table ?? ""}
+          variables={variables}
+          issues={at("golden.table")}
+          onChange={(value) => setGolden("table", value)}
+        />
+        <RefField
+          label="主键"
+          value={keys}
+          variables={variables}
+          issues={at("golden.keys")}
+          help="列名用逗号分隔，或引用一个列名列表。"
+          onChange={(value) => setGolden("keys", value)}
+        />
+      </fieldset>
+      <RefField
+        label="只在这个值为 true 时检查"
+        value={node.only_if ?? ""}
+        variables={variables}
+        issues={at("only_if")}
+        help="通常引用试算是否通过；不为 true 时不读表，直接走“不通过”。留空时总是检查。"
+        onChange={(value) => {
+          const rest = { ...node };
+          delete rest.only_if;
+          change(value.trim() ? { ...rest, only_if: value } : rest);
+        }}
+      />
+    </>
+  );
+}
+
 export function NodeSettings({
   node,
   config,
@@ -1310,6 +1507,16 @@ export function NodeSettings({
             onChange={(max_attempts) => change({ ...node, max_attempts })}
           />
         </>
+      );
+    case "data_check":
+      return (
+        <DataCheckFields
+          node={node}
+          config={config}
+          options={options}
+          change={change}
+          issues={issues}
+        />
       );
     case "databricks_dev_run":
       return (

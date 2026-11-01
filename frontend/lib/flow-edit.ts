@@ -21,6 +21,7 @@ export const BRANCHED_ERROR_TYPES = [
   "databricks_ingest",
   "etl_code_check",
   "databricks_dev_run",
+  "data_check",
 ];
 export const UNTESTABLE_TYPES = [
   "start",
@@ -28,6 +29,7 @@ export const UNTESTABLE_TYPES = [
   "end",
   "databricks_ingest",
   "databricks_dev_run",
+  "data_check",
 ];
 
 export const typeLabels: Record<FlowNode["type"], string> = {
@@ -47,6 +49,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   databricks_ingest: "抽取到湖仓",
   etl_code_check: "检查并打包",
   databricks_dev_run: "dev 运行",
+  data_check: "数据检查",
 };
 
 export function nodeKind(type: FlowNode["type"]): NodeKind {
@@ -58,6 +61,7 @@ export function nodeKind(type: FlowNode["type"]): NodeKind {
       "etl_profile",
       "databricks_ingest",
       "databricks_dev_run",
+      "data_check",
     ].includes(type)
   )
     return "tool";
@@ -154,6 +158,8 @@ export function ownOutputs(node: FlowNode): string[] {
         "errors",
         "report",
       ];
+    case "data_check":
+      return ["ok", "results", "summary", "report"];
     case "end":
       return [];
   }
@@ -237,7 +243,9 @@ export function branchesOf(node: FlowNode): string[] {
               ? ["ok", "retry"]
               : node.type === "databricks_dev_run"
                 ? ["passed", "retry", "failed"]
-                : [""];
+                : node.type === "data_check"
+                  ? ["passed", "failed"]
+                  : [""];
   return "on_error" in node && node.on_error?.then === "branch"
     ? [...list, "error"]
     : list;
@@ -258,6 +266,12 @@ export function branchLabel(
       return node.type === "databricks_dev_run" ? "带着报错重写" : "重写";
     if (branch === "failed") return "失败";
   }
+  if (node?.type === "data_check")
+    return branch === "passed"
+      ? "通过"
+      : branch === "failed"
+        ? "不通过"
+        : branch;
   if (node?.type === "classifier" && branch === "other") return "都不是";
   if (node?.type === "condition" && branch === "else") return "否则";
   const items =

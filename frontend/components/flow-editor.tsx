@@ -73,6 +73,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
   databricks_ingest: ["datasource", "tables", "max_rows"],
   etl_code_check: ["reply", "plan", "source_name", "name", "max_attempts"],
   databricks_dev_run: ["bundle", "max_runs", "preview_rows"],
+  data_check: ["datasource", "checks", "include", "golden", "only_if"],
 };
 
 function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {

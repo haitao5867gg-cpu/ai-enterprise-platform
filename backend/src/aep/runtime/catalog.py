@@ -683,6 +683,8 @@ class AppCatalog:
             raise NotTestable("开始、人工和结束节点不能单独试跑")
         if node["type"] in ("databricks_ingest", "databricks_dev_run"):
             raise NotTestable(f"{spec.label}节点会写 Databricks，不能单独试跑")
+        if node["type"] == "data_check":
+            raise NotTestable("数据检查节点要读这次运行的结果表和项目，不能单独试跑")
         p = Problems(("config", "graph", "nodes", node_id))
         check_common(node, p)
         await spec.check(node, p, self._env(await self.models()))

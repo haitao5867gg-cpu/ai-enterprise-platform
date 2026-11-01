@@ -1574,6 +1574,16 @@ async def test_nodes_that_write_databricks_cannot_be_tried_alone(lake):
         resp = await lake.api.post(f"/apps/retail-etl/nodes/{node}/test", json={"values": {}})
         assert resp.status_code == 422
         assert "会写 Databricks，不能单独试跑" in resp.json()["detail"]
+    # Data checks read the run's result tables and project.
+    config = lakehouse(lake.ds, lake.kb_id)
+    config["graph"]["nodes"].append(
+        {"id": "checks", "type": "data_check", "title": "数据检查", "datasource": lake.ds}
+    )
+    resp = await lake.api.post(
+        "/apps/retail-etl/nodes/checks/test", json={"values": {}, "config": config}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "数据检查节点要读这次运行的结果表和项目，不能单独试跑"
     tried = await lake.api.post(
         "/apps/retail-etl/nodes/profile/test",
         json={"values": {"start.datasource": lake.ds, "start.tables": "sales.orders"}},
@@ -1591,6 +1601,7 @@ async def test_node_types_list_the_data_group():
         "databricks_ingest",
         "etl_code_check",
         "databricks_dev_run",
+        "data_check",
     ]
     assert all(types[k]["error_handling"] for k in data)
     plan_check = types["etl_plan_check"]
