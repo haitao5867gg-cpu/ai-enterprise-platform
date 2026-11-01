@@ -3,7 +3,15 @@
 import { CitedText, SourceList } from "./citations";
 import { NoteButton } from "./review-notes";
 import { formatTime } from "../lib/runs";
-import type { AnswerDesign, Brief, PlanV2, ReviewRecord } from "../lib/etl-v2";
+import {
+  checkKinds,
+  checkSeverities,
+  type AnswerDesign,
+  type Brief,
+  type PlanTarget,
+  type PlanV2,
+  type ReviewRecord,
+} from "../lib/etl-v2";
 
 const violationLabels: Record<string, string> = {
   warn: "只告警",
@@ -204,16 +212,38 @@ export function AnswerShape({
 // 技术方案: each target table's columns, keys, load and quality rules; the rules the
 // plan follows (folded by default) and the material it relies on. `columnNotes` and
 // `ruleNotes` say what a person may hang a remark on here.
+// How a target table is written: versions 1 and 2 say 全量 or 增量, version 3 one of
+// its four ways (docs/api/data-nodes.md, 写表方式).
+function loadLabel(target: PlanTarget): string {
+  const load = target.load;
+  switch (load.mode) {
+    case "incremental":
+      return `增量加载 · ${load.key ?? "未设增量键"}`;
+    case "overwrite":
+      return "整表覆盖";
+    case "replace_where":
+      return `按条件替换 · ${load.where ?? ""}`;
+    case "append":
+      return "追加";
+    case "merge":
+      return `按键合并 · ${(load.keys.length ? load.keys : target.primary_key).join("、")}`;
+    default:
+      return "全量加载";
+  }
+}
+
 export function TechPlanView({
   plan,
   columnNotes = false,
   qualityNotes = false,
   ruleNotes = false,
+  checkNotes = false,
 }: {
   plan: PlanV2;
   columnNotes?: boolean;
   qualityNotes?: boolean;
   ruleNotes?: boolean;
+  checkNotes?: boolean;
 }) {
   return (
     <section className="etl-tech-plan" aria-labelledby="tech-plan-title">
@@ -234,11 +264,7 @@ export function TechPlanView({
               <h4>
                 <code>{target.name}</code>
               </h4>
-              <span className="load-badge">
-                {target.load.mode === "incremental"
-                  ? `增量加载 · ${target.load.key ?? "未设增量键"}`
-                  : "全量加载"}
-              </span>
+              <span className="load-badge">{loadLabel(target)}</span>
             </div>
             {target.description && (
               <p className="target-description">
@@ -337,6 +363,32 @@ export function TechPlanView({
           </article>
         ))}
       </div>
+      {plan.checks.length > 0 && (
+        <section className="plan-checks" aria-label="建议的数据检查">
+          <h4>数据检查</h4>
+          <p className="muted">
+            开发环境试算之后检查；填了老系统结果表时另加一条逐行对比。
+          </p>
+          <ul className="quality-rules">
+            {plan.checks.map((check) => (
+              <li key={check.id}>
+                <div>
+                  <strong>{check.label}</strong>
+                  <span>
+                    {checkKinds[check.kind] ?? check.kind}
+                    {check.severity !== "error" &&
+                      ` · ${checkSeverities[check.severity] ?? check.severity}`}
+                  </span>
+                </div>
+                <p className="check-text">{check.text}</p>
+                {checkNotes && (
+                  <NoteButton item={`check:${check.id}`} label={check.label} />
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {plan.rules.length > 0 && (
         <details className="plan-rules">
           <summary>已按口径处理（{plan.rules.length} 条）</summary>

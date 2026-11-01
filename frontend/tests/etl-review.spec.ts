@@ -336,3 +336,83 @@ test("data review sends the plan back: the plan review says so at its top", asyn
     "ads_sales_city_member_m.avg_order_value：按支付金额算",
   );
 });
+
+test("template v3: write modes and proposed checks on the plan, a failed check has no 通过, a note on it sends the code back", async ({
+  page,
+}) => {
+  await start(page, "按城市和会员等级统计上个月的销售，演示数据检查不通过");
+  const review = page.locator(".etl-review");
+  // How each table is written, and the checks the plan proposes (notes can hang on them).
+  await expect(review.locator(".load-badge")).toHaveText([
+    "整表覆盖",
+    "按条件替换 · stat_month = ${param.update_month}",
+  ]);
+  const proposed = review.getByRole("region", { name: "建议的数据检查" });
+  await expect(proposed).toContainText("每月每个城市每个等级一行");
+  await expect(proposed).toContainText(
+    "ads_sales_city_member_m 按 stat_month、city、member_level 没有重复的行",
+  );
+  await expect(proposed).toContainText(
+    "ads_sales_city_member_m 的 sum(sales_amount)和 dwd_sales_order_line 的 sum(line_amount)一致（容差 0.1%）",
+  );
+  await expect(proposed).toContainText("不该有的行 · 警告");
+  await expect(
+    proposed.getByRole("button", { name: "这里不对：没有负的销售额" }),
+  ).toBeVisible();
+  await confirmPlan(page);
+
+  // The dev run passed, the repeated key failed a check: no 通过.
+  await expect(review.getByText("开发环境试算通过")).toBeVisible();
+  await expect(review.getByRole("alert")).toContainText("数据检查没通过");
+  const checks = review.getByRole("region", { name: "数据检查", exact: true });
+  await expect(checks).toContainText("3 项检查：2 项通过，1 项不通过");
+  const keys = checks
+    .getByRole("listitem")
+    .filter({ hasText: "每月每个城市每个等级一行" });
+  await expect(keys).toContainText("不通过");
+  await expect(keys).toContainText(
+    "键不重复：按 stat_month、city、member_level 有 1 组重复",
+  );
+  await expect(
+    keys.getByRole("table", { name: "每月每个城市每个等级一行 的例子" }),
+  ).toContainText("gold");
+  await expect(
+    page
+      .locator("#approval")
+      .getByRole("button", { name: "通过", exact: true }),
+  ).toHaveCount(0);
+
+  await keys
+    .getByRole("button", { name: "这里不对：每月每个城市每个等级一行" })
+    .click();
+  await review
+    .getByLabel("对「每月每个城市每个等级一行」的意见")
+    .fill("同月同城同等级只能有一行");
+  await review.getByRole("button", { name: "挂上意见" }).click();
+  const sent = posted(page);
+  await page
+    .locator("#approval")
+    .getByRole("button", { name: "改代码", exact: true })
+    .click();
+  expect((await sent).postDataJSON()).toMatchObject({
+    decision: "fix_code",
+    notes: [{ item: "check:keys", text: "同月同城同等级只能有一行" }],
+  });
+
+  // Round 2: the checks pass, 通过 is back, and the result has the check report.
+  await expect(review.getByText("第 2 轮")).toBeVisible();
+  await expect(checks).toContainText("3 项检查：3 项通过");
+  await expect(review.getByRole("alert")).toHaveCount(0);
+  await page
+    .locator("#approval")
+    .getByRole("button", { name: "通过", exact: true })
+    .click();
+  await expect(page.locator(".detail-heading .status-badge")).toHaveText(
+    "已交付",
+  );
+  const result = page.getByRole("region", { name: "运行结果", exact: true });
+  await result.getByRole("tab", { name: "运行报告" }).click();
+  await expect(result.locator(".result-text")).toContainText(
+    "3 项检查：3 项通过",
+  );
+});

@@ -847,7 +847,7 @@ async def run_condition(node: dict[str, Any], state: dict[str, Any], rt: Runtime
 # human
 
 MAX_QUESTIONS = 20
-MAX_DATA_KEYS = 12
+MAX_DATA_KEYS = 16
 QUESTION_TYPES = tuple(t for t in FIELD_TYPES if t != "datasource")
 APPROVAL_ONLY = "只有确认模式可以设"
 # What an approval produces (a form produces its fields and ``actor``).

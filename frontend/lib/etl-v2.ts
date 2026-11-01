@@ -52,8 +52,22 @@ export type PlanTarget = {
   logic: string;
   columns: PlanColumn[];
   primary_key: string[];
-  load: { mode: string; key: string | null };
+  // where: the rows replace_where replaces; keys: what merge matches on (version 3).
+  load: {
+    mode: string;
+    key: string | null;
+    where: string | null;
+    keys: string[];
+  };
   quality_rules: QualityRule[];
+};
+// A data check a version 3 plan proposes (docs/api/data-nodes.md, 方案第 3 版).
+export type PlanCheck = {
+  id: string;
+  label: string;
+  kind: string;
+  severity: string;
+  text: string;
 };
 export type PlanV2 = {
   summary: string;
@@ -62,6 +76,7 @@ export type PlanV2 = {
   rules: PlanRule[];
   questions: PlanQuestion[];
   references: Reference[];
+  checks: PlanCheck[];
 };
 export type AnswerColumn = {
   name: string;
@@ -209,7 +224,12 @@ export function readPlanV2(value: unknown): PlanV2 | null {
           description: text(column.description),
         })),
         primary_key: texts(target.primary_key),
-        load: { mode: text(load.mode), key: textOrNull(load.key) },
+        load: {
+          mode: text(load.mode),
+          key: textOrNull(load.key),
+          where: textOrNull(load.where),
+          keys: texts(load.keys),
+        },
         quality_rules: records(target.quality_rules).map((rule) => ({
           name: text(rule.name),
           condition: text(rule.condition),
@@ -235,7 +255,164 @@ export function readPlanV2(value: unknown): PlanV2 | null {
     references: Array.isArray(value.references)
       ? (value.references.filter(isRecord) as Reference[])
       : [],
+    checks: records(value.checks)
+      .filter((check) => typeof check.id === "string")
+      .map((check) => ({
+        id: text(check.id),
+        label: text(check.label) || text(check.id),
+        kind: text(check.kind),
+        severity: text(check.severity) || "error",
+        text: describeCheck(check),
+      })),
   };
+}
+
+// The data checks (docs/api/data-nodes.md, "data_check 数据检查"): the names people read.
+export const checkKinds: Record<string, string> = {
+  aggregate: "聚合值",
+  reconcile: "对账",
+  unique: "键不重复",
+  golden: "和老系统对比",
+  rows: "不该有的行",
+};
+export const checkStatuses: Record<string, string> = {
+  passed: "通过",
+  failed: "不通过",
+  error: "出错",
+  skipped: "跳过",
+};
+export const checkSeverities: Record<string, string> = {
+  error: "错误",
+  warn: "警告",
+  info: "提示",
+};
+const signs: Record<string, string> = {
+  eq: "=",
+  ne: "≠",
+  gt: ">",
+  ge: "≥",
+  lt: "<",
+  le: "≤",
+};
+
+function shownValue(value: unknown): string {
+  if (value === null || value === undefined) return "空值";
+  if (typeof value === "number") return value.toLocaleString("en-US");
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+// What a check checks, in one sentence (aep.etl.checks.describe without the Markdown).
+export function describeCheck(check: Record<string, unknown>): string {
+  const under = (where: unknown) =>
+    typeof where === "string" && where ? `（条件 ${where}）` : "";
+  const groups = texts(check.group_by);
+  const by = groups.length ? `按 ${groups.join("、")} 分组，` : "";
+  const table = text(check.table);
+  if (check.kind === "aggregate") {
+    const op = text(check.op);
+    const tolerance = typeof check.tolerance === "number" ? check.tolerance : 0;
+    let wanted =
+      op === "between"
+        ? `在 ${shownValue(check.value)} 和 ${shownValue(check.max)} 之间`
+        : `${signs[op] ?? op} ${shownValue(check.value)}`;
+    if (tolerance && ["eq", "ne", "between"].includes(op))
+      wanted += `（容差 ${shownValue(tolerance)}）`;
+    return `${table} ${by}${groups.length ? "每组" : ""}${text(check.expr)} ${wanted}${under(check.where)}`;
+  }
+  if (check.kind === "reconcile") {
+    const left = isRecord(check.left) ? check.left : {};
+    const right = isRecord(check.right) ? check.right : {};
+    const tolerance = typeof check.tolerance === "number" ? check.tolerance : 0;
+    const allowed = tolerance
+      ? `（容差 ${check.relative ? `${shownValue(tolerance * 100)}%` : shownValue(tolerance)}）`
+      : "";
+    return (
+      `${by}${text(left.table)} 的 ${text(left.expr)}${under(left.where)}` +
+      `和 ${text(right.table)} 的 ${text(right.expr)}${under(right.where)}一致${allowed}`
+    );
+  }
+  if (check.kind === "unique")
+    return `${table} 按 ${texts(check.columns).join("、")} 没有重复的行${under(check.where)}`;
+  if (check.kind === "golden")
+    return `${table} 和老系统的结果表按 ${texts(check.keys).join("、")} 逐行一致`;
+  return `${table} 里没有满足 ${text(check.where)} 的行`;
+}
+
+export type CheckResult = {
+  id: string;
+  label: string;
+  kind: string;
+  severity: string;
+  status: string;
+  message: string;
+  rows: Record<string, unknown>[];
+};
+export type DataChecks = { results: CheckResult[]; summary: string };
+
+// A data check node's results and summary; null when there are none (a run of a template
+// without data checks).
+export function readDataChecks(
+  results: unknown,
+  summary: unknown,
+): DataChecks | null {
+  if (!Array.isArray(results) || typeof summary !== "string") return null;
+  return {
+    results: records(results).map((item) => ({
+      id: text(item.id),
+      label: text(item.label) || text(item.id),
+      kind: text(item.kind),
+      severity: text(item.severity) || "error",
+      status: text(item.status),
+      message: text(item.message),
+      rows: records(item.rows),
+    })),
+    summary,
+  };
+}
+
+// Whether the checks pass: none of severity error failed or could not run.
+export function checksPassed(checks: DataChecks): boolean {
+  return !checks.results.some(
+    (item) =>
+      item.severity === "error" &&
+      (item.status === "failed" || item.status === "error"),
+  );
+}
+
+const differences: Record<string, string> = {
+  missing: "少",
+  extra: "多",
+  different: "不一致",
+  duplicate: "重复",
+};
+
+// An example row of a check as a table row: a difference from the old system gets its
+// key and each column as "result / old system" (as in the check report).
+export function checkRow(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const kind = text(row.kind);
+  if (!isRecord(row.key) || !(kind in differences)) return row;
+  const out: Record<string, unknown> = { 差异: differences[kind], ...row.key };
+  if (kind === "duplicate") {
+    out["哪边"] = row.side === "table" ? "结果表" : "老系统";
+    out["次数"] = row.count;
+    return out;
+  }
+  const mine = isRecord(row.table) ? row.table : {};
+  const old = isRecord(row.expected) ? row.expected : {};
+  const differs = new Set(texts(row.differs));
+  for (const column of new Set([...Object.keys(mine), ...Object.keys(old)])) {
+    out[column] =
+      kind === "missing"
+        ? `— / ${shownValue(old[column])}`
+        : kind === "extra"
+          ? `${shownValue(mine[column])} / —`
+          : differs.has(column)
+            ? `${shownValue(mine[column])} / ${shownValue(old[column])}`
+            : shownValue(mine[column]);
+  }
+  return out;
 }
 
 function readColumns(value: unknown): AnswerColumn[] {

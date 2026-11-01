@@ -2365,6 +2365,17 @@ textarea::placeholder {
   color: #756880;
   margin-top: 3px;
 }
+.check-text {
+  color: #756880;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+.plan-checks {
+  margin-top: 18px;
+}
+.data-checks .table-scroll {
+  margin-top: 6px;
+}
 .files-heading p {
   margin-top: 9px;
   color: #7f738b;

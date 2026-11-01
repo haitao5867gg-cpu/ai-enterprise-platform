@@ -33,7 +33,13 @@ def content(body: str = "先读需求，再看数据。", **changes) -> SkillCon
 
 def test_builtin_skills_are_version_one():
     skills = builtin_skills()
-    assert set(skills) == {"etl-plan", "etl-codegen", "etl-plan-brief"}
+    assert set(skills) == {
+        "etl-plan",
+        "etl-codegen",
+        "etl-plan-brief",
+        "etl-plan-project",
+        "etl-codegen-project",
+    }
     for skill in skills.values():
         assert skill.version == 1
         assert skill.note == "平台内置"
@@ -44,13 +50,22 @@ def test_builtin_skills_are_version_one():
     assert brief.startswith(PLAN_RULES)
     for text in ("brief", "rules", "basis", "questions", "count(order_id)", "2026-10"):
         assert text in brief
+    # Version 3 in a project (内置 Skill etl-plan-project, etl-codegen-project): new
+    # names, so a company's own version 2 of etl-plan-brief is not in the way.
+    project = skills["etl-plan-project"].body
+    assert project.startswith(PLAN_RULES)
+    for text in ("表名前缀", "${param.update_month}", "replace_where", "merge", "checks", "golden"):
+        assert text in project
+    code = skills["etl-codegen-project"].body
+    for text in ('source("', 'param("update_month")', "SOURCE_FILTERS", "replace_where"):
+        assert text in code
 
 
 async def test_builtins_are_registered_only_under_new_names():
     store = MemorySkillStore(builtins=False)
     await store.create("etl-plan", content("我们公司的方案规范"))
     await store.publish("etl-plan", "公司规范", None)
-    assert await store.register_builtins() == 2
+    assert await store.register_builtins() == 4
     assert (await store.version("etl-plan", 1)).body == "我们公司的方案规范"
     assert (await store.version("etl-plan-brief", 1)).note == "平台内置"
     assert await store.register_builtins() == 0
@@ -130,8 +145,14 @@ async def api():
 
 async def test_skills_api(api):
     listed = (await api.get("/skills")).json()
-    assert [s["name"] for s in listed] == ["etl-codegen", "etl-plan", "etl-plan-brief"]
-    plan = listed[1]
+    assert [s["name"] for s in listed] == [
+        "etl-codegen",
+        "etl-codegen-project",
+        "etl-plan",
+        "etl-plan-brief",
+        "etl-plan-project",
+    ]
+    plan = listed[2]
     assert plan["published_version"] == 1
     assert plan["has_draft"] is False
     assert plan["used_by"] == [{"app": "etl", "node": "plan", "version": 1, "skill_version": 1}]

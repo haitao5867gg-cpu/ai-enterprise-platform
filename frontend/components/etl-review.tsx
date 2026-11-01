@@ -26,11 +26,18 @@ import {
   readPreviews,
   readQuality,
   readRecord,
+  readDataChecks,
   returnedForPlan,
+  checkKinds,
+  checkRow,
+  checkSeverities,
+  checkStatuses,
+  checksPassed,
   httpsUrl,
   type Answer,
   type AnswerDesign,
   type Brief,
+  type DataChecks,
   type DevPreview,
   type DevTable,
   type PlanV2,
@@ -97,6 +104,8 @@ export type DevReview = {
   url: string | null;
   errors: string;
   files: string[];
+  // The data checks after the dev run; null for a template without them.
+  checks: DataChecks | null;
 };
 
 // What 审核试算结果 (view etl_dev_review) was given; null when it is not what the view reads.
@@ -116,6 +125,7 @@ export function readDevReview(data: unknown): DevReview | null {
     url: httpsUrl(data.url),
     errors: typeof data.errors === "string" ? data.errors : "",
     files: strings(data.files),
+    checks: readDataChecks(data.checks, data.checks_summary),
   };
 }
 
@@ -216,7 +226,7 @@ export function EtlPlanReview({
               />
             </section>
           )}
-          <TechPlanView plan={plan} columnNotes ruleNotes />
+          <TechPlanView plan={plan} columnNotes ruleNotes checkNotes />
           {review.cleaned.length > 0 && (
             <details className="review-cleaned">
               <summary>
@@ -377,6 +387,72 @@ function handling(review: DevReview, table: string, rule: string): string {
   );
 }
 
+// The data checks after the dev run: each with its result, what it found and a place for
+// a note; failed ones show their example rows.
+function ChecksSection({ checks }: { checks: DataChecks }) {
+  return (
+    <section aria-label="数据检查">
+      <h4>数据检查</h4>
+      <p className="muted">{checks.summary}</p>
+      {checks.results.length > 0 && (
+        <ul className="quality-rules data-checks">
+          {checks.results.map((check) => {
+            const bad = check.status === "failed" || check.status === "error";
+            const rows = bad ? check.rows.map(checkRow) : [];
+            const columns = [
+              ...new Set(rows.flatMap((row) => Object.keys(row))),
+            ];
+            return (
+              <li key={check.id}>
+                <div>
+                  <strong>{check.label}</strong>
+                  <span className={bad ? "rule-failed" : "rule-passed"}>
+                    {checkStatuses[check.status] ?? check.status}
+                    {bad &&
+                      check.severity !== "error" &&
+                      `（${checkSeverities[check.severity] ?? check.severity}）`}
+                  </span>
+                </div>
+                <p className="check-text">
+                  {checkKinds[check.kind] ?? check.kind}：{check.message}
+                </p>
+                {rows.length > 0 && (
+                  <div className="table-scroll">
+                    <table
+                      className="mapping-table"
+                      aria-label={`${check.label} 的例子`}
+                    >
+                      <thead>
+                        <tr>
+                          {columns.map((column) => (
+                            <th key={column} scope="col">
+                              {column}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row, i) => (
+                          <tr key={i}>
+                            {columns.map((column) => (
+                              <td key={column}>{cell(row[column])}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <NoteButton item={`check:${check.id}`} label={check.label} />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function ResultTab({ review }: { review: DevReview }) {
   return (
     <div className="review-result">
@@ -399,6 +475,19 @@ function ResultTab({ review }: { review: DevReview }) {
           )}
         </p>
       )}
+      {review.status === "passed" &&
+        review.checks &&
+        !checksPassed(review.checks) && (
+          <div className="checks-failed" role="alert">
+            <h3>
+              <Icon name="alert" />
+              数据检查没通过
+            </h3>
+            <p>
+              有严重级别为“错误”的检查没通过或出错，不能交付。可以改代码、改方案，或者终止。
+            </p>
+          </div>
+        )}
       {review.tables.length > 0 && (
         <section aria-label="结果表">
           <h4>结果表</h4>
@@ -449,6 +538,7 @@ function ResultTab({ review }: { review: DevReview }) {
           {review.quality && <p className="muted">{review.quality.text}</p>}
         </section>
       )}
+      {review.checks && <ChecksSection checks={review.checks} />}
       {review.answer && (
         <section aria-label="答案预览">
           <h4>答案预览</h4>

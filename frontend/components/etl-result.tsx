@@ -50,7 +50,10 @@ export function EtlResultView({
   const code =
     isRecord(result.code) && isFileMap(result.code.files) ? result.code : null;
   const files = code && isFileMap(code.files) ? code.files : {};
-  const report = typeof result.report === "string" ? result.report : "";
+  // The run report, then the data checks' report when the template checks the data.
+  const report = [result.report, result.checks]
+    .filter((text): text is string => typeof text === "string" && text !== "")
+    .join("\n\n");
   const reason = typeof result.reason === "string" ? result.reason : "";
   return (
     <section

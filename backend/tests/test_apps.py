@@ -145,8 +145,10 @@ async def test_apps_list_and_detail(tmp_path):
         assert detail["options"]["default_model"] == "mock"
         assert [s["name"] for s in detail["options"]["skills"]] == [
             "etl-codegen",
+            "etl-codegen-project",
             "etl-plan",
             "etl-plan-brief",
+            "etl-plan-project",
         ]
         assert (await p.api.get("/apps/nope")).status_code == 404
 
