@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from aep import llm, policy
 from aep.databricks import DatabricksError, DevTarget, Landing, full_name
-from aep.datasources import DATABASE_KINDS, DataSource
+from aep.datasources import SOURCE_KINDS, DataSource, tool_seconds
 from aep.etl import codegen
 from aep.etl.answer import cluster_design, shown, with_defaults
 from aep.etl.answer import result as answer_result
@@ -39,10 +39,12 @@ from aep.etl.plan import (
 )
 from aep.etl.profile import (
     MAX_TABLES,
+    InputError,
     describe_for_model,
     known_values,
     profile_tables,
     seen_values,
+    split_name,
 )
 from aep.knowledge.citations import IndexedHit
 from aep.runtime.flow import refs
@@ -77,7 +79,7 @@ INGEST_TOOLS = ["list_tables", "describe_table", "read_rows"]
 
 def _etl_source(source: DataSource) -> DataSource:
     """The source a run chose, if ETL can read it: a tool service cannot."""
-    if source.kind not in DATABASE_KINDS:
+    if source.kind not in SOURCE_KINDS:
         raise NodeFailure(
             INPUT_ERROR,
             f"「{source.name}」是工具服务，不能用来探查或抽取数据，请选数据库或上传文件的数据源",
@@ -116,10 +118,15 @@ def _check_tables(node: dict[str, Any], p: Problems, required: bool) -> None:
         if refs.find(item):
             continue
         for name in _split(item):
-            schema, dot, table = name.partition(".")
-            if not (schema and dot and table):
+            # Databricks tables have a catalog too: the table is after the last dot.
+            schema, dot, table = name.rpartition(".")
+            if not (schema and dot and table) or schema.count(".") > 1:
                 loc = ("tables",) if isinstance(value, str) else ("tables", i)
-                p.add(loc, f"{name} 要写成 schema.table 或 schema.*")
+                p.add(
+                    loc,
+                    f"{name} 要写成 schema.table 或 schema.*"
+                    "（Databricks 的表写成 catalog.schema.table）",
+                )
 
 
 def _split(value: Any) -> list[str]:
@@ -133,22 +140,48 @@ def _split(value: Any) -> list[str]:
     return names
 
 
+def _references(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The tables the run's project references (its snapshot, aep.projects); [] unbound."""
+    found = (state.get("project") or {}).get("references")
+    return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
+
+
 async def _table_names(
-    rt: Runtime, source: DataSource, value: Any, everything: bool
+    rt: Runtime,
+    source: DataSource,
+    value: Any,
+    everything: bool,
+    state: dict[str, Any] | None = None,
 ) -> list[tuple[str, str]]:
-    """``(schema, table)`` for each name (``schema.*`` is every table of the schema);
-    no names means every table of the source when ``everything``."""
+    """``(schema, table)`` for each name (``schema.*`` is every table of the schema; on
+    Databricks the schema is catalog.schema); no names means every table of the source
+    when ``everything``, and on Databricks the tables the run's project references."""
     wanted = _split(value)
     if not wanted:
         if not everything:
             raise NodeFailure(INPUT_ERROR, "没有指定要处理的表")
-        schemas = (await rt.call(source, "list_schemas", {}))["schemas"]
-        wanted = [f"{schema}.*" for schema in schemas]
+        if source.kind == "databricks":
+            project = (state or {}).get("project") or {}
+            wanted = [str(r.get("name") or "") for r in _references(state or {})]
+            if not project:
+                raise NodeFailure(INPUT_ERROR, "Databricks 数据源请写要探查的表")
+            if not wanted:
+                raise NodeFailure(
+                    INPUT_ERROR,
+                    f"项目「{project.get('name') or ''}」没有登记引用表，"
+                    "Databricks 数据源请写要探查的表",
+                )
+        else:
+            schemas = (await rt.call(source, "list_schemas", {}))["schemas"]
+            wanted = [f"{schema}.*" for schema in schemas]
     found: list[tuple[str, str]] = []
     for name in wanted:
-        schema, dot, table = name.partition(".")
-        if not (schema and dot and table):
-            raise NodeFailure(INPUT_ERROR, f"表 {name} 要写成 schema.table 或 schema.*")
+        try:
+            schema, table = split_name(source, name)
+        except InputError as exc:
+            shape = "catalog.schema" if source.kind == "databricks" else "schema"
+            message = f"表 {name} 要写成 {shape}.table 或 {shape}.*"
+            raise NodeFailure(INPUT_ERROR, message) from exc
         if table == "*":
             listed = await rt.call(source, "list_tables", {"schema": schema})
             found += [(schema, t) for t in listed["tables"]]
@@ -242,12 +275,19 @@ async def check_profile(node: dict[str, Any], p: Problems, env: CheckEnv) -> Non
 async def run_profile(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     get = rt.lookup(state)
     source = _etl_source(await rt.source(refs.resolve(node["datasource"], get)))
-    names = await _table_names(rt, source, refs.resolve(node.get("tables"), get), True)
+    names = await _table_names(rt, source, refs.resolve(node.get("tables"), get), True, state)
     if rt.tools is None:
         raise NodeFailure("tool_error", "平台没有配置工具调用")
+    # The project's read filters: only its references have them, and only on Databricks.
+    references = _references(state) if source.kind == "databricks" else []
     try:
         tables = await profile_tables(
-            rt.tools, source, [f"{s}.{t}" for s, t in names], node.get("sample_rows", 5)
+            rt.tools,
+            source,
+            [f"{s}.{t}" for s, t in names],
+            node.get("sample_rows", 5),
+            filters={str(r.get("name")): r.get("filter") for r in references},
+            timeout_seconds=tool_seconds(source, rt.settings),
         )
     except (ConnectorUnavailable, ToolError, ValueError, KeyError) as exc:
         raise NodeFailure("tool_error", f"探查数据源「{source.name}」失败：{exc}") from exc
@@ -261,7 +301,10 @@ async def run_profile(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
             "names": listed,
             # Written for models: as the run's data outbound policy lets the data go.
             "description": describe_for_model(
-                tables, rt.data_policy(state).samples, str(state.get("run_id") or "")
+                tables,
+                rt.data_policy(state).samples,
+                str(state.get("run_id") or ""),
+                references,
             ),
             "summary": summary,
         },
@@ -612,11 +655,35 @@ async def _read_all(rt: Runtime, source: DataSource, schema: str, table: str, mo
     return Landing(schema, table, columns, rows)
 
 
+async def _in_place(rt: Runtime, source: DataSource, names: list[tuple[str, str]]) -> Outcome:
+    """Tables already on Databricks: nothing is copied, the code reads them where they are."""
+    tables = []
+    for schema, table in names:
+        described = await rt.call(source, "describe_table", {"schema": schema, "table": table})
+        tables.append(
+            {
+                "source": f"{schema}.{table}",
+                "target": full_name(*schema.split("."), table),
+                "rows": None,
+                "columns": len(described.get("columns") or []),
+                "copied": False,
+            }
+        )
+    summary = f"这 {len(tables)} 张表本来就在 Databricks 上，直接读，不复制"
+    text = summary + "：" + "、".join(_code(t["target"]) for t in tables)
+    return Outcome(
+        {"catalog": None, "tables": tables, "summary": summary, "reused": False},
+        messages=[{"role": "assistant", "content": text}],
+    )
+
+
 async def run_ingest(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
-    databricks = _databricks(rt, "AEP_DATABRICKS_CLUSTER_ID", "AEP_DATABRICKS_SOURCE_CATALOG")
     get = rt.lookup(state)
     source = _etl_source(await rt.source(refs.resolve(node["datasource"], get)))
     names = await _table_names(rt, source, refs.resolve(node.get("tables"), get), False)
+    if source.kind == "databricks":
+        return await _in_place(rt, source, names)
+    databricks = _databricks(rt, "AEP_DATABRICKS_CLUSTER_ID", "AEP_DATABRICKS_SOURCE_CATALOG")
     reuse = node.get("reuse") is True
     if reuse and (kept := _kept(_mine(state, node), source.datasource_id, names)) is not None:
         catalog, loaded = kept
@@ -634,6 +701,7 @@ async def run_ingest(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
         )
     except DatabricksError as exc:
         raise NodeFailure("databricks_error", f"抽取到 Databricks 失败：{exc}") from exc
+    loaded = [t | {"copied": True} for t in loaded]
     total = sum(t["rows"] or 0 for t in loaded)
     summary = f"已把 {len(loaded)} 张表共 {total} 行抽取到 Databricks：" + "、".join(
         f"{_code(t['target'])}（{t['rows']} 行）" for t in loaded
@@ -661,7 +729,8 @@ def _kept(
     wanted = [f"{schema}.{table}" for schema, table in names]
     if not all(name in records for name in wanted):
         return None
-    return mine.get("catalog"), [records[name] for name in wanted]
+    # Kept before tables on Databricks were read in place, a record has no "copied".
+    return mine.get("catalog"), [{"copied": True} | records[name] for name in wanted]
 
 
 # etl_code_check

@@ -2,9 +2,9 @@
 
 Credentials never live here: the connector holds them (local .env, Key Vault on
 Azure). The platform only knows where the connector is and what it is called. Data
-sources (databases and uploaded files) are what ETL reads, through ``ETL_TOOLS``; a
-tool service (kind ``mcp``) only offers tools to flow apps' tool and agent nodes
-(docs/api/datasources.md).
+sources (databases, uploaded files and tables already on Databricks) are what ETL reads,
+through ``ETL_TOOLS``; a tool service (kind ``mcp``) only offers tools to flow apps'
+tool and agent nodes (docs/api/datasources.md).
 """
 
 import dataclasses
@@ -16,14 +16,19 @@ from typing import Any, Literal, Protocol
 from psycopg import errors
 from psycopg_pool import AsyncConnectionPool
 
+from aep.config import Settings
 from aep.connector_urls import same_url
 from aep.runtime.store import DEFAULT_TENANT
 
-DataSourceKind = Literal["postgres", "mysql", "sqlserver", "file", "mcp"]
-# The kinds ETL reads from; each must offer ETL_TOOLS. The other kind, mcp, is a tool service.
+DataSourceKind = Literal["postgres", "mysql", "sqlserver", "file", "databricks", "mcp"]
+# Databases and uploaded files: what the code app etl reads and copies to Databricks.
 DATABASE_KINDS: tuple[str, ...] = ("postgres", "mysql", "sqlserver", "file")
+# Data sources: each must offer ETL_TOOLS. Tables on Databricks are read where they are
+# (connectors/databricks; their names are catalog.schema.table). The other kind, mcp, is
+# a tool service.
+SOURCE_KINDS: tuple[str, ...] = (*DATABASE_KINDS, "databricks")
 # The kinds whose tools return data values, which the data outbound policy covers (aep.policy).
-DATA_KINDS: tuple[str, ...] = DATABASE_KINDS
+DATA_KINDS: tuple[str, ...] = SOURCE_KINDS
 # What ETL reads through a data source's connector (connectors/postgres and the others).
 ETL_TOOLS = (
     "list_schemas",
@@ -57,6 +62,13 @@ class DataSource:
     description: str = ""
     tenant_id: str = DEFAULT_TENANT
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+def tool_seconds(source: DataSource, settings: Settings) -> float | None:
+    """How long one tool call to the source may take: Databricks statements may wait for a
+    warehouse or cluster, longer than the connector's own statement timeout; None for the
+    platform's usual tool timeout."""
+    return settings.databricks_tool_seconds if source.kind == "databricks" else None
 
 
 class DataSourceStore(Protocol):

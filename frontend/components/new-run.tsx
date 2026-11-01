@@ -16,7 +16,7 @@ import {
   type Run,
 } from "../lib/runs";
 import { readDataSources, type DataSource, type EtlLanguage } from "../lib/etl";
-import { isToolService, kindLabel } from "../lib/datasources";
+import { isEtlAppSource, kindLabel } from "../lib/datasources";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 import { FileUpload } from "./file-upload";
@@ -196,8 +196,8 @@ export function NewRun({ from }: { from?: string } = {}) {
     setErrors(found);
     if (advanced.some((field) => found[field.key])) setAdvancedOpen(true);
   };
-  // ETL reads data: tool services are left out of its picker.
-  const etlSources = sources.filter((source) => !isToolService(source));
+  // The ETL app reads databases and files: tool services and Databricks are left out.
+  const etlSources = sources.filter(isEtlAppSource);
   const needsSource =
     app === "etl" &&
     (sourcesLoading ||

@@ -1,8 +1,11 @@
-"""An in-process stand-in for a relational database connector.
+"""In-process stand-ins for data source connectors.
 
-Same tools and result shapes as connectors/postgres (issue #6), serving a small
-shop database (customers and orders) with some dirty rows.
+``build``: same tools and result shapes as connectors/postgres (issue #6), serving a
+small shop database (customers and orders) with some dirty rows. ``build_databricks``:
+the 6 tools of connectors/databricks over two tables of a Databricks catalog.
 """
+
+import re
 
 import anyio
 from mcp.server.mcpserver import MCPServer
@@ -149,6 +152,136 @@ def build(delay_seconds: float = 0) -> MCPServer:
             "estimated_row_count": len(rows),
             "sample_limit": 1000,
             "sample_row_count": len(rows),
+            "columns": columns,
+        }
+
+    return server
+
+
+# A Databricks data source (connectors/databricks): schemas are catalog.schema, tables
+# carry comments, and the row tools take a ``where`` (here only ``column = 'value'``).
+
+DATABRICKS_URL = "http://databricks.connector.test/mcp"
+DATABRICKS_TABLES = {
+    ("prev.sales", "forecast"): {
+        "comment": "上一期的需求预测",
+        "columns": [
+            _col("sku", "string", nullable=False) | {"comment": "物料号"},
+            _col("month", "string") | {"comment": None},
+            _col("Type", "string") | {"comment": "Vol. 是数量，Amt. 是金额"},
+            _col("value", "decimal(18,2)") | {"comment": None},
+        ],
+        "foreign_keys": [],
+        "rows": [
+            {"sku": "A1", "month": "2026-10", "Type": "Vol.", "value": 10},
+            {"sku": "A1", "month": "2026-10", "Type": "Amt.", "value": 1200.5},
+            {"sku": "B2", "month": "2026-11", "Type": "Vol.", "value": 4},
+        ],
+    },
+    ("prev.sales", "sku"): {
+        "comment": None,
+        "columns": [_col("sku", "string", nullable=False) | {"comment": None}],
+        "foreign_keys": [],
+        "rows": [{"sku": "A1"}, {"sku": "B2"}],
+    },
+}
+_EQUALS = re.compile(r"^\s*`?(\w+)`?\s*=\s*'([^']*)'\s*$")
+
+
+def build_databricks(calls: list[tuple[str, dict]] | None = None) -> MCPServer:
+    """The fake Databricks connector; ``calls`` gets each tool call (name, arguments)."""
+    server = MCPServer("fake-databricks")
+    seen = calls if calls is not None else []
+
+    def find(schema: str, name: str) -> dict:
+        try:
+            return DATABRICKS_TABLES[(schema.lower(), name.lower())]
+        except KeyError:
+            raise ToolError(f"表 {schema}.{name} 不存在，或者没有读权限") from None
+
+    def rows(schema: str, name: str, where: str | None) -> list[dict]:
+        found = find(schema, name)["rows"]
+        if where is None:
+            return found
+        match = _EQUALS.match(where)
+        if match is None:
+            raise ToolError("读取条件写法不对：这个假连接器只认 column = 'value'")
+        column, value = match.groups()
+        return [r for r in found if str(r.get(column)) == value]
+
+    @server.tool()
+    def list_schemas() -> dict:
+        """catalog.schema names."""
+        seen.append(("list_schemas", {}))
+        return {"schemas": sorted({schema for schema, _ in DATABRICKS_TABLES})}
+
+    @server.tool()
+    def list_tables(schema: str) -> dict:
+        """Tables and views of a catalog.schema."""
+        seen.append(("list_tables", {"schema": schema}))
+        names = sorted(t for s, t in DATABRICKS_TABLES if s == schema.lower())
+        return {"schema": schema, "tables": names}
+
+    @server.tool()
+    def describe_table(schema: str, table: str) -> dict:
+        """Columns with comments, and the table's comment."""
+        seen.append(("describe_table", {"schema": schema, "table": table}))
+        t = find(schema, table)
+        return {
+            "schema": schema,
+            "table": table,
+            "comment": t["comment"],
+            "columns": t["columns"],
+            "foreign_keys": t["foreign_keys"],
+        }
+
+    @server.tool()
+    def sample_rows(schema: str, table: str, limit: int = 10, where: str | None = None) -> dict:
+        """At most 100 rows, those ``where`` keeps."""
+        seen.append(("sample_rows", {"schema": schema, "table": table, "where": where}))
+        return {"schema": schema, "table": table, "rows": rows(schema, table, where)[:limit]}
+
+    @server.tool()
+    def read_rows(
+        schema: str, table: str, offset: int = 0, limit: int = 1000, where: str | None = None
+    ) -> dict:
+        """A page of rows."""
+        seen.append(("read_rows", {"schema": schema, "table": table, "where": where}))
+        found = rows(schema, table, where)
+        end = offset + limit
+        return {
+            "schema": schema,
+            "table": table,
+            "columns": [c["name"] for c in find(schema, table)["columns"]],
+            "rows": found[offset:end],
+            "next_offset": end if end < len(found) else None,
+        }
+
+    @server.tool()
+    def table_stats(schema: str, table: str, where: str | None = None) -> dict:
+        """Exact row count with ``where``; per column stats of the rows it keeps."""
+        seen.append(("table_stats", {"schema": schema, "table": table, "where": where}))
+        found = rows(schema, table, where)
+        columns = []
+        for col in find(schema, table)["columns"]:
+            values = [r[col["name"]] for r in found]
+            present = [v for v in values if v is not None]
+            stats = {
+                "name": col["name"],
+                "null_fraction": (len(values) - len(present)) / len(values) if values else 0,
+                "distinct_count": len(set(present)),
+            }
+            if col["data_type"] == "string":
+                stats["top_values"] = [
+                    {"value": v, "count": present.count(v)} for v in sorted(set(present))
+                ]
+            columns.append(stats)
+        return {
+            "schema": schema,
+            "table": table,
+            "estimated_row_count": len(found),
+            "sample_limit": 1000,
+            "sample_row_count": len(found),
             "columns": columns,
         }
 

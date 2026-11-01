@@ -217,6 +217,49 @@ test("登记：先测试连接才能保存，改了地址要重新测试", async
   ).toBeAttached();
 });
 
+test("登记 Databricks 数据源：编排应用能选，ETL 应用不列出", async ({
+  page,
+}) => {
+  const dialog = await openRegister(page);
+  await dialog.getByLabel("类型", { exact: true }).selectOption("databricks");
+  await expect(dialog).toContainText(
+    "Databricks 上已有的表，经只读连接器读取，不复制数据；表名写成 catalog.schema.table。",
+  );
+  const url = dialog.getByLabel("连接器地址", { exact: true });
+  await expect(url).toHaveAttribute(
+    "placeholder",
+    "http://connector-databricks:8005/mcp",
+  );
+  const name = unique("数据湖");
+  await dialog.getByLabel("名称", { exact: true }).fill(name);
+  await url.fill("http://lake.connector.test:8005/mcp");
+  await dialog.getByRole("button", { name: "测试连接" }).click();
+  await expect(dialog.getByRole("status")).toContainText("6 个工具");
+  await dialog.getByRole("button", { name: "保存" }).click();
+  await expect(page).toHaveURL(DETAIL_URL);
+  await expect(page.locator(".asset-tags")).toHaveText("Databricks");
+  await expect(
+    page.getByText("比如用模板「数据 ETL（湖仓）」建的编排应用。"),
+  ).toBeVisible();
+
+  await page.goto("/runs/new");
+  await page.getByLabel("应用", { exact: true }).selectOption("etl");
+  const picker = page.getByLabel("数据源", { exact: true });
+  await expect(
+    picker.getByRole("option", { name: "MySQL 示例库 · MySQL" }),
+  ).toBeAttached();
+  await expect(picker.getByRole("option", { name: new RegExp(name) })).toHaveCount(
+    0,
+  );
+  // A flow app's data source input lists it with the other data sources.
+  await page.getByLabel("应用", { exact: true }).selectOption("retail-etl");
+  await expect(
+    page
+      .getByLabel("数据源（必填）", { exact: true })
+      .getByRole("option", { name: `${name} · Databricks` }),
+  ).toBeAttached();
+});
+
 test("拒绝不安全或写错的地址，不去连接", async ({ page }) => {
   const dialog = await openRegister(page);
   await dialog.getByLabel("类型", { exact: true }).selectOption("mysql");

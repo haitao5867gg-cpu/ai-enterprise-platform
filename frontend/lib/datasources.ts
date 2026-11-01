@@ -7,6 +7,7 @@ export type DatasourceKind =
   | "mysql"
   | "sqlserver"
   | "file"
+  | "databricks"
   | "mcp";
 export type Datasource = DataSource & {
   connector_url: string;
@@ -109,12 +110,17 @@ export const kindLabels: Record<string, string> = {
   mysql: "MySQL",
   sqlserver: "SQL Server",
   file: "上传文件",
+  databricks: "Databricks",
   mcp: "工具服务",
 };
 export const kindLabel = (kind: string) => kindLabels[kind] ?? kind;
 // Tool services (`mcp`) only offer tools: tool and agent nodes may use them, ETL may not.
 export const isToolService = (source: { kind: string }) =>
   source.kind === "mcp";
+// What the code app etl can read: databases and uploaded files. Tables already on
+// Databricks are read where they are, by flow apps (etl-lakehouse).
+export const isEtlAppSource = (source: { kind: string }) =>
+  !isToolService(source) && source.kind !== "databricks";
 export const healthLabels: Record<ConnectionProblem, string> = {
   timeout: "超时",
   refused: "连接被拒绝",

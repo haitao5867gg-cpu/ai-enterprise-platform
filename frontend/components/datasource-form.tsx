@@ -72,10 +72,13 @@ const kindOptions: { value: DatasourceKind; label: string }[] = [
   { value: "mysql", label: "MySQL" },
   { value: "sqlserver", label: "SQL Server" },
   { value: "file", label: "上传文件（CSV、XLSX）" },
+  { value: "databricks", label: "Databricks（已有的表）" },
   { value: "mcp", label: "工具服务" },
 ];
 const kindHints: Record<string, string> = {
   file: "上传 CSV 或 XLSX 文件，平台自动生成数据源，不用填地址。",
+  databricks:
+    "Databricks 上已有的表，经只读连接器读取，不复制数据；表名写成 catalog.schema.table。在编排应用里使用（自然语言 ETL 工作流只接数据库和上传文件）。连接器要提供 6 个读数据的工具，测试连接时会检查。",
   mcp: "工具服务只提供工具，比如查工单、查 CRM，不能用于 ETL；在编排应用的「调用工具」和「智能体」节点里使用。",
 };
 const DATABASE_HINT =
@@ -314,7 +317,9 @@ export function DatasourceForm(props: Props) {
               placeholder={
                 isToolService({ kind })
                   ? "http://connector-tickets:8010/mcp"
-                  : "http://connector-postgres:8001/mcp"
+                  : kind === "databricks"
+                    ? "http://connector-databricks:8005/mcp"
+                    : "http://connector-postgres:8001/mcp"
               }
               aria-invalid={Boolean(urlError)}
               aria-describedby={[

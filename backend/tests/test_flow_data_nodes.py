@@ -711,12 +711,14 @@ async def test_ingest_copies_the_tables_into_the_source_catalog(tmp_path, monkey
             "target": "`icsd-ace-dev`.sales.orders",
             "rows": 3,
             "columns": 5,
+            "copied": True,
         },
         {
             "source": "sales.customers",
             "target": "`icsd-ace-dev`.sales.customers",
             "rows": 3,
             "columns": 3,
+            "copied": True,
         },
     ]
     assert out.outputs["summary"] == (
@@ -1485,7 +1487,9 @@ async def test_data_node_settings_are_checked(lake):
     assert saved.status_code == 422
     problems = {tuple(p["loc"][4:]): p["msg"] for p in saved.json()["detail"]}
     assert problems == {
-        ("profile", "tables"): "orders 要写成 schema.table 或 schema.*",
+        ("profile", "tables"): (
+            "orders 要写成 schema.table 或 schema.*（Databricks 的表写成 catalog.schema.table）"
+        ),
         ("profile", "sample_rows"): "样本行数要在 1–20 之间",
         ("check_plan", "profile"): "探查结果必须恰好是一个变量，如 {{profile.tables}}",
         ("check_plan", "hits", 0): "每项必须恰好是一个变量，如 {{glossary.hits}}",

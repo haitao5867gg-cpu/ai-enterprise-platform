@@ -19,40 +19,66 @@ class InputError(ValueError):
     gives the same failure."""
 
 
+def split_name(source: DataSource, name: str) -> tuple[str, str]:
+    """``(schema, table)`` of a table name as the source's connector takes it: the table
+    is after the last dot. A Databricks table is catalog.schema.table, so its schema is
+    catalog.schema; other sources' tables are schema.table."""
+    schema, _, table = name.rpartition(".")
+    if source.kind == "databricks":
+        catalog, dot, inner = schema.partition(".")
+        if not (catalog and dot and inner and "." not in inner and table):
+            raise InputError(f"表 {name} 要写成 catalog.schema.table")
+    elif not (schema and table) or "." in schema:
+        raise InputError(f"表 {name} 要写成 schema.table")
+    return schema, table
+
+
 async def profile_tables(
     tools: McpTools,
     source: DataSource,
     wanted: list[str] | None = None,
     sample_rows: int = SAMPLE_ROWS,
+    *,
+    filters: dict[str, str] | None = None,
+    timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Structure, stats and ``sample_rows`` sample rows of each table (``wanted``:
-    schema.table names)."""
+    """Structure, stats and ``sample_rows`` sample rows of each table (``wanted``: names
+    as ``split_name`` takes them). ``filters`` (table name: Spark SQL condition, any case)
+    limits the stats and the sample of a table to the rows the condition keeps; it goes
+    to the connector as ``where`` (connectors/databricks)."""
     url = source.connector_url
+
+    def call(tool: str, args: dict[str, Any] | None = None) -> Any:
+        return tools.call(url, tool, args or {}, timeout_seconds)
+
     if wanted:
-        names = [tuple(name.split(".", 1)) for name in wanted]
-        for name, parts in zip(wanted, names, strict=True):
-            if len(parts) != 2 or not all(parts):
-                raise InputError(f"表 {name} 要写成 schema.table")
+        names = [split_name(source, name) for name in wanted]
     else:
         names = []
-        for schema in (await tools.call(url, "list_schemas"))["schemas"]:
-            listed = await tools.call(url, "list_tables", {"schema": schema})
+        for schema in (await call("list_schemas"))["schemas"]:
+            listed = await call("list_tables", {"schema": schema})
             names += [(schema, table) for table in listed["tables"]]
     if not names:
         raise InputError(f"数据源 {source.name} 里没有可读的表")
     if len(names) > MAX_TABLES:
         raise InputError(f"数据源里有 {len(names)} 张表，一次最多 {MAX_TABLES} 张，请指定 tables")
 
+    wheres = {name.lower(): where for name, where in (filters or {}).items() if where}
+
     async def one(schema: str, table: str) -> dict[str, Any]:
         args = {"schema": schema, "table": table}
+        where = wheres.get(f"{schema}.{table}".lower())
+        rows = {"where": where} if where else {}
         described, stats, sample = await asyncio.gather(
-            tools.call(url, "describe_table", args),
-            tools.call(url, "table_stats", args),
-            tools.call(url, "sample_rows", {**args, "limit": sample_rows}),
+            call("describe_table", args),
+            call("table_stats", {**args, **rows}),
+            call("sample_rows", {**args, **rows, "limit": sample_rows}),
         )
         return {
             "name": f"{schema}.{table}",
-            "columns": described["columns"],
+            "comment": described.get("comment"),
+            "filter": where,
+            "columns": [{**c, "comment": c.get("comment")} for c in described["columns"]],
             "foreign_keys": described["foreign_keys"],
             "estimated_row_count": stats.get("estimated_row_count"),
             "sample_row_count": stats.get("sample_row_count"),
@@ -117,12 +143,18 @@ def _short(value: Any) -> Any:
 
 
 def describe_for_model(
-    tables: list[dict[str, Any]], samples: str = "full", run_id: str = ""
+    tables: list[dict[str, Any]],
+    samples: str = "full",
+    run_id: str = "",
+    references: list[dict[str, Any]] | None = None,
 ) -> str:
     """A compact text view of the profile for the planning prompt, with as much of the
     data as the data outbound policy's ``samples`` level lets go to a model (aep.policy):
     ``masked`` masks the sample rows and value counts, ``stats`` leaves them out,
-    ``schema`` also leaves out row counts, null fractions and distinct counts."""
+    ``schema`` also leaves out row counts, null fractions and distinct counts. Comments,
+    the read filter and what the project says of a table it references (``references``:
+    the project's, aep.projects) are what people wrote, not data, so they always go."""
+    noted = {str(r.get("name", "")).lower(): r for r in references or []}
     values = samples in ("full", "masked")
     counts = samples != "schema"
 
@@ -146,6 +178,18 @@ def describe_for_model(
             # Otherwise a column's distinct count reads like the table's row count.
             head += f"；空值率、不同值和取值分布只统计了 {rows} 行样本"
         lines = [f"表 {t['name']}（{head}）" if counts else f"表 {t['name']}"]
+        if t.get("comment"):
+            lines.append(f"  表注释：{t['comment']}")
+        reference = noted.get(t["name"].lower())
+        if reference:
+            said = reference.get("description") or ""
+            lines.append(
+                f"  项目引用表「{reference.get('label') or t['name']}」"
+                + (f"：{said}" if said else "")
+            )
+        if t.get("filter"):
+            # The stats and the sample were read with it too.
+            lines.append(f"  只读 {t['filter']} 的行（项目登记的读取筛选，统计和样本也只算这些行）")
         for col in t["columns"]:
             s = stats.get(col["name"], {})
             flags = [col["data_type"]]
@@ -156,7 +200,8 @@ def describe_for_model(
             if s and counts:
                 flags.append(f"空值率 {s.get('null_fraction') or 0:.0%}")
                 flags.append(f"不同值 {s.get('distinct_count')}")
-            lines.append(f"  - {col['name']}：{'，'.join(flags)}")
+            note = f"；说明：{col['comment']}" if col.get("comment") else ""
+            lines.append(f"  - {col['name']}：{'，'.join(flags)}{note}")
             if s.get("top_values") and values:
                 listed = "，".join(
                     f"{json.dumps(shown(v['value']), ensure_ascii=False)}"

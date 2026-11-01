@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from aep import llm, policy
 from aep.config import Settings
 from aep.databricks import DevTarget
-from aep.datasources import DATA_KINDS, DATABASE_KINDS, DataSource, DataSourceStore
+from aep.datasources import DATA_KINDS, SOURCE_KINDS, DataSource, DataSourceStore, tool_seconds
 from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
@@ -279,7 +279,8 @@ class Runtime:
         if self.tools is None:
             raise NodeFailure("tool_error", "平台没有配置工具调用")
         try:
-            return await self.tools.call(source.connector_url, tool, args)
+            seconds = tool_seconds(source, self.settings)
+            return await self.tools.call(source.connector_url, tool, args, seconds)
         except ConnectorUnavailable as exc:
             kind = "timeout" if isinstance(exc.__cause__, TimeoutError) else "tool_error"
             raise NodeFailure(kind, f"连不上数据源「{source.name}」：{exc}") from exc
@@ -1445,7 +1446,7 @@ async def _check_source(
     if source is None:
         p.add(loc, f"没有数据源 {value}")
         return
-    if etl and source.kind not in DATABASE_KINDS:
+    if etl and source.kind not in SOURCE_KINDS:
         p.add(loc, f"「{source.name}」是工具服务，这里要选数据库或上传文件的数据源")
         return
     if not tools or env.tools is None:

@@ -765,19 +765,20 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 
 ### 表名的写法
 
-- 数据库和上传文件的数据源照旧是 `schema.table`。Databricks 数据源是三段式 `catalog.schema.table`，`schema.*` 写成 `catalog.schema.*`。拆表名时按最后一个 `.` 分出表名，前面是连接器的 `schema`。名字里带 `-` 的 catalog（如 `icsd-ace-dev`）照写，平台拼语句时加反引号。
+- 数据库和上传文件的数据源照旧是 `schema.table`。Databricks 数据源是三段式 `catalog.schema.table`，`schema.*` 写成 `catalog.schema.*`。拆表名时按最后一个 `.` 分出表名，前面是连接器的 `schema`。写法不对时 `input_error`“表 … 要写成 catalog.schema.table 或 catalog.schema.*”（数据库数据源是“… schema.table 或 schema.*”）；保存时只查形状（至少一个、最多两个 `.`），因为整段引用的数据源要到运行时才知道类型。名字里带 `-` 的 catalog（如 `icsd-ace-dev`）照写，平台拼语句时加反引号。
 - 三段式的名字在方案的 `sources`、代码检查、`source()` 和数据检查里原样使用。
 
 ### etl_profile：探查 Databricks 的表
 
 - `datasource` 可以是 `databricks` 数据源。
-- `tables` 为空时：Databricks 数据源上，运行绑定了项目就探查项目的引用表（`references`，超过 20 张时 `input_error`），没绑定时 `input_error`“Databricks 数据源请写要探查的表”；其他数据源照旧探查全部表。
-- 读取筛选：探查的表是项目的引用表、并且带 `filter` 时，`table_stats` 和 `sample_rows` 带上 `where`，样本和统计都只算筛选后的行。数据库数据源上的表不会是引用表（引用表是三段式名），所以不受影响。
-- 产出的 `tables[]` 每张表多两个键：`filter`（用了的读取筛选，没有为 null）和 `comment`（表注释，没有为 null）；列多 `comment`。`description` 里写上表和列的注释、筛选（“只读 Type = 'Vol.' 的行”）和引用表的说明，并按数据外发策略生成（[projects.md](projects.md)“四个级别”）。
+- `tables` 为空时：Databricks 数据源上，运行绑定了项目就探查项目的引用表（`references`，表名按项目里写的原样，超过 20 张时 `input_error`；项目没有登记引用表时 `input_error`“项目「…」没有登记引用表，Databricks 数据源请写要探查的表”），没绑定时 `input_error`“Databricks 数据源请写要探查的表”；其他数据源照旧探查全部表。
+- 读取筛选：探查的表是项目的引用表（表名不分大小写，`tables` 里写明的表也算）、并且带 `filter` 时，`table_stats` 和 `sample_rows` 带上 `where`，样本和统计都只算筛选后的行。只在 Databricks 数据源上用，数据库数据源上的表不受影响。
+- 调 Databricks 数据源的工具时超时用 `AEP_DATABRICKS_TOOL_SECONDS`（[datasources.md](datasources.md)），`tool`、`agent` 节点也一样。
+- 产出的 `tables[]` 每张表多两个键：`filter`（用了的读取筛选，没有为 null）和 `comment`（表注释，没有为 null）；列多 `comment`（没有为 null）。别的数据源同样有这几个键，值为 null（连接器给了注释时照用）；代码应用 `etl` 的探查结果也一样。`description` 里写上表和列的注释、筛选（“只读 Type = 'Vol.' 的行”）和引用表的说明，并按数据外发策略生成（[projects.md](projects.md)“四个级别”）。
 
 ### databricks_ingest：Databricks 的表不复制
 
-`datasource` 是 `databricks` 数据源时，节点不读行、不写 Databricks：表本来就在 Databricks 上，生成的代码直接读。产出照旧，`catalog` 为 null，`tables[]` 是 `{"source": "prev.sales.forecast", "target": "`prev`.`sales`.`forecast`", "rows": null, "columns": 列数, "copied": false}`（别的数据源 `copied` 为 true），`summary` 写“这 3 张表本来就在 Databricks 上，直接读，不复制”。`max_rows` 不检查，`reuse` 不起作用。这样同一个模板既能接数据库，也能接 Databricks。
+`datasource` 是 `databricks` 数据源时，节点不读行、不写 Databricks：表本来就在 Databricks 上，生成的代码直接读。产出照旧，`catalog` 为 null，`tables[]` 是 `{"source": "prev.sales.forecast", "target": "prev.sales.forecast", "rows": null, "columns": 列数, "copied": false}`（`target` 是 SQL 的写法，同抽取的 `target`，需要时加反引号，如 `` `icsd-ace-dev`.sales.orders ``；`columns` 由 `describe_table` 数出；别的数据源 `copied` 为 true），`summary` 写“这 3 张表本来就在 Databricks 上，直接读，不复制”，对话里另列出各表。`max_rows` 不检查，`reuse` 不起作用；不读行，也不需要平台配置 Databricks 工作区（`AEP_DATABRICKS_*`）。这样同一个模板既能接数据库，也能接 Databricks。
 
 ### 生成的代码怎么读源表和参数
 

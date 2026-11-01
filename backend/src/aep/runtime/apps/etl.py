@@ -435,6 +435,11 @@ def build(ctx: AppContext) -> StateGraph:
         source = await ctx.datasources.get(str(inp.get("datasource_id", "")))
         if source is None:
             raise InputError("请选择一个已登记的数据源（input.datasource_id）")
+        if source.kind == "databricks":
+            raise InputError(
+                f"「{source.name}」是 Databricks 数据源，ETL 应用要选数据库或上传文件的数据源，"
+                "Databricks 的表请用编排应用 etl-lakehouse 第 3 版"
+            )
         if source.kind not in DATABASE_KINDS:
             raise InputError(f"「{source.name}」是工具服务，ETL 要选数据库或上传文件的数据源")
         if not str(inp.get("request", "")).strip():
