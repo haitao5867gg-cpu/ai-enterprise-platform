@@ -220,6 +220,7 @@ export function RefField({
 }) {
   const id = useId();
   const box = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
+  const field = useRef<HTMLDivElement>(null);
   const caret = useRef<[number, number] | null>(null);
   const [open, setOpen] = useState(false);
   function remember() {
@@ -237,6 +238,15 @@ export function RefField({
     const at = a + ref.length;
     caret.current = [at, at];
     requestAnimationFrame(() => {
+      // Put the caret back after the variable, unless focus has already moved on to
+      // another control: taking it back would send what is typed there into this box.
+      const active = document.activeElement;
+      if (
+        active &&
+        active !== document.body &&
+        !field.current?.contains(active)
+      )
+        return;
       box.current?.focus();
       box.current?.setSelectionRange(at, at);
     });
@@ -256,7 +266,7 @@ export function RefField({
       onChange(event.target.value),
   };
   return (
-    <div className="asset-field ref-field">
+    <div className="asset-field ref-field" ref={field}>
       <div className="ref-field-heading">
         <label htmlFor={id}>{label}</label>
         <button
