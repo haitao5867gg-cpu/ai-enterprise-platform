@@ -17,6 +17,8 @@ make up
 - 模型网关（LiteLLM）：http://localhost:4000。不填任何 Key 也能用 `mock` 模型；要用真实模型，把 `.env.example` 复制为 `.env` 并填入对应厂商的 Key，然后重新执行 `make up`。
 - 健康检查：`/healthz`（进程存活）、`/readyz`（Postgres、Redis、模型网关均可用）
 
+放到一台 Linux 服务器上给几个人试用（HTTPS + 访问口令，4G 内存够用）：见 [infra/vps/README.md](infra/vps/README.md)。
+
 ### ETL 应用
 
 `make up` 会自动登记两个本地示例库：「示例库」（PostgreSQL）和「MySQL 示例库」。两者都有同样的客户、商品、订单及脏数据，连接器均只读。MySQL 的运行、权限和验证说明见 [connectors/mysql](connectors/mysql/README.md)。`mock` 模型不会输出方案，ETL 要用真实模型：把 `.env.example` 复制为 `.env`，填好一个模型并把 `AEP_DEFAULT_MODEL` 设成它的别名。例如用公司的 OpenAI 兼容网关：

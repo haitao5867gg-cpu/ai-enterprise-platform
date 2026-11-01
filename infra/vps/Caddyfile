@@ -1,0 +1,20 @@
+# 对外唯一入口：自动申请证书（Let's Encrypt，失败时换 ZeroSSL），整站要求访问口令，
+# 再反代到 web。浏览器只和 web 打交道，web 经 /api/* 转发到后端，后端不对外。
+{$AEP_DOMAIN} {
+	encode zstd gzip
+
+	# basic_auth 块，deploy.sh 生成（infra/vps/auth.caddy）。
+	import /etc/caddy/auth.caddy
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		-Server
+	}
+
+	reverse_proxy web:3000 {
+		# 运行页面有流式响应，不缓冲。
+		flush_interval -1
+	}
+}

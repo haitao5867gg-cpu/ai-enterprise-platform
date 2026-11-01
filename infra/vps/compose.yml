@@ -1,0 +1,98 @@
+# 单机 VPS 部署的覆盖层（infra/vps/README.md）。和根目录的 docker-compose.yml 一起用：
+#   docker compose -f docker-compose.yml -f infra/vps/compose.yml up -d
+# 与本地开发的差异只在这里：除 Caddy 的 80/443 外，所有端口只绑本机；对外只有
+# Caddy（自动 HTTPS + 访问口令）反代到 web；面向 4G 内存收紧了 MySQL 和沙箱；
+# 所有服务随机器重启自动拉起。Langfuse 太占内存，这里不启动。
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  caddy:
+    <<: *restart
+    image: caddy:2.10-alpine
+    environment:
+      AEP_DOMAIN: ${AEP_DOMAIN:?在 .env 里设置 AEP_DOMAIN（域名，或 <IP 用横线>.sslip.io）}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # deploy.sh 生成，含口令的 bcrypt 散列，不进仓库。
+      - ./auth.caddy:/etc/caddy/auth.caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+
+  web:
+    <<: *restart
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    environment:
+      # 没有 Langfuse，隐藏追踪链接。
+      AEP_LANGFUSE_UI_URL: ""
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  api:
+    <<: *restart
+    ports: !override
+      - "127.0.0.1:8000:8000"
+    environment:
+      AEP_ENV: vps
+      # 提交到资产仓库的 PR 里链接回运行页面用。
+      AEP_WEB_URL: https://${AEP_DOMAIN}
+
+  litellm:
+    <<: *restart
+    ports: !override
+      - "127.0.0.1:4000:4000"
+
+  postgres:
+    <<: *restart
+    ports: !override
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    <<: *restart
+    ports: !override
+      - "127.0.0.1:6379:6379"
+
+  source-mysql:
+    <<: *restart
+    # 示例库很小，关掉 performance_schema、缩小缓冲池，省下约 300MB。
+    command:
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --key-buffer-size=8M
+
+  source-postgres:
+    <<: *restart
+
+  connector-mysql:
+    <<: *restart
+
+  connector-postgres:
+    <<: *restart
+
+  connector-files:
+    <<: *restart
+
+  connector-databricks:
+    <<: *restart
+
+  connector-sandbox:
+    <<: *restart
+    mem_limit: 768m
+
+  sandbox-relay:
+    <<: *restart
+
+volumes:
+  caddy-data:
+  caddy-config:
