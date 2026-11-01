@@ -825,6 +825,14 @@ def test_quoted_values_holding_the_other_quote_are_scrubbed():
     assert policy.literals(text) == ["O'Reilly", 'say "hi"']
 
 
+def test_quoted_values_across_lines_are_scrubbed():
+    text = "cannot cast 'private@example.com\nprivate-address' to INT"
+    assert policy.scrub(text, "schema", RUN) == "cannot cast '‹已隐去›' to INT"
+    value = "private@example.com\nprivate-address"
+    assert policy.scrub(text, "masked", RUN) == f"cannot cast '{tok(value)}' to INT"
+    assert policy.literals(text) == [value]
+
+
 def test_tokens_in_a_json_reply_turn_back_as_json_strings():
     value = 'O"Re\\illy\n二楼'
     data = [[{"name": value}]]
@@ -835,6 +843,8 @@ def test_tokens_in_a_json_reply_turn_back_as_json_strings():
         back, restored = policy.unmask(reply, data, RUN)
         assert restored == {tok(value): value}
         assert llm.parse_json(back) == {"filter": f"name = '{value}'"}
+        # Sent on to a model, the escaped value is a token again.
+        assert policy.remask(back, restored) == reply
     # Text that is not a JSON object gets the value as it is.
     back, _ = policy.unmask(f"name = '{tok(value)}'", data, RUN)
     assert back == f"name = '{value}'"

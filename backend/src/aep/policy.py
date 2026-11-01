@@ -42,10 +42,10 @@ LOCAL_MODELS = frozenset({"mock-embed", "mock-rerank"})
 TOKEN = re.compile(r"‹文本#([0-9a-f]{10})›")
 # What a quoted value in error text becomes when the policy sends no data values.
 HIDDEN = "‹已隐去›"
-# Quoted literals in error text (values a failed run or read may quote), however long and
-# whatever other quote they hold ("O'Reilly"); a quote right after or before a letter is
-# an apostrophe ("doesn't"), not a quote.
-_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])((?:(?!\1)[^\n])+)\1(?![A-Za-z])")
+# Quoted literals in error text (values a failed run or read may quote), however long,
+# across lines, and whatever other quote they hold ("O'Reilly"); a quote right after or
+# before a letter is an apostrophe ("doesn't"), not a quote.
+_QUOTED = re.compile(r"(?<![A-Za-z])(['\"])((?:(?!\1).)+)\1(?![A-Za-z])", re.S)
 # The JSON object a reply may carry, found the way aep.llm.parse_json finds it.
 _FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 # Type names errors quote in double quotes ("STRING", "DECIMAL(10,2)"): not values, kept.
@@ -245,10 +245,16 @@ def _json_span(text: str) -> tuple[int, int] | None:
 def remask(value: Any, restored: dict[str, str]) -> Any:
     """``value`` with the texts a run turned back from tokens (``restored``) made tokens
     again, before it goes to a model. A text must not touch an ASCII letter, digit or
-    underscore on either side; Chinese has no word boundaries, so it is replaced there."""
+    underscore on either side; Chinese has no word boundaries, so it is replaced there.
+    A text is also found written inside a JSON (or Python) string, with its quotes,
+    backslashes and newlines escaped, the way ``unmask`` puts it into a JSON reply."""
     if not restored:
         return value
-    tokens = {text: tok for tok, text in restored.items() if text}
+    tokens: dict[str, str] = {}
+    for tok, text in restored.items():
+        if text:
+            tokens[text] = tok
+            tokens.setdefault(json.dumps(text, ensure_ascii=False)[1:-1], tok)
     pattern = re.compile(
         r"(?<![A-Za-z0-9_])(?:"
         + "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
