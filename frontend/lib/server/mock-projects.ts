@@ -94,6 +94,18 @@ const store = (globalStore.aepMockProjects ??= new Map(
           description: "",
         },
       ],
+      checks: [
+        {
+          id: "rows_this_month",
+          label: "本月有结果",
+          kind: "aggregate",
+          table: "sf_forecast_history",
+          expr: "count(*)",
+          where: "update_month = ${param.update_month}",
+          op: "gt",
+          value: 0,
+        },
+      ],
       policy: { samples: "stats", models: null },
       created_at: CREATED,
       updated_at: CREATED,
@@ -132,6 +144,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     "references",
     "adopted",
     "params",
+    "checks",
     "policy",
   ];
   const extra = Object.keys(body).find((key) => !allowed.includes(key));
@@ -260,6 +273,13 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     if (!table.startsWith(prefix))
       return `归本项目的表 ${table} 要以表名前缀 ${prefix} 开头`;
   }
+  const checks = body.checks ?? [];
+  if (
+    !Array.isArray(checks) ||
+    checks.length > 50 ||
+    !checks.every((item) => typeof item === "object" && item !== null && !Array.isArray(item))
+  )
+    return "「验收检查」的格式、长度或范围不正确";
   const missing = ((models as string[] | null) ?? []).filter(
     (model) => !mockModels.includes(model) && !LOCAL_MODELS.includes(model),
   );
@@ -273,6 +293,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     references,
     adopted,
     params,
+    checks: checks as Record<string, unknown>[],
     policy: { samples, models: models as string[] | null },
   };
 }

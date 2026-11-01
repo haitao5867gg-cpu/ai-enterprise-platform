@@ -306,3 +306,22 @@ async def test_versions_one_and_two_leave_the_new_outputs_empty():
         assert o["ok"] is True
         assert (o["result_table"], o["result_keys"], o["checks"]) == ("", [], [])
         assert "### 数据检查" not in o["message"]
+
+
+def test_the_projects_acceptance_checks_and_filtered_sources():
+    # A plan check may not take the id of one of the project's acceptance checks.
+    owned = {**PROJECT, "checks": [{**TOTAL, "id": "keys"}]}
+    assert problems3(v3_plan(TOTAL, KEYS), owned) == [
+        "checks[1].id：keys 是项目的验收检查，数据检查时会自动跑，方案里不用再写；"
+        "要另加检查请换一个 id"
+    ]
+    # SQL code cannot read a reference with a read filter: the plan says so already.
+    filtered = {**PROJECT, "references": [{"name": "SALES.orders", "filter": "status <> 'test'"}]}
+    raw = v3_plan()
+    raw["language"] = "sql"
+    assert problems3(raw, filtered) == [
+        "order_facts 的来源 sales.orders 有项目的读取筛选，SQL 代码暂不支持；"
+        "请把 language 改成 pyspark"
+    ]
+    raw["language"] = "pyspark"
+    assert check3(raw, filtered)[1] == []

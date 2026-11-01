@@ -82,6 +82,22 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await form.getByLabel("发给模型的数据").selectOption({ label: "只发统计" });
   await expect(form).toContainText("不发样本行和取值分布");
 
+  // Acceptance checks are written as JSON; repeated ids show before saving.
+  const check = {
+    id: "rows_this_month",
+    label: "本月有结果",
+    kind: "aggregate",
+    table: "pt_history",
+    expr: "count(*)",
+    op: "gt",
+    value: 0,
+  };
+  const checks = form.getByLabel("检查（JSON）");
+  await checks.fill(JSON.stringify([check, check]));
+  await expect(form).toContainText("验收检查 id rows_this_month 重复");
+  await checks.fill(JSON.stringify([check]));
+  await expect(form).not.toContainText("验收检查 id rows_this_month 重复");
+
   await form.getByRole("button", { name: "建立项目" }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${id}$`));
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(`页面测试 ${id}`);
@@ -90,6 +106,8 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(page.getByRole("region", { name: "表登记" })).toContainText("pt_history");
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText("统计月");
   await expect(page.getByRole("region", { name: "数据外发策略" })).toContainText("只发统计");
+  await expect(page.getByRole("region", { name: "验收检查" })).toContainText("本月有结果");
+  await expect(page.getByRole("region", { name: "验收检查" })).toContainText("聚合值");
 
   // The same id cannot be used twice.
   const { created_at: _made, updated_at: _changed, ...saved } = await (

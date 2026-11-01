@@ -24,6 +24,7 @@ import {
 } from "../lib/projects";
 import { ApiError, errorMessage, type SampleLevel } from "../lib/runs";
 import { useUnsavedWarning } from "./asset-ui";
+import { CHECKS_HELP, ChecksField } from "./checks-field";
 import {
   CheckField,
   FieldIssues,
@@ -85,6 +86,7 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
           : null,
       description: param.description,
     })),
+    checks: input.checks,
     policy: {
       samples: input.policy.samples,
       models: input.policy.models?.length ? input.policy.models : null,
@@ -127,6 +129,12 @@ function check(body: ProjectInput): Issues {
       add(issues, "adopted", `${table} 要以表名前缀 ${body.table_prefix} 开头`);
   }
   if (adoptedTwice.length) add(issues, "adopted", `${adoptedTwice.join("、")} 重复`);
+  if (body.checks.length > 50) add(issues, "checks", "最多 50 条验收检查");
+  const checkIds = body.checks.map((item) => (typeof item.id === "string" ? item.id : ""));
+  if (checkIds.includes("golden"))
+    add(issues, "checks", "验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比");
+  const checksTwice = twice(checkIds);
+  if (checksTwice.length) add(issues, "checks", `验收检查 id ${checksTwice.join("、")} 重复`);
   const paramKeys = twice(body.params.map((param) => param.key));
   body.params.forEach((param, i) => {
     const at = `param.${i}`;
@@ -533,6 +541,21 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
           引用，生成的代码用 param(&quot;标识&quot;) 读。
         </p>
       </div>
+
+      <fieldset className="panel asset-section project-form-section" disabled={saving}>
+        <legend>验收检查</legend>
+        <p className="field-hint">
+          项目自己的验收标准，绑定这个项目的运行在数据检查时都会跑（模板里引用{" "}
+          {"{{project.checks}}"}）。不带 catalog、schema 的表名是这次运行写的表，要以表名前缀开头。
+        </p>
+        <ChecksField
+          label="检查（JSON）"
+          value={input.checks}
+          issues={at("checks")}
+          help={`最多 50 条，id 不能用 golden。${CHECKS_HELP}`}
+          onChange={(checks) => set("checks", checks)}
+        />
+      </fieldset>
 
       <fieldset className="panel asset-section project-form-section" disabled={saving}>
         <legend>数据外发策略</legend>

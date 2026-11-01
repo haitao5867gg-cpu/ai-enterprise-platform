@@ -40,6 +40,8 @@ export type ProjectInput = {
   references: Reference[];
   adopted: string[];
   params: Param[];
+  // Acceptance checks, written like the data check node's (docs/api/data-nodes.md).
+  checks: Record<string, unknown>[];
   policy: ProjectPolicy;
 };
 export type Project = ProjectInput & { created_at: string; updated_at: string };
@@ -80,6 +82,7 @@ export const PROJECT_FIELDS = [
   "schema",
   "references",
   "params",
+  "checks",
   "brief",
 ];
 
@@ -219,6 +222,7 @@ export function emptyProject(): ProjectInput {
     references: [],
     adopted: [],
     params: [],
+    checks: [],
     policy: { samples: null, models: null },
   };
 }
@@ -237,6 +241,7 @@ export function projectInput(project: Project): ProjectInput {
       ...param,
       choices: param.choices ? param.choices.map((choice) => ({ ...choice })) : null,
     })),
+    checks: (project.checks ?? []).map((check) => ({ ...check })),
     policy: {
       samples: project.policy.samples ?? null,
       models: project.policy.models ? [...project.policy.models] : null,

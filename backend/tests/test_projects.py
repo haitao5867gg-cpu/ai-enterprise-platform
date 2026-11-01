@@ -163,6 +163,100 @@ async def test_project_rules(changes, detail):
         assert resp.json()["detail"] == detail
 
 
+TOTAL = {
+    "id": "c1_rows",
+    "label": "本月有结果",
+    "kind": "aggregate",
+    "table": "ibf_table2",
+    "expr": "count(*)",
+    "where": "update_month = ${param.update_month}",
+    "op": "gt",
+    "value": 0,
+}
+OLD = {
+    "id": "c6_old",
+    "label": "和老系统一致",
+    "kind": "golden",
+    "severity": "warn",
+    "table": "ibf_table2",
+    "expected": "old.jade.table2",
+    "keys": ["sku"],
+    "expected_where": "version = ${param.version}",
+    "tolerance": 0.001,
+}
+
+
+@pytest.mark.parametrize(
+    ("checks", "detail"),
+    [
+        ([{**TOTAL, "op": "between"}], "验收检查 c1_rows（value）：between 要写数字 value 和 max"),
+        (
+            [{**TOTAL, "id": "C1"}],
+            "验收检查 C1（id）：检查 id 只能用小写字母、数字和下划线，以字母开头，最多 32 个字符",
+        ),  # fmt: skip
+        (["x"], "第 1 条验收检查：每条检查要写成一个对象"),
+        (
+            [{**TOTAL, "id": "golden"}],
+            "验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比",
+        ),
+        ([TOTAL, {**OLD, "id": "c1_rows"}], "验收检查 id c1_rows 重复"),
+        (
+            [{**OLD, "expected_where": "version = ${param.month}"}],
+            "验收检查 c6_old（expected_where）用的运行参数 ${param.month} 不是本项目定义的参数",
+        ),
+        (
+            [{**TOTAL, "table": "table2"}],
+            "验收检查 c1_rows（table）：不带 catalog、schema 的 table2 是本项目在运行环境里的表，"
+            "要以表名前缀 ibf_ 开头",
+        ),
+        ([TOTAL] * 51, "「验收检查」的格式、长度或范围不正确"),
+    ],
+)
+async def test_acceptance_checks_are_checked(checks, detail):
+    async with Platform([]) as p:
+        resp = await p.api.post("/projects", json=project(checks=checks))
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == detail
+
+
+async def test_acceptance_checks_are_kept_and_offered_to_runs():
+    async with Platform(["好的"]) as p:
+        made = await p.api.post("/projects", json=project(checks=[TOTAL, OLD]))
+        assert made.status_code == 201, made.text
+        assert made.json()["checks"] == [TOTAL, OLD]
+        # Projects saved before checks existed read as having none.
+        assert (await p.api.post("/projects", json={
+            k: v for k, v in project(project_id="old-one", name="旧项目").items() if k != "checks"
+        })).json()["checks"] == []  # fmt: skip
+
+        flow = bound_flow(prompt="{{project.brief}}\n检查：{{project.checks}}")
+        await p.new_app("bound", flow)
+        run = await start_run(p, "bound", {"project_id": "jade-ibf"})
+        assert run.status_code == 201, run.text
+        await p.service.wait_idle()
+        sent = p.gateway.requests[0]["body"]["messages"][-1]["content"]
+        assert "### 验收检查（项目已经写好，每次数据检查都会跑）" in sent
+        assert (
+            "| `c6_old` | 和老系统一致 | warn | `ibf_table2` 和老系统的 `old.jade.table2`"
+            "按 `sku` 逐行一致 |" in sent
+        )
+        assert "| `c1_rows` | 本月有结果 | error |" in sent
+        assert "方案里建议的数据检查不要重复这些，id 也不能和它们相同。" in sent
+        assert '"id": "c1_rows"' in sent.split("检查：", 1)[1]
+
+
+def test_project_checks_in_old_snapshots_and_unbound_runs():
+    from aep.projects import brief, project_value
+
+    snap = {
+        "name": "x", "description": "", "table_prefix": "ibf_", "references": [], "params": [],
+        "values": {}, "environment": {"key": "dev", "label": "开发", "catalog": "c", "schema": "s"},
+    }  # fmt: skip
+    assert project_value(snap, "checks") == []
+    assert "验收检查" not in brief(snap)
+    assert project_value(None, "checks") is None
+
+
 async def test_repeated_keys_and_environment_fields():
     async with Platform([]) as p:
         envs = [PROJECT["environments"][0], PROJECT["environments"][0]]

@@ -7,6 +7,7 @@ system) are described and judged in ``aep.etl.checks``; settings, outputs and br
 are documented in docs/api/data-nodes.md, "data_check 数据检查".
 """
 
+import math
 from typing import Any
 
 from aep.datasources import tool_seconds
@@ -26,7 +27,7 @@ from aep.tools.mcp import ConnectorUnavailable
 
 TOOLS = ["aggregate", "duplicates", "compare", "sample_rows"]
 MAX_INCLUDE = 5
-GOLDEN_KEYS = {"expected", "table", "keys"}
+GOLDEN_KEYS = {"expected", "table", "keys", "tolerance", "severity"}
 NOT_DATABRICKS = "数据检查要用 Databricks 数据源"
 SKIPPED = "前一步没有通过，没有做数据检查"
 
@@ -84,7 +85,7 @@ async def check_data_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
     golden = node.get("golden")
     if golden is not None:
         if not isinstance(golden, dict):
-            p.add(("golden",), "golden 要写成 {expected, table, keys}")
+            p.add(("golden",), "golden 要写成 {expected, table, keys, tolerance, severity}")
         else:
             for key in golden:
                 if key not in GOLDEN_KEYS:
@@ -99,10 +100,28 @@ async def check_data_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
                 or (isinstance(keys, list) and all(isinstance(k, str) for k in keys))
             ):
                 p.add(("golden", "keys"), "golden 的 keys 要是列名列表或一个变量")
+            for key, problem in _golden_extras(golden).items():
+                p.add(("golden", key), problem)
 
     only_if = node.get("only_if")
     if only_if is not None and (not isinstance(only_if, str) or refs.whole(only_if) is None):
         p.add(("only_if",), "only_if 必须恰好是一个变量，如 {{dev_run.ok}}")
+
+
+def _golden_extras(golden: dict[str, Any]) -> dict[str, str]:
+    """What is wrong with the comparison's ``tolerance`` and ``severity`` (references are
+    taken at run time)."""
+    found = {}
+    tolerance = golden.get("tolerance")
+    if tolerance is not None and not (isinstance(tolerance, str) and refs.whole(tolerance)):
+        number = isinstance(tolerance, int | float) and not isinstance(tolerance, bool)
+        if not (number and math.isfinite(tolerance) and tolerance >= 0):
+            found["tolerance"] = "golden 的 tolerance 要是不小于 0 的数或一个变量"
+    severity = golden.get("severity")
+    if severity is not None and not (isinstance(severity, str) and refs.whole(severity)):
+        if severity not in checks.SEVERITIES:
+            found["severity"] = "golden 的 severity 只能是 " + "、".join(checks.SEVERITIES)
+    return found
 
 
 # Running
@@ -212,6 +231,8 @@ async def run_data_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             _text(refs.resolve(golden.get("table"), get)),
             expected,
             refs.resolve(golden.get("keys"), get),
+            refs.resolve(golden.get("tolerance"), get),
+            _text(refs.resolve(golden.get("severity"), get)) or None,
         )
         if problem is None:
             results.append(await checks.run(check, where, call))

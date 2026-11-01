@@ -748,10 +748,10 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "id": "checks",
         "type": "data_check",
         "title": "数据检查",
-        "note": "试算通过后经 Databricks 只读连接器核对数据：方案建议的检查（对账、键不重复、"
-        "不该有的行），填了老系统结果表时再逐行对比。试算没通过时不检查。",
+        "note": "试算通过后经 Databricks 只读连接器核对数据：项目的验收检查和方案建议的检查"
+        "（对账、键不重复、不该有的行），填了老系统结果表时再逐行对比。试算没通过时不检查。",
         "datasource": "{{start.datasource}}",
-        "include": ["{{check_plan.checks}}"],
+        "include": ["{{project.checks}}", "{{check_plan.checks}}"],
         "golden": {
             "expected": "{{start.golden}}",
             "table": "{{check_plan.result_table}}",

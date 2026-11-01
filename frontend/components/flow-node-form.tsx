@@ -2,6 +2,7 @@
 
 import { KnowledgePicker } from "./knowledge-form";
 import { RetrievalFields } from "./retrieval-fields";
+import { ChecksField } from "./checks-field";
 
 import { useEffect, useId, useState, type ReactNode } from "react";
 import type {
@@ -1172,87 +1173,6 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
   );
 }
 
-const CHECKS_HELP =
-  "每条检查写 id、label、kind（aggregate 聚合值、reconcile 两表对账、unique 键不重复、golden 和老系统逐行对比、rows 不该有的行）和各自的设置；表名写结果表的名字或 catalog.schema.table，条件里可以用 ${param.参数标识}。";
-const isCheck = (item: unknown): item is Record<string, unknown> =>
-  typeof item === "object" && item !== null && !Array.isArray(item);
-
-// The checks as JSON: the text is kept while it does not parse, and follows the node
-// when it changes from outside (undo, an import).
-function ChecksField({
-  value,
-  onChange,
-  issues,
-}: {
-  value: Record<string, unknown>[];
-  onChange: (value: Record<string, unknown>[]) => void;
-  issues: string[];
-}) {
-  const id = useId();
-  const [draft, setDraft] = useState(() => JSON.stringify(value, null, 2));
-  const [problem, setProblem] = useState("");
-  const [shown, setShown] = useState(value);
-  if (shown !== value) {
-    // The node changed: keep the text when it already says the same checks.
-    setShown(value);
-    let same = false;
-    try {
-      same =
-        JSON.stringify(JSON.parse(draft || "[]")) === JSON.stringify(value);
-    } catch {
-      same = false;
-    }
-    if (!same) {
-      setDraft(JSON.stringify(value, null, 2));
-      setProblem("");
-    }
-  }
-  const messages = problem ? [problem, ...issues] : issues;
-  return (
-    <div className="asset-field">
-      <label htmlFor={id}>检查（JSON）</label>
-      <textarea
-        id={id}
-        className="code-input"
-        rows={12}
-        spellCheck={false}
-        value={draft}
-        aria-invalid={messages.length > 0}
-        aria-describedby={messages.length ? `${id}-issues` : undefined}
-        onChange={(event) => {
-          const text = event.target.value;
-          setDraft(text);
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(text.trim() || "[]");
-          } catch {
-            setProblem("不是合法的 JSON，改好之前不会保存这里的修改");
-            return;
-          }
-          if (!Array.isArray(parsed) || !parsed.every(isCheck)) {
-            setProblem("要写成检查的列表：[{...}, {...}]");
-            return;
-          }
-          setProblem("");
-          onChange(parsed);
-        }}
-      />
-      <small className="muted">{CHECKS_HELP}</small>
-      {value.length > 0 && (
-        <ul className="muted" aria-label="已写的检查">
-          {value.map((item, i) => (
-            <li key={i}>
-              {String(item.label ?? item.id ?? `第 ${i + 1} 条`)}
-              {item.kind ? `（${String(item.kind)}）` : ""}
-            </li>
-          ))}
-        </ul>
-      )}
-      <FieldIssues id={`${id}-issues`} messages={messages} />
-    </div>
-  );
-}
-
 function DataCheckFields({
   node,
   config,
@@ -1272,11 +1192,17 @@ function DataCheckFields({
   const keys = Array.isArray(golden.keys)
     ? golden.keys.join(", ")
     : (golden.keys ?? "");
-  function setGolden(key: "expected" | "table" | "keys", value: string) {
+  function setGolden(
+    key: "expected" | "table" | "keys" | "tolerance" | "severity",
+    value: string,
+  ) {
     const next: Record<string, unknown> = { ...golden };
+    const number = Number(value.trim());
     if (!value.trim()) delete next[key];
     else if (key === "keys" && !value.includes("{{"))
       next.keys = value.split(/[,，、\s]+/).filter(Boolean);
+    else if (key === "tolerance" && !value.includes("{{") && Number.isFinite(number))
+      next.tolerance = number;
     else next[key] = value;
     const rest = { ...node };
     delete rest.golden;
@@ -1347,6 +1273,29 @@ function DataCheckFields({
           help="列名用逗号分隔，或引用一个列名列表。"
           onChange={(value) => setGolden("keys", value)}
         />
+        <RefField
+          label="容差（选填）"
+          value={golden.tolerance === undefined ? "" : String(golden.tolerance)}
+          variables={variables}
+          issues={at("golden.tolerance")}
+          help="数字列差的绝对值不超过它算一致，比如 0.001；留空时要完全相等。"
+          onChange={(value) => setGolden("tolerance", value)}
+        />
+        <SelectField
+          label="不一致时"
+          value={golden.severity ?? ""}
+          choices={[
+            { value: "", label: "算错误（检查不通过）" },
+            { value: "warn", label: "只警告" },
+            { value: "info", label: "只提示" },
+          ]}
+          onChange={(value) => setGolden("severity", value)}
+        />
+        {at("golden.severity").map((msg) => (
+          <p className="field-error" key={msg}>
+            {msg}
+          </p>
+        ))}
       </fieldset>
       <RefField
         label="只在这个值为 true 时检查"

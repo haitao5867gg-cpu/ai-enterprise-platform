@@ -13,7 +13,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -131,6 +131,29 @@ def problems(check: Any) -> list[tuple[Loc, str]]:
     else:
         _expression(check, "where", (), add, "条件", required=True)
     return found
+
+
+def tables(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
+    """The tables a check reads, with where in it: ``table``, golden's ``expected``,
+    reconcile's ``left.table`` and ``right.table``."""
+    for key in ("table", "expected"):
+        if key in check:
+            yield key, check[key]
+    for side in ("left", "right"):
+        if isinstance(check.get(side), dict) and "table" in check[side]:
+            yield f"{side}.table", check[side]["table"]
+
+
+def texts(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
+    """The SQL texts of a check (where ``${param.*}`` may stand), with where in it."""
+    for key in ("expr", "where", "expected_where"):
+        if key in check:
+            yield key, check[key]
+    for side in ("left", "right"):
+        if isinstance(check.get(side), dict):
+            for key in ("expr", "where"):
+                if key in check[side]:
+                    yield f"{side}.{key}", check[side][key]
 
 
 def _table(value: dict[str, Any], key: str, loc: Loc, add: Callable[[Loc, str], None]) -> None:
@@ -639,9 +662,11 @@ RUNS = {
 # The node's added comparison with the old system
 
 
-def golden_check(table: Any, expected: Any, keys: Any) -> tuple[dict[str, Any], str | None]:
+def golden_check(
+    table: Any, expected: Any, keys: Any, tolerance: Any = None, severity: Any = None
+) -> tuple[dict[str, Any], str | None]:
     """The check a node adds when it is given the old system's table, and why it cannot
-    run (None when it can)."""
+    run (None when it can). ``tolerance`` and ``severity`` are left out when not given."""
     check = {
         "id": GOLDEN,
         "label": GOLDEN_LABEL,
@@ -650,6 +675,10 @@ def golden_check(table: Any, expected: Any, keys: Any) -> tuple[dict[str, Any], 
         "expected": expected,
         "keys": keys,
     }
+    if tolerance is not None:
+        check["tolerance"] = tolerance
+    if severity is not None:
+        check["severity"] = severity
     if not isinstance(expected, str):
         return check, "老系统结果表的名字要写成文字（catalog.schema.table）"
     if not table:

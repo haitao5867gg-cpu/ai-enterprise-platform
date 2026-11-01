@@ -228,6 +228,8 @@ export type DataCheckGolden = {
   expected?: string;
   table?: string;
   keys?: string | string[];
+  tolerance?: number | string;
+  severity?: string;
 };
 export type DataCheckNode = NodeBase &
   Fallible & {

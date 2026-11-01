@@ -741,6 +741,8 @@ test("数据检查节点：只列 Databricks 数据源，检查写成 JSON，和
     .fill("old.jade.table2");
   await golden.getByLabel("结果表", { exact: true }).fill("ibf_table2");
   await golden.getByLabel("主键", { exact: true }).fill("sku, month");
+  await golden.getByLabel("容差（选填）", { exact: true }).fill("0.001");
+  await golden.getByLabel("不一致时", { exact: true }).selectOption({ label: "只警告" });
   await insert(page, "只在这个值为 true 时检查", "{{answer.text}}");
 
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
@@ -758,6 +760,8 @@ test("数据检查节点：只列 Databricks 数据源，检查写成 JSON，和
       expected: "old.jade.table2",
       table: "ibf_table2",
       keys: ["sku", "month"],
+      tolerance: 0.001,
+      severity: "warn",
     },
     only_if: "{{answer.text}}",
   });
@@ -772,6 +776,8 @@ test("数据检查节点：只列 Databricks 数据源，检查写成 JSON，和
   await golden.getByLabel("老系统结果表", { exact: true }).fill("");
   await golden.getByLabel("结果表", { exact: true }).fill("");
   await golden.getByLabel("主键", { exact: true }).fill("");
+  await golden.getByLabel("容差（选填）", { exact: true }).fill("");
+  await golden.getByLabel("不一致时", { exact: true }).selectOption({ value: "" });
   await panel(page)
     .getByLabel("只在这个值为 true 时检查", { exact: true })
     .fill("");
