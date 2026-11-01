@@ -61,9 +61,15 @@ CONF
 grep -qE '^Include /etc/ssh/sshd_config.d/' /etc/ssh/sshd_config \
   || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 sshd -t
+# 生效前先核对（sshd -T 读的是配置文件）：公钥登录没打开就撤回，不关密码，免得锁在外面。
+if ! sshd -T -C user=root,host=x,addr=127.0.0.1 | grep -qi '^pubkeyauthentication yes'; then
+  rm -f /etc/ssh/sshd_config.d/10-aep.conf
+  echo "✗ 有别的配置关掉了公钥登录，已撤回改动、保留密码登录。把下面的输出贴出来："
+  grep -rn -Ei "match|pubkey|authenticationmethods|include" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ || true
+  exit 1
+fi
 systemctl reload ssh
 sshd -T | grep -qi '^passwordauthentication no' || echo "! 密码登录没有关掉，请检查 /etc/ssh/sshd_config"
-sshd -T | grep -qi '^pubkeyauthentication yes' || { echo "✗ 公钥登录没有打开，先别退出当前会话，检查 /etc/ssh/sshd_config"; exit 1; }
 
 echo "== 防火墙：22、80、443"
 ufw default deny incoming
@@ -98,5 +104,5 @@ systemctl restart docker
 usermod -aG docker "$DEPLOY_USER"
 
 echo
-echo "✓ 完成。以后用 ssh $DEPLOY_USER@<IP> 登录（root 也只能用密钥）。"
+echo "✓ 完成。先别退出：在自己电脑上另开一个终端试 ssh $DEPLOY_USER@<IP>，能免密登录再退出。"
 echo "  下一步见 infra/vps/README.md 第 3 步：以 $DEPLOY_USER 身份拉代码并运行 deploy.sh。"
