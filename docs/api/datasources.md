@@ -204,9 +204,13 @@ JSON 列表，每一项是下面一种写法：
   - `describe_table` 的列另有 `comment`（列注释，没有为 null），返回另有表的 `comment`；类型是 Databricks 的写法（`string`、`decimal(18,2)`、`timestamp`）。`primary_key` 和 `foreign_keys` 取 Unity Catalog 里登记的约束（只是信息，Databricks 不强制），没登记时为 false 和 `[]`。
   - `table_stats` 的 `estimated_row_count` 是带 `where` 的精确行数；空值率、不同值个数和 `top_values` 在最多 `AEP_DATABRICKS_READ_STATS_SAMPLE`（默认 1000）行的样本上算，同 postgres 连接器。
   - `read_rows` 按主键排序（没登记主键时按全部列），用 `LIMIT … OFFSET …` 分页。
+- 另有 3 个只读的分析工具（`databricks` 类型才有，登记时不要求，`data_check` 节点用；`tool`、`agent` 节点也能用）。表名一律是三段式 `table`（`catalog.schema.table`），`where`、`expr` 的形状检查同上，最多返回 `limit` 行（1–1000，默认 20）：
+  - `aggregate`：`{"table", "expr", "where"?, "group_by"?: [列], "limit"?}`，返回 `{"rows": [{分组列…, "value": 值}], "groups": 组数}`；不分组时 `rows` 只有一行。`limit` 不分组时不起作用，分组时最多 10000。
+  - `duplicates`：`{"table", "columns": [列], "where"?, "limit"?}`，返回 `{"groups": 重复的组数, "rows": [{列…, "count": 次数}]}`（按次数从多到少）。
+  - `compare`：`{"table", "expected", "keys": [列], "columns"?: [列], "where"?, "tolerance"?, "limit"?}`：按 `keys` 全外连接两张表，返回 `{"missing": expected 有而 table 没有的行数, "extra": 反过来, "different": 键相同而某列不同的行数, "columns": 比较了哪些列, "rows": [例子，带 "kind": "missing" | "extra" | "different" 和两边的值]}`。数字列差的绝对值不超过 `tolerance`（默认 0）算相同，两边都是空值算相同。`where` 两边都用。
 - 在哪里执行：设了 `AEP_DATABRICKS_READ_WAREHOUSE_ID` 时用 SQL warehouse（Statement Execution API），否则用 `AEP_DATABRICKS_READ_CLUSTER_ID` 指定的已有集群（命令执行接口，SQL 上下文）；两个都没设时工具报错“连接器没有配置在哪里执行查询”。集群没在运行时报错“集群 … 没有在运行，请先在 Databricks 上启动它”，连接器不替你启动集群。
 - 只读：
-  - 连接器只执行自己拼好的 `SELECT`、`DESCRIBE`、`SHOW` 语句，没有执行任意 SQL 的工具；标识符一律校验后加反引号，`limit`、`offset` 校验成整数后再写进语句。
+  - 连接器只执行自己拼好的 `SELECT`、`DESCRIBE`、`SHOW` 语句，没有执行任意 SQL 的工具；标识符一律校验后加反引号，`limit`、`offset` 校验成整数后再写进语句；`where`、`expr` 这类表达式只在形状检查通过后放进括号里。
   - 只能读 `AEP_DATABRICKS_READ_CATALOGS`（JSON 列表，必填，空列表时所有工具报错）里的 catalog，别的 catalog 一律报“没有允许读 catalog …”。
   - 真正的边界是令牌的权限：`AEP_DATABRICKS_READ_TOKEN` 要用只有 `USE CATALOG`、`USE SCHEMA`、`SELECT` 权限的身份（服务主体或个人令牌），部署说明里写明。令牌只配在连接器上，平台不保存。
 - 设置（都在连接器自己的环境里）：`AEP_DATABRICKS_READ_HOST`（工作区地址）、`AEP_DATABRICKS_READ_TOKEN`、`AEP_DATABRICKS_READ_CLUSTER_ID` 或 `AEP_DATABRICKS_READ_WAREHOUSE_ID`、`AEP_DATABRICKS_READ_CATALOGS`、`AEP_DATABRICKS_READ_TIMEOUT_SECONDS`（每条语句，默认 150）、`AEP_DATABRICKS_READ_STATS_SAMPLE`，以及 MCP 的 `AEP_DATABRICKS_MCP_HOST`、`AEP_DATABRICKS_MCP_PORT`、`AEP_DATABRICKS_MCP_ALLOWED_HOSTS`。本地编排默认把平台的 `AEP_DATABRICKS_HOST`、`AEP_DATABRICKS_TOKEN`、`AEP_DATABRICKS_CLUSTER_ID` 传给前三项，方便开发；生产要单独配只读身份。
@@ -217,7 +221,7 @@ JSON 列表，每一项是下面一种写法：
 
 - 登记、测试连接、连通状态和上面一样：类型 `databricks`，要有 6 个工具。
 - 平台调 `databricks` 数据源的工具时，超时用 `AEP_DATABRICKS_TOOL_SECONDS`（默认 180，要比连接器的语句超时长），其他类型照旧。
-- 能用在 `tool`、`agent`、`etl_profile`、`databricks_ingest` 节点上；`etl` 代码应用不接受（“「…」是 Databricks 数据源，ETL 应用要选数据库或上传文件的数据源，Databricks 的表请用编排应用 etl-lakehouse 第 3 版”）。
+- 能用在 `tool`、`agent`、`etl_profile`、`databricks_ingest`、`data_check` 节点上（`data_check` 只接受这种类型）；`etl` 代码应用不接受（“「…」是 Databricks 数据源，ETL 应用要选数据库或上传文件的数据源，Databricks 的表请用编排应用 etl-lakehouse 第 3 版”）。
 - 探查、抽取怎么对待它见 [data-nodes.md](data-nodes.md) 第三批；数据外发策略把它的工具结果算作数据值（[projects.md](projects.md)）。
 - 测试和 CI 不连真实的 Databricks：连接器的测试用假的执行接口，平台用 `tests/fake_connector.py` 加一个 `databricks` 版本。
 

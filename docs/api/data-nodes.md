@@ -800,6 +800,7 @@ def param(name: str):
 ```
 
 - 筛选写进代码里，代码评审时看得见；改了项目的筛选，要重新生成代码才生效。
+- 生成的代码在集群上读源表是运行管道本身（写的一侧），用平台部署和运行 Job 的身份，和以前一样；试算后读结果表的预览、算答案也照旧在集群上做，读的是这次刚写的表。探查和数据检查读表一律经只读连接器。
 - `param()` 的值按参数类型：`number` 是 int 或 float，`boolean` 是 bool，其余（含 `date`、`month`）是文字，没给值为 None。
 - `etl_code_check` 新加的检查（问题都让模型重写）：`param()` 的参数必须是字符串字面值，并且是项目定义了的参数（没绑定项目时“没有绑定项目，不能用 param()”）；`source()` 的三段式名字同样要在方案的来源里。
 - SQL 方案：源表照旧换成 `${source_catalog}` 加两段名，三段名原样；条件里的 `${param.<key>}` 换成值的 SQL 字面值（同下面写表方式的规则）。读带筛选的引用表时检查不过：“表 … 有读取筛选，SQL 代码暂不支持，请改用 PySpark”。
@@ -841,10 +842,11 @@ def param(name: str):
 
 ### data_check 数据检查（新节点）
 
-运行后核对数据：总数对不对、和源表对不对得上、键是否重复、和老系统的结果是否一致。在集群上执行，只读。
+运行后核对数据：总数对不对、和源表对不对得上、键是否重复、和老系统的结果是否一致。和探查一样经 Databricks 只读连接器读表（它的只读身份和 catalog 白名单照样管用），不用平台写表的身份。
 
 ```jsonc
-{"checks": [Check],                      // 写在节点里的检查，0–50 条
+{"datasource": "{{start.datasource}}",   // 必填：Databricks 数据源（datasource_id 或整段引用），规则同 etl_profile
+ "checks": [Check],                      // 写在节点里的检查，0–50 条
  "include": ["{{check_plan.checks}}"],   // 0–5 个整段引用，值是 Check 的列表（比如方案里的检查），和 checks 合在一起
  "golden": "{{start.golden}}",           // 可选：老系统结果表的三段式名，或整段引用；有值时对 golden 检查的 expected 生效，见下
  "only_if": "{{dev_run.ok}}"}            // 可选，恰好一个引用：值不是 true 时不执行，见下
@@ -854,7 +856,7 @@ def param(name: str):
 // Check 公共字段
 {"id": "total_qty",                      // 规则同节点 id，合在一起后不能重复（重复时节点 input_error）
  "label": "总数量和预测表一致",            // 1–100 字符
- "kind": "aggregate" | "reconcile" | "unique" | "golden" | "query",
+ "kind": "aggregate" | "reconcile" | "unique" | "golden" | "rows",
  "severity": "error" | "warn" | "info"}  // 默认 error
 
 // aggregate：一张表上的一个聚合值和期望比
@@ -875,17 +877,17 @@ def param(name: str):
  "columns": ["qty", "amount"],           // 可选，不写时比两边同名的非键列
  "where": "…", "tolerance": 0.0001}
 
-// query：一条 SELECT，必须查不出行
-{"sql": "SELECT * FROM ibf_table2 WHERE qty < 0"}
+// rows：满足条件的行必须没有
+{"table": "ibf_table2", "where": "qty < 0"}
 ```
 
-- **表名**：不带点的名字是本次运行的结果表（绑定项目时 `<环境 catalog>.<环境 schema>.<名字>`，否则 `<AEP_DATABRICKS_CATALOG>.<AEP_DATABRICKS_SCHEMA>.<名字>`）；两段名是抽取到 `AEP_DATABRICKS_SOURCE_CATALOG` 下的源表；三段名原样。读项目引用表时带上它的读取筛选。`query` 的 SQL 里表名原样写，平台不改写（写全名）。`cluster` 方式不落表，读结果表的检查记为 `error`（“cluster 方式不落表，读不到结果表”）。
-- **条件和表达式**：`expr` 是一个 Spark SQL 聚合表达式；`where`、`expr` 的形状检查同 `filter`；`sql` 只能是一条以 `SELECT` 或 `WITH` 开头的语句，不能有分号和注释，最多 5000 字符。都可以用 `${param.<key>}`，规则同写表方式。这些在集群上执行，和生成的代码同一个信任级别。
+- **表名**：不带点的名字是本次运行的结果表（绑定项目时 `<环境 catalog>.<环境 schema>.<名字>`，否则 `<AEP_DATABRICKS_CATALOG>.<AEP_DATABRICKS_SCHEMA>.<名字>`）；两段名是抽取到 `AEP_DATABRICKS_SOURCE_CATALOG` 下的源表；三段名原样。读项目引用表时带上它的读取筛选（和检查自己的 `where` 用 AND 连起来）。表名都由平台换成三段式再交给连接器，所以连接器的 `AEP_DATABRICKS_READ_CATALOGS` 要包括项目环境的 catalog 和老系统结果表所在的 catalog，只读身份要能读它们；读不到时这条检查记为 `error`，`message` 是连接器的报错。`cluster` 方式不落表，读结果表的检查记为 `error`（“cluster 方式不落表，读不到结果表”）。
+- **条件和表达式**：`expr` 是一个 Spark SQL 聚合表达式；`where`、`expr` 的形状检查同 `filter`，连接器再查一遍。都可以用 `${param.<key>}`，平台按写表方式的规则换成字面值后再交给连接器。没有执行任意 SQL 的检查。
+- **经连接器的哪个工具**：`aggregate`、`reconcile` 用 `aggregate`（`reconcile` 两边各调一次，平台按组对齐、比较）；`unique` 用 `duplicates`；`golden` 用 `compare`；`rows` 用 `aggregate`（`count(*)`）数行、`sample_rows` 取例子。比较、容差和结论都在平台这边算。工具见 [datasources.md](datasources.md)“Databricks 数据源”。
 - **golden 的 expected**：写在检查里的优先；没写时用节点的 `golden`；都没有时这条检查记为 `skipped`（“没有指定老系统的结果表”），不算失败。
-- **结果** `results[]`：`{"id", "label", "kind", "severity", "status": "passed" | "failed" | "error" | "skipped", "actual", "expected", "message", "rows"}`。`actual`、`expected` 是比较的两个值（`reconcile` 是两边的值，`unique` 是重复的组数，`golden` 是 `{"missing": 3, "extra": 0, "different": 12}`，`query` 是行数）；`message` 一句话，如“左边 1,385,355.07，右边 1,385,355.07，一致”；`rows` 最多 20 行例子（对不上的组、重复的键、不一致的行、查出的行），没有为 `[]`。执行出错的检查 `status` 为 `error`，`message` 是报错第一行。
-- **`only_if`**：到这一步时取值，不是 true 就不连集群：`ok` 为 false，`results` 为 `[]`，`summary` 为“前一步没有通过，没有做数据检查”，`report` 同 `summary`，走 `failed`。这样试算失败的路径也能经过这个节点，后面的节点可以放心引用它的产出（保存检查要求引用的节点一定跑过）。
-- **节点什么时候失败**：只有整件事做不了时（没配 Databricks、集群命令出错）以 `databricks_error` 失败；单条检查出错只记在这条上。
-- 执行：一条集群命令跑完全部检查（新任务加进 `cluster_tasks.py`），集群同上。
+- **结果** `results[]`：`{"id", "label", "kind", "severity", "status": "passed" | "failed" | "error" | "skipped", "actual", "expected", "message", "rows"}`。`actual`、`expected` 是比较的两个值（`reconcile` 是两边的值，`unique` 是重复的组数，`golden` 是 `{"missing": 3, "extra": 0, "different": 12}`，`rows` 是行数）；`message` 一句话，如“左边 1,385,355.07，右边 1,385,355.07，一致”；`rows` 最多 20 行例子（对不上的组、重复的键、不一致的行、查出的行），没有为 `[]`。执行出错的检查 `status` 为 `error`，`message` 是报错第一行。
+- **`only_if`**：到这一步时取值，不是 true 就不调连接器：`ok` 为 false，`results` 为 `[]`，`summary` 为“前一步没有通过，没有做数据检查”，`report` 同 `summary`，走 `failed`。这样试算失败的路径也能经过这个节点，后面的节点可以放心引用它的产出（保存检查要求引用的节点一定跑过）。
+- **节点什么时候失败**：`datasource` 不是 Databricks 数据源时 `input_error`（“数据检查要用 Databricks 数据源”）；连不上连接器时 `tool_error`（同 `tool` 节点）；单条检查出错只记在这条上。
 
 产出：
 
@@ -904,7 +906,7 @@ def param(name: str):
 
 - 目标表的 `load` 按上面的写表方式；检查 `mode` 的取值、`replace_where` 要有 `where`、`merge` 的 `keys`（或 `primary_key`）都是这张表的列、`${param.*}` 是项目的参数。
 - 运行绑定了项目时目标表名要以 `table_prefix` 开头，不能和项目引用表的表名一样。
-- 新字段 `checks`：模型建议的数据检查（`aggregate`、`reconcile`、`unique`、`query`，最多 10 条；`golden` 由模板加），格式同 `data_check` 的 Check；表名只能是方案的目标表和来源。不合格的检查让模型重写。新产出 `checks`（整理后的列表，可以整段给 `data_check` 的 `include`；第 1、2 版为 `[]`）。
+- 新字段 `checks`：模型建议的数据检查（`aggregate`、`reconcile`、`unique`、`rows`，最多 10 条；`golden` 由模板加），格式同 `data_check` 的 Check；表名只能是方案的目标表和来源。不合格的检查让模型重写。新产出 `checks`（整理后的列表，可以整段给 `data_check` 的 `include`；第 1、2 版为 `[]`）。
 - 没绑定项目时也能用：不查前缀，用了 `${param.*}` 时让模型重写（“这次运行没有绑定项目，不能用运行参数”）。
 - 模型按 `aep.etl.plan.OUTPUT_FORMAT_V3` 回答（新增，前两个不动）。`message` 的技术方案里每张表多写一行写表方式，最后加“数据检查”一节。
 
@@ -912,11 +914,11 @@ def param(name: str):
 
 模板第 2 版留着（不绑定项目的原型方式）。第 3 版给绑定项目的数据团队用，节点和第 2 版一样，只有这些不同：
 
-- 开始节点 `project: "required"`；输入：数据源（可以选 Databricks 数据源）、需求、表范围（高级选项，空着时用项目的引用表）、`golden`（高级选项，老系统结果表的三段式名，可选）。
+- 开始节点 `project: "required"`；输入：数据源（Databricks 数据源；数据检查也用它）、需求、表范围（高级选项，空着时用项目的引用表）、`golden`（高级选项，老系统结果表的三段式名，可选）。
 - 出方案：Skill `etl-plan-brief` 新版本（版本 2，加写表方式、运行参数、数据检查的写法），`system` 为 `OUTPUT_FORMAT_V3`，提示词加 `{{project.brief}}`。
 - 校验方案：`format: 3`。
 - 写代码：Skill `etl-codegen` 新版本（加 `param()` 和三段式 `source()` 的用法），提示词加 `{{project.brief}}`。
-- 开发环境试算之后加 `data_check`（标题“数据检查”，`include: ["{{check_plan.checks}}"]`，`golden: "{{start.golden}}"`，`only_if: "{{dev_run.ok}}"`）：试算的 `passed`、`failed` 都连到它，它的两个分支都到“审核试算结果”。
+- 开发环境试算之后加 `data_check`（标题“数据检查”，`datasource: "{{start.datasource}}"`，`include: ["{{check_plan.checks}}"]`，`golden: "{{start.golden}}"`，`only_if: "{{dev_run.ok}}"`）：试算的 `passed`、`failed` 都连到它，它的两个分支都到“审核试算结果”。
 - 审核试算结果的 `data` 加 `checks: {{data_check.results}}`，页面加“数据检查”一节；“通过”的 `requires` 改成试算通过并且检查通过（新增的 `requires` 写法：引用列表，全为 true 才能选）。
 
 最后一条要给人工节点的 `requires` 加一种写法：除了一个整段引用，还可以是 1–5 个整段引用的列表，全部为 true 时才能选。这是对人工节点的通用扩展，同步写进 flow-apps.md。
@@ -935,7 +937,7 @@ def param(name: str):
   - 表名：三段式拆分（带 `-` 的 catalog）、`catalog.schema.*` 展开；Databricks 数据源上 `tables` 为空时用项目引用表、没项目时 `input_error`；引用表的筛选传到 `table_stats`、`sample_rows`；抽取 Databricks 的表不读不写、`copied` 为 false。
   - 代码：`SOURCE_FILTERS` 和 `param()` 写进管道文件；`param()` 参数不是字面值、不是项目参数时检查不过；SQL 读带筛选的表检查不过；`${param.*}` 的字面值（文字转义、日期、数字、布尔、空值）。
   - 写表：绑定项目时结果写到环境的 catalog 和 schema、用环境的集群；前缀不对时 `input_error`；归属的三种情况（不存在、有项目标记或登记在 `adopted`、别的项目或没有标记）；写完的表属性；四种写表方式各自的 Spark 调用、`merge` 键重复、`tables[].write`（假的 `DESCRIBE HISTORY`）；第 1、2 版方案的 `full`、`incremental` 结果不变。
-  - `data_check`：`only_if` 不成立时不连集群、走 `failed`；五种检查各自通过和不通过、`tolerance` 和 `relative`、`group_by` 对不上的组、golden 的 missing/extra/different、`query` 查出行、单条出错不影响其他条、`skipped`、`severity` 和 `ok`、表名解析和筛选、id 重复时 `input_error`。
+  - `data_check`：`only_if` 不成立时不调连接器、走 `failed`；五种检查各自调的连接器工具和参数（表名换成三段式、筛选和 `where` 用 AND 连起来、`${param.*}` 换成字面值）、通过和不通过、`tolerance` 和 `relative`、`group_by` 对不上的组、golden 的 missing/extra/different、`rows` 查出行、不是 Databricks 数据源时 `input_error`、单条出错不影响其他条、`skipped`、`severity` 和 `ok`、表名解析和筛选、id 重复时 `input_error`。
   - 方案第 3 版：写表方式的检查、前缀、`checks` 的检查和产出、没绑定项目时用 `${param.*}` 让模型重写；第 2 版的产出不变。
   - 模板第 3 版用假模型、假 Databricks 和假的 Databricks 连接器跑通：绑定项目、探查引用表、检查不通过时不能选“通过”。
 - 不连真实 Databricks 和真实模型；`DevTarget.ingest`、`preview` 用假 HTTP 测请求内容。
