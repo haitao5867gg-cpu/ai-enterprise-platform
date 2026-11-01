@@ -19,7 +19,7 @@
 - 工具接入：一律做成 MCP Server。数据源连接器只读。数据源在平台里登记（`/datasources`，只存名称、类型和连接器地址，凭据留在连接器那边），节点通过 `AppContext.tools`（`aep.tools.mcp`）调用连接器的工具。代码仓库也走连接器：Git 连接器（MCP）支持 GitHub 和 Bitbucket Data Center，PR 是普通差异，提交信息可以带工单号；现在直连 GitHub 的 `aep.assets` 以后迁到它上面。
 - 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
 - 数据外发：发给模型的数据受数据外发策略约束：允许哪些模型别名，数据样本按什么级别外发（完整、脱敏、只发统计、只发结构）。策略有平台默认值，项目可以另设；由平台在调模型前统一执行，节点不各自处理。
-- 项目：平台资源，不属于某个应用。一个项目绑定代码仓库、工程布局、环境（每个环境的 catalog、schema、表名前缀、集群、运行身份、Workspace 根目录）、表登记（自己写的表和只读引用的表）、运行参数和检查规则。运行可以绑定一个项目，节点按项目配置读写，只能写登记为本项目所有的表。契约见 `docs/api/projects.md`（随第一期契约加上）。
+- 项目：平台资源，不属于某个应用。一个项目绑定代码仓库、工程布局、环境（每个环境的 catalog、schema、表名前缀、集群、运行身份、Workspace 根目录）、表登记（自己写的表和只读引用的表）、运行参数和检查规则。运行可以绑定一个项目，节点按项目配置读写，只能写登记为本项目所有的表。契约见 `docs/api/projects.md`。
 - 平台应用分两种，都在 `aep.runtime.registry.default_apps` 或 `apps` 表里登记，运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`：
   - 编排应用（flow）：节点和连线写在带版本的应用配置里，由 `aep.runtime.flow` 编译成 LangGraph 图；页面上可以新建、增删节点、导入导出。内置的 `hello` 和用户新建的应用都是这种。配置格式和接口见 `docs/api/flow-apps.md`，改格式先改这份契约。
   - 代码应用（code）：`backend/src/aep/runtime/apps/` 下手写的一张 LangGraph 图，页面上只能调节点设置。现有 `etl`。
@@ -36,7 +36,7 @@
 ```
 backend/    Python 3.12 + FastAPI，包名 aep（src 布局），uv 管理依赖
 frontend/   Next.js（App Router）+ TypeScript
-connectors/ MCP 连接器（postgres、mysql、files 只读数据源；sandbox 代码沙箱）
+connectors/ MCP 连接器（postgres、mysql、files、databricks 只读数据源；sandbox 代码沙箱）
 docs/       接口契约（docs/api/）
 infra/      基础设施配置（litellm/ 模型网关，langfuse/ 追踪）
 .github/    CI
@@ -61,7 +61,7 @@ make lint
 
 - Python：ruff 检查和格式化（行宽 100），类型标注齐全。配置只从 `aep.config.Settings` 读，环境变量统一 `AEP_` 前缀（例外：`LANGFUSE_*`，与网关共用同一组变量）。
 - TypeScript：`strict` 模式，`npm run typecheck` 必须通过。
-- 新功能必须带测试；后端测试放 `backend/tests/`，不得依赖外部网络或真实模型（模型用 `tests/conftest.py` 里的 `FakeGateway`，数据源用 `tests/fake_connector.py` 里的进程内 MCP Server，代码沙箱用 `tests/test_flow_code.py` 里的假沙箱）。运行时测试用 `MemoryRunStore` + `InMemorySaver`；需要真实 Postgres 的测试读取 `AEP_TEST_DATABASE_URL`，没设置时自动跳过（CI 会设置）。
+- 新功能必须带测试；后端测试放 `backend/tests/`，不得依赖外部网络或真实模型（模型用 `tests/conftest.py` 里的 `FakeGateway`，数据源用 `tests/fake_connector.py` 里的进程内 MCP Server（含 Databricks 只读连接器），Databricks 工作区用 `tests/fake_databricks.py`，代码沙箱用 `tests/test_flow_code.py` 里的假沙箱）。运行时测试用 `MemoryRunStore` + `InMemorySaver`；需要真实 Postgres 的测试读取 `AEP_TEST_DATABASE_URL`，没设置时自动跳过（CI 会设置）。
 - 不提交密钥、`.env`、客户数据。凭据在本地放 `.env`，在 Azure 放 Key Vault。
 - 新依赖要在 PR 描述里写明用途。
 
