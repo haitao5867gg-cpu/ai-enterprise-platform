@@ -309,7 +309,8 @@ async def test_compare_counts_missing_extra_and_different_rows():
     ]
     joined = fake.statements[-1]
     assert "FULL OUTER JOIN b ON a.`sku` <=> b.`SKU`" in joined
-    assert "(a.`qty` <=> b.`Qty` OR abs(a.`qty` - b.`Qty`) <= 0.5)" in joined
+    # Null on one side only is a difference, also for numbers within the tolerance.
+    assert "(a.`qty` <=> b.`Qty` OR coalesce(abs(a.`qty` - b.`Qty`) <= 0.5, false))" in joined
 
     same, _ = reader(golden(lambda s: Result(names, [])))
     result = await same.compare("main.s.forecast", "prev.s.golden", ["sku", "month"])

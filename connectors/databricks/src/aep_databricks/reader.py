@@ -414,9 +414,11 @@ class Reader:
             for a, b in pairs
         ]
         tol = repr(float(tolerance))
+        # A null on one side only is a difference: abs(NULL - x) <= tol is NULL, and a NULL
+        # here would make the whole row count as the same.
         same = [
             f"(a.{ident(a)} <=> b.{ident(b)}"
-            + (f" OR abs(a.{ident(a)} - b.{ident(b)}) <= {tol})" if num else ")")
+            + (f" OR coalesce(abs(a.{ident(a)} - b.{ident(b)}) <= {tol}, false))" if num else ")")
             for (a, b), num in zip(pairs, numeric, strict=True)
         ]
         differs = f"WHEN NOT ({' AND '.join(same)}) THEN 'different' " if same else ""
