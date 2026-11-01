@@ -27,6 +27,7 @@ from tests.conftest import settings
 @pytest.fixture(autouse=True)
 def no_waiting(monkeypatch):
     monkeypatch.setattr(ex, "POLL_SECONDS", 0)
+    monkeypatch.setattr(ex, "RETRY_SECONDS", 0)
 
 
 def client(handler) -> httpx.MockTransport:
@@ -130,12 +131,39 @@ async def test_warehouse_failures_say_what_databricks_said():
     with pytest.raises(ConnectorError, match="拒绝了令牌"):
         await WarehouseExecutor(settings(), client(refused)).query("SELECT 1")
 
+    tries: list[int] = []
+
     def unreachable(request: httpx.Request) -> httpx.Response:
+        tries.append(1)
         raise httpx.ConnectError("adb-1.test: name or service not known")
 
     with pytest.raises(ConnectorError) as found:
         await WarehouseExecutor(settings(), client(unreachable)).query("SELECT 1")
     assert "adb-1.test" not in str(found.value)
+    assert len(tries) == ex.ATTEMPTS
+
+
+async def test_dropped_connections_are_retried():
+    dropped = iter([True, True, False])
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        if next(dropped):
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return httpx.Response(
+            200,
+            json={
+                "statement_id": "s1",
+                "status": {"state": "SUCCEEDED"},
+                "manifest": {
+                    "schema": {"columns": [{"name": "one", "type_name": "INT"}]},
+                    "total_chunk_count": 1,
+                },
+                "result": {"data_array": [["1"]]},
+            },
+        )
+
+    result = await WarehouseExecutor(settings(), client(flaky)).query("SELECT 1")
+    assert result.rows == [[1]]
 
 
 async def test_a_slow_warehouse_statement_is_cancelled(monkeypatch):

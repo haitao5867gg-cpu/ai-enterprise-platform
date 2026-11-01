@@ -16,6 +16,11 @@ from aep_databricks.config import Settings
 from aep_databricks.sql import ConnectorError
 
 POLL_SECONDS = 1.0
+# Connections to a workspace can drop mid-request (seen through egress proxies, several
+# times in a row): a request that did not get through is sent again this many times in
+# all, waiting RETRY_SECONDS, then twice that, and so on. Every statement only reads.
+ATTEMPTS = 6
+RETRY_SECONDS = 1.0
 # The Statement Execution API waits this long before answering with a pending statement.
 WAIT = "30s"
 MAX_ERROR = 500
@@ -60,11 +65,18 @@ class _Rest:
         )
 
     async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        try:
-            response = await self._client.request(method, path, **kwargs)
-        except httpx.HTTPError:
-            # Transport errors can carry the workspace address: say only what happened.
-            raise ConnectorError("连不上 Databricks 工作区，请检查地址和网络") from None
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                response = await self._client.request(method, path, **kwargs)
+                break
+            except httpx.TransportError:
+                if attempt < ATTEMPTS:
+                    await asyncio.sleep(RETRY_SECONDS * 2 ** (attempt - 1))
+                    continue
+                # Transport errors can carry the workspace address: say only what happened.
+                raise ConnectorError("连不上 Databricks 工作区，请检查地址和网络") from None
+            except httpx.HTTPError:
+                raise ConnectorError("连不上 Databricks 工作区，请检查地址和网络") from None
         if response.status_code in (401, 403):
             raise ConnectorError("Databricks 拒绝了令牌（没有权限或已过期）")
         try:
