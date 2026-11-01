@@ -103,6 +103,14 @@ class CheckEnv:
     )
 
 
+def _refers(outputs: dict[str, Any], setting: Any) -> bool:
+    return any(
+        name in (outputs.get(node) or ())
+        for _, text in refs.strings(setting)
+        for node, name in refs.find(text)
+    )
+
+
 @dataclass
 class Runtime:
     """What running a node needs. ``skills`` holds the text of every skill version the
@@ -173,12 +181,17 @@ class Runtime:
 
     def holds_data(self, state: dict[str, Any], setting: Any) -> bool:
         """Whether a setting refers to a data value."""
-        data = state.get("data") or {}
-        return any(
-            name in (data.get(node) or ())
-            for _, text in refs.strings(setting)
-            for node, name in refs.find(text)
-        )
+        return _refers(state.get("data") or {}, setting)
+
+    def classify(self, state: dict[str, Any], setting: Any, keys: list[str]) -> dict[str, Any]:
+        """How outputs made from a setting are classified (aep.policy): data values when it
+        refers to one, error text that may quote them when it refers to such text, so
+        reformatting a value never takes it past the policy."""
+        if self.holds_data(state, setting):
+            return {"data": keys}
+        if _refers(state.get("quoted") or {}, setting):
+            return {"quoted": keys}
+        return {}
 
     def unmask(
         self, value: Any, state: dict[str, Any], extra: list[Any] | None = None
@@ -202,6 +215,20 @@ class Runtime:
         known = [*found, *quoted, *(extra or []), restored]
         return policy.unmask(value, known, str(state.get("run_id") or ""))
 
+    def model_check(self, node: dict[str, Any], state: dict[str, Any]) -> Callable[[str], None]:
+        """Raises ``input_error`` for a model the run's policy does not allow, before any
+        request goes to it (``llm.chat``, embedding, rerank)."""
+        project = (state.get("project") or {}).get("name")
+        title = node.get("title") or node.get("id") or ""
+        rules = self.data_policy(state)
+
+        def check(model: str) -> None:
+            problem = policy.model_problem(rules, model, title, project)
+            if problem:
+                raise NodeFailure(INPUT_ERROR, problem)
+
+        return check
+
     def system(self, node: dict[str, Any], *extra: str) -> str:
         parts = [self.skills[(s["name"], s["version"])].text() for s in node.get("skills") or []]
         parts += [e.strip() for e in extra if e and e.strip()]
@@ -215,11 +242,7 @@ class Runtime:
     ) -> str:
         model = node.get("model") or self.default_model
         state = state or {}
-        project = (state.get("project") or {}).get("name")
-        title = node.get("title") or node.get("id") or ""
-        problem = policy.model_problem(self.data_policy(state), model, title, project)
-        if problem:
-            raise NodeFailure(INPUT_ERROR, problem)
+        self.model_check(node, state)(model)
         try:
             reply = await llm.chat(self.llm_client, messages, model=model)
         except (TimeoutError, openai.APITimeoutError) as exc:
@@ -1198,7 +1221,7 @@ async def check_template(node: dict[str, Any], p: Problems, env: CheckEnv) -> No
 
 async def run_template(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     text = refs.render(node["template"], rt.lookup(state))
-    return Outcome({"text": text}, data=["text"] if rt.holds_data(state, node["template"]) else [])
+    return Outcome({"text": text}, **rt.classify(state, node["template"], ["text"]))
 
 
 # code
@@ -1252,8 +1275,10 @@ async def run_code(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
         value = result[f["key"]]
         if value is not None and not JSON_CHECK[f["type"]](value):
             raise NodeFailure("code_error", f"main 返回的 {f['key']} 应该是 {f['type']}")
-    data = [f["key"] for f in fields] if rt.holds_data(state, node.get("inputs")) else []
-    return Outcome({f["key"]: result[f["key"]] for f in fields}, data=data)
+    keys = [f["key"] for f in fields]
+    return Outcome(
+        {key: result[key] for key in keys}, **rt.classify(state, node.get("inputs"), keys)
+    )
 
 
 # end
@@ -1361,7 +1386,10 @@ async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime
             node.get("min_score", 0.3),
             node.get("retrieval"),
             settings=rt.settings,
+            check=rt.model_check(node, state),
         )
+    except NodeFailure:
+        raise
     except Exception as exc:  # noqa: BLE001 - retrieval failures use the node's on_error
         raise NodeFailure("knowledge_error", f"知识库检索失败：{exc}") from exc
     citations = dict(state.get("citations") or {})
@@ -1634,7 +1662,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             try:
                 if rt.knowledge is None:
                     raise ValueError("平台没有配置知识库")
-                found = await search(
+                kb_hits = await search(
                     rt.knowledge,
                     rt.llm_client,
                     kb_ids,
@@ -1643,12 +1671,16 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                     knowledge.get("min_score", 0.3),
                     knowledge.get("retrieval"),
                     settings=rt.settings,
+                    check=rt.model_check(node, state),
                 )
-                indexed, latest = _index_knowledge_hits(found, citations, node)
+                indexed, latest = _index_knowledge_hits(kb_hits, citations, node)
                 hits.update((hit.index, hit) for hit in indexed)
                 sources.update(latest)
                 step["hits"] = len(indexed)
                 reply = context(indexed)[:MAX_TOOL_RESULT] if indexed else "没有找到相关资料"
+            except NodeFailure:
+                # A model the policy does not allow fails the node, as for its own model.
+                raise
             except Exception as exc:  # noqa: BLE001 - tool errors go back to the model
                 step["error"] = f"知识库检索失败：{exc}"
                 reply = f"出错了：{step['error']}"

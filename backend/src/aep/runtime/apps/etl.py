@@ -30,6 +30,7 @@ and how many times the model and the dev run are tried.
 import hashlib
 import json
 import operator
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import Annotated, Any, TypedDict
 
@@ -388,22 +389,43 @@ def build(ctx: AppContext) -> StateGraph:
     def configured(config: RunnableConfig, node: str) -> NodeConfig:
         return node_config(config, node, CONFIG)
 
+    def rules_for(config: RunnableConfig) -> policy.DataPolicy:
+        """The run's data outbound policy, kept on the run when it was created (so a
+        restart with other platform settings does not change it); the platform's for a
+        graph run outside the run service."""
+        stored = (config.get("configurable") or {}).get("policy")
+        if stored is None:
+            return policy.platform_default(ctx.settings)
+        return policy.DataPolicy.from_dict(stored)
+
+    def model_check(config: RunnableConfig, step: str) -> Callable[[str], None]:
+        """Raises before any request goes to a model the run's policy does not allow."""
+        rules = rules_for(config)
+
+        def check(model: str) -> None:
+            problem = policy.model_problem(rules, model, NODES[step].title)
+            if problem:
+                raise InputError(problem)
+
+        return check
+
     async def ask(
-        state: EtlState, step: str, node: NodeConfig, messages: list[dict[str, str]]
+        state: EtlState,
+        config: RunnableConfig,
+        step: str,
+        node: NodeConfig,
+        messages: list[dict[str, str]],
     ) -> llm.ChatResult:
-        """The model's reply, when the platform's data outbound policy allows the model."""
+        """The model's reply, when the run's data outbound policy allows the model."""
         model = model_for(state, step, node)
-        problem = policy.model_problem(
-            policy.platform_default(ctx.settings), model, NODES[step].title
-        )
-        if problem:
-            raise InputError(problem)
+        model_check(config, step)(model)
         return await llm.chat(ctx.llm_client, messages, model=model)
 
-    def unmask(state: EtlState, value: Any, run_id: str) -> tuple[Any, dict[str, str]]:
+    def unmask(state: EtlState, config: RunnableConfig, value: Any) -> tuple[Any, dict[str, str]]:
         """A reply's tokens turned back into the profiled values (masked samples only)."""
-        if policy.platform_default(ctx.settings).samples != "masked":
+        if rules_for(config).samples != "masked":
             return value, {}
+        run_id = config["configurable"]["thread_id"]
         restored = list((state.get("restored") or {}).values())
         known = [state["profile"], restored, state.get("quoted") or []]
         return policy.unmask(value, known, run_id)
@@ -438,7 +460,7 @@ def build(ctx: AppContext) -> StateGraph:
         inp = state["input"]
         language = inp.get("language") or "pyspark"
         run_id = config["configurable"]["thread_id"]
-        rules = policy.platform_default(ctx.settings)
+        rules = rules_for(config)
         request = (
             f"需求：{inp['request']}\n期望的代码语言：{language}\n\n"
             "源表（只能使用这些）：\n" + describe_for_model(state["profile"], rules.samples, run_id)
@@ -458,8 +480,12 @@ def build(ctx: AppContext) -> StateGraph:
                         "vector_weight": 0.7,
                         "rerank": None,
                     },
+                    check=model_check(config, "plan"),
                 )
                 references = [IndexedHit(**asdict(hit), index=i) for i, hit in enumerate(hits, 1)]
+            except InputError:
+                # A model the policy does not allow stops the run, as for the plan's model.
+                raise
             except Exception as exc:  # noqa: BLE001 - reference material is optional
                 warnings.append(f"知识库检索失败，继续生成方案：{exc}")
             if references:
@@ -486,9 +512,9 @@ def build(ctx: AppContext) -> StateGraph:
         sources = [t["name"] for t in state["profile"]]
         known = known_values(state["profile"])
         for attempt in range(attempts):
-            reply = await ask(state, "plan", node, prompt)
+            reply = await ask(state, config, "plan", node, prompt)
             try:
-                parsed, back = unmask(state, llm.parse_json(reply.text), run_id)
+                parsed, back = unmask(state, config, llm.parse_json(reply.text))
                 restored |= back
                 result = validate_plan(
                     parsed, sources, known, attempt > 0, references, rules.samples == "full"
@@ -562,10 +588,9 @@ def build(ctx: AppContext) -> StateGraph:
                     + "\n".join(policy.remask(state["problems"], restored)),
                 }
             )
-        reply = await ask(state, "codegen", node, prompt)
-        run_id = config["configurable"]["thread_id"]
+        reply = await ask(state, config, "codegen", node, prompt)
         try:
-            parsed, back = unmask(state, llm.parse_json(reply.text), run_id)
+            parsed, back = unmask(state, config, llm.parse_json(reply.text))
             restored |= back
             code = parsed.get("targets") or {}
             problems = codegen.check_code(confirmed, code)
@@ -651,7 +676,7 @@ def build(ctx: AppContext) -> StateGraph:
         if retry:
             errors = [e[:ERROR_CHARS] for e in dev.errors[:10]]
             # They go to the codegen model: the values they quote as the policy lets them.
-            samples = policy.platform_default(ctx.settings).samples
+            samples = rules_for(config).samples
             run_id = config["configurable"]["thread_id"]
             said = policy.scrub(errors, samples, run_id)
             update["problems"] = ["代码在 Databricks dev 目标上运行失败，报错如下：", *said]

@@ -2,7 +2,7 @@
 
 import copy
 from dataclasses import asdict, replace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 import yaml
@@ -323,7 +323,15 @@ async def test_agent_selects_bases_by_name_and_uses_configured_retrieval(p, monk
     assert (hit["scores"]["vector"] is None) == (mode == "keyword")
     assert (hit["scores"]["keyword"] is None) == (mode == "vector")
     searched.assert_awaited_once_with(
-        p.knowledge, p.gateway.client, [second], OTHER, 1, 0.8, retrieval, settings=p.settings
+        p.knowledge,
+        p.gateway.client,
+        [second],
+        OTHER,
+        1,
+        0.8,
+        retrieval,
+        settings=p.settings,
+        check=ANY,
     )
 
 

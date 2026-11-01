@@ -17,7 +17,7 @@ from aep.etl.profile import describe_for_model
 from aep.knowledge.store import MemoryKnowledgeStore
 from aep.policy import DataPolicy
 from aep.runtime.flow import builtin
-from aep.runtime.flow.nodes import INPUT_ERROR, NodeFailure, Runtime
+from aep.runtime.flow.nodes import INPUT_ERROR, NodeFailure, Runtime, run_agent, run_knowledge
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import ModelNotAllowed, RunService
 from aep.runtime.store import MemoryRunStore
@@ -635,3 +635,160 @@ async def test_the_etl_app_sends_dev_run_errors_without_the_values_they_quote():
     assert "运行失败，报错如下" in retry
     assert "a@example.com" not in retry and "The value '‹已隐去›'" in retry
     assert '"STRING"' in retry
+
+
+async def test_reformatting_an_error_does_not_take_the_values_it_quotes_past_the_policy():
+    nodes = [
+        {
+            "id": "start",
+            "type": "start",
+            "title": "开始",
+            "inputs": [{"key": "code", "label": "编号", "type": "text", "required": True}],
+        },
+        {
+            "id": "find",
+            "type": "tool",
+            "title": "查编号",
+            "datasource": "x",
+            "tool": "lookup",
+            "args": {"code": "{{start.code}}"},
+            "on_error": {"then": "branch"},
+        },
+        {
+            "id": "fmt",
+            "type": "template",
+            "title": "整理",
+            "template": "报错：{{find.error_message}}",
+        },
+        {
+            "id": "calc",
+            "type": "code",
+            "title": "转写",
+            "code": 'def main(inputs):\n    return {"said": inputs["e"].upper()}\n',
+            "inputs": {"e": "{{find.error_message}}"},
+            "outputs": [{"key": "said", "type": "string"}],
+            "timeout_seconds": 5,
+        },
+        {"id": "ask", "type": "llm", "title": "解释", "prompt": "{{fmt.text}}\n{{calc.said}}"},
+        {
+            "id": "end",
+            "type": "end",
+            "title": "结束",
+            "outputs": [{"key": "error", "from": ["{{fmt.text}}"]}],
+        },
+    ]
+    edges = [
+        {"from": "start", "to": "find"},
+        {"from": "find", "branch": "error", "to": "fmt"},
+        {"from": "find", "to": "end"},
+        {"from": "fmt", "to": "calc"},
+        {"from": "calc", "to": "ask"},
+        {"from": "ask", "to": "end"},
+    ]
+    servers = {LOOKUP_URL: failing_lookup(), SETTINGS.sandbox_url: sandbox()}
+    async with Platform(["好"], servers, settings=with_policy(data_samples="schema")) as p:
+        source = await p.sources.create("编号库", "postgres", LOOKUP_URL)
+        nodes[1]["datasource"] = source.datasource_id
+        await p.new_app("codes", {"graph": {"nodes": nodes, "edges": edges}})
+        run = await p.run("codes", {"code": "S-42"})
+        assert run["status"] == "done", run["error"]
+        assert "S-42" in run["result"]["error"]  # People see the whole error.
+        sent = prompt(p, 0)
+        assert "S-42" not in sent
+        assert sent.startswith("报错：工具报错：")
+        assert "invalid input syntax for type integer: '‹已隐去›'" in sent
+        assert "INVALID INPUT SYNTAX FOR TYPE INTEGER: '‹已隐去›'" in sent
+
+
+async def test_knowledge_models_are_checked_again_right_before_retrieval():
+    # The base's embedding model can change after the run was created (an empty base
+    # may change it), so the check at creation is not enough.
+    knowledge = MemoryKnowledgeStore()
+    remote = await knowledge.create("远程", embedding_model="company-embed")
+    local = await knowledge.create("本地")
+    gateway = FakeGateway([call("kb", query="退货")])
+    rt = Runtime(gateway.client, "mock", {}, {}, knowledge=knowledge)
+    state = {"policy": {"samples": "full", "models": ["qwen"]}, "vars": {}}
+    node = {
+        "id": "kb",
+        "type": "knowledge",
+        "title": "检索",
+        "knowledge_bases": [remote.kb_id],
+        "query": "退货",
+    }
+    with pytest.raises(NodeFailure) as found:
+        await run_knowledge(node, state, rt)
+    assert found.value.type == INPUT_ERROR
+    assert found.value.message == "平台只允许用模型 qwen，节点「检索」用的是 company-embed"
+    reranked = {
+        **node,
+        "knowledge_bases": [local.kb_id],
+        "retrieval": {"rerank": {"model": "company-rerank", "candidates": 20}},
+    }
+    with pytest.raises(NodeFailure) as found:
+        await run_knowledge(reranked, state, rt)
+    assert found.value.message.endswith("节点「检索」用的是 company-rerank")
+    assert gateway.requests == []
+
+    # An agent's knowledge tool fails the node the same way, without the request.
+    agent = {
+        **builtin.TEMPLATES["knowledge-agent"].config["graph"]["nodes"][1],
+        "model": "qwen",
+    }
+    agent["knowledge"] = {**agent["knowledge"], "knowledge_bases": [remote.kb_id]}
+    state["vars"] = {"start": {"question": "多久能退货？"}}
+    with pytest.raises(NodeFailure) as found:
+        await run_agent(agent, state, rt)
+    assert found.value.type == INPUT_ERROR
+    assert found.value.message.endswith("用的是 company-embed")
+    assert [r["body"]["model"] for r in gateway.requests] == ["qwen"]
+
+
+async def test_an_agent_keeps_tool_values_to_turn_back_after_searching_knowledge():
+    replies = [
+        call("t4", schema="sales", table="customers"),
+        call("kb", query="客户"),
+        answer(f"第一个客户的邮箱是 {tok('a@example.com', RUN0)}"),
+    ]
+    async with Platform(replies, settings=with_policy(data_samples="masked")) as p:
+        p.service._store = PredictableStore(iter([RUN0]))  # noqa: SLF001
+        base = await p.service.knowledge.create("资料")
+        config = builtin.TEMPLATES["datasource-qa"].config
+        config["graph"]["nodes"][1]["knowledge"] = {
+            "knowledge_bases": [base.kb_id],
+            "top_k": 5,
+            "min_score": 0.3,
+        }
+        await p.new_app("ask-data", config)
+        run = await p.run("ask-data", {"question": "第一个客户是谁？", "datasource": p.shop})
+        assert run["status"] == "done", run["error"]
+        assert run["result"] == {"answer": "第一个客户的邮箱是 a@example.com"}
+
+
+async def test_the_etl_app_keeps_the_policy_the_run_was_created_with():
+    class Dev:
+        def __init__(self) -> None:
+            self.runs = [
+                DevRun("failed", "run", [], errors=[ERROR], fixable=True),
+                DevRun("passed", "run", []),
+            ]
+
+        async def run(self, bundle: Any) -> DevRun:
+            return self.runs.pop(0)
+
+    code = test_etl.reply({"targets": {"order_facts": test_etl.PYSPARK_BODY}})
+    service, gateway, ds = await test_etl.make_service(
+        [test_etl.reply(test_etl.plan()), code, code],
+        settings=with_policy(data_samples="stats"),
+        databricks=Dev(),
+    )
+    run_id = await test_etl.start(
+        service, ds, tables=["sales.orders", "sales.customers"], release=False
+    )
+    # The platform restarts with another setting while the run waits.
+    ctx = dataclasses.replace(service._ctx, settings=with_policy(data_samples="full"))  # noqa: SLF001
+    restarted = RunService(service._store, service._checkpointer, default_apps(), ctx)  # noqa: SLF001
+    view = await test_etl.decide(restarted, run_id, "approve")
+    assert view.record.policy == {"samples": "stats", "models": None}
+    retry = gateway.requests[2]["body"]["messages"][-1]["content"]
+    assert "a@example.com" not in retry and "The value '‹已隐去›'" in retry
