@@ -4,11 +4,12 @@
 #   加 4G 交换区、装 Docker 并限制容器日志大小、开启自动安全更新和 fail2ban。
 # 前提：已经在自己电脑上 ssh-copy-id 过，root 能用密钥登录。可以重复运行。
 set -euo pipefail
+trap 'echo "✗ 第 $LINENO 行出错，脚本停止。把上面的输出贴出来；修好后可以直接重新运行。"' ERR
 
 [ "$(id -u)" -eq 0 ] || { echo "✗ 请用 root 运行"; exit 1; }
 . /etc/os-release
 [ "${ID:-}" = debian ] || echo "! 只在 Debian 12 上验证过，当前是 ${PRETTY_NAME:-未知系统}"
-if ! grep -qs '^ssh-' /root/.ssh/authorized_keys; then
+if ! grep -qsE '^(ssh-|ecdsa-|sk-)' /root/.ssh/authorized_keys; then
   echo "✗ /root/.ssh/authorized_keys 里没有公钥。先在自己电脑上运行："
   echo "    ssh-copy-id root@<VPS 的 IP>"
   echo "  确认能免密登录后再运行本脚本，否则关掉密码登录后会进不去。"
@@ -25,15 +26,18 @@ apt-get upgrade -yq
 apt-get install -yq ca-certificates curl git make ufw fail2ban unattended-upgrades openssl sudo
 
 echo "== 交换区 $SWAP_SIZE（4G 内存构建镜像时需要）"
+# 有的 VPS（OpenVZ/LXC 容器）不允许自己加交换区或改内核参数：只提示，不中断。
 if ! swapon --show | grep -q .; then
-  fallocate -l "$SWAP_SIZE" /swapfile
-  chmod 600 /swapfile
-  mkswap /swapfile
-  swapon /swapfile
-  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  if { fallocate -l "$SWAP_SIZE" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096; } \
+    && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile; then
+    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  else
+    rm -f /swapfile
+    echo "! 加不了交换区（$(systemd-detect-virt 2>/dev/null || echo 未知虚拟化)），构建镜像时可能内存不够"
+  fi
 fi
 echo 'vm.swappiness=20' > /etc/sysctl.d/90-aep.conf
-sysctl -q --system
+sysctl -q -w vm.swappiness=20 || echo "! 改不了 vm.swappiness，跳过"
 
 echo "== 部署用户 $DEPLOY_USER"
 if ! id "$DEPLOY_USER" >/dev/null 2>&1; then
@@ -51,8 +55,12 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin prohibit-password
 CONF
+# 有的 VPS 镜像改过 sshd_config，去掉了读 sshd_config.d 的那一行。
+grep -qE '^Include /etc/ssh/sshd_config.d/' /etc/ssh/sshd_config \
+  || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 sshd -t
 systemctl reload ssh
+sshd -T | grep -qi '^passwordauthentication no' || echo "! 密码登录没有关掉，请检查 /etc/ssh/sshd_config"
 
 echo "== 防火墙：22、80、443"
 ufw default deny incoming
