@@ -1992,7 +1992,11 @@ checks 是建议在开发环境试算后做的数据检查，最多 10 条，没
    "right": {"table": "表名", "expr": "sum(volume)", "where": null},
    "group_by": ["可选，两边同名的分组列"], "tolerance": 0.005, "relative": true}
 - unique（键不重复）：{"table": "表名", "columns": ["键列"], "where": null}
-- rows（满足条件的行必须没有）：{"table": "表名", "where": "不该出现的行满足的条件"}
+- rows（满足条件的行必须没有）：{"table": "表名", "where": "不该出现的行满足的条件"}；
+  要看的是在另一张表里找不到（或找得到）对应行的行时，加
+  "lookup": {"table": "另一张表", "on": {"本表的列": "另一张表的列"},
+  "where": "另一张表的条件或 null", "found": false}
+  （found 为 false 只看找不到的行，true 只看找得到的行）
 load.where 和检查的 where、expr 里可以用 ${param.参数标识} 引用项目的运行参数，
 运行时换成参数值；没绑定项目时不能用。
 和老系统结果的逐行对比由数据检查节点自动加，不要写在 checks 里。"""

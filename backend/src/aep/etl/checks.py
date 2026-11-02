@@ -56,9 +56,12 @@ FIELDS = {
     "reconcile": {"left", "right", "group_by", "tolerance", "relative"},
     "unique": {"table", "columns", "where"},
     "golden": {"table", "expected", "keys", "columns", "where", "expected_where", "tolerance"},
-    "rows": {"table", "where"},
+    "rows": {"table", "where", "lookup"},
 }
 SIDE = {"table", "expr", "where"}
+# A rows check may keep only the rows with (or without) a matching row in another table.
+LOOKUP = {"table", "on", "where", "found"}
+MAX_LOOKUP_COLUMNS = 10
 
 STATUS_TEXT = {"passed": "通过", "failed": "不通过", "error": "出错", "skipped": "跳过"}
 SEVERITY_TEXT = {"error": "错误", "warn": "警告", "info": "提示"}
@@ -135,8 +138,49 @@ def problems(check: Any) -> list[tuple[Loc, str]]:
         _tolerance(check, add)
     else:
         _expression(check, "where", (), add, "条件", required=True)
+        _lookup_problems(check, add)
     _known_problems(check, add)
     return found
+
+
+def _lookup_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> None:
+    """``lookup`` on a rows check: only the rows that do (``found``) or do not have a row
+    in another table with the same values in the ``on`` columns, among that table's rows
+    its ``where`` keeps ("lanes with no allocation that applies this month")."""
+    lookup = check.get("lookup")
+    if lookup is None:
+        return
+    shape = '{"table", "on": {"本表的列": "另一张表的列"}, "where"?, "found": true/false}'
+    if not isinstance(lookup, dict):
+        add(("lookup",), f"lookup 要写成 {shape}")
+        return
+    for key in lookup:
+        if key not in LOOKUP:
+            add(("lookup", key), f"lookup 没有 {key} 这一项，只有 table、on、where、found")
+    _table(lookup, "table", ("lookup",), add)
+    on = lookup.get("on")
+    if (
+        not isinstance(on, dict)
+        or not on
+        or len(on) > MAX_LOOKUP_COLUMNS
+        or not all(
+            isinstance(v, str) and _COLUMN.match(v) and v == v.strip()
+            for pair in on.items()
+            for v in pair
+        )
+    ):
+        add(
+            ("lookup", "on"),
+            f"lookup.on 要写 1–{MAX_LOOKUP_COLUMNS} 对列名：{{本表的列: 另一张表的列}}，不带反引号",
+        )
+    elif len({k.lower() for k in on}) != len(on):
+        add(("lookup", "on"), "lookup.on 里本表的列有重复")
+    _expression(lookup, "where", ("lookup",), add, "lookup 的条件")
+    if not isinstance(lookup.get("found"), bool):
+        add(
+            ("lookup", "found"),
+            "lookup.found 要写 true（只看找得到对应行的行）或 false（只看找不到的行）",
+        )
 
 
 def known_columns(check: dict[str, Any]) -> list[str] | None:
@@ -203,7 +247,7 @@ def tables(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
     for key in ("table", "expected"):
         if key in check:
             yield key, check[key]
-    for side in ("left", "right"):
+    for side in ("left", "right", "lookup"):
         if isinstance(check.get(side), dict) and "table" in check[side]:
             yield f"{side}.table", check[side]["table"]
 
@@ -213,7 +257,7 @@ def texts(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
     for key in ("expr", "where", "expected_where"):
         if key in check:
             yield key, check[key]
-    for side in ("left", "right"):
+    for side in ("left", "right", "lookup"):
         if isinstance(check.get(side), dict):
             for key in ("expr", "where"):
                 if key in check[side]:
@@ -256,7 +300,9 @@ def _expression(
             (*loc, key),
             f"{label}不能有子查询（SELECT）：要和另一张表比，用 reconcile 对账检查，两边各写"
             "表、聚合表达式和条件，按组比时写 group_by；要找出不该有的行，用 rows 检查，"
-            "条件只写这张表的列",
+            "条件只写这张表的列；要找出在另一张表里找不到（或找得到）对应行的行，用 rows 检查"
+            '加 lookup：{"table": 另一张表, "on": {本表的列: 另一张表的列}, "where": 另一张表'
+            '的条件, "found": false}',
         )
     elif problem is not None:
         add((*loc, key), problem.replace("读取筛选", label))
@@ -542,7 +588,20 @@ def _describe(check: dict[str, Any]) -> str:
         expected = check.get("expected")
         old = f"老系统的 {code(expected)}" if expected else "老系统的结果表"
         return f"{code(check['table'])} 和{old}按 {keys} 逐行一致"
-    return f"{code(check['table'])} 里没有满足 {code(check['where'])} 的行"
+    return f"{code(check['table'])} 里没有{_rows_said(check, code)}"
+
+
+def _rows_said(check: dict[str, Any], code: Callable[[str], str] = str) -> str:
+    """What rows a rows check looks for: ``满足 … 的行``, with a lookup ``满足 …、并且在 …
+    里找不到 … 对应（满足 …）的行``."""
+    said = f"满足 {code(check['where'])}"
+    lookup = check.get("lookup")
+    if not lookup:
+        return said + " 的行"
+    on = "、".join(a if a == b else f"{a} = {b}" for a, b in lookup["on"].items())
+    where = f"（满足 {code(lookup['where'])}）" if lookup.get("where") else ""
+    found = "找得到" if lookup["found"] else "找不到"
+    return f"{said}、并且在 {code(lookup['table'])} 里{found} {on} 对应{where}的行"
 
 
 async def _aggregate(
@@ -891,14 +950,21 @@ async def _rows(
     table = scope.table(check["table"])
     where = scope.condition(table, check["where"])
     schema, _, name = table.rpartition(".")
+    more: dict[str, Any] = {}
+    if lookup := check.get("lookup"):
+        other = scope.table(lookup["table"])
+        looked = {"table": other, "on": lookup["on"], "found": lookup["found"]}
+        if condition := scope.condition(other, lookup.get("where")):
+            looked["where"] = condition
+        more = {"lookup": looked}
 
     async def counted(condition: str | None) -> int:
-        found = await call("aggregate", _args(table, condition, expr="count(*)"))
+        found = await call("aggregate", _args(table, condition, expr="count(*)", **more))
         return int(found["rows"][0]["value"] or 0) if found["rows"] else 0
 
     async def sampled(condition: str | None) -> list[dict[str, Any]]:
         args = {"schema": schema, "table": name, "limit": EXAMPLES, "where": condition}
-        return list((await call("sample_rows", args))["rows"])
+        return list((await call("sample_rows", args | more))["rows"])
 
     count = await counted(where)
     entries = check.get("known")
@@ -913,11 +979,12 @@ async def _rows(
         known = _known_seen(entries, count - new, hit, complete=count - new <= len(seen))
         where, count = new_where, new
     tail = _known_tail(known, "行")
+    said = _rows_said(check)
     if not count:
         but = "已知差异以外" if known and known["count"] else ""
-        message = f"{but}没有满足 {check['where']} 的行"
+        message = f"{but}没有{said}"
         return result(check, "passed", message + tail, actual=0, expected=0, known=known)
-    message = f"有 {count:,} 行满足 {check['where']}"
+    message = f"有 {count:,} 行{said.removesuffix('的行').rstrip()}"
     return result(
         check,
         "failed",

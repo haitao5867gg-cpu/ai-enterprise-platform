@@ -7,7 +7,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -27,6 +27,29 @@ Where = Annotated[
     Field(description="Optional Spark SQL boolean expression; only matching rows are read"),
 ]
 Limit = Annotated[int, Field(strict=True, ge=1, le=1000)]
+
+
+class Lookup(BaseModel):
+    """Only the rows that do (``found``) or do not have a matching row in another table."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    table: TableName
+    on: Annotated[
+        dict[str, str],
+        Field(
+            min_length=1,
+            max_length=10,
+            description="{column of this table: column of the other table}; nulls match nulls",
+        ),
+    ]
+    where: Annotated[
+        str | None, Field(description="Optional condition on the other table's rows")
+    ] = None
+    found: Annotated[
+        StrictBool,
+        Field(description="true: rows that have a matching row; false: rows that have none"),
+    ]
 
 
 def http_security(settings: Settings) -> TransportSecuritySettings:
@@ -77,9 +100,12 @@ def create_server(settings: Settings | None = None, executor: Executor | None = 
         table: str,
         limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 10,
         where: Where = None,
+        lookup: Lookup | None = None,
     ) -> dict[str, Any]:
-        """Read at most 100 rows as JSON, without an ordering guarantee."""
-        return await call(reader.sample_rows(schema, table, limit, where))
+        """Read at most 100 rows as JSON, without an ordering guarantee. ``lookup`` keeps
+        only the rows that do (or do not) have a matching row in another table."""
+        found = lookup.model_dump() if lookup else None
+        return await call(reader.sample_rows(schema, table, limit, where, found))
 
     @server.tool(annotations=READ_ONLY)
     async def read_rows(
@@ -107,10 +133,14 @@ def create_server(settings: Settings | None = None, executor: Executor | None = 
         where: Where = None,
         group_by: list[str] | None = None,
         limit: Annotated[int, Field(strict=True, ge=1, le=10000)] = 20,
+        lookup: Lookup | None = None,
     ) -> dict[str, Any]:
         """One aggregate value, or one per group (ordered by the group columns, at most
-        ``limit`` groups). ``groups`` counts every group, so it can exceed the rows."""
-        return await call(reader.aggregate(table, expr, where, group_by, limit))
+        ``limit`` groups). ``groups`` counts every group, so it can exceed the rows.
+        ``lookup`` keeps only the rows that do (or do not) have a matching row in another
+        table."""
+        found = lookup.model_dump() if lookup else None
+        return await call(reader.aggregate(table, expr, where, group_by, limit, found))
 
     @server.tool(annotations=READ_ONLY)
     async def duplicates(

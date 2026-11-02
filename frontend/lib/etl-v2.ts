@@ -374,7 +374,16 @@ function describeCheckOnly(check: Record<string, unknown>): string {
     return `${table} 按 ${texts(check.columns).join("、")} 没有重复的行${under(check.where)}`;
   if (check.kind === "golden")
     return `${table} 和老系统的结果表按 ${texts(check.keys).join("、")} 逐行一致`;
-  return `${table} 里没有满足 ${text(check.where)} 的行`;
+  const lookup = isRecord(check.lookup) ? check.lookup : null;
+  if (!lookup) return `${table} 里没有满足 ${text(check.where)} 的行`;
+  const on = Object.entries(isRecord(lookup.on) ? lookup.on : {})
+    .map(([mine, theirs]) =>
+      mine === theirs ? mine : `${mine} = ${String(theirs)}`,
+    )
+    .join("、");
+  const where = text(lookup.where) ? `（满足 ${text(lookup.where)}）` : "";
+  const found = lookup.found === true ? "找得到" : "找不到";
+  return `${table} 里没有满足 ${text(check.where)}、并且在 ${text(lookup.table)} 里${found} ${on} 对应${where}的行`;
 }
 
 export type CheckResult = {

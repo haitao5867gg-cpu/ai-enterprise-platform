@@ -317,6 +317,19 @@ def build_databricks(calls: list[tuple[str, dict]] | None = None) -> MCPServer:
             raise ToolError(f"表名要写成 catalog.schema.table，收到的是 {table!r}")
         return rows(schema, name, where)
 
+    def looked_up(found: list[dict], lookup: dict | None) -> list[dict]:
+        """The rows that do (``found``) or do not have a row in the lookup's table with the
+        same values in the ``on`` columns (None matching None) that its ``where`` keeps."""
+        if lookup is None:
+            return found
+        other = table_rows(lookup["table"], lookup.get("where"))
+        pairs = list(lookup["on"].items())
+
+        def has(row: dict) -> bool:
+            return any(all(row.get(a) == o.get(b) for a, b in pairs) for o in other)
+
+        return [r for r in found if has(r) is lookup["found"]]
+
     def columns_of(table: str) -> list[str]:
         schema, _, name = table.rpartition(".")
         return [c["name"] for c in find(schema, name)["columns"]]
@@ -362,10 +375,18 @@ def build_databricks(calls: list[tuple[str, dict]] | None = None) -> MCPServer:
         }
 
     @server.tool()
-    def sample_rows(schema: str, table: str, limit: int = 10, where: str | None = None) -> dict:
-        """At most 100 rows, those ``where`` keeps."""
-        seen.append(("sample_rows", {"schema": schema, "table": table, "where": where}))
-        return {"schema": schema, "table": table, "rows": rows(schema, table, where)[:limit]}
+    def sample_rows(
+        schema: str,
+        table: str,
+        limit: int = 10,
+        where: str | None = None,
+        lookup: dict | None = None,
+    ) -> dict:
+        """At most 100 rows, those ``where`` (and ``lookup``) keeps."""
+        args = {"schema": schema, "table": table, "where": where}
+        seen.append(("sample_rows", args | ({"lookup": lookup} if lookup else {})))
+        found = looked_up(rows(schema, table, where), lookup)
+        return {"schema": schema, "table": table, "rows": found[:limit]}
 
     @server.tool()
     def read_rows(
@@ -418,11 +439,12 @@ def build_databricks(calls: list[tuple[str, dict]] | None = None) -> MCPServer:
         where: str | None = None,
         group_by: list[str] | None = None,
         limit: int = 20,
+        lookup: dict | None = None,
     ) -> dict:
         """One aggregate value, or one per group (sorted by the group columns)."""
         args = {"table": table, "expr": expr, "where": where, "group_by": group_by}
-        seen.append(("aggregate", args | {"limit": limit}))
-        found = table_rows(table, where)
+        seen.append(("aggregate", args | {"limit": limit} | ({"lookup": lookup} if lookup else {})))
+        found = looked_up(table_rows(table, where), lookup)
         if not group_by:
             return {"rows": [{"value": value_of(expr, found)}], "groups": 1}
         groups: dict[tuple, list[dict]] = {}

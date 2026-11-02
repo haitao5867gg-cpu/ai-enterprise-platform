@@ -5,7 +5,7 @@
 ## 能做什么
 
 - 6 个和其他数据源一样的工具：`list_schemas`、`list_tables`、`describe_table`、`sample_rows`、`read_rows`、`table_stats`。schema 写成 `catalog.schema`，`sample_rows`、`read_rows`、`table_stats` 可以带 `where`。
-- 3 个分析工具：`aggregate`、`duplicates`、`compare`，表名写成 `catalog.schema.table`。
+- 3 个分析工具：`aggregate`、`duplicates`、`compare`，表名写成 `catalog.schema.table`。`aggregate` 和 `sample_rows` 可以带 `lookup`，只读在另一张表里找得到（或找不到）对应行的那些行，子查询由连接器自己拼。
 - 只读：没有执行任意 SQL 的工具，语句都由连接器自己拼。名称校验后加反引号，`where`、`expr` 先做形状检查（不能有分号、注释、子查询；不能调反射、密钥、网络和文件读取、`ai_*`、`IDENTIFIER` 这些函数，也不能调带 catalog 或 schema 的自定义函数）。
 - 元数据来自各 catalog 的 `information_schema`，所以 catalog 要在 Unity Catalog 里（不支持 `hive_metastore`）。
 - 不复制数据，也不启动集群。

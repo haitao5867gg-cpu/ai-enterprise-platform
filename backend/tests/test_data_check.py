@@ -476,6 +476,113 @@ async def test_other_checks_tell_known_rows_and_groups_apart():
     )
 
 
+async def test_rows_may_look_up_another_table(monkeypatch: pytest.MonkeyPatch):
+    # "Rows with no matching row in another table" (jadeflow R4: a lane's month that its
+    # allocation does not apply to must be 0), without a subquery in the condition.
+    forecast = [
+        {"Type": "Vol.", "sku": "A1", "month": "2026-10"},
+        {"Type": "Val.", "sku": "B2", "month": "2026-11"},
+        {"Type": "Vol.", "sku": "C3", "month": "2026-11"},
+    ]
+    monkeypatch.setitem(
+        fake_connector.DATABRICKS_TABLES,
+        ("prev.sales", "forecast"),
+        {"comment": None, "columns": COLUMNS, "foreign_keys": [], "rows": forecast},
+    )
+    rt, lake, _, calls = await env()
+    lookup = {
+        "table": "PREV.sales.Forecast",
+        "on": {"sku": "sku", "month": "month"},
+        "where": "month = ${param.update_month} OR sku = 'C3'",
+        "found": False,
+    }
+    missing = check("missing", "rows", table="ibf_table2", where="qty > 0", lookup=lookup)
+    out = await run(node(checks=[missing]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    # B2 has a forecast row, but the project's filter (Type = 'Vol.') leaves it out.
+    assert (found["status"], found["actual"]) == ("failed", 1)
+    assert [r["sku"] for r in found["rows"]] == ["B2"]
+    assert found["message"] == (
+        "有 1 行满足 qty > 0、并且在 PREV.sales.Forecast 里找不到 sku、month 对应（满足 "
+        "month = ${param.update_month} OR sku = 'C3'）"
+    )
+    looked = {
+        "table": "PREV.sales.Forecast",
+        "on": {"sku": "sku", "month": "month"},
+        "found": False,
+        "where": "(Type = 'Vol.') AND (month = '2026-10' OR sku = 'C3')",
+    }
+    assert calls == [
+        (
+            "aggregate",
+            {"table": "dev.etl.ibf_table2", "expr": "count(*)", "where": "qty > 0",
+             "group_by": None, "limit": 20, "lookup": looked},
+        ),
+        (
+            "sample_rows",
+            {"schema": "dev.etl", "table": "ibf_table2", "where": "qty > 0", "lookup": looked},
+        ),
+    ]  # fmt: skip
+
+    # found: true keeps the rows that have one; known differences work as usual.
+    calls.clear()
+    have = missing | {"lookup": lookup | {"found": True}, "where": "qty <> 0"}
+    out = await run(node(checks=[have]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert (found["status"], [r["sku"] for r in found["rows"]]) == ("failed", ["A1", "C3"])
+    known = have | {"known": [{"match": {"sku": "A1"}}, {"match": {"sku": "C3"}}]}
+    out = await run(node(checks=[known]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert found["status"] == "passed"
+    assert found["message"] == (
+        "已知差异以外没有满足 qty <> 0、并且在 PREV.sales.Forecast 里找得到 sku、month 对应"
+        "（满足 month = ${param.update_month} OR sku = 'C3'）的行；另有 2 行是已知差异"
+        "（sku = A1；sku = C3）"
+    )
+    assert checks.describe(have) == (
+        "`ibf_table2` 里没有满足 `qty <> 0`、并且在 `PREV.sales.Forecast` 里找得到 sku、month "
+        "对应（满足 `month = ${param.update_month} OR sku = 'C3'`）的行"
+    )
+    on_names = have | {"lookup": {"table": "t", "on": {"sku": "code"}, "found": False}}
+    assert checks.describe(on_names) == (
+        "`ibf_table2` 里没有满足 `qty <> 0`、并且在 `t` 里找不到 sku = code 对应的行"
+    )
+
+
+def test_what_a_lookup_may_say():
+    def said(lookup: Any) -> list[tuple[Any, str]]:
+        return checks.problems(check("a", "rows", table="t", where="x > 0", lookup=lookup))
+
+    good = {"table": "a.b.c", "on": {"lane": "lane"}, "found": False}
+    assert said(good) == [] and said(good | {"where": "m = '07'"}) == []
+    on_rule = "lookup.on 要写 1–10 对列名：{本表的列: 另一张表的列}，不带反引号"
+    cases = [
+        ("bad", ("lookup",), "lookup 要写成 "),
+        (good | {"sql": "x"}, ("lookup", "sql"), "lookup 没有 sql 这一项"),
+        (good | {"table": "a.b.c.d"}, ("lookup", "table"), "表名要写成"),
+        (good | {"on": {}}, ("lookup", "on"), on_rule),
+        (good | {"on": ["lane"]}, ("lookup", "on"), on_rule),
+        (good | {"on": {"lane": 1}}, ("lookup", "on"), on_rule),
+        (good | {"on": {"`lane`": "lane"}}, ("lookup", "on"), on_rule),
+        (good | {"on": {f"c{i}": "x" for i in range(11)}}, ("lookup", "on"), on_rule),
+        (good | {"on": {"Lane": "a", "lane": "b"}}, ("lookup", "on"), "lookup.on 里本表的列有重复"),
+        (good | {"where": "x in (select 1)"}, ("lookup", "where"), "lookup 的条件不能有子查询"),
+        (good | {"where": ""}, ("lookup", "where"), "lookup 的条件要写成不为空的文字"),
+        (good | {"found": "false"}, ("lookup", "found"), "lookup.found 要写 true"),
+        ({k: v for k, v in good.items() if k != "found"}, ("lookup", "found"), "lookup.found"),
+    ]  # fmt: skip
+    for lookup, loc, message in cases:
+        problems = said(lookup)
+        assert any(p[0] == loc and p[1].startswith(message) for p in problems), (lookup, problems)
+    other = checks.problems(check("a", "unique", table="t", columns=["x"], lookup=good))
+    assert ((("lookup",), "unique 检查没有 lookup 这一项")) in other
+    # The lookup's table and condition count as the check's (project and plan rules).
+    lookup = good | {"where": "m = ${param.month}"}
+    full = check("a", "rows", table="t", where="x > 0", lookup=lookup)
+    assert ("lookup.table", "a.b.c") in list(checks.tables(full))
+    assert ("lookup.where", "m = ${param.month}") in list(checks.texts(full))
+
+
 def test_what_known_differences_may_say():
     def said(kind: str, **fields: Any) -> list[tuple[Any, str]]:
         return checks.problems(check("k", kind, **fields))
@@ -775,7 +882,10 @@ def test_what_a_check_may_say():
         (check("a", "rows", table="t", where="x; drop"), ("where",), "条件不能有分号"),
         (check("a", "rows", table="t", where="x in (select 1)"), ("where",),
          "条件不能有子查询（SELECT）：要和另一张表比，用 reconcile 对账检查，两边各写表、聚合表达式"
-         "和条件，按组比时写 group_by；要找出不该有的行，用 rows 检查，条件只写这张表的列"),
+         "和条件，按组比时写 group_by；要找出不该有的行，用 rows 检查，条件只写这张表的列；"
+         "要找出在另一张表里找不到（或找得到）对应行的行，用 rows 检查加 lookup：{\"table\": "
+         "另一张表, \"on\": {本表的列: 另一张表的列}, \"where\": 另一张表的条件, "
+         "\"found\": false}"),
         (check("a", "rows", table="t", where="x = ${month}"), ("where",),
          "运行参数要写成 ${param.<key>}（key 是项目参数的标识）"),
         (check("a", "rows", table="t", where="x", severity="fatal"), ("severity",),
