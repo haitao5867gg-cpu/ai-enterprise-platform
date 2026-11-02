@@ -314,8 +314,34 @@ function shownValue(value: unknown): string {
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
+// A known difference as people read it: its note, or the values it matches.
+function namedKnown(item: Record<string, unknown>): string {
+  const note = text(item.note);
+  if (note) return note;
+  const match = isRecord(item.match) ? item.match : {};
+  return Object.entries(match)
+    .map(([column, value]) => {
+      const shown =
+        value === null || value === undefined
+          ? "空值"
+          : typeof value === "object"
+            ? JSON.stringify(value)
+            : String(value);
+      return `${column} = ${shown}`;
+    })
+    .join("、");
+}
+
 // What a check checks, in one sentence (aep.etl.checks.describe without the Markdown).
 export function describeCheck(check: Record<string, unknown>): string {
+  const known = records(check.known);
+  const said = describeCheckOnly(check);
+  return known.length
+    ? `${said}；已知差异 ${known.length} 处（${known.map(namedKnown).join("；")}）不算不通过`
+    : said;
+}
+
+function describeCheckOnly(check: Record<string, unknown>): string {
   const under = (where: unknown) =>
     typeof where === "string" && where ? `（条件 ${where}）` : "";
   const groups = texts(check.group_by);
@@ -348,7 +374,16 @@ export function describeCheck(check: Record<string, unknown>): string {
     return `${table} 按 ${texts(check.columns).join("、")} 没有重复的行${under(check.where)}`;
   if (check.kind === "golden")
     return `${table} 和老系统的结果表按 ${texts(check.keys).join("、")} 逐行一致`;
-  return `${table} 里没有满足 ${text(check.where)} 的行`;
+  const lookup = isRecord(check.lookup) ? check.lookup : null;
+  if (!lookup) return `${table} 里没有满足 ${text(check.where)} 的行`;
+  const on = Object.entries(isRecord(lookup.on) ? lookup.on : {})
+    .map(([mine, theirs]) =>
+      mine === theirs ? mine : `${mine} = ${String(theirs)}`,
+    )
+    .join("、");
+  const where = text(lookup.where) ? `（满足 ${text(lookup.where)}）` : "";
+  const found = lookup.found === true ? "找得到" : "找不到";
+  return `${table} 里没有满足 ${text(check.where)}、并且在 ${text(lookup.table)} 里${found} ${on} 对应${where}的行`;
 }
 
 export type CheckResult = {

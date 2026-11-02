@@ -39,6 +39,10 @@ MAX_EXPRESSION = 2000
 MAX_GROUP_COLUMNS = 10
 MAX_KEYS = 20
 MAX_COMPARED = 200
+# Known differences a check may list (jadeflow acceptance I-4).
+MAX_KNOWN = 20
+KNOWN_FIELDS = {"match", "note"}
+MAX_NOTE = 200
 # A table name: a result table (bare), a source (schema.table) or catalog.schema.table.
 _PART = r"[^\s`.]{1,255}"
 TABLE = re.compile(rf"^{_PART}(?:\.{_PART}){{0,2}}$")
@@ -46,15 +50,18 @@ _COLUMN = re.compile(r"^[^`\x00-\x1f]{1,255}$")
 # What the MCP client and server put before a tool's own error message.
 TOOL_PREFIX = re.compile(r"^\s*(?:\w+: )?(?:Error executing tool \w+: )?")
 
-COMMON = {"id", "label", "kind", "severity"}
+COMMON = {"id", "label", "kind", "severity", "known"}
 FIELDS = {
     "aggregate": {"table", "expr", "where", "group_by", "op", "value", "max", "tolerance"},
     "reconcile": {"left", "right", "group_by", "tolerance", "relative"},
     "unique": {"table", "columns", "where"},
     "golden": {"table", "expected", "keys", "columns", "where", "expected_where", "tolerance"},
-    "rows": {"table", "where"},
+    "rows": {"table", "where", "lookup"},
 }
 SIDE = {"table", "expr", "where"}
+# A rows check may keep only the rows with (or without) a matching row in another table.
+LOOKUP = {"table", "on", "where", "found"}
+MAX_LOOKUP_COLUMNS = 10
 
 STATUS_TEXT = {"passed": "通过", "failed": "不通过", "error": "出错", "skipped": "跳过"}
 SEVERITY_TEXT = {"error": "错误", "warn": "警告", "info": "提示"}
@@ -109,6 +116,7 @@ def problems(check: Any) -> list[tuple[Loc, str]]:
         _tolerance(check, add)
         if not isinstance(check.get("relative", False), bool):
             add(("relative",), "relative 要是 true 或 false")
+        _known_problems(check, add)
         return found
 
     _table(check, "table", (), add)
@@ -130,7 +138,107 @@ def problems(check: Any) -> list[tuple[Loc, str]]:
         _tolerance(check, add)
     else:
         _expression(check, "where", (), add, "条件", required=True)
+        _lookup_problems(check, add)
+    _known_problems(check, add)
     return found
+
+
+def _lookup_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> None:
+    """``lookup`` on a rows check: only the rows that do (``found``) or do not have a row
+    in another table with the same values in the ``on`` columns, among that table's rows
+    its ``where`` keeps ("lanes with no allocation that applies this month")."""
+    lookup = check.get("lookup")
+    if lookup is None:
+        return
+    shape = '{"table", "on": {"本表的列": "另一张表的列"}, "where"?, "found": true/false}'
+    if not isinstance(lookup, dict):
+        add(("lookup",), f"lookup 要写成 {shape}")
+        return
+    for key in lookup:
+        if key not in LOOKUP:
+            add(("lookup", key), f"lookup 没有 {key} 这一项，只有 table、on、where、found")
+    _table(lookup, "table", ("lookup",), add)
+    on = lookup.get("on")
+    if (
+        not isinstance(on, dict)
+        or not on
+        or len(on) > MAX_LOOKUP_COLUMNS
+        or not all(
+            isinstance(v, str) and _COLUMN.match(v) and v == v.strip()
+            for pair in on.items()
+            for v in pair
+        )
+    ):
+        add(
+            ("lookup", "on"),
+            f"lookup.on 要写 1–{MAX_LOOKUP_COLUMNS} 对列名：{{本表的列: 另一张表的列}}，不带反引号",
+        )
+    elif len({k.lower() for k in on}) != len(on):
+        add(("lookup", "on"), "lookup.on 里本表的列有重复")
+    _expression(lookup, "where", ("lookup",), add, "lookup 的条件")
+    if not isinstance(lookup.get("found"), bool):
+        add(
+            ("lookup", "found"),
+            "lookup.found 要写 true（只看找得到对应行的行）或 false（只看找不到的行）",
+        )
+
+
+def known_columns(check: dict[str, Any]) -> list[str] | None:
+    """The columns a known difference of ``check`` is matched on: the groups of a grouped
+    aggregate or reconcile, the columns of unique, the keys of golden; None for rows (any
+    of the table's columns); [] when the check has no rows to tell apart."""
+    kind = check.get("kind")
+    key = {"aggregate": "group_by", "reconcile": "group_by", "unique": "columns", "golden": "keys"}
+    if kind == "rows":
+        return None
+    found = check.get(key.get(str(kind), ""))
+    return [c for c in found if isinstance(c, str)] if isinstance(found, list) else []
+
+
+def _known_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> None:
+    """``known``: the differences people already know of (jadeflow acceptance I-4), each
+    ``{"match": {column: value}, "note": "why"}``. What they match is reported apart and
+    does not fail the check; anything else still does."""
+    known = check.get("known")
+    if known is None:
+        return
+    shape = '{"match": {"列": 值}, "note": "说明"}'
+    if not isinstance(known, list) or not known:
+        add(("known",), f"known（已知差异）要写成列表，每项是 {shape}")
+        return
+    if len(known) > MAX_KNOWN:
+        add(("known",), f"known 最多 {MAX_KNOWN} 项")
+    allowed = known_columns(check)
+    if allowed == []:
+        add(
+            ("known",),
+            "只有按组比的聚合值和对账、键不重复、和老系统对比、不该有的行能写 known（已知差异）",
+        )
+        return
+    what = {"unique": "检查的 columns", "golden": "keys"}.get(check["kind"], "group_by")
+    for i, item in enumerate(known):
+        at: Loc = ("known", i)
+        if not isinstance(item, dict):
+            add(at, f"每项已知差异要写成 {shape}")
+            continue
+        for key in item:
+            if key not in KNOWN_FIELDS:
+                add((*at, key), f"已知差异没有 {key} 这一项，只有 match 和 note")
+        match = item.get("match")
+        if not isinstance(match, dict) or not match:
+            add((*at, "match"), "match 要写成 {列: 值}，至少一列")
+            continue
+        for column, value in match.items():
+            if allowed is not None and column not in allowed:
+                add((*at, "match", column), f"列 {column} 要是{what}里的列：{'、'.join(allowed)}")
+            elif allowed is None and not (_COLUMN.match(column) and column == column.strip()):
+                add((*at, "match", column), "列名要是文字，不能有反引号")
+            plain = value is None or isinstance(value, str | bool) or _number(value)
+            if not plain:
+                add((*at, "match", column), "值只能是文字、数字、true、false 或 null")
+        note = item.get("note")
+        if note is not None and (not isinstance(note, str) or len(note) > MAX_NOTE):
+            add((*at, "note"), f"note 要是 {MAX_NOTE} 个字符以内的文字")
 
 
 def tables(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
@@ -139,7 +247,7 @@ def tables(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
     for key in ("table", "expected"):
         if key in check:
             yield key, check[key]
-    for side in ("left", "right"):
+    for side in ("left", "right", "lookup"):
         if isinstance(check.get(side), dict) and "table" in check[side]:
             yield f"{side}.table", check[side]["table"]
 
@@ -149,7 +257,7 @@ def texts(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
     for key in ("expr", "where", "expected_where"):
         if key in check:
             yield key, check[key]
-    for side in ("left", "right"):
+    for side in ("left", "right", "lookup"):
         if isinstance(check.get(side), dict):
             for key in ("expr", "where"):
                 if key in check[side]:
@@ -192,7 +300,9 @@ def _expression(
             (*loc, key),
             f"{label}不能有子查询（SELECT）：要和另一张表比，用 reconcile 对账检查，两边各写"
             "表、聚合表达式和条件，按组比时写 group_by；要找出不该有的行，用 rows 检查，"
-            "条件只写这张表的列",
+            "条件只写这张表的列；要找出在另一张表里找不到（或找得到）对应行的行，用 rows 检查"
+            '加 lookup：{"table": 另一张表, "on": {本表的列: 另一张表的列}, "where": 另一张表'
+            '的条件, "found": false}',
         )
     elif problem is not None:
         add((*loc, key), problem.replace("读取筛选", label))
@@ -341,7 +451,7 @@ def result(check: dict[str, Any], status: str, message: str, **found: Any) -> di
         "expected": found.get("expected"),
         "message": message,
         "rows": found.get("rows") or [],
-    }
+    } | ({"known": found["known"]} if found.get("known") is not None else {})
 
 
 async def run(
@@ -432,6 +542,14 @@ KIND_TEXT = {
 def describe(check: dict[str, Any]) -> str:
     """What a valid check checks, in one sentence of Markdown for a person (a plan shows
     the checks it proposes this way)."""
+    said = _describe(check)
+    known = check.get("known") or []
+    if known:
+        said += f"；已知差异 {len(known)} 处（{'；'.join(_named(k) for k in known)}）不算不通过"
+    return said
+
+
+def _describe(check: dict[str, Any]) -> str:
     kind = check["kind"]
 
     def code(text: str) -> str:
@@ -470,7 +588,20 @@ def describe(check: dict[str, Any]) -> str:
         expected = check.get("expected")
         old = f"老系统的 {code(expected)}" if expected else "老系统的结果表"
         return f"{code(check['table'])} 和{old}按 {keys} 逐行一致"
-    return f"{code(check['table'])} 里没有满足 {code(check['where'])} 的行"
+    return f"{code(check['table'])} 里没有{_rows_said(check, code)}"
+
+
+def _rows_said(check: dict[str, Any], code: Callable[[str], str] = str) -> str:
+    """What rows a rows check looks for: ``满足 … 的行``, with a lookup ``满足 …、并且在 …
+    里找不到 … 对应（满足 …）的行``."""
+    said = f"满足 {code(check['where'])}"
+    lookup = check.get("lookup")
+    if not lookup:
+        return said + " 的行"
+    on = "、".join(a if a == b else f"{a} = {b}" for a, b in lookup["on"].items())
+    where = f"（满足 {code(lookup['where'])}）" if lookup.get("where") else ""
+    found = "找得到" if lookup["found"] else "找不到"
+    return f"{said}、并且在 {code(lookup['table'])} 里{found} {on} 对应{where}的行"
 
 
 async def _aggregate(
@@ -487,16 +618,23 @@ async def _aggregate(
         message = f"实际 {fmt(actual)}，要求 {condition(check)}，{'满足' if ok else '不满足'}"
         return result(check, _status(ok), message, actual=actual, expected=wanted)
     rows = _all_groups(await call("aggregate", args | {"group_by": group_by, "limit": GROUP_LIMIT}))
-    bad = [row for row in rows if not _meets(row.get("value"), check)]
+    bad, known = _apart([row for row in rows if not _meets(row.get("value"), check)], check)
     named = "、".join(group_by)
     if not rows:
         message = f"按 {named} 分组没有行"
     elif bad:
         message = f"按 {named} 分 {len(rows):,} 组，{len(bad):,} 组不满足 {condition(check)}"
     else:
-        message = f"按 {named} 分 {len(rows):,} 组，每组都满足 {condition(check)}"
+        but = "除已知差异外" if known and known["count"] else ""
+        message = f"按 {named} 分 {len(rows):,} 组，{but}每组都满足 {condition(check)}"
     return result(
-        check, _status(not bad), message, actual=len(bad), expected=0, rows=bad[:EXAMPLES]
+        check,
+        _status(not bad),
+        message + _known_tail(known, "组"),
+        actual=len(bad),
+        expected=0,
+        rows=bad[:EXAMPLES],
+        known=known,
     )
 
 
@@ -525,6 +663,119 @@ def _key(row: dict[str, Any], columns: list[str]) -> str:
     values = [row.get(c) for c in columns]
     values = [int(v) if isinstance(v, float) and v.is_integer() else v for v in values]
     return json.dumps(values, ensure_ascii=False, sort_keys=True)
+
+
+# Known differences (jadeflow acceptance I-4): what they match is reported apart.
+
+
+def _plain(value: Any) -> Any:
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
+def _equal(found: Any, wanted: Any) -> bool:
+    """Whether a row's value is a known difference's (2026 and "2026" are one value)."""
+    a, b = _plain(found), _plain(wanted)
+    if a is None or b is None or isinstance(a, bool) or isinstance(b, bool):
+        return a is b if a is None or b is None else a == b and type(a) is type(b)
+    return a == b or str(a) == str(b)
+
+
+def _which(row: Any, known: list[dict[str, Any]]) -> int | None:
+    """The known difference ``row`` is, if any."""
+    if not isinstance(row, dict):
+        return None
+    for i, item in enumerate(known):
+        if all(_equal(row.get(c), v) for c, v in item["match"].items()):
+            return i
+    return None
+
+
+def _named(item: dict[str, Any]) -> str:
+    """A known difference as people read it: its note, or the values it matches (written as
+    given, so a year stays 2026, not 2,026)."""
+
+    def value(v: Any) -> str:
+        if v is None:
+            return "空值"
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        return str(_plain(v))
+
+    return item.get("note") or "、".join(f"{c} = {value(v)}" for c, v in item["match"].items())
+
+
+def _known_seen(
+    known: list[dict[str, Any]], count: int, hit: set[int], complete: bool
+) -> dict[str, Any]:
+    """``count`` rows or groups matched known differences, ``hit`` the ones seen among them;
+    with ``complete`` (all of them were looked at) the ones that did not show up too."""
+    return {
+        "count": count,
+        "seen": [_named(known[i]) for i in sorted(hit)],
+        "absent": [_named(k) for i, k in enumerate(known) if i not in hit] if complete else [],
+    }
+
+
+def _apart(
+    rows: list[dict[str, Any]], check: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """The failing groups that are no known difference, and what the known ones were."""
+    known = check.get("known")
+    if not known:
+        return rows, None
+    new: list[dict[str, Any]] = []
+    hit: set[int] = set()
+    count = 0
+    for row in rows:
+        i = _which(row, known)
+        if i is None:
+            new.append(row)
+        else:
+            hit.add(i)
+            count += 1
+    return new, _known_seen(known, count, hit, complete=True)
+
+
+def _known_tail(info: dict[str, Any] | None, unit: str) -> str:
+    if info is None:
+        return ""
+    parts = []
+    if info["count"]:
+        parts.append(f"另有 {info['count']:,} {unit}是已知差异（{'；'.join(info['seen'])}）")
+    if info["absent"]:
+        parts.append(f"已知差异「{'；'.join(info['absent'])}」这次没有出现")
+    return "".join(f"；{p}" for p in parts)
+
+
+def _sql_value(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return repr(value)
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _known_sql(known: list[dict[str, Any]]) -> str:
+    """The rows the known differences match, as a condition (null matches null)."""
+    return " OR ".join(
+        "("
+        + " AND ".join(
+            f"`{c.replace('`', '``')}` <=> {_sql_value(v)}" for c, v in item["match"].items()
+        )
+        + ")"
+        for item in known
+    )
+
+
+def _and(where: str | None, more: str) -> str:
+    found = f"({where}) AND ({more})" if where else more
+    if len(found) > MAX_EXPRESSION:
+        raise CheckError(
+            f"加上已知差异后条件超过 {MAX_EXPRESSION} 个字符，连接器不收；请少写几项已知差异"
+        )
+    return found
 
 
 async def _reconcile(
@@ -563,15 +814,23 @@ async def _reconcile(
         if a is None or b is None or not _same(a.get("value"), b.get("value"), check)[0]:
             bad.append(row | {"left": (a or {}).get("value"), "right": (b or {}).get("value")})
     total = len(set(lefts) | set(rights))
+    bad, known = _apart(bad, check)
     named = "、".join(group_by)
     if not total:
         message = f"按 {named} 分组两边都没有行"
     elif bad:
         message = f"按 {named} 分 {total:,} 组，{len(bad):,} 组对不上"
     else:
-        message = f"按 {named} 分 {total:,} 组，每组都一致"
+        but = "除已知差异外" if known and known["count"] else ""
+        message = f"按 {named} 分 {total:,} 组，{but}每组都一致"
     return result(
-        check, _status(not bad), message, actual=len(bad), expected=0, rows=bad[:EXAMPLES]
+        check,
+        _status(not bad),
+        message + _known_tail(known, "组"),
+        actual=len(bad),
+        expected=0,
+        rows=bad[:EXAMPLES],
+        known=known,
     )
 
 
@@ -580,15 +839,42 @@ async def _unique(
 ) -> dict[str, Any]:
     table = scope.table(check["table"])
     columns = check["columns"]
-    found = await call(
-        "duplicates",
-        _args(table, scope.condition(table, check.get("where")), columns=columns, limit=EXAMPLES),
-    )
-    groups = int(found["groups"])
+    where = scope.condition(table, check.get("where"))
+    found = await call("duplicates", _args(table, where, columns=columns, limit=EXAMPLES))
+    groups, rows = int(found["groups"]), found["rows"]
+    known: dict[str, Any] | None = None
+    if check.get("known"):
+        entries = check["known"]
+        known = _known_seen(entries, 0, set(), complete=True)
+        if groups:
+            sql = _known_sql(entries)
+            new = await call(
+                "duplicates",
+                _args(table, _and(where, f"NOT ({sql})"), columns=columns, limit=EXAMPLES),
+            )
+            seen = await call(
+                "duplicates", _args(table, _and(where, sql), columns=columns, limit=EXAMPLES)
+            )
+            count = int(seen["groups"])
+            hit = {i for r in seen["rows"] if (i := _which(r, entries)) is not None}
+            known = _known_seen(entries, count, hit, complete=count <= len(seen["rows"]))
+            groups, rows = int(new["groups"]), new["rows"]
     named = "、".join(columns)
-    message = f"按 {named} 有 {groups:,} 组重复" if groups else f"按 {named} 没有重复"
-    rows = found["rows"]
-    return result(check, _status(not groups), message, actual=groups, expected=0, rows=rows)
+    if groups:
+        message = f"按 {named} 有 {groups:,} 组重复"
+    elif known and known["count"]:
+        message = f"按 {named} 除已知差异外没有重复"
+    else:
+        message = f"按 {named} 没有重复"
+    return result(
+        check,
+        _status(not groups),
+        message + _known_tail(known, "组"),
+        actual=groups,
+        expected=0,
+        rows=rows,
+        known=known,
+    )
 
 
 async def _golden(
@@ -599,15 +885,33 @@ async def _golden(
         return result(check, "skipped", "没有指定老系统的结果表")
     keys = check["keys"]
     table, old = scope.table(check["table"]), scope.table(old_name)
-    args = _args(table, scope.condition(table, check.get("where")), expected=old, keys=keys)
+    where = scope.condition(table, check.get("where"))
     expected_where = scope.condition(old, check.get("expected_where"))
-    if expected_where:
-        args["expected_where"] = expected_where
+    more: dict[str, Any] = {"expected": old, "keys": keys, "limit": EXAMPLES}
     if check.get("columns"):
-        args["columns"] = check["columns"]
+        more["columns"] = check["columns"]
     if check.get("tolerance"):
-        args["tolerance"] = check["tolerance"]
-    found = await call("compare", args | {"limit": EXAMPLES})
+        more["tolerance"] = check["tolerance"]
+
+    def compare(table_where: str | None, old_where: str | None) -> Awaitable[Any]:
+        args = _args(table, table_where, **more)
+        if old_where:
+            args["expected_where"] = old_where
+        return call("compare", args)
+
+    known: dict[str, Any] | None = None
+    if check.get("known"):
+        # The keys people know differ are compared apart from the rest, on both sides.
+        entries = check["known"]
+        sql = _known_sql(entries)
+        found = await compare(_and(where, f"NOT ({sql})"), _and(expected_where, f"NOT ({sql})"))
+        seen = await compare(_and(where, sql), _and(expected_where, sql))
+        count = sum(int(seen[k]) for k in ("missing", "extra", "different"))
+        hit = {i for r in seen["rows"] if (i := _which(r.get("key"), entries)) is not None}
+        known = _known_seen(entries, count, hit, complete=count <= len(seen["rows"]))
+    else:
+        found = await compare(where, expected_where)
+    tail = _known_tail(known, "行")
     named = "、".join(keys)
     repeated = found["duplicates"]
     counts = {
@@ -630,11 +934,14 @@ async def _golden(
         message = (
             f"和老系统的结果对不上：少 {missing:,} 行、多 {extra:,} 行、{different:,} 行不一致"
         )
-        return result(check, "failed", message, actual=counts, expected=old, rows=rows)
+        return result(
+            check, "failed", message + tail, actual=counts, expected=old, rows=rows, known=known
+        )
     compared = found.get("columns") or []
     what = f"比较了 {'、'.join(compared)}" if compared else "两边没有同名的其他列，只比了键"
-    message = f"和老系统的结果逐行一致（按 {named} 对齐，{what}）"
-    return result(check, "passed", message, actual=counts, expected=old)
+    but = "除已知差异外" if known and known["count"] else ""
+    message = f"和老系统的结果{but}逐行一致（按 {named} 对齐，{what}）"
+    return result(check, "passed", message + tail, actual=counts, expected=old, known=known)
 
 
 async def _rows(
@@ -642,16 +949,51 @@ async def _rows(
 ) -> dict[str, Any]:
     table = scope.table(check["table"])
     where = scope.condition(table, check["where"])
-    found = await call("aggregate", _args(table, where, expr="count(*)"))
-    count = int(found["rows"][0]["value"] or 0) if found["rows"] else 0
-    if not count:
-        return result(check, "passed", f"没有满足 {check['where']} 的行", actual=0, expected=0)
     schema, _, name = table.rpartition(".")
-    sample = await call(
-        "sample_rows", {"schema": schema, "table": name, "limit": EXAMPLES, "where": where}
+    more: dict[str, Any] = {}
+    if lookup := check.get("lookup"):
+        other = scope.table(lookup["table"])
+        looked = {"table": other, "on": lookup["on"], "found": lookup["found"]}
+        if condition := scope.condition(other, lookup.get("where")):
+            looked["where"] = condition
+        more = {"lookup": looked}
+
+    async def counted(condition: str | None) -> int:
+        found = await call("aggregate", _args(table, condition, expr="count(*)", **more))
+        return int(found["rows"][0]["value"] or 0) if found["rows"] else 0
+
+    async def sampled(condition: str | None) -> list[dict[str, Any]]:
+        args = {"schema": schema, "table": name, "limit": EXAMPLES, "where": condition}
+        return list((await call("sample_rows", args | more))["rows"])
+
+    count = await counted(where)
+    entries = check.get("known")
+    known = _known_seen(entries, 0, set(), complete=True) if entries else None
+    if count and entries:
+        # The rows people know of are counted and shown apart (jadeflow acceptance I-4).
+        sql = _known_sql(entries)
+        new_where = _and(where, f"NOT ({sql})")
+        new = await counted(new_where)
+        seen = await sampled(_and(where, sql)) if new < count else []
+        hit = {i for r in seen if (i := _which(r, entries)) is not None}
+        known = _known_seen(entries, count - new, hit, complete=count - new <= len(seen))
+        where, count = new_where, new
+    tail = _known_tail(known, "行")
+    said = _rows_said(check)
+    if not count:
+        but = "已知差异以外" if known and known["count"] else ""
+        message = f"{but}没有{said}"
+        return result(check, "passed", message + tail, actual=0, expected=0, known=known)
+    message = f"有 {count:,} 行{said.removesuffix('的行').rstrip()}"
+    return result(
+        check,
+        "failed",
+        message + tail,
+        actual=count,
+        expected=0,
+        rows=await sampled(where),
+        known=known,
     )
-    message = f"有 {count:,} 行满足 {check['where']}"
-    return result(check, "failed", message, actual=count, expected=0, rows=sample["rows"])
 
 
 def _status(ok: bool) -> str:
@@ -730,6 +1072,9 @@ def summary(results: list[dict[str, Any]]) -> str:
         these = [r for r in results if r["status"] == status]
         if these:
             soft = _soft(these) if status in ("failed", "error") else ""
+            if status == "passed":
+                known = sum(1 for r in these if (r.get("known") or {}).get("count"))
+                soft = f"（其中 {known} 项只有已知差异）" if known else ""
             parts.append(f"{len(these)} 项{STATUS_TEXT[status]}{soft}")
     return f"{len(results)} 项检查：" + "，".join(parts)
 

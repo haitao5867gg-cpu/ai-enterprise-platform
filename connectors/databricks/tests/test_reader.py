@@ -205,6 +205,61 @@ async def test_aggregate_with_and_without_groups():
         await found.aggregate("main.sales.orders", "count(*)", group_by=["Value"])
 
 
+ALLOC = "main.ref.allocation"
+NOT_APPLICABLE = {
+    "table": ALLOC,
+    "on": {"platform": "platform", "efficiency_type": "eff_type", "lane": "lane"},
+    "where": "array_contains(split(months, ','), '07')",
+    "found": False,
+}
+
+
+async def test_a_lookup_keeps_the_rows_with_or_without_a_match_in_another_table():
+    found, fake = reader(lambda s: Result([("value", "bigint")], [[2]]))
+    counted = await found.aggregate(
+        "main.out.lanes", "count(*)", "NOT (cw_07 <=> 0)", lookup=NOT_APPLICABLE
+    )
+    assert counted == {"rows": [{"value": 2}], "groups": 1}
+    assert fake.statements[-1] == (
+        "SELECT (count(*)) AS value FROM `main`.`out`.`lanes` AS __aep_t "
+        "WHERE (NOT (cw_07 <=> 0)) AND NOT EXISTS (SELECT 1 FROM `main`.`ref`.`allocation` "
+        "AS __aep_l WHERE __aep_l.`platform` <=> __aep_t.`platform` AND "
+        "__aep_l.`eff_type` <=> __aep_t.`efficiency_type` AND __aep_l.`lane` <=> "
+        "__aep_t.`lane` AND (array_contains(split(months, ','), '07')))"
+    )
+    found, fake = reader(lambda s: Result([("lane", "string")], [["SEA-QY2"]]))
+    sampled = await found.sample_rows(
+        "main.out", "lanes", 5, lookup={"table": ALLOC, "on": {"lane": "lane"}, "found": True}
+    )
+    assert sampled["rows"] == [{"lane": "SEA-QY2"}]
+    assert fake.statements[-1] == (
+        "SELECT * FROM `main`.`out`.`lanes` AS __aep_t WHERE EXISTS (SELECT 1 FROM "
+        "`main`.`ref`.`allocation` AS __aep_l WHERE __aep_l.`lane` <=> __aep_t.`lane`) LIMIT 5"
+    )
+    grouped = Result(
+        [("lane", "string"), ("__aep_value", "bigint"), ("__aep_groups", "bigint")],
+        [["SEA-QY2", 1, 1]],
+    )
+    found, fake = reader(lambda s: grouped)
+    result = await found.aggregate(
+        "main.out.lanes", "count(*)", group_by=["lane"], lookup=NOT_APPLICABLE
+    )
+    assert result == {"rows": [{"lane": "SEA-QY2", "value": 1}], "groups": 1}
+    assert "FROM `main`.`out`.`lanes` AS __aep_t WHERE NOT EXISTS" in fake.statements[-1]
+
+    for bad, message in [
+        ({**NOT_APPLICABLE, "table": "other.ref.allocation"}, "没有允许读 catalog other"),
+        ({**NOT_APPLICABLE, "on": {}}, "lookup.on 至少要有一对列"),
+        ({**NOT_APPLICABLE, "on": {"a`b": "lane"}}, "列名"),
+        ({**NOT_APPLICABLE, "where": "1 = 1; DROP TABLE x"}, "^lookup.where 写法不对：不能有分号"),
+        ({**NOT_APPLICABLE, "where": "lane IN (SELECT lane FROM x)"}, "不能有 SELECT"),
+        ({k: v for k, v in NOT_APPLICABLE.items() if k != "found"}, "lookup.found 要是 true"),
+    ]:
+        with pytest.raises(ConnectorError, match=message):
+            await found.aggregate("main.out.lanes", "count(*)", lookup=bad)
+    assert len(fake.statements) == 1
+
+
 async def test_duplicates_lists_repeated_groups():
     found, fake = reader(
         lambda s: Result(

@@ -785,6 +785,7 @@ const planChecks = [
     kind: "rows",
     table: "ads_sales_city_member_m",
     where: "sales_amount < 0",
+    known: [{ match: { city: "退货中心" }, note: "退货中心的冲红单按负数记" }],
     severity: "warn",
   },
 ];

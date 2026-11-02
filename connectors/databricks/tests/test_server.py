@@ -56,8 +56,22 @@ async def test_nine_read_only_tools_with_checked_arguments():
             {"table": "main.s.a", "expected": "main.s.b", "keys": ["id"], "tolerance": -1},
         )
         assert tolerance.is_error
+        lookup = {"table": "main.ref.cities", "on": {"city": "name"}, "found": False}
+        looked = await client.call_tool(
+            "aggregate", {"table": "main.sales.orders", "expr": "count(*)", "lookup": lookup}
+        )
+        assert not looked.is_error
+        for wrong in [{"found": "false"}, {"found": None}, {"on": {}}, {"extra": 1}]:
+            bad = await client.call_tool(
+                "aggregate",
+                {"table": "main.sales.orders", "expr": "count(*)", "lookup": lookup | wrong},
+            )
+            assert bad.is_error, wrong
     assert fake.statements == [
-        "SELECT * FROM `main`.`sales`.`orders` WHERE (city = '上海') LIMIT 3"
+        "SELECT * FROM `main`.`sales`.`orders` WHERE (city = '上海') LIMIT 3",
+        "SELECT (count(*)) AS value FROM `main`.`sales`.`orders` AS __aep_t WHERE NOT EXISTS "
+        "(SELECT 1 FROM `main`.`ref`.`cities` AS __aep_l WHERE __aep_l.`name` <=> "
+        "__aep_t.`city`)",
     ]
 
 

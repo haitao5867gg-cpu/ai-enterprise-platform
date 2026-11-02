@@ -12,6 +12,7 @@ from aep_databricks.sql import (
     ConnectorError,
     Schema,
     Table,
+    column,
     columns,
     expression,
     ident,
@@ -24,6 +25,8 @@ TOP_VALUES_MAX = 20
 TOP_VALUE_CHARS = 80
 NUMERIC = ("tinyint", "smallint", "int", "bigint", "float", "double", "decimal")
 COMPLEX = ("array", "map", "struct", "variant")
+# Column pairs a lookup in another table may match on.
+MAX_LOOKUP_COLUMNS = 10
 
 
 def _where(where: str | None, what: str = "读取条件") -> str:
@@ -174,12 +177,50 @@ class Reader:
 
     # Rows
 
+    def _lookup(self, lookup: dict[str, Any]) -> str:
+        """``[NOT] EXISTS`` a row of another table that matches the row being read (alias
+        ``__aep_t``) on the ``on`` columns, nulls matching nulls, and meets the lookup's
+        own ``where``: "rows with no applicable allocation", without arbitrary SQL."""
+        other = self._table(lookup.get("table"))
+        on = lookup.get("on")
+        if not isinstance(on, dict) or not on:
+            raise ConnectorError("lookup.on 至少要有一对列：{本表的列: 另一张表的列}")
+        outer = columns(list(on), "lookup.on ", most=MAX_LOOKUP_COLUMNS)
+        inner = [column(name) for name in on.values()]
+        pairs = " AND ".join(
+            f"__aep_l.{ident(b)} <=> __aep_t.{ident(a)}" for a, b in zip(outer, inner, strict=True)
+        )
+        where = lookup.get("where")
+        more = "" if where is None else f" AND ({expression(where, 'lookup.where ')})"
+        found = lookup.get("found")
+        if not isinstance(found, bool):
+            raise ConnectorError("lookup.found 要是 true（找得到的行）或 false（找不到的行）")
+        return (
+            f"{'' if found else 'NOT '}EXISTS (SELECT 1 FROM {other.sql} AS __aep_l "
+            f"WHERE {pairs}{more})"
+        )
+
+    def _rows_of(self, table: Table, where: str | None, lookup: dict[str, Any] | None) -> str:
+        """``FROM table WHERE ...`` for the rows a tool reads: the condition, and with a
+        lookup only those that do (or do not) have a matching row in the other table."""
+        if lookup is None:
+            return f"{table.sql}{_where(where)}"
+        found = [f"({expression(where, '读取条件')})"] if where is not None else []
+        return f"{table.sql} AS __aep_t WHERE {' AND '.join([*found, self._lookup(lookup)])}"
+
     async def sample_rows(
-        self, schema: str, table: str, limit: int = 10, where: str | None = None
+        self,
+        schema: str,
+        table: str,
+        limit: int = 10,
+        where: str | None = None,
+        lookup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         found = Table.of(schema, table)
         self._catalog(found.catalog)
-        result = await self.run(f"SELECT * FROM {found.sql}{_where(where)} LIMIT {int(limit)}")
+        result = await self.run(
+            f"SELECT * FROM {self._rows_of(found, where, lookup)} LIMIT {int(limit)}"
+        )
         return {
             "schema": f"{found.catalog}.{found.schema}",
             "table": found.table,
@@ -288,12 +329,13 @@ class Reader:
         where: str | None = None,
         group_by: list[str] | None = None,
         limit: int = 20,
+        lookup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         found = self._table(table)
         value = expression(expr, "聚合表达式")
-        condition = _where(where)
+        rows = self._rows_of(found, where, lookup)
         if not group_by:
-            result = await self.run(f"SELECT ({value}) AS value FROM {found.sql}{condition}")
+            result = await self.run(f"SELECT ({value}) AS value FROM {rows}")
             return {"rows": [{"value": row[0]} for row in result.rows[:1]], "groups": 1}
         groups = columns(group_by, "分组列")
         if any(name.lower() == "value" for name in groups):
@@ -301,13 +343,13 @@ class Reader:
         keys = ", ".join(ident(name) for name in groups)
         result = await self.run(
             f"SELECT *, count(*) OVER () AS __aep_groups FROM (SELECT {keys}, ({value}) "
-            f"AS __aep_value FROM {found.sql}{condition} GROUP BY {keys}) "
+            f"AS __aep_value FROM {rows} GROUP BY {keys}) "
             f"ORDER BY {keys} LIMIT {int(limit)}"
         )
-        rows = result.dicts()
+        found_rows = result.dicts()
         return {
-            "rows": [{**{n: r[n] for n in groups}, "value": r["__aep_value"]} for r in rows],
-            "groups": int(rows[0]["__aep_groups"]) if rows else 0,
+            "rows": [{**{n: r[n] for n in groups}, "value": r["__aep_value"]} for r in found_rows],
+            "groups": int(found_rows[0]["__aep_groups"]) if found_rows else 0,
         }
 
     async def duplicates(

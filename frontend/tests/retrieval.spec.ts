@@ -283,6 +283,47 @@ test("知识检索节点：旧配置按向量显示，修改后写回完整 retr
   await capture(page, "knowledge-node");
 });
 
+test("知识检索节点：整篇放进去时只设字数上限，切回检索时去掉这两项", async ({
+  page,
+  request,
+}) => {
+  const { app, config } = await createTemplate(request, "knowledge-qa");
+  const kb = config.graph.nodes.find(
+    (node) => node.type === "knowledge",
+  ) as KnowledgeNode;
+  kb.knowledge_bases = ["policies"];
+  await request.put(`/api/apps/${app}/draft`, { data: { config } });
+  await page.goto(`/apps/${app}`);
+  await nodeButton(page, "知识检索", "kb").click();
+  const form = panel(page);
+  const mode = form.getByLabel("取资料的方式", { exact: true });
+  await expect(mode).toHaveValue("search");
+  await mode.selectOption("full");
+  await expect(form.getByLabel("检索问题")).toHaveCount(0);
+  await expect(form.getByLabel("top_k", { exact: true })).toHaveCount(0);
+  const budget = form.getByLabel("字数上限", { exact: true });
+  await expect(budget).toHaveValue("40000");
+  await budget.fill("999");
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await expect(budget).toHaveAttribute("aria-invalid", "true");
+  await expect(form).toContainText("整篇放进去的字数上限要在 1000–120000 之间");
+  await budget.fill("50000");
+  await save(page, app);
+  const node = () =>
+    details(request, app).then((data) =>
+      (data.draft!.config as FlowConfig).graph.nodes.find(
+        (item) => item.id === "kb",
+      ),
+    );
+  expect(await node()).toMatchObject({ mode: "full", max_chars: 50000 });
+  await mode.selectOption("search");
+  await expect(form.getByLabel("字数上限", { exact: true })).toHaveCount(0);
+  await save(page, app);
+  const saved = await node();
+  expect(saved).not.toHaveProperty("mode");
+  expect(saved).not.toHaveProperty("max_chars");
+});
+
 for (const type of ["knowledge", "agent"] as const) {
   test(`${type} 节点：候选数小于 top_k 时在前端阻止保存，缺模型时禁用重排`, async ({
     page,

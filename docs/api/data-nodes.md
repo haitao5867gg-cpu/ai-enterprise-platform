@@ -943,7 +943,8 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 {"id": "total_qty",                      // 规则同节点 id，合在一起后不能重复；golden 留给节点自动加的对比，不能用（都是 input_error）
  "label": "总数量和预测表一致",            // 1–100 字符
  "kind": "aggregate" | "reconcile" | "unique" | "golden" | "rows",
- "severity": "error" | "warn" | "info"}  // 默认 error
+ "severity": "error" | "warn" | "info",  // 默认 error
+ "known": [{"match": {"sku": "B2"}, "note": "B2 按新口径，和老系统不同"}]}  // 可选：已知差异，见下
 
 // aggregate：一张表上的一个聚合值和期望比
 {"table": "ibf_table2", "expr": "sum(qty)", "where": "update_month = ${param.update_month}",
@@ -967,12 +968,27 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
  "tolerance": 0.0001}
 
 // rows：满足条件的行必须没有
-{"table": "ibf_table2", "where": "qty < 0"}
+{"table": "ibf_table2", "where": "qty < 0",
+ "lookup": {"table": "prev.sales.allocation",          // 可选：只看在另一张表里找不到（或找得到）对应行的行
+            "on": {"lane": "lane", "efficiency_type": "eff_type"},   // 本表的列: 另一张表的列，1–10 对
+            "where": "array_contains(split(months, ','), '07')",   // 可选，只筛另一张表
+            "found": false}}                                         // false 只看找不到的行，true 只看找得到的行
 ```
 
 - **字段**：每种检查只认上面列出的字段，多写的字段算不合格（“rows 检查没有 sql 这一项”）。`aggregate` 的 `op`、`value` 必填：`eq`、`ne` 的 `value` 可以是数字、文字或 true/false，`gt`、`ge`、`lt`、`le` 是数字或文字（文字按字符串比较，适合 ISO 日期），`between` 要数字 `value` 和 `max`（`value` 不大于 `max`），其他 `op` 不写 `max`。`tolerance`（不小于 0，默认 0）用在数字的 `eq`、`ne`、`between` 上：`eq` 是差的绝对值不超过它，`between` 两头各放宽它。聚合值是空值时一律不满足；要和数字比而聚合值不是数字（比如 `NaN`）时这条检查记为 `error`。分组列、`unique` 的 `columns`、`golden` 的 `keys` 最多 10、20、20 列，不能重复；分组列不能叫 `value`，`unique` 的列不能叫 `count`（和结果里的字段重名）。`checks` 和 `include` 合在一起最多 100 条。
 - **表名**：不带点的名字是本次运行的结果表（绑定项目时 `<环境 catalog>.<环境 schema>.<名字>`，否则 `<AEP_DATABRICKS_CATALOG>.<AEP_DATABRICKS_SCHEMA>.<名字>`）；两段名是抽取到 `AEP_DATABRICKS_SOURCE_CATALOG` 下的源表；三段名原样。读项目引用表时带上它的读取筛选，和这张表那一边自己的条件用 AND 连起来，只用在这一边：`reconcile` 的 `left`、`right` 各用各的 `where`，`golden` 的 `table` 用 `where`、`expected` 用 `expected_where`（连接器的 `compare` 两边条件分开传）。表名都由平台换成三段式再交给连接器，所以连接器的 `AEP_DATABRICKS_READ_CATALOGS` 要包括项目环境的 catalog 和老系统结果表所在的 catalog，只读身份要能读它们；读不到时这条检查记为 `error`，`message` 是连接器的报错。`cluster` 方式不落表，读结果表的检查记为 `error`（“cluster 方式不落表，读不到结果表”）。
 - **条件和表达式**：`expr` 是一个 Spark SQL 聚合表达式；`where`、`expected_where`、`expr` 的形状检查同 `filter`，连接器再查一遍。都可以用 `${param.<key>}`，平台按写表方式的规则换成字面值后再交给连接器。没有执行任意 SQL 的检查。
+- **查另一张表 `lookup`**（第二轮验收后新增，为了 R4“分摊表里不适用的月份必须为 0”）：`rows` 检查可以只看在另一张表里找不到（`found: false`）或找得到（`found: true`）对应行的行，比如“这个月有重量、但分摊表里这条航线这个月不适用的行”。以前只能在条件里写子查询，而条件不收 `SELECT`。
+  - `on` 是 `{本表的列: 另一张表的列}`，1–10 对，列名规则同分组列，本表的列不能重复；按空值安全的相等对上。`where` 只筛另一张表，规则同检查的 `where`（可以用 `${param.<key>}`）；另一张表是项目引用表时同样带上它的读取筛选，和 `lookup.where` 用 AND 连起来。`found` 必填，是 true 或 false。只有 `rows` 能写，别的检查写了算多写的字段（“unique 检查没有 lookup 这一项”）。
+  - 表名规则同 `table`；方案里的检查只能查方案的目标表和源表，项目验收检查里不带点的表名要以表名前缀开头，这些规则对 `lookup.table` 同样适用，`lookup.where` 里的运行参数也要是项目定义的。
+  - 连接器的 `aggregate`（数行）和 `sample_rows`（取例子）都带上 `lookup`，子查询由连接器拼（[datasources.md](datasources.md)）；已知差异照常加在本表的条件上。
+  - `message` 和方案里的说明写成“有 2 行满足 `NOT (cw_07 <=> 0)`、并且在 `…allocation` 里找不到 lane、efficiency_type = eff_type 对应（满足 `…`）”“没有满足 …、并且在 … 里找不到 … 对应的行”；两边列名相同时只写一次。
+  - 条件里写了子查询时，报错除了指向 `reconcile` 和 `rows`，也说可以用 `lookup`。
+- **已知差异 `known`**（第二轮验收 I-4 后新增）：项目里有些差异是预期中的（假数据故意放的、口径变了的），以前只能把整条检查降成警告，之后新出的差异混在里面看不出来。现在检查可以列出已知差异，命中的单独报出来、不算不通过，清单以外的照常按 `severity` 不通过，所以这条检查可以设成 `error`。
+  - 每项 `{"match": {列: 值}, "note": "说明"}`，最多 20 项；`note` 可选，200 字符以内，报出时用它，没有时写成“sku = B2、month = 2026-11”。值是文字、数字、true、false 或 null（null 只配 null）；比较时 2026 和 "2026" 算同一个值。
+  - `match` 的列：按组的 `aggregate`、`reconcile` 是 `group_by` 里的列，`unique` 是 `columns` 里的列，`golden` 是 `keys` 里的列，`rows` 是表里任意的列。不分组的 `aggregate`、`reconcile` 没有可以区分的行，写了不合格（“只有按组比的聚合值和对账、键不重复、和老系统对比、不该有的行能写 known（已知差异）”）。
+  - 怎么算：分组的 `aggregate`、`reconcile` 拿全了组，在平台这边把对不上的组分成已知和新的。`unique`、`golden`、`rows` 在连接器上分两次查：一次条件加上 `NOT (已知差异)`，判断通过没有、取例子；一次条件加上已知差异本身，数出命中多少、看是哪几项。已知差异写成 `` (`sku` <=> 'B2' AND `month` <=> '2026-11') OR (…) ``，和原来的条件用 AND 连起来，`golden` 两边都加（按键排除）。加上后超过 2000 个字符时这条检查记为 `error`（“加上已知差异后条件超过 2000 个字符，连接器不收；请少写几项已知差异”）。`golden` 按键整行排除，同一行别的列也不一样时不会单独报出来。
+  - 结果多一项 `known`：`{"count": 1, "seen": ["B2 按新口径，和老系统不同"], "absent": ["Z9 已下市"]}`。`count` 是命中的行数或组数，`seen` 是看到的已知差异，`absent` 是这次没出现的（命中的行多于 20 行例子、看不全时为 `[]`）。没写 `known` 的检查结果里没有这一项。`message` 末尾加“；另有 1 行是已知差异（…）”“；已知差异「…」这次没有出现”；只有已知差异时 `status` 是 `passed`，说明写“和老系统的结果除已知差异外逐行一致（…）”“按 month 分 2 组，除已知差异外每组都满足 ≥ 5”“已知差异以外没有满足 qty < 0 的行”这样。`summary` 的通过数后面写“（其中 3 项只有已知差异）”。方案里的检查说明（`describe`）末尾加“；已知差异 1 处（…）不算不通过”。
 - **经连接器的哪个工具**：`aggregate`、`reconcile` 用 `aggregate`（`reconcile` 两边各调一次，平台按组对齐、比较）；`unique` 用 `duplicates`；`golden` 用 `compare`；`rows` 用 `aggregate`（`count(*)`）数行、`sample_rows` 取例子。比较、容差和结论都在平台这边算。分组的 `aggregate` 和 `reconcile` 要拿全所有组才下结论：调 `aggregate` 时 `limit` 用 10000，任何一边返回的 `groups` 比 `rows` 多（没拿全）时这条检查记为 `error`（“分组有 12,345 组，超过一次能核对的 10,000 组；请减少分组列或加条件”），不按拿到的那部分判断。工具见 [datasources.md](datasources.md)“Databricks 数据源”。
 - **节点的 `golden`**：各项都可以是整段引用。`expected`（老系统结果表的三段式名）取值后不是空的，节点就加一条检查 `{"id": "golden", "label": "和老系统的结果一致", "kind": "golden", "table": table, "expected": expected, "keys": keys}`，比两边同名的非键列；写了 `tolerance`、`severity` 时这条检查也带上（试点后新增：老系统的数常有末位舍入差异，差异也可能只想报出来不拦住），取值不合格时这条检查记为 `error`（“tolerance 要是不小于 0 的数”）；`expected` 为空（比如用户没填）时不加。`keys` 为空时这条检查记为 `error`（“结果表没有主键，不能逐行对比；请在方案里给结果表写 primary_key”）。id `golden` 只留给这条自动加的检查：`checks` 和 `include` 里有检查用这个 id 时节点 `input_error`（“检查 id golden 是留给和老系统对比的，请换一个”），所以填了老系统结果表就一定有这条对比，不会被别的检查顶掉。别的 id 的 golden 检查可以照常写在 `checks` 里；没写 `expected` 时用节点 `golden.expected`，也没有时记为 `skipped`（“没有指定老系统的结果表”），不算失败。
 - **golden 先查键是否唯一**：`compare` 先数两边按 `keys` 重复的组数（见 datasources.md）。结果表有重复时这条检查 `failed`（“结果表按 sku、month 有 3 组重复的行，不能逐行对比”，`rows` 是重复的键）；老系统的表有重复时记为 `error`（“老系统的结果表按 sku、month 有重复，不能逐行对比；请换一组键”）。都不重复才比 missing、extra、different。
@@ -994,7 +1010,7 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 | --- | --- |
 | `ok` | 没有 `severity` 为 `error` 的检查是 `failed` 或 `error` |
 | `results` | 见上，按检查的顺序 |
-| `summary` | 如“8 项检查：7 项通过，1 项不通过（警告）”；没有检查时“没有数据检查” |
+| `summary` | 如“8 项检查：7 项通过（其中 1 项只有已知差异），1 项不通过（警告）”；不通过和出错的写出几项是错误、警告、提示（都是错误时不写）；没有检查时“没有数据检查” |
 | `report` | Markdown：每条检查一行（结果、名称、一句话），不通过的附例子表格 |
 
 分支：`passed`（`ok`）、`failed`（编辑页显示“通过”“不通过”）。不支持单节点试跑：`POST /apps/{app}/nodes/{node}/test` 返回 422“数据检查节点要读这次运行的结果表和项目，不能单独试跑”。`results`、`report` 算数据值，受数据外发策略约束。
@@ -1060,6 +1076,8 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - 方案第 3 版：写表方式的检查、前缀、`checks` 的检查和产出、没绑定项目时用 `${param.*}` 让模型重写；第 2 版的产出不变；检查 id 和项目验收检查重复、SQL 方案读带筛选的引用表都让模型重写（试点后新增）。
   - 表结构变化（验收后新增）：探查列出环境里前缀开头的表（只读结构）、没有时为 `[]`、列表失败和不是 Databricks 时为 null；方案里加的列和位置（第一列、连着加几列）、模型写的 `add_columns` 被去掉、少了已有的列让模型重写、`overwrite` 不加列、`message` 的“表结构”一行、`existing` 的保存检查；集群程序只加确认的列（位置、大小写、已经有的跳过）、少列和多列不写、`after` 不在表里不写、加列后写入失败的提示、不再 `mergeSchema`，没绑定项目时照旧；`write_text` 写出加了的列。列的类型（I-14）：类型的统一写法和不是类型的写法、新加的列没写类型和已有的列改类型让模型重写、`add_columns` 带类型、“表结构”一行带类型；集群程序里新加的列类型和确认的不一样不加列不写、已有的列不是一类值不写、数字宽度不同照写。
   - `data_check` 的节点 `golden` 带 `tolerance`、`severity`（试点后新增）：传给连接器的容差、结果的级别、只警告时节点照样通过、保存时的取值检查。
+  - 已知差异（I-4）：`golden` 两次 `compare` 的条件、只有已知差异时通过、没出现的已知差异、`summary` 的“只有已知差异”；`rows` 三次调用的条件和例子只取新的行；分组 `aggregate`、`reconcile`、`unique` 的已知组；`known` 的保存检查。
+  - 查另一张表（R4）：`rows` 带 `lookup` 时 `aggregate`、`sample_rows` 的参数（另一张表的读取筛选和 `lookup.where` 用 AND 连起来、运行参数换成字面值）、`found` 两种、和已知差异一起用、说明的写法、保存检查（各字段、只有 `rows` 能写、`tables()` 和 `texts()` 包括它）；连接器拼的 `EXISTS` 语句和参数检查。
   - 模板第 3 版用假模型、假 Databricks 和假的 Databricks 连接器跑通：绑定项目、探查引用表（带读取筛选）、在项目环境试算、检查读环境里的结果表并和老系统对比后交付；检查不通过时不能选“通过”，挂在检查上的意见带给模型；试算失败时不做检查。
 - 不连真实 Databricks 和真实模型；`DevTarget.ingest`、`preview` 用假 HTTP 测请求内容。
 - 前端：类型检查通过；说明书面板和新节点表单有 Playwright 用例（沿用现有的 mock 方式）。第二批另加：确认方案页（每题必答、改了答案后主按钮变化、意见挂在条目上）、审核试算结果页（试算失败时没有“通过”）、结果页（答案卡、合计显示“—”、终止的运行、以前的运行的回退、用户自己建的应用输出叫 `code` 或 `brief` 时照以前显示）；mock 里另加第 2 版的运行（等确认方案、等审核、已交付、已终止），第 1 版的演示运行留作“以前的运行”的样例。

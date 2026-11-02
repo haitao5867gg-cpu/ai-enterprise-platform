@@ -11,7 +11,7 @@ import ast
 import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -27,7 +27,7 @@ from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import search
-from aep.knowledge.store import Hit, KnowledgeStore
+from aep.knowledge.store import Chunk, Hit, KnowledgeStore
 from aep.policy import DataPolicy
 from aep.projects import project_value
 from aep.runtime import human
@@ -1380,9 +1380,28 @@ async def _check_knowledge_settings(
             p.add(("retrieval", *error["loc"]), str(cause) if cause else "检索参数格式或范围不正确")
 
 
+# How a knowledge node gets its material: the chunks a search finds, or every chunk of every
+# document in the bases, in order ("full": a short spec the plan must follow end to end).
+KNOWLEDGE_MODES = ("search", "full")
+DEFAULT_FULL_CHARS = 40_000
+MAX_FULL_CHARS = 120_000
+_DOCUMENT_STATES = {"queued": "排队中", "processing": "处理中", "error": "处理失败"}
+
+
 async def check_knowledge(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     await _check_knowledge_settings(node, p, env, 20)
-    _text(node, "query", p, "检索问题", required=True, max_length=2000)
+    mode = node.get("mode", "search")
+    if mode not in KNOWLEDGE_MODES:
+        p.add(("mode",), "取资料的方式只能是 search（检索相关片段）或 full（整篇放进去）")
+    if mode == "full":
+        budget = node.get("max_chars", DEFAULT_FULL_CHARS)
+        if (
+            not isinstance(budget, int)
+            or isinstance(budget, bool)
+            or not 1000 <= budget <= MAX_FULL_CHARS
+        ):
+            p.add(("max_chars",), f"整篇放进去的字数上限要在 1000–{MAX_FULL_CHARS} 之间")
+    _text(node, "query", p, "检索问题", required=mode != "full", max_length=2000)
 
 
 def _index_knowledge_hits(
@@ -1404,7 +1423,93 @@ def _index_knowledge_hits(
     return hits, sources
 
 
+async def _whole(
+    store: KnowledgeStore, kb_ids: list[str], budget: int
+) -> tuple[list[Hit], dict[str, str]]:
+    """Every chunk of every document in the bases, oldest document first and chunks in order,
+    and the text the context shows for each: a chunk's overlap with the one before it (the
+    chunker repeats the last characters of a chunk at the start of the next) is shown once.
+    Raises when a document is not indexed yet, or when the text is over ``budget`` characters
+    (cutting it would drop part of what the node promises to give whole)."""
+    found: list[Hit] = []
+    shown: dict[str, str] = {}
+    size = 0
+    for kb_id in kb_ids:
+        base = await store.get(kb_id)
+        if base is None:
+            raise ValueError(f"没有知识库 {kb_id}")
+        documents = sorted(
+            await store.documents(kb_id), key=lambda d: (d.created_at, d.document_id)
+        )
+        if waiting := [d for d in documents if d.status != "ready"]:
+            listed = "、".join(f"{d.name}（{_DOCUMENT_STATES[d.status]}）" for d in waiting[:5])
+            more = f"等 {len(waiting)} 个文档" if len(waiting) > 5 else ""
+            raise ValueError(
+                f"知识库「{base.name}」里 {listed}{more}还没处理好；整篇放进去要等文档都处理好"
+                "（处理失败的请重新处理或删掉）"
+            )
+        for document in documents:
+            chunks: list[Chunk] = []
+            while True:
+                total, page = await store.chunks(document.document_id, len(chunks), 500)
+                chunks += page
+                if not page or len(chunks) >= total:
+                    break
+            before: Chunk | None = None
+            for chunk in chunks:
+                text = chunk.text
+                k = document.chunk_overlap
+                if (
+                    before is not None
+                    and k
+                    and (before.heading, before.page) == (chunk.heading, chunk.page)
+                    and len(text) > k
+                    and text[:k] == before.text[-k:]
+                ):
+                    text = text[k:]
+                before = chunk
+                size += len(text)
+                if size > budget:
+                    raise ValueError(
+                        f"知识库的内容超过整篇放进去的上限 {budget:,} 个字符，没有截断："
+                        "调高 max_chars，或者改用检索（mode 写 search）"
+                    )
+                shown[chunk.chunk_id] = text
+                found.append(
+                    Hit(
+                        kb_id=kb_id,
+                        kb_name=base.name,
+                        document_id=document.document_id,
+                        document_name=document.name,
+                        chunk_id=chunk.chunk_id,
+                        position=chunk.position,
+                        text=chunk.text,
+                        heading=chunk.heading,
+                        page=chunk.page,
+                        score=1.0,
+                    )
+                )
+    return found, shown
+
+
 async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
+    if node.get("mode") == "full":
+        try:
+            if rt.knowledge is None:
+                raise ValueError("平台没有配置知识库")
+            whole, shown = await _whole(
+                rt.knowledge, node["knowledge_bases"], node.get("max_chars", DEFAULT_FULL_CHARS)
+            )
+        except Exception as exc:  # noqa: BLE001 - failures use the node's on_error
+            raise NodeFailure("knowledge_error", f"知识库整篇读取失败：{exc}") from exc
+        citations = dict(state.get("citations") or {})
+        hits, sources = _index_knowledge_hits(whole, citations, node)
+        text = context([replace(hit, text=shown[hit.chunk_id]) for hit in hits])
+        return Outcome(
+            {"hits": [asdict(hit) for hit in hits], "context": text},
+            citations=citations,
+            sources=sources,
+        )
     query = refs.render(node["query"], rt.model_lookup(state)).strip()
     if not query:
         return Outcome({"hits": [], "context": ""})

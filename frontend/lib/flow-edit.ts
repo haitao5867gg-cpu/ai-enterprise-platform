@@ -191,6 +191,14 @@ export function knowledgeIssues(
           ? node.knowledge
           : null;
     if (!settings) return issues;
+    if (node.type === "knowledge" && node.mode === "full") {
+      const budget = node.max_chars ?? 40000;
+      if (!Number.isInteger(budget) || budget < 1000 || budget > 120000)
+        issues.push({
+          loc: [...loc, "max_chars"],
+          msg: "整篇放进去的字数上限要在 1000–120000 之间",
+        });
+    }
     const prefix = node.type === "agent" ? [...loc, "knowledge"] : loc;
     const max = node.type === "agent" ? 10 : 20;
     if (
