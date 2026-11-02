@@ -312,8 +312,9 @@ async def test_a_bound_run_is_planned_checked_and_delivered(make, monkeypatch):
     run_id, view = await lake.start()
 
     # The project's reference tables were profiled, the forecast through its filter.
-    profiled = [(t, a.get("where")) for t, a in lake.calls if t == "table_stats"]
-    assert profiled == [("table_stats", "Type = 'Vol.'"), ("table_stats", None)]
+    # The tables are profiled concurrently, so in no particular order.
+    profiled = [a.get("where") or "" for t, a in lake.calls if t == "table_stats"]
+    assert sorted(profiled) == ["", "Type = 'Vol.'"]
     prompt = lake.gateway.requests[0]["body"]["messages"][-1]["content"]
     assert "## 项目：IBF 预测" in prompt and "`prev.sales.forecast`" in prompt
     system = lake.gateway.requests[0]["body"]["messages"][0]["content"]

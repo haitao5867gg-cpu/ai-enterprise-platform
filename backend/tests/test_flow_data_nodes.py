@@ -927,7 +927,10 @@ async def test_code_check_sends_problems_back():
     assert first.branch == "retry" and first.private == {"failures": 1}
     assert first.outputs["bundle"] is None and first.outputs["code"] == bad
     assert first.outputs["files"] == []
-    assert first.outputs["problems"] == "order_facts: 不允许使用 .sql"
+    assert (
+        first.outputs["problems"]
+        == "order_facts: 不允许使用 .sql（用 DataFrame 写，读源表用 source()）"
+    )
     assert first.outputs["summary"].startswith("代码没有通过检查，带着问题让模型重写")
     assert first.messages[0]["content"] == "代码有 1 处没通过检查，让模型重写（第 2/3 次）"
 

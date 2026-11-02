@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from aep.datasources import DataSource
-from aep.etl.plan import KnownValues
+from aep.etl.plan import KnownValues, compared_literals
 from aep.policy import LABELS, mask
 from aep.tools.mcp import McpTools
 
@@ -101,24 +101,33 @@ def known_values(tables: list[dict[str, Any]]) -> dict[str, KnownValues]:
 
     Only columns whose values were all listed (none cut short) count. A table was read
     whole when its stats sample came back smaller than the limit. A name used in several
-    tables merges their values, and is complete only if every table's is.
+    tables merges their values, and is complete only if every table's is. A table read
+    through a filter (a project's read filter) did not show the rows it filters out, so
+    the values the filter compares a column with count as seen too: a plan may name them,
+    say to leave them out as well.
     """
     known: dict[str, KnownValues] = {}
     for t in tables:
         rows, limit = t.get("sample_row_count"), t.get("sample_limit")
         whole = isinstance(rows, int) and isinstance(limit, int) and rows < limit
+        named: dict[str, set[str]] = {}
+        where = t.get("filter")
+        for column, literal in compared_literals(where) if isinstance(where, str) else []:
+            named.setdefault(column, set()).add(literal.replace("''", "'").strip())
         for s in t["column_stats"]:
             listed = s.get("top_values")
             if listed is None or any(v.get("truncated") for v in listed):
                 continue
             if len(listed) != (s.get("distinct_count") or 0):
                 continue
-            values = frozenset(str(v["value"]).strip().lower() for v in listed)
+            shown = {str(v["value"]).strip() for v in listed} | named.get(s["name"].lower(), set())
+            values = frozenset(v.lower() for v in shown)
             name, complete = s["name"].lower(), whole
             if name in known:
                 values |= known[name].values
+                shown |= known[name].shown
                 complete = complete and known[name].complete
-            known[name] = KnownValues(values, complete)
+            known[name] = KnownValues(values, complete, frozenset(shown))
     return known
 
 

@@ -159,6 +159,7 @@
 
 **平台自动整理**的情况（不让模型重写、不算不过，每处在 `cleaned` 里记一句）：
 - 下面各条按列出的顺序依次做，一条对整个方案做完再做下一条（其中“第 6 题起改成规则”放在按 `answered` 处理之后，见上）。
+- 质量规则名不是小写字母、数字和下划线（比如写成中文、带大写或横线），或者同一张表里重复时，改成代码能用的名字（验收后新增：以前让模型重写，模型常因此用完重写次数）：转成小写，其余字符换成下划线；什么都不剩时用 `rule_<n>`（n 是这条规则在这张表里的序号），不以字母开头时前面加 `rule_`；和这张表别的规则重名时加 `_2`、`_3`。每张表一句：“order_facts 的质量规则名改成了代码能用的名字：「数量为正」→ rule_1”。
 - 接下来三条只管这几组文字，每组算一个列表：`brief.filters[].text`、`rules[].text`、`questions[].text`、每道题的 `options[].label`（选项不去重）。指标和维度的名称、说明，以及列的 `label` 不动。
 - 同一个列表里有 2 条以上用同一个小写英文词加 `:`、`：`、`-`、`—` 开头（比如 `advance:`），把这个前缀从这些条目里去掉。大写缩写不去。
 - 去掉条目开头的编号（`1.`、`1、`、`(1)`、`①`、`- `）和“假设：”“规则：”“问题：”“说明：”这类前缀。
@@ -179,6 +180,8 @@
 - 这样人答过的题，不管是哪一轮答的，模型再问也不会再让人答一遍。
 
 数据取值的放行口子（`trust_assumptions`，第 1 版看 `assumptions` 的文字）：第 2 版看 `rules` 的文字、`questions` 的 `text`、`why` 和选项的 `label`。上一次是 `retry` 时，方案拿一个探查里没见过的取值做比较、而这些文字里提到了这个值，就放行。两版都一样：和空字符串 `''` 比较是判空（如 `trim(city) = ''`），不算拿取值做比较，不查。
+
+读取筛选里的取值（验收后新增，各版都一样）：带读取筛选探查的表只看得到筛选后的行，筛掉的取值探查里没有，可方案常要提到它（比如“去掉 BU_X”）。所以 `known_values` 把这张表的 `filter` 拿来和列比较的字符串字面值（`=`、`<>`、`IN (…)`、`NOT IN (…)`，写法同上面判断方案的取值）也算成这一列见过的取值，方案拿它们做比较不算编造。退回给模型的问题里列出实际取值时照数据原样写，不转小写（以前写成“只有 bu_a、bu_b”，模型照着把维度转成了小写），并提醒“大小写照数据写”“不要为了通过校验改口径，比如把维度转成小写”。比较照旧不分大小写、去掉首尾空格。
 
 第 2 版通过时：
 - `plan` 是第 1 版 `EtlPlan` 的超集：`summary` 一定有值，`assumptions` 为 `[]`，另有整理后的 `brief`、`rules`、`questions` 和补齐了默认值的 `answer`（没有时为 null）；`plan.targets[].columns[]` 保留补齐后的 `label`。第 2 版用 `aep.etl.plan` 里另加的模型输出，`EtlPlan` 不动；`etl_code_check` 照旧用 `EtlPlan` 读它，多出的键不管。
@@ -817,6 +820,7 @@ def warn(message: str) -> None:
 - 函数体能 import 的（试点后新增，原来一律“不要写 import”）：标准库 `re`、`math`、`datetime`、`decimal`、`calendar`（`import re`、`import datetime as dt`、`from decimal import Decimal` 都行），以及 `pyspark.sql` 的 `types`、`functions`、`window`（`from pyspark.sql import types as T`、`from pyspark.sql.functions import col`；`import pyspark.sql.types` 要带 `as`）。别的模块、相对导入、`import *` 检查不过：“不能 import os，能 import 的只有 re、math、datetime、decimal、calendar 和 pyspark.sql 的 types、functions、window”。import 出来的名字不能是平台提供的名字，只有 `from pyspark.sql import functions as F`、`from pyspark.sql import Window` 这种和平台同一个东西的除外。
 - 没有定义的名字：函数体读了一个名字，而它既不是函数体里赋值、import、定义或参数里出现过的，也不是 Python 内置名字或平台提供的名字时，检查不过：“ibf_table2: 用了没有定义的名字 re（能 import 的只有 …；告警用 warn()）”。只查有没有，不查先后。以前这种代码要到 dev 运行时才报 NameError，白跑一次集群。
 - `warn("说明")`：数据有问题但不该停下时用（比如某个月没有数据、分摊比例加起来不是 1），每条进 dev 运行的 `warnings`，写成“代码告警：说明”，最多 20 条，每条最多 500 字；运行照常通过（`cluster`、`job` 模式；`pipeline` 模式只打印在管道日志里）。该停下的问题照旧 `raise ValueError("说明")`，dev 运行失败并带回这句话。`WARNINGS` 由平台读取，代码不能直接用（“不要直接用 WARNINGS，告警用 warn()”）。
+- `warn_rows(df, "说明", limit=10)`（验收后新增）：要在告警里列出有问题的行（比如没分摊上的组合）时用。代码不许 `collect`，列行的事由平台的这个函数做：`df` 为空时什么都不记；否则数一遍行数，取前 `limit` 行（1–100），记一条 `warn("说明：共 n 行：列=值, 列=值；……（只列出前 k 行）")`，同样受上面每条 500 字的限制。代码不能重新定义它。代码用了禁止的写法时，问题里写上能用什么代替：`.collect`、`.toPandas` 写“要在告警里列出几行用 warn_rows(df, "说明")，数据留在集群上算”，`.sql` 写“用 DataFrame 写，读源表用 source()”，写表的 `.write`、`.saveAsTable`、`.insertInto` 写“不要写表：return 结果 DataFrame，平台按方案的写表方式写”。
 - SQL 方案：源表照旧换成 `${source_catalog}` 加两段名，三段名原样；条件里的 `${param.<key>}` 换成值的 SQL 字面值（同下面写表方式的规则）。读带筛选的引用表时检查不过：“表 … 有读取筛选，SQL 代码暂不支持，请改用 PySpark”。
 
 ### 写到哪里，只写本项目的表
@@ -938,14 +942,14 @@ def warn(message: str) -> None:
 
 在第 2 版上加这些，第 2 版的规则、整理和产出全部照旧（`aep.etl.plan.validate_plan_v3`，解析出的方案是 `EtlPlanV3`，比第 2 版多 `checks`，代码检查和试算照样当第 1 版方案读）。不合格的地方都让模型重写，问题的写法如下：
 
-- **写表方式**：目标表的 `load` 按上面的写表方式；没写 `load` 或 `load.mode` 时是 `overwrite`。
+- **写表方式**：目标表的 `load` 按上面的写表方式；没写 `load` 或 `load.mode` 时是 `overwrite`。`load` 里用不上的 `where`、`keys`、`key` 写成 null 或空白时当作没写（验收后新增：格式说明让模型写 null，以前 `keys` 写 null 反而被退回）。
   - `mode` 只能是 `overwrite`、`replace_where`、`append`、`merge`（第 1、2 版的 `full`、`incremental` 也不行）：“city_daily 的 load.mode 只能是 overwrite、replace_where、append、merge”。
   - `replace_where` 要有 `where`（“… 按条件替换（replace_where），要给出替换条件 load.where”），形状检查同读取筛选（“… 的 load.where：替换条件不能有分号”），`${param.*}` 要写对、是项目定义了的参数。
   - `merge` 要有 `keys` 或 `primary_key`，`keys` 是这张表的列、不重复。
   - `where` 只用在 `replace_where`、`keys` 只用在 `merge`；第 1、2 版增量的 `key` 这一版不用，写了也让模型重写。
-- **项目**：运行绑定了项目时，目标表名要以 `table_prefix` 开头（“目标表名 'x' 要以项目「…」的表名前缀 ibf_ 开头”），不能和项目引用表的表名（三段式名的最后一段，不分大小写）一样（“目标表名 'forecast' 和项目引用的表 prev.sales.Forecast 同名，请换一个”）。方案的 `language` 是 `sql`、而某张目标表的来源是带读取筛选的引用表时也让模型重写（“t2 的来源 prev.sales.forecast 有项目的读取筛选，SQL 代码暂不支持；请把 language 改成 pyspark”）：以前要到代码检查才发现，那时方案已经确认过了。
+- **项目**：运行绑定了项目时，目标表名要以 `table_prefix` 开头（“目标表名 'x' 要以项目「…」的表名前缀 ibf_ 开头”），不能和项目引用表的表名（三段式名的最后一段，不分大小写）一样（“目标表名 'forecast' 和项目引用的表 prev.sales.Forecast 同名，请换一个”）。方案的 `language` 是 `sql`、而某张目标表的来源是带读取筛选的引用表时，平台把 `language` 改成 `pyspark`，`cleaned` 里写“prev.sales.forecast 有项目的读取筛选，SQL 代码暂不支持，代码语言改成了 PySpark”（验收后改的：以前让模型重写；再以前要到代码检查才发现，那时方案已经确认过了）。
 - **运行参数**：`load.where` 和检查里的 `where`、`expr` 用到的 `${param.<key>}` 要是项目定义了的参数（“… 的运行参数 ${param.month} 不是项目「…」定义的参数”）；没绑定项目时不能用（“… 用了运行参数 ${param.update_month}，这次运行没有绑定项目，不能用运行参数”），也不查前缀。
-- **`checks`**：模型建议的数据检查，格式同 `data_check` 的 Check，按 `aep.etl.checks.problems` 检查（问题写成 `checks[2].where：…`）。另外：
+- **`checks`**：模型建议的数据检查，格式同 `data_check` 的 Check，按 `aep.etl.checks.problems` 检查（问题写成 `checks[2].where：…`）。检查之前先去掉模型写空了的部分（验收后新增，不记 `cleaned`）：值为 null 的字段（模型常把各种检查的字段都写出来，用不上的写 null）、空白的 `where` 和 `expected_where`、空列表的 `group_by`，`reconcile` 两边里为 null 的字段和空白的 `where`。别的照原样检查。另外：
   - 最多 10 条；种类只能是 `aggregate`、`reconcile`、`unique`、`rows`，和老系统的逐行对比由 `data_check` 的 `golden` 加；
   - id 不能用 `golden`、不能重复，也不能和运行绑定的项目的验收检查同 id（“checks[1].id：c4_keys 是项目的验收检查，数据检查时会自动跑，方案里不用再写；要另加检查请换一个 id”），因为数据检查节点同时引用两边，id 重复时节点 `input_error`；
   - 表名（含 `reconcile` 两边的）只能是方案的目标表名和各目标表的 `sources`，不分大小写（“checks[4].table：sales.refunds 不是方案的目标表或来源，检查只能读方案写的表和读的源表”）。不带点的目标表名到 `data_check` 里就是本次运行的结果表，源表名照探查结果写。
