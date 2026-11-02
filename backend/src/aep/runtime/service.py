@@ -36,6 +36,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -107,6 +108,14 @@ class ProjectProblem(Exception):
 
 class NoDraftToRun(Exception):
     pass
+
+
+class NotAFlowRun(Exception):
+    """Only a flow app's run can be rerun from one of its steps."""
+
+
+class CannotStartThere(Exception):
+    """The run cannot start at that step; the message is for people."""
 
 
 class NotCancellable(Exception):
@@ -329,6 +338,13 @@ class RunService:
         self._running: dict[str, asyncio.Task] = {}
         # Told each time a run settles (waiting, done, error): the platform's notices.
         self.on_settled: Callable[[RunSettled], Awaitable[None]] | None = None
+        # Where model calls are recorded (aep.models.CallStore), for each step's usage.
+        self.calls: Any = None
+
+    @property
+    def llm_client(self) -> Any:
+        """The model gateway client (``aep.llm``)."""
+        return self._ctx.llm_client
 
     @property
     def tools(self) -> Any:
@@ -495,6 +511,8 @@ class RunService:
         requester: str | None = None,
         rerun_of: str | None = None,
         project: dict[str, Any] | None = None,
+        seed: dict[str, Any] | None = None,
+        start_at: dict[str, Any] | None = None,
     ) -> RunRecord:
         """Start a run of the app's current version, or of ``app_version``; with ``config``
         (a draft's configuration, for its eval) or ``draft`` (the draft as it is now) the
@@ -532,9 +550,13 @@ class RunService:
                 if problem:
                     raise ModelNotAllowed(problem)
         record = await self._store.create(
-            app, input, app_version, config, requester, rerun_of, rules.as_dict(), bound
+            app, input, app_version, config, requester, rerun_of, rules.as_dict(), bound, start_at
         )
-        self._spawn(record, {"input": input}, "start", input)
+        # A rerun from a step starts there, with the state the source run had then.
+        payload = {**(seed or {}), "input": input}
+        if start_at:
+            payload["jump"] = start_at["node"]
+        self._spawn(record, payload, "start", input)
         return record
 
     async def _bind(
@@ -626,6 +648,7 @@ class RunService:
             self.default_model,
             await self.node_configs(record),
         )
+        await self._usage(run_id, flow["steps"])
         if record.app in self._graphs:
             for node in flow["nodes"]:
                 node.setdefault("type", None)
@@ -655,6 +678,25 @@ class RunService:
                     {"name": s["name"], "version": s["version"]} for s in settings["skills"]
                 ]
         return flow | {"nodes": nodes, "edges": edges}
+
+    async def _usage(self, run_id: str, steps: list[dict[str, Any]]) -> None:
+        """Each step's model calls: the run's calls from its node within its time."""
+        calls = await self.calls.for_run(run_id) if self.calls is not None else []
+        now = datetime.now(UTC)
+        for step in steps:
+            start = datetime.fromisoformat(step["started_at"]) if step["started_at"] else None
+            end = datetime.fromisoformat(step["finished_at"]) if step["finished_at"] else now
+            mine = [c for at, c in calls if c.node == step["node"] and start and start <= at <= end]
+            if not mine:
+                step["usage"] = None
+                continue
+            costs = [c.cost_usd for c in mine if c.cost_usd is not None]
+            step["usage"] = {
+                "calls": len(mine),
+                "prompt_tokens": sum(c.prompt_tokens for c in mine),
+                "completion_tokens": sum(c.completion_tokens for c in mine),
+                "cost_usd": round(sum(costs), 6) if costs else None,
+            }
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         return await self._store.recent(limit)
@@ -811,16 +853,7 @@ class RunService:
         if source is None:
             raise RunNotFound(run_id)
         draft = source.app_version is None and source.config is not None
-        project = None
-        if source.project:
-            project_id = source.project["project_id"]
-            if await self._ctx.projects.get(project_id) is None:
-                raise ProjectProblem(f"项目 {project_id} 已经删除，不能重新运行")
-            project = {
-                "project_id": project_id,
-                "environment": source.project["environment"]["key"],
-                "params": {k: v for k, v in source.project["values"].items() if v is not None},
-            }
+        project = await self._same_project(source)
         return await self.create(
             source.app,
             source.input if input is None else input,
@@ -830,6 +863,96 @@ class RunService:
             rerun_of=source.run_id,
             project=project,
         )
+
+    async def _same_project(self, source: RunRecord) -> dict[str, Any] | None:
+        """The project choice that binds the source run's project again."""
+        if not source.project:
+            return None
+        project_id = source.project["project_id"]
+        if await self._ctx.projects.get(project_id) is None:
+            raise ProjectProblem(f"项目 {project_id} 已经删除，不能重新运行")
+        return {
+            "project_id": project_id,
+            "environment": source.project["environment"]["key"],
+            "params": {k: v for k, v in source.project["values"].items() if v is not None},
+        }
+
+    async def rerun_from(
+        self, run_id: str, node: str, use_draft: bool, requester: str | None = None
+    ) -> RunRecord:
+        """A new run that starts at ``node`` with the state the source run had right
+        before it last ran there, on the app's draft or on the source run's own
+        configuration (docs/api/evals.md, "从某一步重跑")."""
+        source = await self._store.get(run_id)
+        if source is None:
+            raise RunNotFound(run_id)
+        if await self.kind(source.app) != "flow":
+            raise NotAFlowRun(run_id)
+        version, config = source.app_version, source.config
+        if use_draft:
+            found = await self.versions.draft(source.app)
+            if found is None:
+                raise NoDraftToRun(source.app)
+            version, config = None, found.config
+        chosen = self.flow_config(source.app, config)
+        target = next((n for n in flowgraph.nodes(chosen) if n["id"] == node), None)
+        if target is None:
+            where = "草稿" if use_draft else "原运行的配置"
+            raise CannotStartThere(f"{where}里没有节点 {node}")
+        if target["type"] == "start":
+            raise CannotStartThere("从开始节点重跑就是重新运行，请用“复制并重新发起”")
+        before = None
+        graph = await self._graph(source)
+        async for snapshot in graph.aget_state_history(_config(run_id)):
+            if node in snapshot.next:
+                before = snapshot
+                break
+        if before is None:
+            raise CannotStartThere(f"原运行没有跑到「{target.get('title') or node}」这一步")
+        seed = {
+            k: v for k, v in (before.values or {}).items() if k not in ("input", "jump", "result")
+        }
+        return await self.create(
+            source.app,
+            source.input,
+            version,
+            config=None if version is not None else config,
+            requester=requester,
+            rerun_of=source.run_id,
+            project=await self._same_project(source),
+            seed=seed,
+            start_at={"node": node, "title": target.get("title") or node, "run_id": run_id},
+        )
+
+    async def answers_given(self, run_id: str) -> dict[str, dict[str, Any]]:
+        """How people answered the run's human nodes, the last answer of each: an
+        approval's ``decision`` and ``comment`` (and ``values`` when it asked any), a
+        form's ``values``. Only flow runs have any."""
+        record = await self._store.get(run_id)
+        if record is None:
+            raise RunNotFound(run_id)
+        if await self.kind(record.app) != "flow":
+            return {}
+        config = self.flow_config(record.app, record.config)
+        state = await (await self._graph(record)).aget_state(_config(run_id))
+        found = (state.values or {}).get("vars") or {}
+        out: dict[str, dict[str, Any]] = {}
+        for item in flowgraph.nodes(config):
+            given = found.get(item["id"])
+            if item["type"] != "human" or not isinstance(given, dict):
+                continue
+            if item.get("mode", "approval") == "form":
+                keys = [f["key"] for f in item.get("fields") or []]
+                out[item["id"]] = {"values": {k: given.get(k) for k in keys}}
+            else:
+                answer: dict[str, Any] = {
+                    "decision": given.get("decision"),
+                    "comment": given.get("comment"),
+                }
+                if given.get("values"):
+                    answer["values"] = given["values"]
+                out[item["id"]] = answer
+        return out
 
     async def can_rerun(self, record: RunRecord) -> bool:
         if await self.kind(record.app) is None:

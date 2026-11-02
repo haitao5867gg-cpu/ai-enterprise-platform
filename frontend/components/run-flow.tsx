@@ -1,9 +1,14 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { rerunFrom } from "../lib/evals";
 import {
+  msText,
   readFlow,
   stepLabels,
+  tokensText,
   type Flow,
   type FlowNode,
   type FlowStep,
@@ -27,8 +32,9 @@ function AgentSteps({ output }: { output: unknown }) {
           {step.tool === "search_knowledge" ? (
             <>
               检索知识库：
-              {isRecord(step.args) ? String(step.args.query ?? "") : ""}（命中{" "}
-              {typeof step.hits === "number" ? step.hits : 0} 条）
+              {isRecord(step.args)
+                ? String(step.args.query ?? "")
+                : ""}（命中 {typeof step.hits === "number" ? step.hits : 0} 条）
             </>
           ) : (
             String(step.tool ?? "工具调用")
@@ -57,16 +63,71 @@ function askedPrompt(interrupt: unknown): string | null {
     : null;
 }
 
+const DEV_KEY = "aep.developerView";
+
+// Rerun the source run from this node, on the app's draft or the run's own configuration
+// (docs/api/evals.md, "从某一步重跑").
+function RerunFrom({ runId, node }: { runId: string; node: FlowNode }) {
+  const router = useRouter();
+  const [config, setConfig] = useState<"draft" | "same">("draft");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <div className="rerun-from" role="group" aria-label="从这一步重跑">
+      <select
+        aria-label="用哪份配置重跑"
+        value={config}
+        disabled={busy}
+        onChange={(e) => setConfig(e.target.value as "draft" | "same")}
+      >
+        <option value="draft">用应用的草稿</option>
+        <option value="same">用这次运行的配置</option>
+      </select>
+      <button
+        type="button"
+        className="button secondary"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          setError("");
+          try {
+            const made = await rerunFrom(runId, node.id, config);
+            router.push(`/runs/${encodeURIComponent(made.run_id)}`);
+          } catch (err) {
+            setError(errorMessage(err));
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "正在创建…" : "从这一步重跑"}
+      </button>
+      <small className="muted">
+        新运行带着这一步之前的全部状态，从「{node.title}」开始往下跑。
+      </small>
+      {error && (
+        <p className="field-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function NodeDetail({
   node,
   steps,
   stepId,
   onStep,
+  developer,
+  rerunOf,
 }: {
   node: FlowNode;
   steps: FlowStep[];
   stepId: string | null;
   onStep: (id: string) => void;
+  developer: boolean;
+  // The run to rerun from this node, when the person may.
+  rerunOf: string | null;
 }) {
   const runs = steps.filter((step) => step.node === node.id);
   const step = runs.find((s) => s.id === stepId) ?? runs[runs.length - 1];
@@ -123,6 +184,22 @@ function NodeDetail({
                       <span>开始于 {timeOf(step.started_at)}</span>
                     )}
                   </p>
+                  {developer && (
+                    <p className="flow-note step-usage">
+                      耗时 {msText(step.duration_ms)}
+                      {step.duration_ms != null &&
+                        !step.finished_at &&
+                        "（还没结束）"}
+                      {" · "}
+                      {tokensText(step.usage)}
+                    </p>
+                  )}
+                  {developer &&
+                    rerunOf &&
+                    node.type &&
+                    node.type !== "start" && (
+                      <RerunFrom runId={rerunOf} node={node} />
+                    )}
                   {askedPrompt(step.interrupt) && (
                     <p className="flow-asked">
                       等待处理：{askedPrompt(step.interrupt)}
@@ -140,7 +217,10 @@ function NodeDetail({
                       </p>
                     ) : (
                       <>
-                        {(node.type === "databricks_dev_run" || node.id === "dev_run") && <TablePreviews output={step.output} />}
+                        {(node.type === "databricks_dev_run" ||
+                          node.id === "dev_run") && (
+                          <TablePreviews output={step.output} />
+                        )}
                         <JsonBlock value={step.output} />
                       </>
                     )}
@@ -159,16 +239,56 @@ function NodeDetail({
   );
 }
 
+function totalUsage(steps: FlowStep[]) {
+  const used = steps.filter((s) => s.usage).map((s) => s.usage!);
+  if (!used.length) return null;
+  const costs = used.filter((u) => u.cost_usd != null);
+  return {
+    calls: used.reduce((n, u) => n + u.calls, 0),
+    prompt_tokens: used.reduce((n, u) => n + u.prompt_tokens, 0),
+    completion_tokens: used.reduce((n, u) => n + u.completion_tokens, 0),
+    cost_usd: costs.length
+      ? costs.reduce((n, u) => n + (u.cost_usd ?? 0), 0)
+      : null,
+  };
+}
+
 export function RunFlow({
   runId,
   version,
   live,
+  rerun = false,
+  traceUrl = null,
 }: {
   runId: string;
   // Changes whenever the run moves on, so the flow is fetched again.
   version: string;
   live: boolean;
+  // Whether the person may rerun a flow run from one of its steps.
+  rerun?: boolean;
+  traceUrl?: string | null;
 }) {
+  const [developer, setDeveloper] = useState(false);
+  const [other, setOther] = useState("");
+  useEffect(() => {
+    // Per viewer: a builder who turned it on sees it on every run.
+    const frame = requestAnimationFrame(() => {
+      try {
+        setDeveloper(window.localStorage.getItem(DEV_KEY) === "on");
+      } catch {
+        // No storage (a private window): the view starts off.
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  function toggle(on: boolean) {
+    setDeveloper(on);
+    try {
+      window.localStorage.setItem(DEV_KEY, on ? "on" : "off");
+    } catch {
+      // Kept for this page only.
+    }
+  }
   const [flow, setFlow] = useState<Flow | null>(null);
   const [error, setError] = useState("");
   // The backend has no flow for this run (an older API): leave the panel out.
@@ -271,7 +391,57 @@ export function RunFlow({
         <span className="muted">
           {flow.nodes.length - 2} 个节点 · 本次走了 {steps.length} 步
         </span>
+        <label className="developer-toggle">
+          <input
+            type="checkbox"
+            checked={developer}
+            onChange={(e) => toggle(e.target.checked)}
+          />
+          开发者视图
+        </label>
       </div>
+      {developer && (
+        <div className="developer-bar" aria-label="开发者视图">
+          <span>
+            合计耗时{" "}
+            {msText(
+              steps.some((s) => s.duration_ms != null)
+                ? steps.reduce((sum, s) => sum + (s.duration_ms ?? 0), 0)
+                : null,
+            )}
+            {" · "}
+            {tokensText(totalUsage(steps))}
+          </span>
+          {traceUrl && (
+            <a target="_blank" rel="noopener noreferrer" href={traceUrl}>
+              在 Langfuse 中看每次模型调用 ↗
+            </a>
+          )}
+          <form
+            className="compare-form"
+            onSubmit={(event) => event.preventDefault()}
+          >
+            <input
+              aria-label="要对比的运行编号"
+              placeholder="另一次运行的编号"
+              value={other}
+              onChange={(e) => setOther(e.target.value.trim())}
+            />
+            {other ? (
+              <Link
+                className="button secondary"
+                href={`/runs/compare?a=${encodeURIComponent(runId)}&b=${encodeURIComponent(other)}`}
+              >
+                对比两次运行
+              </Link>
+            ) : (
+              <button className="button secondary" type="button" disabled>
+                对比两次运行
+              </button>
+            )}
+          </form>
+        </div>
+      )}
       {flow.design && (
         <div className="flow-about">
           <p>
@@ -317,6 +487,14 @@ export function RunFlow({
                   onClick={() => select(step.node, step.id)}
                 >
                   {i + 1}. {node?.title ?? step.node}
+                  {developer && step.duration_ms != null && (
+                    <small className="step-cost">
+                      {" · "}
+                      {msText(step.duration_ms)}
+                      {step.usage &&
+                        ` · ${(step.usage.prompt_tokens + step.usage.completion_tokens).toLocaleString("en-US")} tokens`}
+                    </small>
+                  )}
                 </button>
               </li>
             );
@@ -340,6 +518,8 @@ export function RunFlow({
             steps={steps}
             stepId={picked?.node === selected.id ? picked.step : null}
             onStep={(id) => select(selected.id, id)}
+            developer={developer}
+            rerunOf={rerun ? runId : null}
           />
         )}
       </div>

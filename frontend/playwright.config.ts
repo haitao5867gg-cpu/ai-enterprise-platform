@@ -39,6 +39,7 @@ export default defineConfig({
         "auth.spec.ts",
         "notifications.spec.ts",
         "app-access.spec.ts",
+        "evals.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

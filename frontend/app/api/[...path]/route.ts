@@ -69,6 +69,9 @@ async function handle(request: Request, context: Context) {
     [/^runs$/, ["GET", "POST"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow|manual))?$/, ["GET"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/(resume|cancel|retry|rerun)$/, ["POST"]],
+    // Feedback on a run and rerunning it from a step (docs/api/evals.md).
+    [/^runs\/[a-zA-Z0-9_-]{1,128}\/feedback$/, ["PUT", "DELETE"]],
+    [/^runs\/[a-zA-Z0-9_-]{1,128}\/rerun-from$/, ["POST"]],
     [/^knowledge-bases$/, ["GET", "POST"]],
     [/^knowledge-bases\/options$/, ["GET"]],
     [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],
@@ -91,6 +94,9 @@ async function handle(request: Request, context: Context) {
     [/^apps\/import$/, ["POST"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}$/, ["GET", "PATCH", "DELETE"]],
     [/^apps\/[a-zA-Z0-9_-]{1,128}\/manual$/, ["GET"]],
+    // An app's eval set (docs/api/evals.md).
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set$/, ["GET", "PUT"]],
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set\/cases\/from-run$/, ["POST"]],
     // API keys of an app (docs/api/app-access.md).
     [/^apps\/[a-z][a-z0-9-]{1,63}\/keys$/, ["GET", "POST"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/keys\/[a-zA-Z0-9_-]{1,64}$/, ["DELETE"]],

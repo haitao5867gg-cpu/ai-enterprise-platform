@@ -109,6 +109,7 @@ const accountsOnly = (pathname: string) =>
 function crumb(pathname: string) {
   if (pathname === "/") return "运行记录";
   if (pathname === "/runs/new") return "新建运行";
+  if (pathname === "/runs/compare") return "对比运行";
   if (pathname === "/notifications") return "通知";
   if (pathname.startsWith("/use/")) return "使用应用";
   const item = NAV.find((nav) => nav.href !== "/" && nav.active(pathname));

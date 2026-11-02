@@ -201,11 +201,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
-from aep.auth import require, who
+from aep import feedback as runfeedback
+from aep.auth import current_user, enabled, require, who
 from aep.knowledge.citations import CitedSource
 from aep.policy import DataPolicy
 from aep.projects import run_summary
 from aep.runtime.service import (
+    CannotStartThere,
     CommentRequired,
     ContentChanged,
     InvalidDecision,
@@ -213,6 +215,7 @@ from aep.runtime.service import (
     InvalidValues,
     ModelNotAllowed,
     NoDraftToRun,
+    NotAFlowRun,
     NotCancellable,
     NotFailed,
     NotRetryable,
@@ -392,6 +395,10 @@ class RunDetail(RunSummary):
     # Langfuse trace of this run; null when tracing is off.
     trace_id: str | None = None
     sources: list[CitedSource] = []
+    # A run rerun from a step of another run: where it began (docs/api/evals.md).
+    start_at: dict[str, Any] | None = None
+    # People's "right / wrong" on it, and the eval cases saved from it.
+    feedback: dict[str, Any] | None = None
 
 
 class FlowNode(BaseModel):
@@ -420,6 +427,9 @@ class FlowStep(BaseModel):
     output: Any
     error: str | None
     interrupt: Any
+    finished_at: str | None = None
+    duration_ms: int | None = None
+    usage: dict[str, Any] | None = None
 
 
 class Flow(BaseModel):
@@ -486,6 +496,7 @@ async def _detail(v: RunView, service: RunService, app_titles: dict[str, str]) -
         error=v.record.error,
         trace_id=v.trace_id,
         sources=v.sources,
+        start_at=r.start_at,
     )
 
 
@@ -532,12 +543,97 @@ async def list_runs(service: Service, limit: int = 50) -> list[RunSummary]:
 
 
 @router.get("/{run_id}")
-async def get_run(run_id: str, service: Service) -> RunDetail:
+async def get_run(run_id: str, service: Service, request: Request) -> RunDetail:
     try:
         view = await service.get(run_id)
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
-    return await _detail(view, service, await service.app_titles())
+    detail = await _detail(view, service, await service.app_titles())
+    detail.feedback = await _feedback(request, view.record)
+    return detail
+
+
+def _rater(request: Request) -> str:
+    """Whose feedback: the signed-in user, or everyone ("") with sign-in off."""
+    return current_user(request).user_id if enabled(request) else ""
+
+
+async def _feedback(request: Request, record: RunRecord) -> dict[str, Any] | None:
+    store: runfeedback.FeedbackStore | None = getattr(request.app.state, "feedback", None)
+    if store is None:
+        return None
+    catalog = getattr(request.app.state, "catalog", None)
+    cases = await catalog.cases_from(record.app, record.run_id) if catalog else []
+    return runfeedback.summary(await store.for_run(record.run_id), _rater(request)) | {
+        "cases": [{"app": record.app, "case_id": c} for c in cases]
+    }
+
+
+class Rate(BaseModel):
+    rating: Literal["good", "bad"]
+    note: str | None = Field(default=None, max_length=500)
+
+
+async def _finished(service: RunService, run_id: str) -> RunRecord:
+    try:
+        record = (await service.get(run_id)).record
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    if record.status not in ("done", "error"):
+        raise HTTPException(409, "运行结束后才能评价")
+    return record
+
+
+def _feedback_store(request: Request) -> runfeedback.FeedbackStore:
+    store = getattr(request.app.state, "feedback", None)
+    if store is None:
+        raise HTTPException(503, "反馈服务还没有准备好")
+    return store
+
+
+@router.put("/{run_id}/feedback")
+async def rate_run(run_id: str, body: Rate, service: Service, request: Request) -> dict[str, Any]:
+    record = await _finished(service, run_id)
+    note = (body.note or "").strip() or None
+    await _feedback_store(request).put(
+        runfeedback.Feedback(run_id, _rater(request), body.rating, note)
+    )
+    return await _feedback(request, record) or {}
+
+
+@router.delete("/{run_id}/feedback")
+async def unrate_run(run_id: str, service: Service, request: Request) -> dict[str, Any]:
+    record = await _finished(service, run_id)
+    await _feedback_store(request).delete(run_id, _rater(request))
+    return await _feedback(request, record) or {}
+
+
+class RerunFrom(BaseModel):
+    node: str = Field(min_length=1, max_length=100)
+    config: Literal["draft", "same"] = "draft"
+
+
+@router.post("/{run_id}/rerun-from", status_code=status.HTTP_201_CREATED)
+async def rerun_from(run_id: str, body: RerunFrom, service: Service, request: Request) -> RunRef:
+    try:
+        record = await service.rerun_from(
+            run_id, body.node, body.config == "draft", requester=who(request, None)
+        )
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    except NotAFlowRun as exc:
+        raise HTTPException(409, "代码应用不能从某一步重跑") from exc
+    except NoDraftToRun as exc:
+        raise HTTPException(409, "这个应用没有草稿") from exc
+    except CannotStartThere as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (UnknownApp, UnknownVersion) as exc:
+        raise HTTPException(404, "这次运行用的应用或版本已经不在了") from exc
+    except InvalidValues as exc:
+        raise _invalid_values("input", exc) from exc
+    except (ModelNotAllowed, ProjectProblem) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return RunRef(run_id=record.run_id, status=record.status)
 
 
 @router.get("/{run_id}/flow")

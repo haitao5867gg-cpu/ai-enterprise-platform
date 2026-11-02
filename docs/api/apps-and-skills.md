@@ -147,7 +147,7 @@
 | POST | `/apps/{app}/draft/publish` | `{"note", "actor"?}` | `AppDetail`（草稿成为当前版本）；有评测集但草稿评测未通过 409 |
 | POST | `/apps/{app}/versions/{version}/activate` | `{"actor"?}` | `AppDetail`（该版本成为当前版本，即回滚） |
 
-草稿评测是后台任务，前端轮询 `GET /apps/{app}`（建议每 5 秒一次）查看 `draft.eval`。评测用例就是 `make eval` 的 ETL 评测集，每个用例是一次真实运行，`run_id` 可以链接到运行详情页。
+草稿评测是后台任务，前端轮询 `GET /apps/{app}`（建议每 5 秒一次）查看 `draft.eval`。每个用例是一次真实运行，`run_id` 可以链接到运行详情页。代码应用 `etl` 的用例是 `make eval` 的 ETL 评测集；编排应用的评测集在页面上编辑，见 [evals.md](evals.md)。
 
 ## 运行
 

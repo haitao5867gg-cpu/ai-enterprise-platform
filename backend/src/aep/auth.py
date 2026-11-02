@@ -169,6 +169,11 @@ LABELS: dict[str, str] = {
     "PUT /models/defaults": "设置默认模型",
     "POST /llm/chat": "试调模型",
     "POST /apps/{app}/keys": "新建 API 密钥",
+    "PUT /apps/{app}/eval-set": "保存评测集",
+    "POST /apps/{app}/eval-set/cases/from-run": "把运行存成评测用例",
+    "PUT /runs/{run_id}/feedback": "评价运行",
+    "DELETE /runs/{run_id}/feedback": "撤回评价",
+    "POST /runs/{run_id}/rerun-from": "从某一步重跑",
     "DELETE /apps/{app}/keys/{key_id}": "删除 API 密钥",
     "POST /v1/apps/{app}/runs": "经 API 发起运行",
     "POST /v1/runs/{run_id}/answer": "经 API 填表单",
@@ -207,7 +212,7 @@ def required(method: str, path: str) -> str | None:
     # The app API answers to API keys only (docs/api/app-access.md), checked there.
     if _under(path, "/v1"):
         return None
-    if path.startswith("/apps/{app}/keys"):
+    if path.startswith("/apps/{app}/keys") or path == "/runs/{run_id}/rerun-from":
         return "builder"
     if any(_under(path, p) for p in ("/users", "/audit", "/webhooks", "/notification-channels")):
         return "admin"

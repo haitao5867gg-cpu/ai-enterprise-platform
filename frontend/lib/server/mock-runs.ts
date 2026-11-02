@@ -46,6 +46,12 @@ import {
 } from "./mock-flow-apps";
 import { invalid } from "./mock-assets";
 import {
+  mockFeedback,
+  mockFeedbackOf,
+  setMockRunCase,
+  type MockRunCase,
+} from "./mock-evals";
+import {
   bindMockProject,
   mockProject,
   projectPolicy,
@@ -100,6 +106,8 @@ type StoredRun = {
     summary: string;
   };
   steps: MockSteps;
+  // A run rerun from a step of another run (docs/api/evals.md).
+  startAt?: { node: string; title: string; run_id: string };
   // A run of the ETL template's second version (mock-etl-v2.ts).
   v2?: EtlV2State;
   // Where the run failed and why, for the detail's `failed`.
@@ -147,6 +155,8 @@ function detail(entry: StoredRun): Run {
       retry: retryable(entry) && Boolean(entry.flow),
       rerun: Boolean(run.input) && Boolean(mockAppSnapshot(run.app)),
     },
+    start_at: entry.startAt ?? null,
+    feedback: mockFeedbackOf(run.run_id, run.app),
     // Like the backend, worked out when the run is read.
     sources: cited
       ? run.sources?.map((source) => ({
@@ -967,6 +977,70 @@ function create(
   return json({ run_id: run.run_id, status: run.status }, 201);
 }
 
+// Like the backend: what a run saved as an eval case carries.
+setMockRunCase((id): MockRunCase | null => {
+  const entry = store.get(id);
+  if (!entry) return null;
+  const run = refresh(entry);
+  const answers: MockRunCase["answers"] = {};
+  for (const node of entry.flow?.config.graph.nodes ?? []) {
+    const given = entry.flow?.pool[node.id];
+    if (node.type !== "human" || !isRecord(given)) continue;
+    answers[node.id] =
+      node.mode === "form"
+        ? {
+            values: Object.fromEntries(
+              node.fields.map((field) => [field.key, given[field.key]]),
+            ),
+          }
+        : {
+            decision: String(given.decision ?? ""),
+            comment:
+              typeof given.comment === "string" && given.comment
+                ? given.comment
+                : null,
+          };
+  }
+  return {
+    run_id: run.run_id,
+    app: run.app,
+    status: run.status,
+    title: run.title ?? null,
+    input: isRecord(run.input) ? run.input : {},
+    result: run.result,
+    answers,
+  };
+});
+
+// The developer view's numbers: a mock step takes no time, so it gets made-up ones.
+const MODEL_TYPES = new Set(["llm", "classifier", "agent"]);
+function timed(entry: StoredRun, steps: MockSteps): MockSteps {
+  const types = new Map(
+    (entry.flow?.config.graph.nodes ?? []).map((node) => [node.id, node.type]),
+  );
+  return steps.map((step) => {
+    if (step.status !== "done" || !step.started_at)
+      return { ...step, finished_at: null, duration_ms: null, usage: null };
+    const model = MODEL_TYPES.has(types.get(step.node) ?? "");
+    const duration_ms = model ? 1830 : 120;
+    return {
+      ...step,
+      finished_at: new Date(
+        Date.parse(step.started_at) + duration_ms,
+      ).toISOString(),
+      duration_ms,
+      usage: model
+        ? {
+            calls: 1,
+            prompt_tokens: 1520,
+            completion_tokens: 340,
+            cost_usd: 0.0041,
+          }
+        : null,
+    };
+  });
+}
+
 export async function mockRuns(request: Request, path: string[]) {
   seedRetailRun();
   if (path[0] === "datasources")
@@ -977,7 +1051,7 @@ export async function mockRuns(request: Request, path: string[]) {
     return json([...store.values()].reverse().map(refresh).map(summary));
   }
   let body: unknown;
-  if (request.method === "POST") {
+  if (request.method === "POST" || request.method === "PUT") {
     try {
       body = await request.json();
     } catch {
@@ -988,6 +1062,79 @@ export async function mockRuns(request: Request, path: string[]) {
   const entry = store.get(path[1]);
   if (!entry) return json({ detail: "Run not found" }, 404);
   const run = refresh(entry);
+  if (path[2] === "feedback")
+    return mockFeedback(
+      new Request(request.url, {
+        method: request.method,
+        body: request.method === "PUT" ? JSON.stringify(body) : undefined,
+      }),
+      run,
+    );
+  if (request.method === "POST" && path[2] === "rerun-from") {
+    if (
+      !isRecord(body) ||
+      typeof body.node !== "string" ||
+      !body.node ||
+      (body.config !== undefined &&
+        body.config !== "draft" &&
+        body.config !== "same")
+    )
+      return json({ detail: "Invalid node or config" }, 422);
+    if (!entry.flow) return json({ detail: "代码应用不能从某一步重跑" }, 409);
+    const useDraft = body.config !== "same";
+    const draft = useDraft ? mockAppSnapshot(run.app, undefined, true) : null;
+    if (useDraft && !draft) return json({ detail: "这个应用没有草稿" }, 409);
+    const config =
+      draft && isFlowConfig(draft.config) ? draft.config : entry.flow.config;
+    const node = config.graph.nodes.find((item) => item.id === body.node);
+    if (!node)
+      return json(
+        {
+          detail: `${useDraft ? "草稿" : "原运行的配置"}里没有节点 ${body.node}`,
+        },
+        422,
+      );
+    if (node.type === "start")
+      return json(
+        { detail: "从开始节点重跑就是重新运行，请用“复制并重新发起”" },
+        422,
+      );
+    const before = entry.steps.findLast((step) => step.node === node.id);
+    if (!before)
+      return json({ detail: `原运行没有跑到「${node.title}」这一步` }, 422);
+    const made = create(
+      {
+        app: run.app,
+        input: run.input,
+        ...(useDraft
+          ? { draft: true }
+          : run.draft || run.app_version == null
+            ? {}
+            : { app_version: run.app_version }),
+      },
+      {
+        rerunOf: run.run_id,
+        config: !useDraft && run.draft ? entry.flow.config : undefined,
+      },
+    );
+    if (made.status !== 201) return made;
+    const receipt = (await made.clone().json()) as { run_id: string };
+    const copy = store.get(receipt.run_id);
+    if (copy?.flow) {
+      copy.flow.pool = {
+        ...structuredClone(before.input as typeof copy.flow.pool),
+        ...Object.fromEntries(
+          ["env", "secret", "param", "project"].map((key) => [
+            key,
+            copy.flow!.pool[key],
+          ]),
+        ),
+      };
+      copy.flow.next = node.id;
+      copy.startAt = { node: node.id, title: node.title, run_id: run.run_id };
+    }
+    return made;
+  }
   if (request.method === "POST" && path[2] === "cancel") {
     if (
       !isRecord(body) ||
@@ -1109,7 +1256,7 @@ export async function mockRuns(request: Request, path: string[]) {
   }
   if (request.method === "GET" && path[2] === "flow") {
     // Like the backend: a cancelled run's unfinished step shows where it stopped.
-    const steps =
+    let steps =
       run.status === "cancelled"
         ? entry.steps.map((step) =>
             step.status === "done"
@@ -1120,6 +1267,7 @@ export async function mockRuns(request: Request, path: string[]) {
     const stopped = steps.at(-1)?.status === "stopped" ? steps.at(-1) : null;
     if (!entry.flow)
       return json(mockFlow(run.app, steps, run.status === "done"));
+    steps = timed(entry, steps);
     const view = flowView(
       entry.flow.config,
       entry.flow.title,

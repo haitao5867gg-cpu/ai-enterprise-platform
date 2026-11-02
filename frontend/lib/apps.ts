@@ -5,6 +5,7 @@ import type {
   Retrieval,
 } from "./knowledge";
 import type { FlowEdge, NodeDesign, NodeKind } from "./flow";
+import type { CheckResult } from "./evals";
 import { ApiError, isRecord, requestJson } from "./runs";
 
 // docs/api/apps-and-skills.md — names and payloads follow the backend contract.
@@ -365,12 +366,16 @@ export type AppEval = {
   started_at: string;
   finished_at: string | null;
   error: string | null;
+  // How many cases the eval set had when the eval started (docs/api/evals.md).
+  case_count?: number;
   cases: {
     id: string;
+    title?: string | null;
     status: string;
     score: number | null;
     run_id: string | null;
     error: string | null;
+    checks?: CheckResult[];
   }[];
 };
 export type AppVersion = {

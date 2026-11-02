@@ -16,6 +16,7 @@ import {
   type AppConfig,
   type AppDetail,
   type AppEval,
+  type FlowConfig,
   type AppVersion,
 } from "../lib/apps";
 import { actorPayload, savedActor } from "../lib/actor";
@@ -40,6 +41,8 @@ import {
 } from "../lib/flow-edit";
 import { FlowNodeDesign } from "./flow-node-design";
 import { ErrorNotice } from "./ui";
+import { EvalSetPanel } from "./eval-set";
+import type { EvalSet } from "../lib/evals";
 import { AppMetadata } from "./app-metadata";
 import { AppManualPanel, useManual } from "./app-manual";
 import { dataNodeIssues } from "../lib/data-nodes";
@@ -61,13 +64,23 @@ const caseLabels: Record<string, string> = {
 const scoreText = (value: number | null | undefined) =>
   value == null ? "—" : value.toFixed(2);
 
-function Evaluation({ evaluation }: { evaluation: AppEval | null }) {
+function Evaluation({
+  evaluation,
+  stale,
+}: {
+  evaluation: AppEval | null;
+  // The eval set changed after this eval started.
+  stale: boolean;
+}) {
   if (!evaluation)
     return (
       <p className="muted">尚未运行评测。每次保存草稿后，需要重新评测。</p>
     );
   return (
     <div className="evaluation-result" aria-live="polite">
+      {stale && evaluation.status !== "running" && (
+        <p className="eval-stale">评测集改过了，建议重新评测。</p>
+      )}
       <div className={`eval-summary ${evaluation.status}`}>
         <strong>{evalLabels[evaluation.status]}</strong>
         <span>
@@ -81,16 +94,52 @@ function Evaluation({ evaluation }: { evaluation: AppEval | null }) {
           <li key={item.id}>
             {item.run_id ? (
               <Link href={`/runs/${encodeURIComponent(item.run_id)}`}>
-                {item.id} ↗
+                {item.title || item.id} ↗
               </Link>
             ) : (
-              <span>{item.id}</span>
+              <span>{item.title || item.id}</span>
             )}
             <span>
               {caseLabels[item.status] ?? item.status} · 得分{" "}
               {scoreText(item.score)}
             </span>
             {item.error && <p className="field-error">{item.error}</p>}
+            {item.checks && item.checks.length > 0 && (
+              <ul
+                className="eval-check-results"
+                aria-label={`${item.title || item.id} 的检查`}
+              >
+                {item.checks.map((check, i) => (
+                  <li
+                    key={i}
+                    className={
+                      check.passed === null
+                        ? "skipped"
+                        : check.passed
+                          ? "passed"
+                          : "failed"
+                    }
+                  >
+                    <span aria-hidden="true">
+                      {check.passed === null ? "–" : check.passed ? "✓" : "✗"}
+                    </span>
+                    <span>
+                      {check.name}
+                      <span className="sr-only">
+                        {check.passed === null
+                          ? "（跳过）"
+                          : check.passed
+                            ? "（通过）"
+                            : "（没通过）"}
+                      </span>
+                      {check.detail && (
+                        <small className="muted"> · {check.detail}</small>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </li>
         ))}
       </ul>
@@ -293,6 +342,7 @@ export function AppDetailView({ app }: { app: string }) {
   const [issues, setIssues] = useState<FlowIssues>(noIssues);
   const [manualDraft, setManualDraft] = useState(false);
   const [tab, setTab] = useState<Tab>("design");
+  const [evalSet, setEvalSet] = useState<EvalSet | null>(null);
   useEffect(() => {
     // The tab is in the address (#release) so a link can open it; only known here.
     const follow = () => {
@@ -803,7 +853,18 @@ export function AppDetailView({ app }: { app: string }) {
                     : `版本 v${data.current_version} 发布时的`}
                   评测。
                 </p>
-                <Evaluation evaluation={displayedEval} />
+                <Evaluation
+                  evaluation={displayedEval}
+                  stale={
+                    view === "draft" &&
+                    Boolean(
+                      evalSet?.updated_at &&
+                      displayedEval &&
+                      Date.parse(evalSet.updated_at) >
+                        Date.parse(displayedEval.started_at),
+                    )
+                  }
+                />
               </>
             ) : (
               <p className="muted">此应用没有评测集，保存草稿后可直接发布。</p>
@@ -857,6 +918,24 @@ export function AppDetailView({ app }: { app: string }) {
             </form>
           </section>
         </div>
+        <EvalSetPanel
+          app={app}
+          config={
+            data.kind === "flow"
+              ? ((data.draft?.config ?? data.current.config) as FlowConfig)
+              : null
+          }
+          options={data.options}
+          onSaved={(value) => {
+            setEvalSet(value);
+            const gated = value.source === "file" || value.cases.length > 0;
+            setData((now) =>
+              now && now.has_eval_set !== gated
+                ? { ...now, has_eval_set: gated }
+                : now,
+            );
+          }}
+        />
         <section className="panel asset-section" aria-label="版本历史">
           <h2>版本历史</h2>
           {historyError && (

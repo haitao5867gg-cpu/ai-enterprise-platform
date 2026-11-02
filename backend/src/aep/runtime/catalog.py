@@ -25,7 +25,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from aep import evals
+from aep import eval_sets, evals, llm, policy
 from aep.config import Settings
 from aep.connector_urls import same_url
 from aep.datasources import DATABASE_KINDS, DataSourceStore
@@ -39,7 +39,14 @@ from aep.runtime.flow import refs
 from aep.runtime.flow.check import check_common, check_config
 from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems
 from aep.runtime.flow.store import AppExists
-from aep.runtime.service import RunService, RunView
+from aep.runtime.service import (
+    CommentRequired,
+    InvalidDecision,
+    InvalidValues,
+    RunNotFound,
+    RunService,
+    RunView,
+)
 from aep.runtime.store import FINISHED
 from aep.runtime.versions import AppVersion, Draft, NoDraft, VersionNotFound
 from aep.skills import Skill
@@ -78,9 +85,26 @@ class NotTestable(Exception):
     """This node cannot be run on its own; the message says why."""
 
 
+class EvalSetReadOnly(Exception):
+    """The app's eval set is a file in the repository."""
+
+
+class CaseFromRunProblem(Exception):
+    """The run cannot be saved as a case; the message says why. ``status`` is the HTTP
+    status that fits."""
+
+    def __init__(self, message: str, status: int = 409) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 # How long a node tried on its own may take.
 NODE_TEST_SECONDS = 120
 MASK = "******"
+
+
+def _check_out(check: evals.Check) -> dict[str, Any]:
+    return {"kind": check.layer, "name": check.name, "passed": check.passed, "detail": check.detail}
 
 
 def _now() -> str:
@@ -119,8 +143,10 @@ class AppCatalog:
         datasources: DataSourceStore,
         settings: Settings,
         models: Any = None,
+        eval_sets_store: eval_sets.EvalSetStore | None = None,
     ) -> None:
         self._runs = runs
+        self.eval_sets = eval_sets_store or eval_sets.MemoryEvalSetStore()
         self._datasources = datasources
         self._settings = settings
         self._models = models
@@ -147,6 +173,14 @@ class AppCatalog:
         build = self._runs.builder(app)
         name = getattr(sys.modules.get(build.__module__), "EVAL_SET", None)
         return Path(self._settings.evals_dir) / name if name else None
+
+    async def has_eval_set(self, app: str) -> bool:
+        """Whether publishing waits for a passed eval: a file eval set, or a platform one
+        with at least one case."""
+        if self.eval_set(app) is not None:
+            return True
+        found = await self.eval_sets.get(app)
+        return bool(found and found.cases)
 
     async def models(self) -> list[str] | None:
         return await self._models() if self._models else None
@@ -179,7 +213,7 @@ class AppCatalog:
             "created_at": created_at,
             "current_version": await self._runs.versions.current(app),
             "has_draft": await self._runs.versions.draft(app) is not None,
-            "has_eval_set": self.eval_set(app) is not None,
+            "has_eval_set": await self.has_eval_set(app),
         }
 
     def _config(self, app: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -510,6 +544,7 @@ class AppCatalog:
         if app in self._runs.code_apps or await self._runs.flows.get(app) is not None:
             raise AppExists(app)
         needs_setup = False
+        copied: eval_sets.EvalSet | None = None
         if source.get("template"):
             template = flowbuiltin.TEMPLATES.get(source["template"])
             if template is None:
@@ -527,11 +562,26 @@ class AppCatalog:
                 raise BadSource(f"应用 {original} 没有版本 {number}")
             raw = self._runs.flow_config(original, found.config)
             note = f"复制自 {original} 版本 {number}"
+            copied = await self.eval_sets.get(original)
         else:
             raw, note = flowbuiltin.blank(), "新建空白应用"
         # Built-in templates that need a base intentionally have an empty selection.
         config = copy.deepcopy(raw) if needs_setup else await self.check_flow(raw)
         await self._create_flow(app, title, summary, config, note, actor, needs_setup)
+        if source.get("app") and copied is not None:
+            # A copy keeps the original's eval set, and so its publishing gate.
+            for case in copied.cases:
+                case["from_run"] = None
+            await self.eval_sets.put(
+                eval_sets.EvalSet(
+                    app,
+                    copied.threshold,
+                    copied.judge_model,
+                    copied.cases,
+                    actor,
+                    datetime.now(UTC),
+                )
+            )
 
     async def _create_flow(
         self,
@@ -785,7 +835,7 @@ class AppCatalog:
         draft = await self._runs.versions.draft(app)
         if draft is None:
             raise NotPublishable("没有草稿")
-        if self.eval_set(app) is not None:
+        if await self.has_eval_set(app):
             status = (draft.eval or {}).get("status")
             if status != "passed":
                 reason = {
@@ -817,28 +867,45 @@ class AppCatalog:
         if draft is None:
             raise EvalUnavailable("没有草稿")
         path = self.eval_set(app)
-        if path is None:
-            raise EvalUnavailable("这个应用没有评测集")
-        if not path.is_file():
-            raise EvalUnavailable(f"找不到评测集文件 {path}，请检查 AEP_EVALS_DIR")
+        judge_model: str | None = None
+        if path is not None:
+            if not path.is_file():
+                raise EvalUnavailable(f"找不到评测集文件 {path}，请检查 AEP_EVALS_DIR")
+            cases = evals.load_cases(path)
+            threshold = self._settings.eval_publish_threshold
+        else:
+            found = await self.eval_sets.get(app)
+            if found is None or not found.cases:
+                raise EvalUnavailable("这个应用没有评测集")
+            cases, threshold, judge_model = found.cases, found.threshold, found.judge_model
         running = self._evals.get(app)
         if running is not None and not running.done():
             raise EvalUnavailable("已经有评测在进行")
-        cases = evals.load_cases(path)
         state = {
             "status": "running",
             "score": None,
-            "threshold": self._settings.eval_publish_threshold,
+            "threshold": threshold,
+            "case_count": len(cases),
             "started_at": _now(),
             "finished_at": None,
             "error": None,
             "cases": [
-                {"id": c["id"], "status": "pending", "score": None, "run_id": None, "error": None}
+                {
+                    "id": c["id"],
+                    "title": c.get("title"),
+                    "status": "pending",
+                    "score": None,
+                    "run_id": None,
+                    "error": None,
+                    "checks": [],
+                }
                 for c in cases
             ],
         }
         await self._runs.versions.set_draft_eval(app, draft.revision, state)
-        task = asyncio.create_task(self._evaluate(app, draft, cases, state))
+        task = asyncio.create_task(
+            self._evaluate(app, draft, cases, state, path is None, judge_model)
+        )
         self._evals[app] = task
 
     async def recover(self) -> int:
@@ -883,7 +950,13 @@ class AppCatalog:
         raise RuntimeError(f"找不到评测用的数据源 {wanted}（AEP_EVAL_DATASOURCE）")
 
     async def _evaluate(
-        self, app: str, draft: Draft, cases: list[dict[str, Any]], state: dict[str, Any]
+        self,
+        app: str,
+        draft: Draft,
+        cases: list[dict[str, Any]],
+        state: dict[str, Any],
+        flow: bool = False,
+        judge_model: str | None = None,
     ) -> None:
         lock = asyncio.Lock()
 
@@ -892,7 +965,9 @@ class AppCatalog:
                 await self._runs.versions.set_draft_eval(app, draft.revision, state)
 
         try:
-            datasource_id = await self._datasource_id()
+            # Flow cases carry their whole input; the ETL ones run on a data source.
+            datasource_id = "" if flow else await self._datasource_id()
+            judge = self._judge(judge_model or self._runs.default_model)
             gate = asyncio.Semaphore(max(self._settings.eval_parallel, 1))
 
             async def one(i: int, case: dict[str, Any]) -> evals.CaseResult:
@@ -902,11 +977,17 @@ class AppCatalog:
                         # The draft changed or went away: its result would not be kept.
                         return evals.CaseResult(case["id"], error="草稿已经改了")
                     state["cases"][i]["status"] = "running"
-                    result = await self._run_case(app, draft, case, datasource_id, state, i, save)
+                    if flow:
+                        result = await self._run_flow_case(app, draft, case, state, i, save, judge)
+                    else:
+                        result = await self._run_case(
+                            app, draft, case, datasource_id, state, i, save
+                        )
                     state["cases"][i] |= {
                         "status": "done" if result.status == "done" else "error",
                         "score": result.score,
                         "error": result.error,
+                        "checks": [_check_out(c) for c in result.checks],
                     }
                     await save()
                     return result
@@ -961,6 +1042,191 @@ class AppCatalog:
         out.checks = evals.score_case(case, plan, run)
         out.seconds = round(time.monotonic() - started, 1)
         return out
+
+    def _judge(self, model: str) -> eval_sets.Judge:
+        """Asks ``model`` whether an answer meets a check's criteria."""
+        rules = policy.platform_default(self._settings)
+
+        async def judge(answer: str, criteria: str, reference: str | None) -> tuple[bool, str]:
+            if not rules.allows(model):
+                return False, f"平台不允许用模型 {model} 判断"
+            try:
+                reply = await llm.chat(
+                    self._runs.llm_client,
+                    eval_sets.judge_messages(answer, criteria, reference),
+                    model=model,
+                    temperature=0,
+                )
+                return eval_sets.judge_reply(llm.parse_json(reply.text))
+            except Exception as exc:  # noqa: BLE001 - the check fails, saying why
+                return False, f"模型判断没有成功：{str(exc) or type(exc).__name__}"
+
+        return judge
+
+    async def _run_flow_case(
+        self,
+        app: str,
+        draft: Draft,
+        case: dict[str, Any],
+        state: dict[str, Any],
+        index: int,
+        save: Any,
+        judge: eval_sets.Judge,
+    ) -> evals.CaseResult:
+        out = evals.CaseResult(case["id"])
+        started = time.monotonic()
+        deadline = started + self._settings.eval_timeout_seconds
+        answers = case.get("answers") or {}
+        run: dict[str, Any]
+        try:
+            record = await self._runs.create(
+                app, case.get("input") or {}, config=draft.config, requester=evals.ACTOR
+            )
+            out.run_id = record.run_id
+            state["cases"][index]["run_id"] = record.run_id
+            await save()
+            run = await self._wait(record.run_id, deadline)
+            asked = 0
+            while run["status"] == "waiting":
+                asked += 1
+                if asked > eval_sets.MAX_ANSWERS:
+                    raise RuntimeError(f"运行等人回答超过 {eval_sets.MAX_ANSWERS} 次")
+                await self._answer(record.run_id, run["pending"] or {}, answers)
+                run = await self._wait(record.run_id, deadline)
+        except InvalidValues as exc:
+            out.error = "输入不对：" + "；".join(exc.problems.values())
+            run = {"status": "error", "error": out.error}
+        except Exception as exc:  # noqa: BLE001 - the case fails, the eval goes on
+            out.error = str(exc) or type(exc).__name__
+            run = {"status": "error", "error": out.error}
+        out.status = run.get("status", "error")
+        out.error = out.error or run.get("error")
+        out.checks = await eval_sets.score_flow_case(case, run, judge)
+        out.seconds = round(time.monotonic() - started, 1)
+        return out
+
+    async def _answer(self, run_id: str, pending: dict[str, Any], answers: dict[str, Any]) -> None:
+        """Answer the person's step the run waits at, as the case says."""
+        node = (pending.get("details") or {}).get("node")
+        given = answers.get(node) or {}
+        title = pending.get("prompt") or node
+        options = pending.get("options") or []
+        if pending.get("kind") == "form":
+            if given.get("values") is None:
+                raise RuntimeError(f"用例没有给表单「{node}」的值")
+            try:
+                await self._runs.resume(run_id, "submit", None, evals.ACTOR, given["values"])
+            except InvalidValues as exc:
+                problems = "；".join(exc.problems.values())
+                raise RuntimeError(f"表单「{node}」的值不对：{problems}") from exc
+            return
+        decision = given.get("decision") or (options[0] if options else None)
+        try:
+            await self._runs.resume(
+                run_id, decision or "", given.get("comment"), evals.ACTOR, given.get("values")
+            )
+        except InvalidDecision as exc:
+            raise RuntimeError(f"「{title}」没有选项 {decision}") from exc
+        except CommentRequired as exc:
+            raise RuntimeError(f"「{title}」选 {decision} 要写意见，用例里没写") from exc
+        except InvalidValues as exc:
+            problems = "；".join(exc.problems.values())
+            raise RuntimeError(f"「{title}」的回答不对：{problems}") from exc
+
+    # Eval sets (docs/api/evals.md)
+
+    async def get_eval_set(self, app: str) -> dict[str, Any]:
+        kind = await self._check(app)
+        path = self.eval_set(app)
+        if path is not None:
+            cases = evals.load_cases(path) if path.is_file() else []
+            return {
+                "app": app,
+                "source": "file",
+                "editable": False,
+                "threshold": self._settings.eval_publish_threshold,
+                "judge_model": None,
+                "cases": cases,
+                "updated_by": None,
+                "updated_at": None,
+            }
+        found = await self.eval_sets.get(app)
+        return {
+            "app": app,
+            "source": "platform" if found else None,
+            "editable": kind == "flow",
+            "threshold": found.threshold if found else self._settings.eval_publish_threshold,
+            "judge_model": found.judge_model if found else None,
+            "cases": found.cases if found else [],
+            "updated_by": found.updated_by if found else None,
+            "updated_at": found.updated_at.isoformat() if found and found.updated_at else None,
+        }
+
+    async def _editable(self, app: str) -> None:
+        if await self._check(app) != "flow" or self.eval_set(app) is not None:
+            raise EvalSetReadOnly(app)
+
+    async def put_eval_set(
+        self,
+        app: str,
+        cases: list[dict[str, Any]],
+        threshold: float | None,
+        judge_model: str | None,
+        actor: str | None,
+    ) -> dict[str, Any]:
+        await self._editable(app)
+        found = await self.eval_sets.get(app)
+        await self.eval_sets.put(
+            eval_sets.EvalSet(
+                app,
+                threshold
+                if threshold is not None
+                else (found.threshold if found else self._settings.eval_publish_threshold),
+                judge_model,
+                cases,
+                actor,
+                datetime.now(UTC),
+            )
+        )
+        return await self.get_eval_set(app)
+
+    async def case_from_run(
+        self, app: str, run_id: str, rating: str, actor: str | None
+    ) -> dict[str, Any]:
+        await self._editable(app)
+        try:
+            view = await self._runs.get(run_id)
+        except RunNotFound as exc:
+            raise CaseFromRunProblem("没有找到这次运行", 404) from exc
+        if view.record.app != app:
+            raise CaseFromRunProblem(f"这次运行不是应用 {app} 的")
+        if view.record.status not in ("done", "error"):
+            raise CaseFromRunProblem("运行结束后才能存成用例")
+        found = await self.eval_sets.get(app) or eval_sets.EvalSet(
+            app, self._settings.eval_publish_threshold
+        )
+        if len(found.cases) >= eval_sets.MAX_CASES:
+            raise CaseFromRunProblem(f"一个评测集最多 {eval_sets.MAX_CASES} 条用例")
+        good = rating == "good" and view.record.status == "done"
+        case = {
+            "id": eval_sets.case_id(run_id, {c["id"] for c in found.cases}),
+            "title": self._runs.title(view.record),
+            "input": view.record.input,
+            "answers": await self._runs.answers_given(run_id),
+            "expect": eval_sets.suggested_checks(view.result) if good else [],
+            "from_run": run_id,
+        }
+        if case["title"] and len(case["title"]) > 100:
+            case["title"] = case["title"][:99] + "…"
+        found.cases.append(case)
+        found.updated_by, found.updated_at = actor, datetime.now(UTC)
+        await self.eval_sets.put(found)
+        return case
+
+    async def cases_from(self, app: str, run_id: str) -> list[str]:
+        """The ids of the cases saved from this run."""
+        found = await self.eval_sets.get(app)
+        return [c["id"] for c in (found.cases if found else []) if c.get("from_run") == run_id]
 
     async def _wait(self, run_id: str, deadline: float) -> dict[str, Any]:
         while True:

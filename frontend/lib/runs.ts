@@ -1,3 +1,4 @@
+import type { RunFeedback } from "./evals";
 import type { RunSource } from "./knowledge";
 import type { FormField, Input } from "./apps";
 
@@ -152,6 +153,10 @@ export type Run = RunSummary & {
   error: string | null;
   trace_id?: string | null;
   sources?: RunSource[];
+  // A run rerun from a step of another run: where it began (docs/api/evals.md).
+  start_at?: { node: string; title: string; run_id: string } | null;
+  // People's "right / wrong" on it and the eval cases saved from it; null: not offered.
+  feedback?: RunFeedback | null;
 };
 
 export const statusLabels: Record<RunStatus, string> = {
@@ -487,7 +492,10 @@ export async function requestJson(
           response.status === 401 ||
           response.status === 403 ||
           response.status === 429 ||
-          path.startsWith("/projects"))
+          path.startsWith("/projects") ||
+          // Eval sets, feedback and reruns from a step say what to do in their detail.
+          path.includes("/eval-set") ||
+          /\/(feedback|rerun-from)$/.test(path))
         ? detail
         : detail
           ? `${message} ${detail}`

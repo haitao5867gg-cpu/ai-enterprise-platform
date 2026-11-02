@@ -247,6 +247,7 @@ class CallStore(Protocol):
     async def record(self, call: llm.CallRecord) -> None: ...
     async def summary(self, since: datetime) -> dict[str, UsageSummary]: ...
     async def prune(self, before: datetime) -> int: ...
+    async def for_run(self, run_id: str) -> list[tuple[datetime, llm.CallRecord]]: ...
 
 
 class SettingStore(Protocol):
@@ -272,6 +273,9 @@ class MemoryCallStore:
                 continue
             found[call.model] = _add(found.get(call.model, UsageSummary()), at, call)
         return found
+
+    async def for_run(self, run_id: str) -> list[tuple[datetime, llm.CallRecord]]:
+        return [(at, c) for at, c in self.calls if c.run_id == run_id]
 
     async def prune(self, before: datetime) -> int:
         kept = [(at, c) for at, c in self.calls if at >= before]
@@ -394,6 +398,17 @@ class PostgresCallStore:
                 )
                 for row in await cur.fetchall()
             }
+
+    async def for_run(self, run_id: str) -> list[tuple[datetime, llm.CallRecord]]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT at, model, kind, run_id, node, prompt_tokens, completion_tokens,"
+                " cost_usd, ok, error, duration_ms FROM model_calls"
+                " WHERE tenant_id = %s AND run_id = %s ORDER BY at",
+                (DEFAULT_TENANT, run_id),
+            )
+            rows = await cur.fetchall()
+        return [(row.pop("at"), llm.CallRecord(**row)) for row in rows]
 
     async def prune(self, before: datetime) -> int:
         async with self._pool.connection() as conn:
