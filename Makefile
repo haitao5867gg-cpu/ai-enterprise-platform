@@ -1,4 +1,4 @@
-.PHONY: up up-full down logs test lint fmt eval demo
+.PHONY: up up-full up-sqlserver down logs test lint fmt eval demo
 
 up:        ## Start the full local stack
 	docker compose up --build -d
@@ -11,8 +11,12 @@ up-full:   ## Full stack plus self-hosted Langfuse; every run is traced
 	@echo "Web: http://localhost:3000  API: http://localhost:8000/docs"
 	@echo "Langfuse: http://localhost:3100 (admin@aep.local / aep-local-dev)"
 
-down:      ## Stop the stack, Langfuse included (data volumes are kept)
-	docker compose --profile observability down
+up-sqlserver: ## Add the SQL Server sample source and its read-only connector
+	docker compose --profile sqlserver up --build -d --wait source-sqlserver connector-sqlserver
+	@echo "Register it on the data source page: SQL Server, http://connector-sqlserver:8007/mcp"
+
+down:      ## Stop the stack, Langfuse and SQL Server included (data volumes are kept)
+	docker compose --profile observability --profile sqlserver down
 
 logs:
 	docker compose logs -f
@@ -48,6 +52,7 @@ lint:
 	cd backend && uv run ruff check . && uv run ruff format --check .
 	cd connectors/postgres && uv run ruff check . && uv run ruff format --check .
 	cd connectors/mysql && uv run ruff check . && uv run ruff format --check .
+	cd connectors/sqlserver && uv run ruff check . && uv run ruff format --check .
 	cd connectors/files && uv run ruff check . && uv run ruff format --check .
 	cd connectors/sandbox && uv run ruff check . && uv run ruff format --check .
 	cd connectors/databricks && uv run ruff check . && uv run ruff format --check .
@@ -56,11 +61,12 @@ fmt:
 	cd backend && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/postgres && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/mysql && uv run ruff check --fix . && uv run ruff format .
+	cd connectors/sqlserver && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/files && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/sandbox && uv run ruff check --fix . && uv run ruff format .
 	cd connectors/databricks && uv run ruff check --fix . && uv run ruff format .
 
-.PHONY: test-connectors smoke-connectors
+.PHONY: test-connectors smoke-connectors test-sqlserver
 
 test-connectors:  ## Integration tests against the synthetic source database
 	docker compose up -d --wait source-postgres source-mysql
@@ -69,6 +75,12 @@ test-connectors:  ## Integration tests against the synthetic source database
 	uv run --frozen --project connectors/files pytest connectors/files/tests -q
 	uv run --frozen --project connectors/sandbox pytest connectors/sandbox/tests -q
 	cd connectors/databricks && uv run --frozen pytest -q
+
+# SQL Server is not in test-connectors: its image is large and x86-64 only.
+test-sqlserver:  ## SQL Server connector tests against the synthetic source (profile sqlserver)
+	docker compose --profile sqlserver up -d --wait source-sqlserver
+	docker compose --profile sqlserver run --rm source-sqlserver-seed
+	uv run --frozen --project connectors/sqlserver pytest connectors/sqlserver/tests -q
 
 smoke-connectors: ## Call all five tools on the running Streamable HTTP server
 	uv run --frozen --project connectors/postgres aep-postgres-smoke
