@@ -42,6 +42,7 @@ import { EtlPlanView } from "./etl-plan";
 import { EtlReleaseView, EtlTrail } from "./etl-release";
 import { GeneratedFiles } from "./generated-files";
 import { RunFlow } from "./run-flow";
+import { RunFeedbackPanel } from "./run-feedback";
 import { RunManual } from "./app-manual";
 import { savedActor, saveActor } from "../lib/actor";
 import { useMay, useSignedIn } from "./session";
@@ -146,6 +147,7 @@ export function RunDetail({
   const [actor, setActor] = useState(savedActor);
   const me = useSignedIn();
   const mayApprove = useMay("approver");
+  const mayBuild = useMay("builder");
   const [actorError, setActorError] = useState("");
   const actorInput = useRef<HTMLInputElement>(null);
   const [submitting, setSubmitting] = useState<Decision | null>(null);
@@ -750,6 +752,12 @@ export function RunDetail({
                   runId={id}
                   version={`${run.status}:${run.messages.length}`}
                   live={run.status === "running"}
+                  rerun={mayBuild && Array.isArray(run.inputs)}
+                  traceUrl={
+                    langfuseTraceBaseUrl && run.trace_id
+                      ? `${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`
+                      : null
+                  }
                 />
               )}
               {resultPlan && <EtlPlanView plan={resultPlan} asResult />}
@@ -958,7 +966,20 @@ export function RunDetail({
                       <dd>{policyText(run.policy, run.project)}</dd>
                     </div>
                   )}
-                  {run.rerun_of && (
+                  {run.start_at && (
+                    <div>
+                      <dt>重跑自</dt>
+                      <dd>
+                        <Link
+                          className="text-button"
+                          href={`/runs/${encodeURIComponent(run.start_at.run_id)}`}
+                        >
+                          原运行的「{run.start_at.title}」这一步
+                        </Link>
+                      </dd>
+                    </div>
+                  )}
+                  {run.rerun_of && !run.start_at && (
                     <div>
                       <dt>复制自</dt>
                       <dd>
@@ -1318,6 +1339,13 @@ export function RunDetail({
                   )}
                 </section>
               )}
+              <RunFeedbackPanel
+                key={run.feedback?.mine?.at ?? "none"}
+                run={run}
+                onChange={(feedback) =>
+                  setRun((now) => (now ? { ...now, feedback } : now))
+                }
+              />
               {run.status === "cancelled" && (
                 <section className="panel failure-card cancelled-card">
                   <h2>已取消</h2>

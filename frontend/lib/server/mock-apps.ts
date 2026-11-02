@@ -39,6 +39,12 @@ import { buildMockManual } from "./mock-manual";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
 import { createMockEvalRun } from "./mock-runs";
 import {
+  copyMockEvalSet,
+  mockEvalSet,
+  mockEvalSetOf,
+  mockHasEvalSet,
+} from "./mock-evals";
+import {
   invalid,
   mockError,
   mockJson,
@@ -264,7 +270,7 @@ function summary(entry: StoredApp) {
     created_at: entry.created_at,
     current_version: entry.current,
     has_draft: entry.draft !== null,
-    has_eval_set: entry.app === "etl",
+    has_eval_set: mockHasEvalSet(entry.app),
   };
 }
 function refresh(entry: StoredApp) {
@@ -282,10 +288,26 @@ function refresh(entry: StoredApp) {
   evaluation.status = failed ? "failed" : "passed";
   evaluation.score = failed ? 0.6 : 0.9;
   evaluation.finished_at = new Date().toISOString();
+  const set = entry.app === "etl" ? undefined : mockEvalSetOf(entry.app);
   evaluation.cases.forEach((item) => {
     item.status = "done";
     item.score = evaluation.score;
+    const found = set?.cases.find((c) => c.id === item.id);
+    if (found) {
+      // Like the backend: "运行完成" and one line per check; every check passes here.
+      item.score = 1;
+      item.checks = [
+        { kind: "completed", name: "运行完成", passed: true, detail: "" },
+        ...found.expect.map((check) => ({
+          kind: check.kind,
+          name: `${check.path || "结果"} ${check.kind === "judge" ? "模型判断" : check.kind === "equals" ? "等于" : check.kind === "contains" ? "包含" : "不含"}`,
+          passed: true,
+          detail: "",
+        })),
+      ];
+    }
   });
+  if (set) evaluation.score = 1;
 }
 function startProject(config: FlowConfig) {
   const start = config.graph.nodes.find((node) => node.type === "start");
@@ -732,12 +754,15 @@ export async function mockApps(
     const entry = createEntry(body, needsKnowledge ? blankConfig() : config);
     if (needsKnowledge) entry.draft = draftVersion(config, body.actor);
     store.set(entry.app, entry);
+    if (typeof from.app === "string") copyMockEvalSet(from.app, entry.app);
     return mockJson(detail(entry), 201);
   }
   const isNewImport = path[1] === "import";
   const entry = isNewImport ? undefined : store.get(path[1]);
   if (!isNewImport && (!entry || entry.archived))
     return mockError("应用不存在", 404);
+  if (entry && path[2] === "eval-set")
+    return mockEvalSet(request, entry.app, entry.kind, path[3] === "cases");
   if (isNewImport || (path[2] === "draft" && path[3] === "import")) {
     if (entry?.kind === "code") return mockError("代码应用不能导入", 409);
     const body = await readBody(request);
@@ -981,7 +1006,7 @@ export async function mockApps(
   }
   if (!entry.draft) return mockError("请先保存应用草稿", 409);
   if (path[3] === "eval") {
-    if (entry.app !== "etl") return mockError("此应用没有评测集", 409);
+    if (!mockHasEvalSet(entry.app)) return mockError("此应用没有评测集", 409);
     if (entry.draft.eval?.status === "running")
       return mockError("草稿已有评测在运行", 409);
     const config = entry.draft.config;
@@ -989,26 +1014,33 @@ export async function mockApps(
       !isFlowConfig(config) && config.nodes.plan.params.max_attempts === 1
         ? 0.6
         : 0.9;
+    const set = entry.app === "etl" ? undefined : mockEvalSetOf(entry.app);
+    const cases = set
+      ? set.cases.map((item) => ({ id: item.id, title: item.title }))
+      : ["orders-clean", "customers-clean"].map((id) => ({ id, title: null }));
     entry.draft.eval = {
       status: "running",
       score: null,
-      threshold: 0.8,
+      threshold: set?.threshold ?? 0.8,
+      case_count: cases.length,
       started_at: new Date().toISOString(),
       finished_at: null,
       error: null,
-      cases: ["orders-clean", "customers-clean"].map((id) => ({
+      cases: cases.map(({ id, title }) => ({
         id,
+        title,
         status: "running",
         score: null,
-        run_id: createMockEvalRun(id, score),
+        run_id: set ? null : createMockEvalRun(id, score),
         error: null,
+        checks: [],
       })),
     };
     return mockJson(detail(entry), 202);
   }
   const issues = validatePublish(body);
   if (issues.length) return invalid(issues);
-  if (entry.app === "etl" && entry.draft.eval?.status !== "passed")
+  if (mockHasEvalSet(entry.app) && entry.draft.eval?.status !== "passed")
     return mockError("草稿须先通过评测才能发布（阈值 0.8）", 409);
   if (
     isFlowConfig(entry.draft.config) &&

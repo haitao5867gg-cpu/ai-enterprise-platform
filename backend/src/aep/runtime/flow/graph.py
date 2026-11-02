@@ -61,6 +61,9 @@ class FlowState(TypedDict, total=False):
     data: Annotated[dict[str, list[str]], _merge]
     quoted: Annotated[dict[str, list[str]], _merge]
     restored: Annotated[dict[str, str], _merge]
+    # A run rerun from a step of another run starts at this node with that run's state
+    # (docs/api/evals.md, "从某一步重跑"); other runs start at the start node.
+    jump: str | None
 
 
 class FlowError(Exception):
@@ -225,7 +228,9 @@ def build(config: dict[str, Any], rt: Runtime) -> StateGraph:
         out[edge["from"]].append(edge)
     for node in nodes(config):
         graph.add_node(node["id"], _node_fn(node, rt), metadata=design(node, rt).metadata())
-    graph.add_edge(START, start_node(config)["id"])
+    first = start_node(config)["id"]
+    ids = [node["id"] for node in nodes(config)]
+    graph.add_conditional_edges(START, _jump(first, set(ids)), {i: i for i in ids})  # type: ignore[arg-type]
     for node in nodes(config):
         node_id = node["id"]
         if node["type"] == "end":
@@ -238,6 +243,14 @@ def build(config: dict[str, Any], rt: Runtime) -> StateGraph:
         path = {edge.get("branch") or NEXT: edge["to"] for edge in edges}
         graph.add_conditional_edges(node_id, _router(node_id), path)  # type: ignore[arg-type]
     return graph
+
+
+def _jump(first: str, ids: set[str]) -> Any:
+    def route(state: FlowState) -> str:
+        wanted = state.get("jump")
+        return wanted if wanted in ids else first
+
+    return route
 
 
 def _router(node_id: str) -> Any:

@@ -54,7 +54,32 @@ export type FlowStep = {
   output: unknown;
   error: string | null;
   interrupt: unknown;
+  // The developer view (docs/api/evals.md): when the step ended, how long it took and
+  // the model calls made in it.
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  usage?: StepUsage | null;
 };
+export type StepUsage = {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number | null;
+};
+
+export function msText(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${ms} 毫秒`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`;
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+export function tokensText(usage: StepUsage | null | undefined): string {
+  if (!usage) return "没有模型调用";
+  const total = usage.prompt_tokens + usage.completion_tokens;
+  const cost = usage.cost_usd == null ? "" : ` · $${usage.cost_usd.toFixed(4)}`;
+  return `${usage.calls} 次调用 · ${total.toLocaleString("en-US")} tokens（输入 ${usage.prompt_tokens.toLocaleString("en-US")} / 输出 ${usage.completion_tokens.toLocaleString("en-US")}）${cost}`;
+}
 
 export type Flow = {
   design: AppDesign | null;

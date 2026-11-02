@@ -20,6 +20,7 @@ from aep.api import (
     assets,
     auth,
     datasources,
+    eval_sets,
     flows,
     knowledge,
     models,
@@ -36,6 +37,8 @@ from aep.config import Settings, get_settings
 from aep.connector_check import ConnectorCheck
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
+from aep.eval_sets import PostgresEvalSetStore
+from aep.feedback import PostgresFeedbackStore
 from aep.health import check_llm_gateway, check_postgres, check_redis, demo_checks
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
@@ -141,10 +144,17 @@ def create_app() -> FastAPI:
             flows=flow_store,
             secrets=secret_store,
         )
-        catalog = AppCatalog(service, sources, settings, GatewayModels(llm_client))
+        # Flow apps' eval sets and people's feedback on runs (docs/api/evals.md).
+        eval_set_store = PostgresEvalSetStore(pool)
+        await eval_set_store.setup()
+        feedback_store = PostgresFeedbackStore(pool)
+        await feedback_store.setup()
+        app.state.feedback = feedback_store
+        catalog = AppCatalog(service, sources, settings, GatewayModels(llm_client), eval_set_store)
         # Models on the model page, the platform's default models and every call's record
         # (docs/api/models.md).
         call_store = PostgresCallStore(pool)
+        service.calls = call_store
         gateway_admin = GatewayAdmin.from_settings(settings)
 
         def set_default_chat(alias: str) -> None:
@@ -236,6 +246,7 @@ def create_app() -> FastAPI:
     app.include_router(datasources.router)
     app.include_router(projects.router)
     app.include_router(assets.router)
+    app.include_router(eval_sets.router)
     app.include_router(apps.router)
     app.include_router(flows.router)
     app.include_router(skills.router)

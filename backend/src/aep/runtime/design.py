@@ -10,6 +10,7 @@ the view changes when the graph does.
 
 import sys
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Any, Literal
 
 from langgraph.graph.state import CompiledStateGraph
@@ -23,7 +24,7 @@ from aep.runtime.appconfig import NodeConfig
 NodeKind = Literal["tool", "model", "human", "code"]
 
 # State keys left out of a step's input: the conversation is in the run itself.
-HIDDEN_INPUT = {"messages"}
+HIDDEN_INPUT = {"messages", "jump"}
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,13 @@ def _status(task: Any) -> str:
     return "waiting" if task.interrupts else "running"
 
 
+def _between(start: str | None, end: str | None) -> int | None:
+    if not start or not end:
+        return None
+    seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+    return max(0, round(seconds * 1000))
+
+
 async def flow(
     graph: CompiledStateGraph,
     config: dict[str, Any],
@@ -139,7 +147,10 @@ async def flow(
 
     snapshots: list[StateSnapshot] = [s async for s in graph.aget_state_history(config)]
     steps = []
-    for snapshot in reversed(snapshots):
+    ordered = list(reversed(snapshots))
+    for at, snapshot in enumerate(ordered):
+        # A step ends when the next checkpoint is written.
+        after = ordered[at + 1].created_at if at + 1 < len(ordered) else None
         values = {k: v for k, v in (snapshot.values or {}).items() if k not in HIDDEN_INPUT}
         for task in snapshot.tasks:
             if task.name.startswith("__"):
@@ -167,6 +178,10 @@ async def flow(
                     "output": task.result,
                     "error": error,
                     "interrupt": task.interrupts[0].value if task.interrupts else None,
+                    "finished_at": after if status == "done" else None,
+                    "duration_ms": _between(snapshot.created_at, after)
+                    if status == "done"
+                    else None,
                 }
             )
     current = None
