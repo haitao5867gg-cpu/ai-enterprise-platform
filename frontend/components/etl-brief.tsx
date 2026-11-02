@@ -401,8 +401,9 @@ export function TechPlanView({
                   <strong>{check.label}</strong>
                   <span>
                     {checkKinds[check.kind] ?? check.kind}
-                    {check.severity !== "error" &&
-                      ` · ${checkSeverities[check.severity] ?? check.severity}`}
+                    {check.severity === "error"
+                      ? " · 错误：不通过时结果不能直接通过"
+                      : ` · ${checkSeverities[check.severity] ?? check.severity}`}
                   </span>
                 </div>
                 <p className="check-text">{check.text}</p>

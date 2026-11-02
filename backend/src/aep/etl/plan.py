@@ -1246,7 +1246,9 @@ def _version_one_checks(
     return problems
 
 
-def _version_two_checks(plan: EtlPlanV2) -> list[str]:
+def _version_two_checks(plan: EtlPlanV2, model_answer: bool = True) -> list[str]:
+    """``model_answer``: the model wrote the answer design (the platform's own design from
+    the brief is not checked for its groups: the card says which groups it cannot add up)."""
     problems = _pyspark_problems(plan)
     for where, text in _business_texts(plan):
         found = _code_in(text)
@@ -1283,7 +1285,9 @@ def _version_two_checks(plan: EtlPlanV2) -> list[str]:
         problems += _question_problems(q)
     if plan.answer is not None:
         targets = {t.name: [c.name for c in t.columns] for t in plan.targets}
-        problems += answer.design_problems(plan.answer, targets)
+        keys = {t.name: list(t.primary_key) for t in plan.targets} if model_answer else None
+        sources = {t.name: {c.name: c.source for c in t.columns} for t in plan.targets}
+        problems += answer.design_problems(plan.answer, targets, keys, sources)
     return problems
 
 
@@ -1358,7 +1362,7 @@ def _validated(
     problems = _version_one_checks(
         plan, source_tables, known, trust_assumptions, show_values, modes
     )
-    problems += structure + _blank_texts(plan) + _version_two_checks(plan)
+    problems += structure + _blank_texts(plan) + _version_two_checks(plan, model_answer)
     kept: list[dict[str, Any]] = []
     if version == 3:
         kept, more = _version_three_checks(plan, proposed, project, existing)
@@ -1454,7 +1458,8 @@ OUTPUT_FORMAT_V2 = """只输出一个 JSON 对象，不要输出其他文字，�
   "answer": {"target": "结果表名", "filter": [{"column": "时间列", "pick": "latest"}],
              "group_by": ["分组列，最多 3 个"], "measures": ["指标列，1–8 个"],
              "order_by": [{"column": "排序列", "desc": true}], "top_n": 10,
-             "chart": {"type": "bar、line 或 none", "label": ["分组列"], "value": "指标列"}}
+             "chart": {"type": "bar、line 或 none", "label": ["分组列"], "value": "指标列"},
+             "add_up": ["可以跨行相加、但不是 sum 或 count 算出来的指标列，没有就给空数组"]}
 }
 不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。"""
 
@@ -1774,7 +1779,10 @@ def _plan_checks(
             wrong = wrong or bool(more)
             problems += more
         if not wrong:
-            kept.append({**check, "severity": check.get("severity") or "error"})
+            # A check the model proposes only warns unless the plan says it must hold
+            # (jadeflow acceptance I-10): a wrong model check at error level blocks a
+            # right result.
+            kept.append({**check, "severity": check.get("severity") or "warn"})
     return kept, problems
 
 
@@ -1892,16 +1900,18 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
   "answer": {"target": "结果表名", "filter": [{"column": "时间列", "pick": "latest"}],
              "group_by": ["分组列，最多 3 个"], "measures": ["指标列，1–8 个"],
              "order_by": [{"column": "排序列", "desc": true}], "top_n": 10,
-             "chart": {"type": "bar、line 或 none", "label": ["分组列"], "value": "指标列"}},
+             "chart": {"type": "bar、line 或 none", "label": ["分组列"], "value": "指标列"},
+             "add_up": ["可以跨行相加、但不是 sum 或 count 算出来的指标列，没有就给空数组"]},
   "checks": [{"id": "c1", "label": "检查名称，给人看",
               "kind": "aggregate、reconcile、unique 或 rows",
-              "severity": "error、warn 或 info", "其余字段": "按检查的种类，见下"}]
+              "severity": "warn、error 或 info，不写时是 warn", "其余字段": "按检查的种类，见下"}]
 }
 不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。
 load.mode：overwrite 整表覆盖；replace_where 只替换满足 where 的行（如一个月、一个版本）；
 append 追加；merge 按键合并（有的更新，没有的插入）。
 checks 是建议在开发环境试算后做的数据检查，最多 10 条，没有就给空数组；
-表名只能是上面的目标表名和 sources 里的源表。各种检查的其余字段：
+表名只能是上面的目标表名和 sources 里的源表。severity：warn 不通过时只提醒；error 不通过时结果
+不能直接通过，只给确定了结果一错就不能交付的检查用；info 只列出来给人看。各种检查的其余字段：
 - aggregate（一个聚合值和期望比）：
   {"table": "表名", "expr": "一个聚合表达式，如 sum(qty)", "where": "条件或 null",
    "group_by": ["可选：按组算，每组都要满足"], "op": "eq、ne、gt、ge、lt、le 或 between",

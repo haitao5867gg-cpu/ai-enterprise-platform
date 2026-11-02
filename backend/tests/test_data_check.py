@@ -593,7 +593,7 @@ def test_the_report_lists_each_check_and_the_examples():
         checks.result(check("y", "rows", severity="info"), "failed", ""),
         checks.result(check("z", "rows"), "failed", ""),
     ]
-    assert checks.summary(mixed) == "3 项检查：3 项不通过（1 项是警告，1 项是提示）"
+    assert checks.summary(mixed) == "3 项检查：3 项不通过（1 项是错误，1 项是警告，1 项是提示）"
     assert checks.report([]) == "## 数据检查\n\n没有数据检查"
 
 
@@ -629,7 +629,9 @@ def test_what_a_check_may_say():
          "表名要写成结果表的名字、schema.table（抽取的源表）或 catalog.schema.table，不带反引号"),
         (check("a", "rows", table="t"), ("where",), "条件不能为空"),
         (check("a", "rows", table="t", where="x; drop"), ("where",), "条件不能有分号"),
-        (check("a", "rows", table="t", where="x in (select 1)"), ("where",), "条件不能有 SELECT"),
+        (check("a", "rows", table="t", where="x in (select 1)"), ("where",),
+         "条件不能有子查询（SELECT）：要和另一张表比，用 reconcile 对账检查，两边各写表、聚合表达式"
+         "和条件，按组比时写 group_by；要找出不该有的行，用 rows 检查，条件只写这张表的列"),
         (check("a", "rows", table="t", where="x = ${month}"), ("where",),
          "运行参数要写成 ${param.<key>}（key 是项目参数的标识）"),
         (check("a", "rows", table="t", where="x", severity="fatal"), ("severity",),

@@ -44,8 +44,11 @@ class AnswerDesign(BaseModel):
     # Strict: true or "10" is not a number of groups.
     top_n: StrictInt | None = None
     chart: Chart | None = None
+    # Measures the plan says add up across rows although their source is no sum or count
+    # (a weight, an amount: a row's value); a person confirms it with the plan.
+    add_up: list[str] = []
 
-    @field_validator("filter", "group_by", mode="before")
+    @field_validator("filter", "group_by", "add_up", mode="before")
     @classmethod
     def _null_is_empty(cls, value: Any) -> Any:
         return [] if value is None else value
@@ -60,9 +63,15 @@ def _latest(item: Any) -> bool:
     )
 
 
-def design_problems(design: AnswerDesign, targets: Mapping[str, Sequence[str]]) -> list[str]:
+def design_problems(
+    design: AnswerDesign,
+    targets: Mapping[str, Sequence[str]],
+    keys: Mapping[str, Sequence[str]] | None = None,
+    sources: Mapping[str, Mapping[str, str]] | None = None,
+) -> list[str]:
     """What is wrong with ``design``; ``targets`` are the plan's target tables (name to
-    column names, in order). A target that is not one is checked against the last."""
+    column names, in order), ``keys`` their primary keys and ``sources`` their columns'
+    source expressions. A target that is not one is checked against the last."""
     problems = []
     table = design.target
     if table not in targets:
@@ -103,6 +112,105 @@ def design_problems(design: AnswerDesign, targets: Mapping[str, Sequence[str]]) 
     for c in chart.label or []:
         if c not in design.group_by:
             problems.append(f"answer.chart.label 的列 {c} 要在 group_by 里")
+    problems += _add_up_problems(
+        design, table, (keys or {}).get(table) or [], (sources or {}).get(table) or {}
+    )
+    return problems
+
+
+# Aggregates whose values do not add up across rows, whatever a plan says.
+NOT_ADDING = {
+    "avg",
+    "mean",
+    "min",
+    "max",
+    "median",
+    "mode",
+    "percentile",
+    "percentile_approx",
+    "approx_percentile",
+    "approx_count_distinct",
+    "count_distinct",
+    "stddev",
+    "stddev_pop",
+    "stddev_samp",
+    "std",
+    "variance",
+    "var_pop",
+    "var_samp",
+    "first",
+    "first_value",
+    "last",
+    "last_value",
+    "any_value",
+    "collect_list",
+    "collect_set",
+    "array_agg",
+    "max_by",
+    "min_by",
+}
+
+
+def _unquoted(expr: str) -> str:
+    """``expr`` with everything in quotes blanked out (parentheses kept)."""
+    out = []
+    quote = ""
+    for ch in expr:
+        if quote:
+            out.append("\0")
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+            out.append("\0")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _not_adding(expr: str) -> str | None:
+    """The aggregate in ``expr`` that keeps it from adding up across rows, if any."""
+    plain = _unquoted(expr)
+    for m in CALL.finditer(plain):
+        name = m[1].lower()
+        if name in NOT_ADDING:
+            return name
+        if name in ("count", "sum") and DISTINCT.match(plain[m.end() :].lstrip()):
+            return f"{name}(DISTINCT …)"
+    return None
+
+
+def _add_up_problems(
+    design: AnswerDesign, table: str, keys: Sequence[str], sources: Mapping[str, str]
+) -> list[str]:
+    """``add_up`` names measures whose rows add up; a measure that does not add up needs
+    groups of one row each (the result table's primary key in the groups and the filter),
+    or the card cannot work it out (jadeflow acceptance I-13)."""
+    problems = []
+    for c in dict.fromkeys(design.add_up):
+        if c not in design.measures:
+            problems.append(f"answer.add_up 的列 {c} 要在 measures 里")
+        elif c in sources and (found := _not_adding(sources[c])):
+            problems.append(
+                f"answer.add_up 的 {c} 是用 {found} 算出来的，不能跨行相加，请从 add_up 里去掉"
+            )
+    if not keys:
+        return problems
+    grouped = {c.lower() for c in design.group_by}
+    if design.filter and _latest(design.filter[0]):
+        grouped.add(str(design.filter[0]["column"]).lower())
+    if all(k.lower() in grouped for k in keys):
+        return problems
+    for c in design.measures:
+        if c in design.add_up or c not in sources or additivity(c, sources)[0] != "none":
+            continue
+        by = "、".join(design.group_by) if design.group_by else "不分组"
+        problems.append(
+            f"answer 按 {by} 汇总时一组会有多行（结果表 {table} 的主键是 "
+            f"{'、'.join(keys)}），{c} 不是 sum 或 count 算出来的，平台不知道它能不能相加，"
+            f"这样的组算不出来：能相加（重量、金额、件数这类）就把 {c} 写进 answer.add_up；"
+            "不能相加就把主键都放进 group_by 或 filter，或者换一个指标"
+        )
     return problems
 
 
@@ -337,6 +445,9 @@ def columns(
     for c in design.measures:
         label = labels.get(c) or c
         agg, numerator, denominator = additivity(c, sources)
+        declared = agg == "none" and c in design.add_up
+        if declared:
+            agg = "sum"
         bracket = BRACKET.search(label)
         unit = units.get(c) or (bracket[1].strip() if bracket else None) or None
         item: dict[str, Any] = {
@@ -348,6 +459,8 @@ def columns(
         }
         if agg == "ratio":
             item |= {"numerator": numerator, "denominator": denominator}
+        if declared:
+            item["declared"] = True
         out.append(item)
     return out
 
@@ -364,9 +477,11 @@ def text(design: AnswerDesign, names: Mapping[str, str]) -> str:
 
     first = design.filter[0] if design.filter else None
     time = name(first["column"]) if isinstance(first, dict) else None
+    added = [name(c) for c in dict.fromkeys(design.add_up) if c in design.measures]
+    tail = f"{'、'.join(added)}按方案说明逐行相加。" if added else ""
     if not design.group_by:
         measures = "、".join(name(c) for c in design.measures)
-        return f"最近一个{time}的{measures}合计。" if time else f"{measures}合计。"
+        return (f"最近一个{time}的{measures}合计。" if time else f"{measures}合计。") + tail
     head = f"最近一个{time}里，" if time else ""
     groups = " × ".join(name(c) for c in design.group_by)
     order = (design.order_by or [OrderBy(column=design.measures[0])])[0]
@@ -374,7 +489,7 @@ def text(design: AnswerDesign, names: Mapping[str, str]) -> str:
     chart = CHART_WORDS.get((design.chart or Chart()).type or "", "")
     return (
         f"{head}各「{groups}」组合按{name(order.column)}{way}排的前 {design.top_n} 组，"
-        f"附合计{chart}。"
+        f"附合计{chart}。{tail}"
     )
 
 
@@ -465,6 +580,8 @@ def conclusion(answer: Mapping[str, Any], card: Mapping[str, Any], names: Mappin
     if not group_by:
         metric = columns[order["column"]]
         value = answer["rows"][0].get(order["column"])
+        if value is None:
+            return lead(f"{_metric_name(metric, names)}合计算不出（{_blank_why(metric)}）。")
         return lead(f"{_metric_name(metric, names)}合计：{amount(order['column'], value)}。")
     if order["column"] in group_by:
         column = columns[order["column"]]
@@ -475,6 +592,11 @@ def conclusion(answer: Mapping[str, Any], card: Mapping[str, Any], names: Mappin
     row = answer["rows"][0]
     metric = columns[order["column"]]
     value = row.get(metric["name"])
+    # Groups whose value could not be worked out sort last; they are no lowest or highest
+    # value and are said apart (jadeflow acceptance I-13).
+    blank = sum(1 for r in answer["rows"] if r.get(metric["name"]) is None)
+    if value is None:
+        return lead(f"各组的{_metric_name(metric, names)}都算不出（{_blank_why(metric)}）。")
     who = " · ".join(shown(row.get(c)) for c in group_by)
     said = _joined(who, f"的{_metric_name(metric, names)}{'最高' if order['desc'] else '最低'}")
     said += f"：{amount(metric['name'], value)}"
@@ -489,7 +611,16 @@ def conclusion(answer: Mapping[str, Any], card: Mapping[str, Any], names: Mappin
         and total > 0
     ):
         said += f"，占合计 {value / total * 100:.1f}%"
+    if blank:
+        seen = f"前 {len(answer['rows'])} 组里" if answer.get("truncated") else ""
+        said += f"；{seen}另有 {blank} 组算不出（{_blank_why(metric)}）"
     return lead(said + "。")
+
+
+def _blank_why(metric: Mapping[str, Any]) -> str:
+    if metric.get("agg") == "none":
+        return "一组有多行，这个指标不能直接相加"
+    return "这些组的值是空的"
 
 
 def _name(*parts: str) -> str:

@@ -320,6 +320,7 @@ def test_a_generated_design_follows_the_brief_and_the_rules():
             "label": ["city", "member_level", "extra"],
             "value": "sales_amount",
         },
+        "add_up": [],
     }
     many = [f"m{i}" for i in range(10)]
     made = generate("t", ["d", *many], ["d"], many, None)
@@ -547,11 +548,13 @@ def test_a_share_needs_a_sum_no_group_below_zero_and_a_total_above_zero():
     assert worked(made, totals={"sales_amount": 0})["conclusion"] == said + "。"
     # A group of 0 is fine: the smallest group may be empty.
     assert worked(made, mins={"sales_amount": 0})["conclusion"].endswith("占合计 18.4%。")
-    # Not a sum: no share; no value: a dash, no unit and no share.
+    # Not a sum: no share; no value in any group: said so, no number, unit or share.
     ordered = card(order_by=[{"column": "customer_count", "desc": True}])
     assert worked(ordered)["conclusion"] == "2026-10，上海 · gold 的下单客户数最高：812。"
     none = dict(WORKED["rows"][0], sales_amount=None)
-    assert worked(made, rows=[none])["conclusion"] == "2026-10，上海 · gold 的销售额最高：—。"
+    assert worked(made, rows=[none])["conclusion"] == (
+        "2026-10，各组的销售额都算不出（这些组的值是空的）。"
+    )
 
 
 def test_the_other_conclusions():
@@ -578,6 +581,106 @@ def test_the_other_conclusions():
     assert worked(by_city, period=None)["conclusion"] == "共 27 组，按城市排序。"
     assert worked(card(order_by=[{"column": "city", "desc": False}]))["conclusion"] == (
         "2026-10 共 27 组，按城市排序。"
+    )
+
+
+# A measure that does not add up, over groups of more than one row (jadeflow acceptance
+# I-13: the card said "最高 50 kg" where the group's rows added up to 400 kg).
+
+LANES = {"lanes": ["bu", "lane", "weight", "price"]}
+LANE_KEYS = {"lanes": ["lane"]}
+LANE_SOURCES = {
+    "lanes": {
+        "bu": "bu",
+        "lane": "lane",
+        "weight": "CASE WHEN eff = 'Y' THEN w ELSE 0 END",
+        "price": "max(unit_price)",
+    }
+}
+
+
+def lanes(**changes) -> AnswerDesign:
+    base = {"target": "lanes", "group_by": ["bu"], "measures": ["weight"]}
+    return AnswerDesign.model_validate(base | changes)
+
+
+def test_groups_of_many_rows_need_measures_that_add_up():
+    def problems(made: AnswerDesign) -> list[str]:
+        return design_problems(made, LANES, LANE_KEYS, LANE_SOURCES)
+
+    many = problems(lanes())
+    assert len(many) == 1 and many[0].startswith(
+        "answer 按 bu 汇总时一组会有多行（结果表 lanes 的主键是 lane），weight 不是 sum 或 count"
+    )
+    assert "就把 weight 写进 answer.add_up" in many[0]
+    # Declared to add up, or one row a group: nothing to say.
+    assert problems(lanes(add_up=["weight"])) == []
+    assert problems(lanes(group_by=["bu", "lane"])) == []
+    assert problems(lanes(group_by=[], filter=[{"column": "lane", "pick": "latest"}])) == []
+    assert problems(lanes(group_by=[]))[0].startswith("answer 按 不分组 汇总时一组会有多行")
+    # Only measures can add up, and an aggregate that does not add up never does.
+    assert problems(lanes(add_up=["weight", "bu"])) == ["answer.add_up 的列 bu 要在 measures 里"]
+    assert problems(lanes(measures=["price"], add_up=["price"])) == [
+        "answer.add_up 的 price 是用 max 算出来的，不能跨行相加，请从 add_up 里去掉"
+    ]
+    distinct = design(add_up=["customer_count"])
+    assert design_problems(distinct, TARGETS, {}, {"ads_sales_city_member_m": SOURCES}) == [
+        "answer.add_up 的 customer_count 是用 count(DISTINCT …) 算出来的，不能跨行相加，"
+        "请从 add_up 里去掉"
+    ]
+    # Without the primary keys (the platform's own design) the groups are not checked.
+    assert design_problems(lanes(), LANES, None, LANE_SOURCES) == []
+    # A model that leaves add_up out or writes null declares nothing.
+    assert lanes(add_up=None).add_up == [] and lanes().add_up == []
+
+
+def test_a_measure_declared_to_add_up_is_summed():
+    made = with_defaults(lanes(add_up=["weight"]))
+    got = columns(made, LANE_SOURCES["lanes"], {"weight": "重量（kg）"}, {})
+    assert got[1] == {
+        "name": "weight",
+        "label": "重量（kg）",
+        "role": "metric",
+        "agg": "sum",
+        "unit": "kg",
+        "declared": True,
+    }
+    assert "declared" not in columns(with_defaults(lanes()), LANE_SOURCES["lanes"], {}, {})[1]
+    said = text(made, {"weight": "重量", "bu": "事业部"})
+    assert said.endswith("附合计和柱状图。重量按方案说明逐行相加。")
+    card = made.model_dump() | {"columns": got, "text": said}
+    assert cluster_design(card)["measures"] == [{"name": "weight", "agg": "sum"}]
+
+
+def test_groups_that_cannot_be_worked_out_are_said_apart():
+    made = with_defaults(lanes())
+    cols = columns(made, LANE_SOURCES["lanes"], {"weight": "重量（kg）"}, {})
+    for c in cols:
+        c["format"] = "integer" if c["name"] == "weight" else None
+    got = {
+        "period": None,
+        "rows": [{"bu": "B", "weight": 50}, {"bu": "A", "weight": None}],
+        "totals": {"weight": None},
+        "mins": {},
+        "groups": 2,
+        "columns": cols,
+    }
+    names = {"weight": "重量"}
+    assert conclusion(got, made.model_dump(), names) == (
+        "B 的重量最高：50 kg；另有 1 组算不出（一组有多行，这个指标不能直接相加）。"
+    )
+    cut = got | {"truncated": True, "groups": 30}
+    assert conclusion(cut, made.model_dump(), names).endswith(
+        "；前 2 组里另有 1 组算不出（一组有多行，这个指标不能直接相加）。"
+    )
+    blank = got | {"rows": [{"bu": "A", "weight": None}], "groups": 1}
+    assert conclusion(blank, made.model_dump(), names) == (
+        "各组的重量都算不出（一组有多行，这个指标不能直接相加）。"
+    )
+    whole = with_defaults(lanes(group_by=[]))
+    one = got | {"rows": [{"weight": None}], "groups": 1}
+    assert conclusion(one, whole.model_dump(), names) == (
+        "重量合计算不出（一组有多行，这个指标不能直接相加）。"
     )
 
 

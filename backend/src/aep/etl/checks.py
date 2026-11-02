@@ -185,7 +185,16 @@ def _expression(
         add((*loc, key), f"{label}最多 {MAX_EXPRESSION} 个字符")
         return
     problem = filter_problem(text)
-    if problem is not None:
+    if problem is not None and problem.endswith("SELECT"):
+        # Say what to write instead (jadeflow acceptance S-11): a check reads one table
+        # through the read-only connector, so comparing with another table is a reconcile.
+        add(
+            (*loc, key),
+            f"{label}不能有子查询（SELECT）：要和另一张表比，用 reconcile 对账检查，两边各写"
+            "表、聚合表达式和条件，按组比时写 group_by；要找出不该有的行，用 rows 检查，"
+            "条件只写这张表的列",
+        )
+    elif problem is not None:
         add((*loc, key), problem.replace("读取筛选", label))
     elif "${" in PARAM.sub("", text):
         add((*loc, key), "运行参数要写成 ${param.<key>}（key 是项目参数的标识）")
@@ -698,13 +707,18 @@ def passed(results: list[dict[str, Any]]) -> bool:
 
 
 def _soft(results: list[dict[str, Any]]) -> str:
-    """Which of these (failed or errored) checks were only warnings or notes."""
-    soft = Counter(r["severity"] for r in results if r["severity"] != "error")
-    if not soft:
+    """The severities of these (failed or errored) checks, when not all are errors; the
+    errors come first, so the count that keeps a result from passing is never left out."""
+    counts = Counter(r["severity"] for r in results)
+    if set(counts) == {"error"}:
         return ""
-    if sum(soft.values()) == len(results) and len(soft) == 1:
-        return f"（{SEVERITY_TEXT[next(iter(soft))]}）"
-    return "（" + "，".join(f"{n} 项是{SEVERITY_TEXT[s]}" for s, n in soft.items()) + "）"
+    if len(counts) == 1:
+        return f"（{SEVERITY_TEXT[next(iter(counts))]}）"
+    return (
+        "（"
+        + "，".join(f"{counts[s]} 项是{SEVERITY_TEXT[s]}" for s in SEVERITY_TEXT if counts[s])
+        + "）"
+    )
 
 
 def summary(results: list[dict[str, Any]]) -> str:

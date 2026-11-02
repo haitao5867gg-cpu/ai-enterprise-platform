@@ -220,6 +220,11 @@
 
 所以“订单数”写成 `count(DISTINCT order_id)` 时是 `none`：平台不知道一单只落在一组里。方案先建一张一单一行的明细表、结果表里写 `count(order_id)`，就是 `sum`，客单价 `sales_amount / order_count` 也就是 `ratio`。`etl-plan-brief` 这个 Skill 会这样引导模型。
 
+**一组有多行时**（验收后新增，jadeflow I-13）：`none` 的指标每组只取唯一的一行（`CASE WHEN count(*) = 1 THEN first(x) END`），一组有多行就算不出。以前这种组在答案里是空值，结论句再从剩下的组里挑最高的，结论是错的。现在：
+- 方案可以写 `answer.add_up`：可以逐行相加、但来源不是 sum 或 count 的指标列（重量、金额、件数这类一行的值，如 `base × allocation`）。这些列按 `sum` 汇总，`columns` 里这一列 `agg` 为 `sum` 并带 `"declared": true`，`text` 末尾加一句“{指标名称}按方案说明逐行相加。”，人确认方案时看得到。来源里有不能相加的聚合时（`avg`、`min`、`max`、`count(DISTINCT …)`、`sum(DISTINCT …)`、`approx_count_distinct`、`percentile`、`first` 等）不接受：“answer.add_up 的 x 是用 avg 算出来的，不能跨行相加，请从 add_up 里去掉”；不在 `measures` 里也报错。
+- 校验方案时：结果表写了 `primary_key`，主键没有全部落在 `group_by` 和 `filter` 的列里（一组会有多行），`measures` 里还有 `agg` 为 `none` 又不在 `add_up` 里的指标，就作为问题退回：“answer 按 bu、platform 汇总时一组会有多行（结果表 t 的主键是 …），x 不是 sum 或 count 算出来的，平台不知道它能不能相加，这样的组算不出来：能相加（重量、金额、件数这类）就把 x 写进 answer.add_up；不能相加就把主键都放进 group_by 或 filter，或者换一个指标”。没写主键时不查。
+- 结论句：排序指标在第一组就是空值时写“各组的{指标}都算不出（一组有多行，这个指标不能直接相加）。”（值本身为空时括号里写“这些组的值是空的”）；有的组算不出时在句末加“；另有 n 组算不出（…）”，答案只取了前 `top_n` 组时写“前 n 组里另有 …”。没有分组、合计为空时写“{指标}合计算不出（…）。”
+
 ### databricks_ingest 抽取到湖仓
 
 ```jsonc
@@ -887,7 +892,7 @@ def warn(message: str) -> None:
   - `append`：`mode("append")`。
   - `merge`：先查结果在 `keys` 上不重复，重复时记写入错误“合并键 order_id 有 3 组重复”；再 `MERGE INTO … WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *`。源里没有的行不删。
   - 后三种在表不存在时直接建表。表已存在时：绑定项目的运行只按确认的方案加列（见下面“表结构变化”，验收后改的；以前结果多了新列就自动加在表的最后，人看不到也没确认过）；没绑定项目的运行照旧自动加列（`mergeSchema`，`merge` 先 `ALTER TABLE … ADD COLUMNS`）。列的类型变了时写入失败，报错原样带回。
-- 写完（打项目标记之前）读一次 `DESCRIBE HISTORY … LIMIT 1`，`databricks_dev_run` 的 `tables[]` 新增 `write`：`{"mode": "replace_where", "version": 12, "operation": "WRITE", "rows_written": 1200, "rows_updated": null, "rows_deleted": 340}`（取 Delta 的操作指标，没有的为 null；`merge` 的 `rows_written` 是插入的行数）；这次给表加了列时另有 `columns_added`（见“表结构变化”）。没写的表（`cluster` 模式不落表、写入失败）没有这一项。运行报告的结果表多一列“写表”，如“按条件替换，版本 4，写入 4 行，加列 platform_original（string，放在 platform 后面）”。
+- 写完（打项目标记之前）读一次 `DESCRIBE HISTORY … LIMIT 1`，`databricks_dev_run` 的 `tables[]` 新增 `write`：`{"mode": "replace_where", "version": 12, "operation": "WRITE", "rows_written": 1200, "rows_updated": null, "rows_deleted": 340}`（取 Delta 的操作指标，没有的为 null；`merge` 的 `rows_written` 是插入的行数；按条件替换会重写旧行所在的文件，同一文件里不在条件内的行原样写回，Delta 也算进输出，平台从 `rows_written` 里减掉，另记 `rows_copied`，只在不为 0 时有，写表说明写“另把同一文件里 n 行其他数据原样写回（Delta 重写文件）”，验收后新增）；这次给表加了列时另有 `columns_added`（见“表结构变化”）。没写的表（`cluster` 模式不落表、写入失败）没有这一项。运行报告的结果表多一列“写表”，如“按条件替换，版本 4，写入 4 行，加列 platform_original（string，放在 platform 后面）”。
 - 方案第 1、2 版的 `full` 当作 `overwrite`，`incremental` 照旧只写进方案说明、按整表覆盖执行，结果不变。
 
 ### 表结构变化（验收后新增）
@@ -1005,7 +1010,7 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - 最多 10 条；种类只能是 `aggregate`、`reconcile`、`unique`、`rows`，和老系统的逐行对比由 `data_check` 的 `golden` 加；
   - id 不能用 `golden`、不能重复，也不能和运行绑定的项目的验收检查同 id（“checks[1].id：c4_keys 是项目的验收检查，数据检查时会自动跑，方案里不用再写；要另加检查请换一个 id”），因为数据检查节点同时引用两边，id 重复时节点 `input_error`；
   - 表名（含 `reconcile` 两边的）只能是方案的目标表名和各目标表的 `sources`，不分大小写（“checks[4].table：sales.refunds 不是方案的目标表或来源，检查只能读方案写的表和读的源表”）。不带点的目标表名到 `data_check` 里就是本次运行的结果表，源表名照探查结果写。
-- **产出**：`result_table` 是结果表的表名（同第 2 版“结果表”：`answer.target`，没有答案设计时最后一张目标表），`result_keys` 是它的 `primary_key`（没写时为 `[]`），给 `data_check` 的 `golden` 用；`checks` 是整理后的检查（没写 `severity` 的补上 `error`），同 `plan.checks`，可以整段给 `data_check` 的 `include`。没通过校验时三项为 `""`、`[]`、`[]`；第 1、2 版也是。
+- **产出**：`result_table` 是结果表的表名（同第 2 版“结果表”：`answer.target`，没有答案设计时最后一张目标表），`result_keys` 是它的 `primary_key`（没写时为 `[]`），给 `data_check` 的 `golden` 用；`checks` 是整理后的检查（没写 `severity` 的补上 `warn`：模型建议的检查默认只提醒，要拦住结果得在方案里写 `error`，给人看的方案里写明“不通过时结果不能直接通过”；验收后从 `error` 改成 `warn`），同 `plan.checks`，可以整段给 `data_check` 的 `include`。没通过校验时三项为 `""`、`[]`、`[]`；第 1、2 版也是。
 - **提示词**：模型按 `aep.etl.plan.OUTPUT_FORMAT_V3` 回答（新增，前两个不动）。
 - **`message`**：技术方案里每张表的“加载方式”一行换成“写表方式”（整表覆盖、只替换满足 `…` 的行、追加、按 `…` 合并），最后加“数据检查”一节，每条一行：名称（不是 `error` 的标出“警告”“提示”）、种类和一句话说明，如“**每天每个城市一行**（警告）：键不重复，`city_daily` 按 `stat_day`、`city` 没有重复的行”；没有检查时写“方案没有建议数据检查。”
 
