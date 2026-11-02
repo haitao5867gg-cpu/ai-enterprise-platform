@@ -25,6 +25,7 @@ from aep.etl.answer import result as answer_result
 from aep.etl.plan import (
     BASIS_NAMES,
     IDENTIFIER,
+    KEEPING_MODES,
     Confirmed,
     EtlPlan,
     EtlPlanV2,
@@ -34,6 +35,8 @@ from aep.etl.plan import (
     answer_names,
     answer_output,
     bare,
+    existing_columns,
+    existing_table,
     result_table,
     uncited,
     validate_plan,
@@ -43,7 +46,9 @@ from aep.etl.plan import (
 from aep.etl.profile import (
     MAX_TABLES,
     InputError,
+    describe_existing,
     describe_for_model,
+    existing_tables,
     known_values,
     profile_tables,
     seen_values,
@@ -334,6 +339,23 @@ async def run_profile(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         raise NodeFailure("tool_error", f"探查数据源「{source.name}」失败：{exc}") from exc
     listed = [t["name"] for t in tables]
     summary = f"已探查 {source.name} 的 {len(tables)} 张表：" + "、".join(listed)
+    # The project's tables already in its environment: only a Databricks source can list
+    # them; None when they were not listed.
+    project = state.get("project") or None
+    env = (project or {}).get("environment") or {}
+    placed = bool(project and env.get("catalog") and env.get("schema"))
+    existing: list[dict[str, Any]] | None = None
+    if placed and source.kind == "databricks":
+        try:
+            existing = await existing_tables(
+                rt.tools, source, project, timeout_seconds=tool_seconds(source, rt.settings)
+            )
+            names = "、".join(t["name"] for t in existing) or "没有"
+            summary += f"；项目在环境里已有的表：{names}"
+        except (ConnectorUnavailable, ToolError, ValueError, KeyError) as exc:
+            # Writing checks the table again; the plan just cannot add columns.
+            existing = None
+            summary += f"；没能列出项目在环境里已有的表：{exc}"
     return Outcome(
         {
             "source_id": source.datasource_id,
@@ -347,6 +369,8 @@ async def run_profile(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
                 str(state.get("run_id") or ""),
                 references,
             ),
+            "existing": existing,
+            "existing_description": describe_existing(existing, project) if placed else "",
             "summary": summary,
         },
         messages=[{"role": "assistant", "content": summary}],
@@ -381,6 +405,12 @@ async def check_plan_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
             p.add(("answered",), "只有方案版本 format 为 2 或 3 时才能写已答的题")
         elif not isinstance(answered, str) or refs.whole(answered) is None:
             p.add(("answered",), "已答的题必须恰好是一个变量，如 {{review.record}}")
+    existing = node.get("existing")
+    if existing is not None and existing != "":
+        if version != 3:
+            p.add(("existing",), "只有方案版本 format 为 3 时才能写已有的表")
+        elif not isinstance(existing, str) or refs.whole(existing) is None:
+            p.add(("existing",), "已有的表必须恰好是一个变量，如 {{profile.existing}}")
 
 
 def _answered(
@@ -402,6 +432,19 @@ def _answered(
         if isinstance(label, str) and isinstance(value, str) and bare(label):
             memory[bare(label)] = {"label": label, "value_label": value, "actor": who}
     return memory
+
+
+def _existing(node: dict[str, Any], get: refs.Lookup) -> list[dict[str, Any]] | None:
+    """The project's tables already in the environment, as the profile node listed them
+    (its ``existing``); None when the node does not say or they could not be listed."""
+    if not node.get("existing"):
+        return None
+    value = refs.resolve(node["existing"], get)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(t, dict) for t in value):
+        raise NodeFailure("output_format", "已有的表要引用探查数据节点的 existing")
+    return value
 
 
 def _hits(node: dict[str, Any], get: refs.Lookup) -> list[IndexedHit]:
@@ -436,12 +479,40 @@ def _load_line(t: Target) -> str:
     return "- 写表方式：" + ("追加" if load.mode == "append" else "整表覆盖")
 
 
-def _target_lines(n: int, t: Target) -> list[str]:
+def _schema_line(t: Target, existing: list[dict[str, Any]] | None) -> str | None:
+    """What writing the target does to the table's structure (docs/api/data-nodes.md,
+    表结构变化); None when the project's existing tables are not known."""
+    if existing is None:
+        return None
+    table = existing_table(t, existing)
+    if table is None:
+        return "- 表结构：表还不存在，按方案新建"
+    have = existing_columns(table)
+    if t.load.mode not in KEEPING_MODES:
+        return (
+            f"- 表结构：表已经存在（{len(have)} 列），整表覆盖会删掉现有的全部行，按方案重建表结构"
+        )
+    if not t.load.add_columns:
+        return f"- 表结构：表已经存在（{len(have)} 列），结构不变"
+    added = "；".join(
+        f"`{c.name}`（放在 `{c.after}` 后面）" if c.after else f"`{c.name}`（放在最前面）"
+        for c in t.load.add_columns
+    )
+    return (
+        f"- 表结构：表已经存在（{len(have)} 列），确认方案后加 {len(t.load.add_columns)} 列："
+        + added
+    )
+
+
+def _target_lines(n: int, t: Target, existing: list[dict[str, Any]] | None = None) -> list[str]:
     """Target table ``n`` of a plan as a person reviews it (Markdown)."""
     lines = ["", f"### 目标表 {n}：`{t.name}`", ""]
     if t.description:
         lines += [t.description, ""]
     lines.append(_load_line(t))
+    schema = _schema_line(t, existing)
+    if schema:
+        lines.append(schema)
     lines.append("- 来源：" + "、".join(f"`{s}`" for s in t.sources))
     lines.append(f"- 做法：{t.logic}")
     if t.primary_key:
@@ -484,9 +555,14 @@ def plan_message(plan: EtlPlan) -> str:
     return "\n".join(lines)
 
 
-def plan_message_v2(plan: EtlPlanV2, answer: dict[str, Any] | None) -> str:
+def plan_message_v2(
+    plan: EtlPlanV2,
+    answer: dict[str, Any] | None,
+    existing: list[dict[str, Any]] | None = None,
+) -> str:
     """A version 2 plan as a person reviews it (Markdown): the business part first,
-    then the technical one."""
+    then the technical one; with the project's ``existing`` tables, what writing each
+    target does to the table's structure."""
     brief = plan.brief
     lines = ["## 业务说明"]
     if brief is not None:
@@ -533,7 +609,7 @@ def plan_message_v2(plan: EtlPlanV2, answer: dict[str, Any] | None) -> str:
     lines += ["", "## 技术方案", "", f"**方案**：{plan.summary}", ""]
     lines.append(f"代码语言：{_language(plan)}")
     for n, t in enumerate(plan.targets, 1):
-        lines += _target_lines(n, t)
+        lines += _target_lines(n, t, existing)
     lines += _reference_lines(plan.references)
     if isinstance(plan, EtlPlanV3):
         lines += _check_lines(plan.checks)
@@ -621,6 +697,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     # Version 2 (and 3) remembers every answer people gave, across rounds: the human
     # node's record holds only its latest one.
     memory = _answered(node, state, get) if v2 else {}
+    existing = _existing(node, get) if version == 3 else None
     raw: Any = None
     plan: EtlPlan | None = None
     cleaned: list[str] = []
@@ -634,7 +711,16 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         if version == 3:
             project = state.get("project") or None
             plan, cleaned = validate_plan_v3(
-                raw, sources, known, seen_values(profile), trust, hits, memory, shown, project
+                raw,
+                sources,
+                known,
+                seen_values(profile),
+                trust,
+                hits,
+                memory,
+                shown,
+                project,
+                existing,
             )
         elif v2:
             plan, cleaned = validate_plan_v2(
@@ -693,7 +779,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     if isinstance(plan, EtlPlanV2):
         answer = answer_output(plan)
         outputs |= {
-            "message": plan_message_v2(plan, answer),
+            "message": plan_message_v2(plan, answer, existing),
             "brief": dumped["brief"],
             "questions": human_fields(plan),
             "answer": answer,
@@ -987,8 +1073,8 @@ WRITE_MODES = {
 
 
 def write_text(write: dict[str, Any] | None) -> str:
-    """What writing a table did, in short: the mode, the table's new version and the
-    rows Delta counted."""
+    """What writing a table did, in short: the mode, the table's new version, the rows
+    Delta counted and the columns added to the table."""
     if not write:
         return "—"
     parts = [WRITE_MODES.get(write.get("mode") or "", str(write.get("mode")))]
@@ -996,6 +1082,10 @@ def write_text(write: dict[str, Any] | None) -> str:
         parts.append(f"版本 {write['version']}")
     counts = (("rows_written", "写入"), ("rows_updated", "更新"), ("rows_deleted", "删除"))
     parts += [f"{label} {write[key]} 行" for key, label in counts if write.get(key) is not None]
+    for column in write.get("columns_added") or []:
+        after = column.get("after")
+        place = f"放在 {after} 后面" if after else "放在最前面"
+        parts.append(f"加列 {column.get('name')}（{column.get('type')}，{place}）")
     return "，".join(parts)
 
 
@@ -1235,13 +1325,24 @@ TYPES: dict[str, NodeType] = {
             check_profile,
             run_profile,
             _none,
-            _fixed("source_id", "source_name", "tables", "names", "description", "summary"),
+            _fixed(
+                "source_id",
+                "source_name",
+                "tables",
+                "names",
+                "description",
+                "existing",
+                "existing_description",
+                "summary",
+            ),
             outputs=(
                 ("source_id", "数据源 id"),
                 ("source_name", "数据源名称"),
                 ("tables", "每张表的探查结果"),
                 ("names", "表名列表"),
                 ("description", "给模型看的源表说明"),
+                ("existing", "项目在环境里已有的表和列（绑定项目的 Databricks 数据源）"),
+                ("existing_description", "给模型看的已有的表和写到这些表的规则"),
                 ("summary", "一句话总结"),
             ),
             defaults={"datasource": "", "tables": "", "sample_rows": 5},

@@ -123,6 +123,8 @@ export function ownOutputs(node: FlowNode): string[] {
         "tables",
         "names",
         "description",
+        "existing",
+        "existing_description",
         "summary",
       ];
     case "etl_plan_check":

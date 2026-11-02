@@ -241,3 +241,72 @@ def describe_for_model(
             lines.append(f"  样本：{json.dumps(sample, ensure_ascii=False, default=str)}")
         parts.append("\n".join(lines))
     return "\n\n".join(parts)
+
+
+async def existing_tables(
+    tools: McpTools,
+    source: DataSource,
+    project: dict[str, Any],
+    *,
+    timeout_seconds: float | None = None,
+) -> list[dict[str, Any]]:
+    """The tables of the run's project already in its environment (docs/api/data-nodes.md,
+    "表结构变化"): the tables of ``<catalog>.<schema>`` named with the project's prefix,
+    each ``{"name", "table", "columns": [{"name", "data_type", "nullable", "comment"}]}``,
+    at most ``MAX_TABLES`` by name. Only the structure is read, never rows. Raises the
+    connector's errors."""
+    env = project["environment"]
+    schema = f"{env['catalog']}.{env['schema']}"
+    prefix = str(project.get("table_prefix") or "").lower()
+    url = source.connector_url
+    listed = await tools.call(url, "list_tables", {"schema": schema}, timeout_seconds)
+    names = sorted(t for t in listed["tables"] if str(t).lower().startswith(prefix))
+    names = names[:MAX_TABLES]
+    described = await asyncio.gather(
+        *(
+            tools.call(url, "describe_table", {"schema": schema, "table": t}, timeout_seconds)
+            for t in names
+        )
+    )
+    return [
+        {
+            "name": name,
+            "table": f"{schema}.{name}",
+            "columns": [
+                {
+                    "name": c["name"],
+                    "data_type": c["data_type"],
+                    "nullable": c.get("nullable", True),
+                    "comment": c.get("comment"),
+                }
+                for c in found["columns"]
+            ],
+        }
+        for name, found in zip(names, described, strict=True)
+    ]
+
+
+def describe_existing(existing: list[dict[str, Any]] | None, project: dict[str, Any]) -> str:
+    """For the planning prompt: the project's tables already in the run's environment and
+    what writing to one means (only names, types and comments people wrote, so it goes
+    whatever the data outbound policy). ``existing`` None: they were not listed (the
+    source is not on Databricks, or listing failed)."""
+    env = project["environment"]
+    where = f"环境「{env.get('label') or env.get('key')}」的 `{env['catalog']}.{env['schema']}`"
+    if existing is None:
+        return f"（平台没有列出{where}里已有的表；写表时会再核对表结构，不会加方案外的列）"
+    if not existing:
+        return f"{where}里还没有本项目的表，目标表都会新建。"
+    lines = [
+        f"{where}里已经有下面这些本项目的表。目标表和其中一张同名，就是写到这张表：",
+        "- 按条件替换、追加、按键合并会保留表里其他的行，columns 要写出表里已有的全部列；"
+        "要加的列写在 columns 里想放的位置，确认方案后平台按这个位置在表里加列；",
+        "- 整表覆盖（overwrite）会删掉表里现有的全部行，按方案重建表结构。",
+    ]
+    for t in existing:
+        lines += ["", f"表 {t['name']}（{len(t['columns'])} 列）"]
+        for c in t["columns"]:
+            flags = [str(c["data_type"])] + ([] if c.get("nullable", True) else ["非空"])
+            note = f"；说明：{c['comment']}" if c.get("comment") else ""
+            lines.append(f"  - {c['name']}：{'，'.join(flags)}{note}")
+    return "\n".join(lines)

@@ -16,7 +16,7 @@ from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import MemoryRunStore
 from aep.skills import MemorySkillStore
-from aep.tools.mcp import McpTools
+from aep.tools.mcp import McpTools, ToolError
 from tests import fake_connector
 from tests.conftest import SETTINGS, FakeGateway
 from tests.test_etl import start
@@ -166,6 +166,85 @@ async def test_profile_reads_the_project_references_with_their_filters():
     # Named tables that the project references get their filters too.
     named = state(PROJECT, start={"datasource": lake, "tables": FORECAST})
     assert (await run(profile(), named, rt)).outputs["tables"][0]["filter"] == "Type = 'Vol.'"
+
+
+PLACED = PROJECT | {
+    "table_prefix": "ibf_",
+    "environment": {"key": "dev", "label": "开发", "catalog": "prev", "schema": "Jade"},
+}
+RESULT = {
+    "comment": "结果表",
+    "columns": [
+        fake_connector._col("sku", "string", nullable=False) | {"comment": "物料号"},
+        fake_connector._col("qty", "decimal(18,4)") | {"comment": None},
+    ],
+    "foreign_keys": [],
+    "rows": [{"sku": "A1", "qty": 1}],
+}
+
+
+async def test_profile_lists_the_projects_tables_in_its_environment(monkeypatch):
+    tables = dict(fake_connector.DATABRICKS_TABLES)
+    tables[("prev.jade", "ibf_table2")] = RESULT
+    tables[("prev.jade", "other_table")] = RESULT  # not the project's prefix
+    monkeypatch.setattr(fake_connector, "DATABRICKS_TABLES", tables)
+    rt, lake, shop, calls, _ = await lake_env()
+    out = await run(profile(), state(PLACED, start={"datasource": lake, "tables": ""}), rt)
+    assert out.outputs["existing"] == [
+        {
+            "name": "ibf_table2",
+            "table": "prev.Jade.ibf_table2",
+            "columns": [
+                {"name": "sku", "data_type": "string", "nullable": False, "comment": "物料号"},
+                {"name": "qty", "data_type": "decimal(18,4)", "nullable": True, "comment": None},
+            ],
+        }
+    ]
+    # Only the structure: no rows, no stats of the project's own tables.
+    assert ("list_tables", {"schema": "prev.Jade"}) in calls
+    assert not [a for n, a in calls if n != "describe_table" and a.get("table") == "ibf_table2"]
+    text = out.outputs["existing_description"]
+    assert text.startswith("环境「开发」的 `prev.Jade`里已经有下面这些本项目的表。")
+    assert "columns 要写出表里已有的全部列" in text
+    assert (
+        "表 ibf_table2（2 列）\n  - sku：string，非空；说明：物料号\n  - qty：decimal(18,4)" in text
+    )
+    assert "ibf_table2" not in out.outputs["description"]  # not a source
+    assert out.outputs["summary"].endswith("；项目在环境里已有的表：ibf_table2")
+
+    # None yet; listing fails (the plan then adds nothing); not a Databricks source.
+    del tables[("prev.jade", "ibf_table2")]
+    rt, lake, shop, calls, _ = await lake_env()
+    out = await run(profile(), state(PLACED, start={"datasource": lake, "tables": ""}), rt)
+    assert out.outputs["existing"] == []
+    assert out.outputs["existing_description"] == (
+        "环境「开发」的 `prev.Jade`里还没有本项目的表，目标表都会新建。"
+    )
+
+    real = rt.tools.call
+
+    async def refusing(url, name, arguments=None, timeout_seconds=None):  # type: ignore[no-untyped-def]
+        if name == "list_tables":
+            raise ToolError("catalog prev 不在白名单里")
+        return await real(url, name, arguments, timeout_seconds)
+
+    monkeypatch.setattr(rt.tools, "call", refusing)
+    out = await run(profile(), state(PLACED, start={"datasource": lake, "tables": ""}), rt)
+    assert out.outputs["existing"] is None
+    assert "没能列出项目在环境里已有的表：" in out.outputs["summary"]
+    assert out.outputs["existing_description"].startswith("（平台没有列出环境「开发」")
+    monkeypatch.undo()
+
+    rt, lake, shop, calls, _ = await lake_env()
+    st = state(
+        PLACED | {"references": [{"name": "sales.orders", "filter": None}]},
+        start={"datasource": shop, "tables": ""},
+    )
+    out = await run(profile(), st, rt)
+    assert out.outputs["existing"] is None and calls == []
+    # Unbound: nothing said.
+    out = await run(profile(), state(start={"datasource": lake, "tables": FORECAST}), rt)
+    assert (out.outputs["existing"], out.outputs["existing_description"]) == (None, "")
 
 
 async def test_a_project_without_references_needs_the_tables_named(monkeypatch):

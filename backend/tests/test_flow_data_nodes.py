@@ -1617,6 +1617,16 @@ async def test_plan_check_format_and_answered_are_checked(lake):
     assert await saved(format=2, answered="{{review.records}}") == {
         ("check_plan", "answered"): "节点 review 没有产出 records"
     }
+    # The project's existing tables, from the profile node (version 3 only).
+    for settings in ({"format": 2}, {}):
+        assert await saved(existing="{{profile.existing}}", **settings) == {
+            ("check_plan", "existing"): "只有方案版本 format 为 3 时才能写已有的表"
+        }
+    assert await saved(format=3, existing="{{profile.existing}} 和别的") == {
+        ("check_plan", "existing"): "已有的表必须恰好是一个变量，如 {{profile.existing}}"
+    }
+    assert await saved(format=3, existing="{{profile.existing}}") == {}
+    assert await saved(format=3, existing="") == {}
 
 
 async def test_plan_check_format_2_through_a_run(tmp_path):

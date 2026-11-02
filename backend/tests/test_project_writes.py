@@ -362,6 +362,10 @@ class Writer:
         return self
 
     def saveAsTable(self, name: str) -> None:  # noqa: N802
+        if self.spark.failing:
+            raise RuntimeError(
+                "[DELTA_FAILED_TO_MERGE_FIELDS] Failed to merge fields 'qty'\nat ..."
+            )
         self.spark.log.append(("save", name, self.how, self.options))
         self.spark.tables.setdefault(name, {"props": {}, "columns": ["sku", "qty"]})
 
@@ -400,6 +404,7 @@ class Frame:
 class Spark:
     def __init__(self, tables: dict[str, dict[str, Any]] | None = None) -> None:
         self.tables = tables or {}
+        self.failing = False
         self.log: list[tuple[Any, ...]] = []
         self.history: dict[str, Any] = {
             "version": 12,
@@ -560,19 +565,19 @@ def test_tables_without_the_prefix_and_unbound_runs():
     assert sqls(spark) == ["DESCRIBE HISTORY `c`.`s`.`t` LIMIT 1"]
 
 
+MINE = {"aep.project": "jade-ibf"}
+SAME = ["sku", "qty", "note"]  # the columns of the result (Frame)
+
+
 def test_replace_where():
     where = "update_month = ${param.update_month}"
-    spark = Spark({STORED: {"props": {"aep.project": "jade-ibf"}, "columns": ["sku"]}})
+    spark = Spark({STORED: {"props": MINE, "columns": SAME}})
     store(spark, mode="replace_where", where=where, keys=[])
     condition = "update_month = '2026-09'"
     assert ("filter", f"NOT coalesce(({condition}), false)") in spark.log
     [save] = [entry for entry in spark.log if entry[0] == "save"]
-    assert save == (
-        "save",
-        STORED,
-        "overwrite",
-        {"replaceWhere": condition, "mergeSchema": "true"},
-    )
+    # The project's table keeps its columns: no schema merging.
+    assert save == ("save", STORED, "overwrite", {"replaceWhere": condition})
 
     spark = Spark()
     with pytest.raises(cluster_harness._Refused) as refused:
@@ -585,11 +590,11 @@ def test_replace_where():
 
 
 def test_append_and_merge():
-    spark = Spark({STORED: {"props": {"aep.project": "jade-ibf"}, "columns": ["sku"]}})
+    spark = Spark({STORED: {"props": MINE, "columns": SAME}})
     store(spark, mode="append", where=None, keys=[])
-    assert ("save", STORED, "append", {"mergeSchema": "true"}) in spark.log
+    assert ("save", STORED, "append", {}) in spark.log
 
-    spark = Spark({STORED: {"props": {"aep.project": "jade-ibf"}, "columns": ["SKU", "qty"]}})
+    spark = Spark({STORED: {"props": MINE, "columns": ["SKU", "qty"]}})
     spark.history = {
         "version": 3,
         "operation": "MERGE",
@@ -600,9 +605,10 @@ def test_append_and_merge():
             "numOutputRows": "12",
         },
     }
-    found = store(spark, mode="merge", where=None, keys=["sku"])
+    note = [{"name": "note", "after": "qty"}]
+    found = store(spark, mode="merge", where=None, keys=["sku"], add_columns=note)
     assert sqls(spark)[1:3] == [
-        f"ALTER TABLE {STORED} ADD COLUMNS (`note` string)",
+        f"ALTER TABLE {STORED} ADD COLUMNS (`note` string AFTER `qty`)",
         f"MERGE INTO {STORED} AS t USING aep_merge_ibf_table2 AS s ON t.`sku` <=> s.`sku` "
         "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *",
     ]
@@ -614,6 +620,7 @@ def test_append_and_merge():
         "rows_written": 5,
         "rows_updated": 7,
         "rows_deleted": 0,
+        "columns_added": [{"name": "note", "type": "string", "after": "qty"}],
     }
 
     spark = Spark()
@@ -623,6 +630,75 @@ def test_append_and_merge():
     spark = Spark()
     store(spark, mode="merge", where=None, keys=["sku"])  # a new table: created
     assert [e for e in spark.log if e[0] == "save"][0][2] is None
+
+
+def test_an_existing_tables_columns_change_only_as_the_plan_confirmed():
+    where = "update_month = ${param.update_month}"
+    condition = "update_month = '2026-09'"
+
+    def refused(columns: list[str], **load: Any) -> str:
+        spark = Spark({STORED: {"props": MINE, "columns": columns}})
+        with pytest.raises(cluster_harness._Refused) as failed:
+            store(spark, mode="replace_where", where=where, keys=[], **load)
+        assert not [e for e in spark.log if e[0] == "save" or "ADD COLUMNS" in str(e)]
+        return str(failed.value)
+
+    # A new column the plan did not confirm, a column the result lacks, a place not there.
+    assert refused(["sku", "note"]) == (
+        "ibf_table2: 结果比表多了列 qty，确认的方案里没有要加这些列，没有写"
+    )
+    assert refused([*SAME, "Region"]) == "ibf_table2: 结果里没有表里已有的列 Region，没有写"
+    assert refused(["sku", "note"], add_columns=[{"name": "qty", "after": "nope"}]) == (
+        "ibf_table2: 方案要把列 qty 加在 nope 后面，表里没有列 nope，没有写"
+    )
+
+    # Confirmed: added where the plan says (names are not case sensitive), then written
+    # without merging the schema; the result says what was added.
+    spark = Spark({STORED: {"props": MINE, "columns": ["SKU", "note"]}})
+    found = store(
+        spark,
+        mode="replace_where",
+        where=where,
+        keys=[],
+        add_columns=[{"name": "QTY", "after": "sku"}],
+    )
+    assert sqls(spark)[1] == f"ALTER TABLE {STORED} ADD COLUMNS (`qty` int AFTER `SKU`)"
+    assert ("save", STORED, "overwrite", {"replaceWhere": condition}) in spark.log
+    assert found["columns_added"] == [{"name": "qty", "type": "int", "after": "sku"}]
+
+    # First, or one after another; a column the table already has is left alone.
+    spark = Spark({STORED: {"props": MINE, "columns": ["note"]}})
+    added = [{"name": "sku", "after": None}, {"name": "qty", "after": "sku"}]
+    store(spark, mode="append", where=None, keys=[], add_columns=added)
+    assert [q for q in sqls(spark) if "ADD COLUMNS" in q] == [
+        f"ALTER TABLE {STORED} ADD COLUMNS (`sku` string FIRST)",
+        f"ALTER TABLE {STORED} ADD COLUMNS (`qty` int AFTER `sku`)",
+    ]
+    spark = Spark({STORED: {"props": MINE, "columns": SAME}})
+    found = store(spark, mode="append", where=None, keys=[], add_columns=added)
+    assert not [q for q in sqls(spark) if "ADD COLUMNS" in q] and "columns_added" not in found
+
+    # A write that fails after the columns were added says so.
+    spark = Spark({STORED: {"props": MINE, "columns": ["sku", "note"]}})
+    spark.failing = True
+    with pytest.raises(cluster_harness._Refused) as failed:
+        store(
+            spark, mode="append", where=None, keys=[], add_columns=[{"name": "qty", "after": "sku"}]
+        )
+    assert str(failed.value) == (
+        "ibf_table2: RuntimeError: [DELTA_FAILED_TO_MERGE_FIELDS] Failed to merge fields 'qty'"
+        "（列 qty 已经加到表里，数据没有写）"
+    )
+
+    # Overwriting rebuilds the table; a new table is created as the result is.
+    spark = Spark({STORED: {"props": MINE, "columns": ["other"]}})
+    store(spark)
+    assert spark.log[1] == ("save", STORED, "overwrite", {"overwriteSchema": "true"})
+    # Unbound runs merge the schema as before.
+    spark = Spark({"`c`.`s`.`t`": {"props": {}, "columns": ["sku"]}})
+    spec = {"write": {"catalog": "c", "schema": "s"}, "loads": {"t": {"mode": "append"}}}
+    cluster_harness._store(spark, Frame(spark), "t", spec)
+    assert ("save", "`c`.`s`.`t`", "append", {"mergeSchema": "true"}) in spark.log
 
 
 def test_the_history_is_optional():
@@ -868,6 +944,14 @@ def test_write_text():
 
     assert write_text(None) == "—"
     assert write_text({"mode": "append", "version": None, "rows_written": None}) == "追加"
+    added = [
+        {"name": "platform_original", "type": "string", "after": "platform"},
+        {"name": "code", "type": "int", "after": None},
+    ]
+    assert write_text({"mode": "replace_where", "version": 4, "columns_added": added}) == (
+        "按条件替换，版本 4，加列 platform_original（string，放在 platform 后面），"
+        "加列 code（int，放在最前面）"
+    )
 
 
 async def test_the_code_check_node_binds_the_bundle_to_the_project():

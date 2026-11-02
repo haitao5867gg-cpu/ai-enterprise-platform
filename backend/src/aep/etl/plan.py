@@ -54,17 +54,36 @@ PLAN_MODES = ("full", "incremental")
 WRITE_MODES = ("overwrite", "replace_where", "append", "merge")
 
 
+class AddColumn(BaseModel):
+    """A column an existing table gets: ``after`` the column it goes after, None first."""
+
+    name: str
+    after: str | None = None
+
+
 class Load(BaseModel):
     mode: LoadMode = "full"
     key: str | None = Field(None, description="Column that orders changes, for incremental")
     where: str | None = Field(None, description="replace_where: the rows to replace (Spark SQL)")
     keys: list[str] = Field([], description="merge: the key columns; empty: the primary key")
+    # Set by the platform, never by the model (version 3, docs/api/data-nodes.md,
+    # "表结构变化"): the columns the plan adds to the project's existing table, in the plan's
+    # order. Confirming the plan confirms them; the cluster program adds no others.
+    add_columns: list[AddColumn] = []
 
     def stored(self, primary_key: Sequence[str]) -> dict[str, Any]:
         """How the cluster program writes the table: ``mode`` (one of ``WRITE_MODES``,
-        full and incremental overwrite), ``where`` and ``keys``."""
+        full and incremental overwrite), ``where`` and ``keys``, and ``add_columns`` when
+        the plan adds columns to an existing table."""
         mode = "overwrite" if self.mode in PLAN_MODES else self.mode
-        return {"mode": mode, "where": self.where, "keys": list(self.keys or primary_key)}
+        found: dict[str, Any] = {
+            "mode": mode,
+            "where": self.where,
+            "keys": list(self.keys or primary_key),
+        }
+        if self.add_columns:
+            found["add_columns"] = [c.model_dump() for c in self.add_columns]
+        return found
 
 
 class Target(BaseModel):
@@ -1300,6 +1319,7 @@ def _validated(
     show_values: bool,
     version: Literal[2, 3] = 2,
     project: Mapping[str, Any] | None = None,
+    existing: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[EtlPlanV2, list[str]]:
     """Version 2 or 3 of the plan: parsed, tidied and checked (see the two callers)."""
     if not isinstance(raw, dict):
@@ -1341,7 +1361,7 @@ def _validated(
     problems += structure + _blank_texts(plan) + _version_two_checks(plan)
     kept: list[dict[str, Any]] = []
     if version == 3:
-        kept, more = _version_three_checks(plan, proposed, project)
+        kept, more = _version_three_checks(plan, proposed, project, existing)
         problems += more
     if problems:
         unique = list(dict.fromkeys(problems))
@@ -1465,10 +1485,15 @@ def validate_plan_v3(
     answered: Mapping[str, Confirmed] | None = None,
     show_values: bool = True,
     project: Mapping[str, Any] | None = None,
+    existing: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[EtlPlanV3, list[str]]:
     """Parse, tidy and check a version 3 plan: ``validate_plan_v2`` and the version's own
     rules. ``project`` is the run's project as the run keeps it (``table_prefix``,
-    ``references``, ``params``), None when the run is bound to none."""
+    ``references``, ``params``), None when the run is bound to none. ``existing`` are
+    the project's tables already in the run's environment (the profile node's
+    ``existing``: ``name`` and ``columns``); a target with one's name writes to it, so the
+    plan keeps its columns and the columns it adds go into ``load.add_columns``. None:
+    not known, nothing is added."""
     plan, cleaned = _validated(
         raw,
         source_tables,
@@ -1480,6 +1505,7 @@ def validate_plan_v3(
         show_values,
         3,
         project,
+        existing,
     )
     assert isinstance(plan, EtlPlanV3)
     return plan, cleaned
@@ -1493,7 +1519,8 @@ def result_table(plan: EtlPlanV2) -> LabeledTarget:
 def _overwrite_by_default(raw: dict[str, Any]) -> dict[str, Any]:
     """``raw`` with ``load.mode`` overwrite where a target leaves it out, and the load's
     unused parts left out when the model wrote them empty (``where`` blank, ``keys`` or
-    ``key`` null): the format says to write those as null or [], and either will do."""
+    ``key`` null): the format says to write those as null or [], and either will do. A
+    model's ``add_columns`` is dropped: the platform works them out."""
     data = dict(raw)
     targets = data.get("targets")
     if not isinstance(targets, list):
@@ -1505,10 +1532,12 @@ def _overwrite_by_default(raw: dict[str, Any]) -> dict[str, Any]:
             if load is None:
                 target = {**target, "load": {"mode": "overwrite"}}
             elif isinstance(load, dict):
+                # add_columns is the platform's to set, from the existing table.
                 load = {
                     k: v
                     for k, v in load.items()
-                    if not (k in ("where", "keys", "key") and (v is None or _blank_text(v)))
+                    if k != "add_columns"
+                    and not (k in ("where", "keys", "key") and (v is None or _blank_text(v)))
                 }
                 if _blank(load.get("mode")):
                     load["mode"] = "overwrite"
@@ -1749,14 +1778,76 @@ def _plan_checks(
     return kept, problems
 
 
+# The write modes that keep an existing table's rows, and so its columns.
+KEEPING_MODES = ("replace_where", "append", "merge")
+KEEPING_NAMES = {"replace_where": "按条件替换", "append": "追加", "merge": "按键合并"}
+
+
+def existing_columns(table: Mapping[str, Any]) -> list[str]:
+    """The column names of an existing table as the profile node lists it."""
+    found = table.get("columns")
+    listed = found if isinstance(found, list) else []
+    return [
+        str(c["name"])
+        for c in listed
+        if isinstance(c, dict) and isinstance(c.get("name"), str) and c["name"]
+    ]
+
+
+def existing_table(
+    target: Target, existing: Sequence[Mapping[str, Any]] | None
+) -> Mapping[str, Any] | None:
+    """The project's existing table ``target`` writes to (names are not case sensitive)."""
+    for table in existing or []:
+        if isinstance(table, Mapping) and str(table.get("name") or "").lower() == (
+            target.name.lower()
+        ):
+            return table
+    return None
+
+
+def _schema_problems(plan: EtlPlanV2, existing: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Sets each target's ``load.add_columns`` from the table it writes to, and says
+    what is wrong (docs/api/data-nodes.md, 表结构变化): a write that keeps the table's
+    rows writes every column it has; the plan's columns it lacks are added where the plan
+    puts them. Overwriting rebuilds the table as the plan says, so nothing is added."""
+    problems: list[str] = []
+    for target in plan.targets:
+        target.load.add_columns = []
+        table = existing_table(target, existing)
+        if table is None or target.load.mode not in KEEPING_MODES:
+            continue
+        have = existing_columns(table)
+        lower = {c.lower() for c in have}
+        planned = {c.name.lower() for c in target.columns}
+        missing = [c for c in have if c.lower() not in planned]
+        if missing:
+            problems.append(
+                f"{target.name} 已经存在，表里的列 {'、'.join(missing)} 不在方案的 columns 里："
+                f"{KEEPING_NAMES[target.load.mode]}会保留表里其他的行，要写出表里已有的全部列，"
+                "新加的列写在想放的位置；要去掉列或重建表，请用 overwrite"
+            )
+        after: str | None = None
+        for column in target.columns:
+            if column.name.lower() not in lower:
+                target.load.add_columns.append(AddColumn(name=column.name, after=after))
+            after = column.name
+    return problems
+
+
 def _version_three_checks(
-    plan: EtlPlanV2, proposed: Any, project: Mapping[str, Any] | None
+    plan: EtlPlanV2,
+    proposed: Any,
+    project: Mapping[str, Any] | None,
+    existing: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     problems: list[str] = []
     for target in plan.targets:
         problems += _load_problems(target, project)
     if project is not None:
         problems += _project_problems(plan, project)
+    if existing is not None:
+        problems += _schema_problems(plan, existing)
     kept, more = _plan_checks(proposed, plan, project)
     return kept, problems + more
 

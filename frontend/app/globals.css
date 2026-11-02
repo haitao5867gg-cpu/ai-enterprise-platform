@@ -2283,6 +2283,16 @@ textarea::placeholder {
   white-space: nowrap;
   font-size: 10px;
 }
+.column-added {
+  margin-left: 6px;
+  border: 1px solid #e4dcf5;
+  border-radius: 5px;
+  padding: 1px 6px;
+  color: #7455a6;
+  background: #f6f2fc;
+  white-space: nowrap;
+  font-size: 10px;
+}
 .target-description {
   margin-top: 10px;
   color: #72677f;

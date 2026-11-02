@@ -52,12 +52,15 @@ export type PlanTarget = {
   logic: string;
   columns: PlanColumn[];
   primary_key: string[];
-  // where: the rows replace_where replaces; keys: what merge matches on (version 3).
+  // where: the rows replace_where replaces; keys: what merge matches on; add_columns:
+  // the columns the platform adds to the project's existing table once the plan is
+  // confirmed, each after a column (null: first) (version 3, 表结构变化).
   load: {
     mode: string;
     key: string | null;
     where: string | null;
     keys: string[];
+    add_columns: { name: string; after: string | null }[];
   };
   quality_rules: QualityRule[];
 };
@@ -229,6 +232,10 @@ export function readPlanV2(value: unknown): PlanV2 | null {
           key: textOrNull(load.key),
           where: textOrNull(load.where),
           keys: texts(load.keys),
+          add_columns: records(load.add_columns).map((column) => ({
+            name: text(column.name),
+            after: textOrNull(column.after),
+          })),
         },
         quality_rules: records(target.quality_rules).map((rule) => ({
           name: text(rule.name),
