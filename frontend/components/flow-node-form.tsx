@@ -16,6 +16,7 @@ import type {
   FlowConfig,
   FlowNode,
   FormField,
+  GitPrNode,
   HumanNode,
   Input,
   InputType,
@@ -26,9 +27,12 @@ import type {
 import { chatModelChoices, getApp, isFlowConfig, listApps } from "../lib/apps";
 import {
   cachedTools,
+  isCodeRepo,
   isToolService,
   kindLabel,
+  listRepos,
   toolDescription,
+  type CodeRepos,
 } from "../lib/datasources";
 import { issuesUnder, variablesFor, type Variable } from "../lib/flow-edit";
 import { errorMessage } from "../lib/runs";
@@ -133,6 +137,7 @@ function datasourceChoices(
   const start = config.graph.nodes.find((node) => node.type === "start");
   return [
     ...options.datasources
+      .filter((item) => !isCodeRepo(item))
       .filter((item) => !etlOnly || !isToolService(item))
       .filter((item) => !databricksOnly || item.kind === "databricks")
       .map((item) => ({
@@ -1445,6 +1450,171 @@ function AppCallFields({
   );
 }
 
+// docs/api/git.md ("提交 PR"): a code repository, one of its repositories, and what
+// goes into the pull request.
+function GitPrFields({
+  node,
+  options,
+  variables,
+  issues,
+  change,
+}: {
+  node: GitPrNode;
+  options: Options;
+  variables: Variable[];
+  issues: Issues;
+  change: Change;
+}) {
+  const at = (path: string) => issuesUnder(issues, path);
+  const sources = options.datasources.filter(isCodeRepo);
+  const [repos, setRepos] = useState<CodeRepos | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (
+      !node.datasource ||
+      !sources.some((s) => s.datasource_id === node.datasource)
+    )
+      return;
+    const controller = new AbortController();
+    listRepos(node.datasource, controller.signal)
+      .then((value) => {
+        setRepos(value);
+        setError("");
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(errorMessage(err));
+      });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.datasource]);
+  const shown = repos && node.datasource ? repos : null;
+  const set = (key: keyof GitPrNode) => (value: string) =>
+    change({ ...node, [key]: value });
+  return (
+    <>
+      <SelectField
+        label="代码仓库"
+        value={node.datasource}
+        choices={[
+          {
+            value: "",
+            label: sources.length
+              ? "请选择代码仓库"
+              : "还没有登记代码仓库（在「数据源与工具」页登记）",
+          },
+          ...sources.map((item) => ({
+            value: item.datasource_id,
+            label: item.name,
+          })),
+          ...(node.datasource &&
+          !sources.some((item) => item.datasource_id === node.datasource)
+            ? [
+                {
+                  value: node.datasource,
+                  label: `${node.datasource}（不是代码仓库）`,
+                },
+              ]
+            : []),
+        ]}
+        issues={at("datasource")}
+        help="经 Git 连接器接入的 GitHub 或 Bitbucket。平台只在自己的 aep/ 分支上提交，合不合并由人决定。"
+        onChange={(datasource) => {
+          setRepos(null);
+          change({ ...node, datasource });
+        }}
+      />
+      {error && <p className="field-error">{error}</p>}
+      {shown && shown.repos.length ? (
+        <SelectField
+          label="仓库"
+          value={node.repo}
+          choices={[
+            { value: "", label: "请选择仓库" },
+            ...shown.repos.map((item) => ({
+              value: item.repo,
+              label: `${item.repo}（默认分支 ${item.default_branch}）`,
+            })),
+            ...(node.repo &&
+            !shown.repos.some((item) => item.repo === node.repo)
+              ? [{ value: node.repo, label: node.repo }]
+              : []),
+          ]}
+          issues={at("repo")}
+          onChange={set("repo")}
+        />
+      ) : (
+        <TextField
+          label="仓库"
+          value={node.repo}
+          issues={at("repo")}
+          help="GitHub 写 owner/仓库，Bitbucket 写 PROJECT/仓库。"
+          onChange={set("repo")}
+        />
+      )}
+      <RefField
+        label="要提交的文件"
+        value={node.files}
+        variables={variables}
+        issues={at("files")}
+        help="引用一个「路径: 文本」对象，比如检查并打包节点的 {{check_code.bundle.files}}；值为 null 的路径会被删除。"
+        onChange={set("files")}
+      />
+      <RefField
+        label="放在哪个目录"
+        value={node.directory ?? ""}
+        variables={variables}
+        issues={at("directory")}
+        help="文件放在仓库的这个目录下，比如 pipelines/{{check_code.bundle.name}}；空着是仓库根目录。"
+        onChange={set("directory")}
+      />
+      <CheckField
+        label="用这些文件替换整个目录（删掉目录里没有提交的旧文件）"
+        checked={node.replace_directory ?? false}
+        onChange={(replace_directory) => change({ ...node, replace_directory })}
+      />
+      <RefField
+        label="PR 标题"
+        value={node.pr_title}
+        variables={variables}
+        issues={at("pr_title")}
+        onChange={set("pr_title")}
+      />
+      <RefField
+        label="PR 说明"
+        value={node.body ?? ""}
+        variables={variables}
+        issues={at("body")}
+        multiline
+        help="空着时写上运行的链接。"
+        onChange={set("body")}
+      />
+      <RefField
+        label="提交信息"
+        value={node.message ?? ""}
+        variables={variables}
+        issues={at("message")}
+        help="可以带工单号，比如 {{start.ticket}} 新增管道；空着用 PR 标题。"
+        onChange={set("message")}
+      />
+      <TextField
+        label="目标分支"
+        value={node.base ?? ""}
+        issues={at("base")}
+        help="PR 合到哪个分支，空着用仓库的默认分支。"
+        onChange={set("base")}
+      />
+      <RefField
+        label="提交到的分支"
+        value={node.branch ?? ""}
+        variables={variables}
+        issues={at("branch")}
+        help={`空着时平台按运行起名：${shown?.branch_prefix ?? "aep/"}runs/<运行>/${node.id}。要以 ${shown?.branch_prefix ?? "aep/"} 开头；同一个分支再提交会更新原来的 PR。`}
+        onChange={set("branch")}
+      />
+    </>
+  );
+}
+
 export function NodeSettings({
   node,
   config,
@@ -1643,6 +1813,16 @@ export function NodeSettings({
             onChange={(preview_rows) => change({ ...node, preview_rows })}
           />
         </>
+      );
+    case "git_pr":
+      return (
+        <GitPrFields
+          node={node}
+          options={options}
+          variables={variables}
+          issues={issues}
+          change={change}
+        />
       );
     case "app":
       return (

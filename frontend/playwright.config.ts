@@ -43,6 +43,7 @@ export default defineConfig({
         "release.spec.ts",
         "schedules.spec.ts",
         "app-node.spec.ts",
+        "git-pr.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

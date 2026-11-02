@@ -63,6 +63,7 @@ class Settings(BaseSettings):
         "connector-mysql:8002",
         "connector-files:8003",
         "connector-databricks:8005",
+        "connector-git:8006",
     ]
     # Testing a connector, its health and listing its tools; stays under the web
     # proxy's 10 seconds (frontend/app/api/[...path]/route.ts).
@@ -111,12 +112,14 @@ class Settings(BaseSettings):
     databricks_ingest_volume: str = "aep_landing"
 
     # The assets repository (aep.assets): bundles that passed on dev are opened there
-    # as pull requests under pipelines/<name>/. Off unless repo (owner/name) and token
-    # are set; the token needs contents and pull requests read/write on that repo only.
+    # as pull requests under pipelines/<name>/, through the Git connector at
+    # assets_git_url (connectors/git, which holds the token). Off unless both are set;
+    # the repository is owner/name (GitHub) or PROJECT/slug (Bitbucket).
     assets_repo: str = ""
-    assets_github_token: str = ""
+    assets_git_url: str = ""
     assets_base_branch: str = "main"
-    assets_api_url: str = "https://api.github.com"
+    # A commit and push of a whole bundle may take longer than other tool calls.
+    assets_git_seconds: float = 120.0
     # Where people open the workbench, for links back to a run (in PRs, for example).
     web_url: str = "http://localhost:3000"
 

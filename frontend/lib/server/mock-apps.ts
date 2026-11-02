@@ -33,7 +33,7 @@ import {
 } from "./mock-flow-apps";
 import { mockFlow } from "./mock-flow";
 import { MockNodeFailure, lakehouseConfig } from "./mock-data-nodes";
-import { mockToolService } from "./mock-datasources";
+import { allMockSources, mockToolService } from "./mock-datasources";
 import { mockModelChoices } from "./mock-models";
 import { buildMockManual } from "./mock-manual";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
@@ -506,6 +506,41 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
           ],
           msg: "没有这个知识库，请重新选择",
         });
+      // Like the backend (docs/api/git.md): code repositories only in 提交 PR nodes.
+      const named =
+        "datasource" in node && typeof node.datasource === "string"
+          ? allMockSources().find(
+              (item) => item.datasource_id === node.datasource,
+            )
+          : undefined;
+      if (node.type === "git_pr") {
+        const msg = !node.datasource
+          ? "要选择代码仓库"
+          : named && named.kind !== "git"
+            ? `「${named.name}」不是代码仓库，这里要选代码仓库`
+            : !named && !node.datasource.includes("{{")
+              ? `没有代码仓库 ${node.datasource}`
+              : null;
+        if (msg)
+          issues.push({
+            loc: ["body", "config", "graph", "nodes", node.id, "datasource"],
+            msg,
+          });
+        for (const [key, said] of [
+          ["repo", "要填仓库"],
+          ["files", "要引用要提交的文件，比如 {{check_code.bundle.files}}"],
+          ["pr_title", "要填 PR 标题"],
+        ] as const)
+          if (!String(node[key] ?? "").trim())
+            issues.push({
+              loc: ["body", "config", "graph", "nodes", node.id, key],
+              msg: said,
+            });
+      } else if (named?.kind === "git")
+        issues.push({
+          loc: ["body", "config", "graph", "nodes", node.id, "datasource"],
+          msg: `「${named.name}」是代码仓库，只能用在提交 PR 节点里`,
+        });
       // Like the backend (docs/api/flow-apps.md, "app 调用应用"), in short.
       if (node.type === "app") {
         const called = store.get(node.app);
@@ -897,6 +932,8 @@ export async function mockApps(
       return mockError("该类型不支持单节点试跑", 400);
     if (node.type === "app")
       return mockError("调用应用节点会真的发起一次运行，不能单独试跑", 422);
+    if (node.type === "git_pr")
+      return mockError("提交 PR 节点会真的在代码仓库开 PR，不能单独试跑", 422);
     if (["start", "human", "end"].includes(node.type))
       return invalid([
         {

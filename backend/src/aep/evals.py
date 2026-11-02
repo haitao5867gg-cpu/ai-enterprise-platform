@@ -243,8 +243,8 @@ class Runner:
 
     async def _datasource_id(self) -> str:
         listed = (await self._api.get("/datasources")).raise_for_status().json()
-        # Tool services and Databricks tables are not for the code app etl.
-        sources = [s for s in listed if s["kind"] not in ("mcp", "databricks")]
+        # Tool services, code repositories and Databricks tables are not for the code app etl.
+        sources = [s for s in listed if s["kind"] not in ("mcp", "git", "databricks")]
         if not sources:
             raise RuntimeError("平台里没有登记数据源")
         if self._datasource is None:

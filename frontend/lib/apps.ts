@@ -249,6 +249,21 @@ export type AppCallNode = NodeBase &
     outputs: string[];
     timeout_seconds?: number;
   };
+// docs/api/git.md ("提交 PR"): proposes files to a code repository as a pull request.
+export type GitPrNode = NodeBase &
+  Fallible & {
+    type: "git_pr";
+    datasource: string;
+    repo: string;
+    base?: string;
+    directory?: string;
+    files: string;
+    replace_directory?: boolean;
+    branch?: string;
+    pr_title: string;
+    body?: string;
+    message?: string;
+  };
 // Checks are written as docs/api/data-nodes.md ("data_check") describes; the editor
 // edits them as JSON and the backend checks them when the draft is saved.
 export type DataCheckGolden = {
@@ -286,6 +301,7 @@ export type FlowNode =
   | DatabricksReleaseNode
   | DataCheckNode
   | AppCallNode
+  | GitPrNode
   | EndNode;
 export type Edge = { from: string; to: string; branch?: string | null };
 export type FlowConfig = {

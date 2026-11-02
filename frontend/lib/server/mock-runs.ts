@@ -250,6 +250,8 @@ function nodeSaid(
     (node.type === "llm" && node.output.kind === "text" && !node.quiet)
   )
     return typeof outputs.text === "string" ? outputs.text : null;
+  if (node.type === "git_pr" && typeof outputs.summary === "string")
+    return outputs.summary;
   if (node.type === "app" && typeof outputs.run_id === "string")
     return `调用「${mockAppTitle(node.app) ?? node.app}」：运行 ${outputs.run_id.slice(0, 8)} 已完成。`;
   return dataNodeSaid(node, outputs, branch);

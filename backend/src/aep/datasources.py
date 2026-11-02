@@ -4,7 +4,8 @@ Credentials never live here: the connector holds them (local .env, Key Vault on
 Azure). The platform only knows where the connector is and what it is called. Data
 sources (databases, uploaded files and tables already on Databricks) are what ETL reads,
 through ``ETL_TOOLS``; a tool service (kind ``mcp``) only offers tools to flow apps'
-tool and agent nodes (docs/api/datasources.md).
+tool and agent nodes (docs/api/datasources.md); a code repository (kind ``git``) is a Git
+connector, used only by the 提交 PR node and the assets repository (docs/api/git.md).
 """
 
 import dataclasses
@@ -20,7 +21,7 @@ from aep.config import Settings
 from aep.connector_urls import same_url
 from aep.runtime.store import DEFAULT_TENANT
 
-DataSourceKind = Literal["postgres", "mysql", "sqlserver", "file", "databricks", "mcp"]
+DataSourceKind = Literal["postgres", "mysql", "sqlserver", "file", "databricks", "mcp", "git"]
 # Databases and uploaded files: what the code app etl reads and copies to Databricks.
 DATABASE_KINDS: tuple[str, ...] = ("postgres", "mysql", "sqlserver", "file")
 # Data sources: each must offer ETL_TOOLS. Tables on Databricks are read where they are
@@ -29,6 +30,16 @@ DATABASE_KINDS: tuple[str, ...] = ("postgres", "mysql", "sqlserver", "file")
 SOURCE_KINDS: tuple[str, ...] = (*DATABASE_KINDS, "databricks")
 # The kinds whose tools return data values, which the data outbound policy covers (aep.policy).
 DATA_KINDS: tuple[str, ...] = SOURCE_KINDS
+# A code repository: a Git connector (connectors/git), offering GIT_TOOLS.
+GIT_KIND = "git"
+GIT_TOOLS = (
+    "list_repos",
+    "list_files",
+    "read_file",
+    "open_pull_request",
+    "get_pull_request",
+    "comment_pull_request",
+)
 # What ETL reads through a data source's connector (connectors/postgres and the others).
 ETL_TOOLS = (
     "list_schemas",

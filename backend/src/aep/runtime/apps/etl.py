@@ -441,7 +441,8 @@ def build(ctx: AppContext) -> StateGraph:
                 "Databricks 的表请用编排应用 etl-lakehouse 第 3 版"
             )
         if source.kind not in DATABASE_KINDS:
-            raise InputError(f"「{source.name}」是工具服务，ETL 要选数据库或上传文件的数据源")
+            what = "代码仓库" if source.kind == "git" else "工具服务"
+            raise InputError(f"「{source.name}」是{what}，ETL 要选数据库或上传文件的数据源")
         if not str(inp.get("request", "")).strip():
             raise InputError("请用自然语言描述需求（input.request）")
         rows = configured(config, "profile").params["sample_rows"]
@@ -712,7 +713,7 @@ def build(ctx: AppContext) -> StateGraph:
         if ctx.assets is None:
             result["asset"] = {
                 "status": "skipped",
-                "reason": "没有配置资产仓库（AEP_ASSETS_REPO、AEP_ASSETS_GITHUB_TOKEN）",
+                "reason": "没有配置资产仓库（AEP_ASSETS_REPO、AEP_ASSETS_GIT_URL）",
             }
             return {"result": result}
         run_id = config["configurable"]["thread_id"]

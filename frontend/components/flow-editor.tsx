@@ -98,6 +98,18 @@ const formKeys: Record<FlowNode["type"], string[]> = {
   databricks_release: ["bundle", "schedule", "environment"],
   data_check: ["datasource", "checks", "include", "golden", "only_if"],
   app: ["app", "input", "outputs", "timeout_seconds"],
+  git_pr: [
+    "datasource",
+    "repo",
+    "files",
+    "directory",
+    "replace_directory",
+    "pr_title",
+    "body",
+    "message",
+    "base",
+    "branch",
+  ],
 };
 
 function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {

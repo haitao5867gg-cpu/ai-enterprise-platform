@@ -791,6 +791,8 @@ class AppCatalog:
             raise NotTestable("数据检查节点要读这次运行的结果表和项目，不能单独试跑")
         if node["type"] == "app":
             raise NotTestable("调用应用节点会真的发起一次运行，不能单独试跑")
+        if node["type"] == "git_pr":
+            raise NotTestable("提交 PR 节点会真的在代码仓库开 PR，不能单独试跑")
         p = Problems(("config", "graph", "nodes", node_id))
         check_common(node, p)
         await spec.check(node, p, self._env(await self.models()))

@@ -1,14 +1,17 @@
 "use client";
 
 import type { Input } from "../lib/apps";
-import { isToolService, kindLabel } from "../lib/datasources";
+import { isCodeRepo, isToolService, kindLabel } from "../lib/datasources";
 import type { FieldValues } from "../lib/input-fields";
 
 type Source = { datasource_id: string; name: string; kind: string };
 // Tool services come last, in their own group: a start input may feed a tool node, but an
-// ETL step that gets one fails with a Chinese input error.
+// ETL step that gets one fails with a Chinese input error. Code repositories are only for
+// the 提交 PR node, never chosen at run time.
 function DatasourceOptions({ sources }: { sources: Source[] }) {
-  const databases = sources.filter((source) => !isToolService(source));
+  const databases = sources.filter(
+    (source) => !isToolService(source) && !isCodeRepo(source),
+  );
   const services = sources.filter(isToolService);
   const options = (items: Source[], kind: boolean) =>
     items.map((source) => (

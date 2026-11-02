@@ -1,12 +1,12 @@
 """Company assets: generated bundles go to a Git repository as pull requests.
 
 ``AssetRepo`` writes a bundle under ``pipelines/<name>/`` on a new branch of the
-assets repository and opens a PR, through the GitHub REST API only (no git
-binary). Whether the PR merges is up to people. ``AssetStore`` is the platform's
-index of every version: bundle name, version, the PR and commit, the run it came
-from and where it stands.
+assets repository and opens a PR, through the platform's Git connector (connectors/git,
+docs/api/git.md): the platform holds no Git token and runs no git. Whether the PR merges
+is up to people. ``AssetStore`` is the platform's index of every version: bundle name,
+version, the PR and commit, the run it came from and where it stands.
 
-Off unless AEP_ASSETS_REPO and AEP_ASSETS_GITHUB_TOKEN are set.
+Off unless AEP_ASSETS_REPO and AEP_ASSETS_GIT_URL are set.
 """
 
 import uuid
@@ -14,11 +14,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
-import httpx
 from psycopg_pool import AsyncConnectionPool
 
 from aep.config import Settings
 from aep.runtime.store import DEFAULT_TENANT
+from aep.tools.mcp import McpTools, ToolError, tool_message
 
 # pending: the version is reserved, the PR not opened yet; proposed: the PR is open;
 # released: approved and deployed to prod; rejected: the release was turned down (a
@@ -56,42 +56,30 @@ class Asset:
 
 
 class AssetRepo:
-    """The assets repository on GitHub (or GitHub Enterprise, through ``assets_api_url``)."""
+    """The assets repository, through the Git connector at ``assets_git_url`` (GitHub or
+    Bitbucket Data Center, whichever that connector serves)."""
 
-    def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, settings: Settings, tools: McpTools) -> None:
         self.repo = settings.assets_repo
         self.base = settings.assets_base_branch
-        self._api = f"{settings.assets_api_url.rstrip('/')}/repos/{self.repo}"
-        self._http = http or httpx.AsyncClient(timeout=30)
-        self._headers = {
-            "Authorization": f"Bearer {settings.assets_github_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
+        self._url = settings.assets_git_url
+        self._tools = tools
+        self._seconds = settings.assets_git_seconds
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "AssetRepo | None":
-        if not (settings.assets_repo and settings.assets_github_token):
+    def from_settings(cls, settings: Settings, tools: McpTools) -> "AssetRepo | None":
+        if not (settings.assets_repo and settings.assets_git_url):
             return None
-        return cls(settings)
+        return cls(settings, tools)
 
     async def close(self) -> None:
-        await self._http.aclose()
+        return None
 
-    async def _call(self, method: str, path: str, body: Any = None, **params: Any) -> Any:
+    async def _call(self, tool: str, args: dict[str, Any]) -> Any:
         try:
-            resp = await self._http.request(
-                method, self._api + path, json=body, params=params or None, headers=self._headers
-            )
-        except httpx.HTTPError as exc:
-            raise AssetRepoError(f"连不上 GitHub（{method} {path}）：{exc!r}") from exc
-        if resp.status_code >= 400:
-            try:
-                message = resp.json().get("message", resp.text)
-            except ValueError:
-                message = resp.text
-            raise AssetRepoError(f"GitHub 返回 {resp.status_code}（{method} {path}）：{message}")
-        return resp.json() if resp.content else None
+            return await self._tools.call(self._url, tool, args, self._seconds)
+        except ToolError as exc:
+            raise AssetRepoError(tool_message(exc, tool)) from exc
 
     async def open_pr(
         self,
@@ -102,58 +90,29 @@ class AssetRepo:
         body: str,
         message: str,
     ) -> Published:
-        """Replace ``directory`` with ``files`` on ``branch`` (new, from the base branch) and
+        """Replace ``directory`` with ``files`` on ``branch`` (from the base branch) and
         open a PR to the base branch. Running it again for the same branch moves the branch
         to the new commit and reuses its open PR, so a retried step does not open a second."""
-        try:
-            ref = await self._call("GET", f"/git/ref/heads/{self.base}")
-        except AssetRepoError as exc:
-            raise AssetRepoError(
-                f"资产仓库 {self.repo} 读不到分支 {self.base}（空仓库请先建一个带 README 的"
-                f"初始提交）：{exc}"
-            ) from exc
-        parent = ref["object"]["sha"]
-        tree = (await self._call("GET", f"/git/commits/{parent}"))["tree"]["sha"]
-        listed = await self._call("GET", f"/git/trees/{tree}", recursive="1")
-        wanted = {f"{directory}/{path}": content for path, content in files.items()}
-        entries: list[dict[str, Any]] = [
-            {"path": path, "mode": "100644", "type": "blob", "content": content}
-            for path, content in sorted(wanted.items())
-        ]
-        # Files of an earlier version that this one no longer has.
-        entries += [
-            {"path": item["path"], "mode": "100644", "type": "blob", "sha": None}
-            for item in listed["tree"]
-            if item["type"] == "blob"
-            and item["path"].startswith(directory + "/")
-            and item["path"] not in wanted
-        ]
-        new_tree = await self._call("POST", "/git/trees", {"base_tree": tree, "tree": entries})
-        commit = await self._call(
-            "POST",
-            "/git/commits",
-            {"message": message, "tree": new_tree["sha"], "parents": [parent]},
+        made = await self._call(
+            "open_pull_request",
+            {
+                "repo": self.repo,
+                "branch": branch,
+                "title": title,
+                "files": files,
+                "message": message,
+                "body": body,
+                "base": self.base,
+                "directory": directory,
+                "replace_directory": True,
+            },
         )
-        sha = commit["sha"]
-        try:
-            await self._call("POST", "/git/refs", {"ref": f"refs/heads/{branch}", "sha": sha})
-        except AssetRepoError as exc:
-            if "422" not in str(exc):
-                raise
-            # Left by an earlier try of this step: point it at this commit.
-            await self._call("PATCH", f"/git/refs/heads/{branch}", {"sha": sha, "force": True})
-        owner = self.repo.split("/")[0]
-        open_prs = await self._call("GET", "/pulls", head=f"{owner}:{branch}", state="open")
-        if open_prs:
-            pr = await self._call("PATCH", f"/pulls/{open_prs[0]['number']}", {"body": body})
-        else:
-            pr = await self._call(
-                "POST", "/pulls", {"title": title, "head": branch, "base": self.base, "body": body}
-            )
-        return Published(pr["number"], pr["html_url"], branch, sha)
+        return Published(int(made["number"]), str(made["url"]), branch, str(made["commit"]))
 
     async def comment(self, number: int, body: str) -> None:
-        await self._call("POST", f"/issues/{number}/comments", {"body": body})
+        await self._call(
+            "comment_pull_request", {"repo": self.repo, "number": number, "body": body}
+        )
 
 
 class AssetStore(Protocol):

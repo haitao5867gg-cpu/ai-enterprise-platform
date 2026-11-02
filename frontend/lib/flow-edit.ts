@@ -34,6 +34,7 @@ export const UNTESTABLE_TYPES = [
   "databricks_release",
   "data_check",
   "app",
+  "git_pr",
 ];
 
 export const typeLabels: Record<FlowNode["type"], string> = {
@@ -56,6 +57,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   databricks_release: "上线到 prod",
   data_check: "数据检查",
   app: "调用应用",
+  git_pr: "提交 PR",
 };
 
 export function nodeKind(type: FlowNode["type"]): NodeKind {
@@ -70,6 +72,7 @@ export function nodeKind(type: FlowNode["type"]): NodeKind {
       "databricks_release",
       "data_check",
       "app",
+      "git_pr",
     ].includes(type)
   )
     return "tool";
@@ -192,6 +195,16 @@ export function ownOutputs(node: FlowNode): string[] {
         ...node.outputs.filter((key) => key !== "result" && key !== "run_id"),
         "result",
         "run_id",
+      ];
+    case "git_pr":
+      return [
+        "number",
+        "url",
+        "branch",
+        "commit",
+        "created",
+        "changed",
+        "summary",
       ];
     case "end":
       return [];

@@ -13,8 +13,15 @@ from aep.api.validation import NoNulls, chinese_errors
 from aep.config import Settings, get_settings
 from aep.connector_check import TOOLS_FAILED, ConnectorCheck, connection_problem, failed_detail
 from aep.connector_urls import mask_url, same_url
-from aep.datasources import DataSource, DataSourceKind, DataSourceStore, DuplicateName, canon_id
-from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError
+from aep.datasources import (
+    GIT_KIND,
+    DataSource,
+    DataSourceKind,
+    DataSourceStore,
+    DuplicateName,
+    canon_id,
+)
+from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, tool_message
 from aep.uploads import MAX_FILES, UploadError, stage_dataset
 
 router = APIRouter(
@@ -352,3 +359,30 @@ async def list_datasource_tools(
         )
         for t in listed
     ]
+
+
+class RepoOut(BaseModel):
+    repo: str
+    default_branch: str
+    url: str
+
+
+class ReposOut(BaseModel):
+    provider: str
+    branch_prefix: str
+    repos: list[RepoOut]
+
+
+@router.get("/{datasource_id}/repos")
+async def list_datasource_repos(datasource_id: str, store: Store, tools: Tools) -> ReposOut:
+    """A code repository's repositories (docs/api/git.md), for the 提交 PR node."""
+    ds = await _get(store, datasource_id)
+    if ds.kind != GIT_KIND:
+        raise HTTPException(409, f"「{ds.name}」不是代码仓库")
+    try:
+        listed = await tools.call(ds.connector_url, "list_repos", {})
+        return ReposOut.model_validate(listed)
+    except ToolError as exc:
+        raise HTTPException(502, tool_message(exc, "list_repos")) from exc
+    except ValueError as exc:
+        raise HTTPException(502, "代码仓库连接器返回的仓库列表格式不对") from exc

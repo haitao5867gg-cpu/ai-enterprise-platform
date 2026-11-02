@@ -233,6 +233,11 @@ function NodeDetail({
                             output={nodeOutput(step.output, node.id)}
                           />
                         )}
+                        {node.type === "git_pr" && (
+                          <PullRequestOutput
+                            output={nodeOutput(step.output, node.id)}
+                          />
+                        )}
                         <JsonBlock value={step.output} />
                       </>
                     )}
@@ -282,6 +287,27 @@ function AppCallOutput({ output }: { output: unknown }) {
       <Link href={`/runs/${encodeURIComponent(output.run_id)}`}>
         查看被调用的运行
       </Link>
+    </div>
+  );
+}
+
+// The pull request a 提交 PR step opened or updated (docs/api/git.md).
+function PullRequestOutput({ output }: { output: unknown }) {
+  if (!isRecord(output) || typeof output.url !== "string") return null;
+  // The address comes from the connector: only a web link is made a link.
+  const url = /^https?:\/\//i.test(output.url) ? output.url : null;
+  const changed = Array.isArray(output.changed) ? output.changed.length : 0;
+  return (
+    <div className="release-output passed" role="group" aria-label="提交的 PR">
+      <p>
+        {typeof output.summary === "string" ? output.summary : "已提交 PR"}
+        {changed ? `（改动 ${changed} 个文件）` : ""}
+      </p>
+      {url && (
+        <a href={url} target="_blank" rel="noreferrer">
+          打开 PR #{String(output.number)} ↗
+        </a>
+      )}
     </div>
   );
 }

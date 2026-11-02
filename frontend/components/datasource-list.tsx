@@ -7,6 +7,7 @@ import {
   getHealth,
   getUsage,
   healthLabels,
+  isCodeRepo,
   isToolService,
   kindLabel,
   listDatasources,
@@ -197,8 +198,11 @@ export function DatasourceList() {
     setAnnouncement(`${source.name}：${healthText(value)}`);
   }
 
-  const databases = items?.filter((source) => !isToolService(source)) ?? [];
+  const databases =
+    items?.filter((source) => !isToolService(source) && !isCodeRepo(source)) ??
+    [];
   const services = items?.filter(isToolService) ?? [];
+  const repos = items?.filter(isCodeRepo) ?? [];
   const table = (label: string, sources: Datasource[]) => (
     <SourceTable
       label={label}
@@ -274,6 +278,29 @@ export function DatasourceList() {
             ) : (
               <p className="muted">
                 还没有登记工具服务。工具服务只提供工具，比如查工单、查 CRM。
+              </p>
+            )}
+          </section>
+          <section
+            className="panel asset-section datasource-section"
+            aria-labelledby="datasource-group-repos"
+          >
+            <div className="asset-section-heading">
+              <h2 id="datasource-group-repos">代码仓库</h2>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => open("git")}
+              >
+                登记代码仓库
+              </button>
+            </div>
+            {repos.length ? (
+              table("代码仓库", repos)
+            ) : (
+              <p className="muted">
+                还没有登记代码仓库。代码仓库经 Git 连接器接入 GitHub 或
+                Bitbucket，「提交 PR」节点用它把代码以 PR 提交上去。
               </p>
             )}
           </section>

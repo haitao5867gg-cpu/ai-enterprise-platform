@@ -22,7 +22,14 @@ from pydantic import ValidationError
 from aep import llm, policy
 from aep.config import Settings
 from aep.databricks import DevTarget
-from aep.datasources import DATA_KINDS, SOURCE_KINDS, DataSource, DataSourceStore, tool_seconds
+from aep.datasources import (
+    DATA_KINDS,
+    GIT_KIND,
+    SOURCE_KINDS,
+    DataSource,
+    DataSourceStore,
+    tool_seconds,
+)
 from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
@@ -33,7 +40,7 @@ from aep.projects import project_value
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.skills import SkillContent, SkillStore
-from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo
+from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo, tool_message
 
 ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 ID_RULE = "只能用小写字母、数字和下划线，以字母开头，最多 32 个字符"
@@ -298,7 +305,9 @@ class Runtime:
             raise NodeFailure("model_error", f"调用模型失败：{exc}") from exc
         return reply.text
 
-    async def source(self, value: Any) -> DataSource:
+    async def source(self, value: Any, git: bool = False) -> DataSource:
+        """A registered source; a code repository only where ``git`` (the 提交 PR node):
+        code leaves the platform only through that node (docs/api/git.md)."""
         found = (
             await self.datasources.get(value)
             if self.datasources and isinstance(value, str) and value
@@ -306,6 +315,8 @@ class Runtime:
         )
         if found is None:
             raise NodeFailure(INPUT_ERROR, f"没有数据源 {refs.as_text(value) or '（未选择）'}")
+        if found.kind == GIT_KIND and not git:
+            raise NodeFailure(INPUT_ERROR, git_only(found))
         return found
 
     async def call(self, source: DataSource, tool: str, args: dict[str, Any]) -> Any:
@@ -318,7 +329,7 @@ class Runtime:
             kind = "timeout" if isinstance(exc.__cause__, TimeoutError) else "tool_error"
             raise NodeFailure(kind, f"连不上数据源「{source.name}」：{exc}") from exc
         except ToolError as exc:
-            raise NodeFailure("tool_error", f"工具报错：{exc}") from exc
+            raise NodeFailure("tool_error", f"工具报错：{tool_message(exc, tool)}") from exc
 
     async def run_code(self, code: str, inputs: dict[str, Any], timeout: int) -> Any:
         """What ``main(inputs)`` returns, run in the sandbox (see connectors/sandbox)."""
@@ -349,6 +360,10 @@ class Runtime:
             return await self.tools.list_tools(source.connector_url)
         except ToolError as exc:
             raise NodeFailure("tool_error", f"读不到数据源「{source.name}」的工具：{exc}") from exc
+
+
+def git_only(source: DataSource) -> str:
+    return f"「{source.name}」是代码仓库，只能用在提交 PR 节点里"
 
 
 @dataclass
@@ -1600,6 +1615,9 @@ async def _check_source(
     if source is None:
         p.add(loc, f"没有数据源 {value}")
         return
+    if source.kind == GIT_KIND:
+        p.add(loc, git_only(source))
+        return
     if etl and source.kind not in SOURCE_KINDS:
         p.add(loc, f"「{source.name}」是工具服务，这里要选数据库或上传文件的数据源")
         return
@@ -2160,8 +2178,9 @@ TYPES: dict[str, NodeType] = {
 }
 
 # The data-engineering types use the helpers above; they register themselves here.
-from aep.runtime.flow import app_node, data_check, data_nodes  # noqa: E402
+from aep.runtime.flow import app_node, data_check, data_nodes, git_node  # noqa: E402
 
 TYPES.update(data_nodes.TYPES)
 TYPES.update(data_check.TYPES)
 TYPES.update(app_node.TYPES)
+TYPES.update(git_node.TYPES)

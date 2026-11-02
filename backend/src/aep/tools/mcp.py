@@ -47,6 +47,17 @@ class ConnectorUnavailable(ToolError):
         self.reason: ConnectionProblem = reason
 
 
+def tool_message(exc: ToolError, tool: str) -> str:
+    """What a tool said when it failed, without the prefixes the client and the MCP SDK
+    put before it; for an unreachable connector, that it could not be reached."""
+    text = str(exc)
+    if isinstance(exc, ConnectorUnavailable):
+        return f"连不上连接器：{text}"
+    for prefix in (f"{tool}: ", f"Error executing tool {tool}: "):
+        text = text.removeprefix(prefix)
+    return text
+
+
 @dataclass(frozen=True)
 class ToolInfo:
     name: str

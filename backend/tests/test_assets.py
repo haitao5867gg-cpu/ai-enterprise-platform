@@ -4,7 +4,8 @@ import httpx
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from aep.assets import AssetRepoError, MemoryAssetStore
+from aep.assets import AssetRepo, AssetRepoError, MemoryAssetStore
+from aep.config import Settings
 from aep.datasources import MemoryDataSourceStore
 from aep.main import app
 from aep.runtime.apps.etl import _shorten
@@ -12,7 +13,7 @@ from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import MemoryRunStore
 from aep.tools.mcp import McpTools
-from tests import fake_connector, fake_databricks, fake_github
+from tests import fake_connector, fake_databricks, fake_git
 from tests.conftest import FakeGateway
 from tests.test_databricks_job import PASSED
 from tests.test_etl import PYSPARK_BODY, decide, plan, reply, start
@@ -22,7 +23,7 @@ FILES = {"databricks.yml": "bundle: {}\n", "src/pipeline.py": "x = 1\n", "README
 
 
 async def test_opens_a_pr_with_the_bundle_under_its_directory():
-    github = fake_github.FakeGitHub()
+    github = fake_git.FakeGit()
     repo = github.repo()
 
     first = await repo.open_pr("pipelines/shop", FILES, "aep/shop/v1", "shop v1", "说明", "msg")
@@ -44,7 +45,7 @@ async def test_opens_a_pr_with_the_bundle_under_its_directory():
 
 
 async def test_a_retried_step_reuses_its_branch_and_pr():
-    github = fake_github.FakeGitHub()
+    github = fake_git.FakeGit()
     repo = github.repo()
     await repo.open_pr("pipelines/shop", FILES, "aep/shop/v1", "shop v1", "第一次", "m")
     changed = FILES | {"src/pipeline.py": "x = 2\n"}
@@ -56,15 +57,35 @@ async def test_a_retried_step_reuses_its_branch_and_pr():
     assert github.files("aep/shop/v1")["pipelines/shop/src/pipeline.py"] == "x = 2\n"
 
 
-async def test_errors_say_what_github_answered():
-    empty = fake_github.FakeGitHub(empty=True)
-    with pytest.raises(AssetRepoError, match="读不到分支 main（空仓库请先建一个带 README"):
-        await empty.repo().open_pr("pipelines/shop", FILES, "b", "t", "", "m")
+async def test_errors_say_what_the_git_connector_answered():
+    empty = fake_git.FakeGit(empty=True)
+    with pytest.raises(AssetRepoError, match="^仓库 acme/aep-assets 取不到 main"):
+        await empty.repo().open_pr("pipelines/shop", FILES, "aep/b", "t", "", "m")
 
-    github = fake_github.FakeGitHub()
-    github.fail("/pulls", 403, "Resource not accessible by personal access token")
-    with pytest.raises(AssetRepoError, match="403.*Resource not accessible"):
-        await github.repo().open_pr("pipelines/shop", FILES, "b", "t", "", "m")
+    github = fake_git.FakeGit()
+    github.fail(
+        "open_pull_request", "GitHub 拒绝了访问（403），请检查令牌的权限：Resource not accessible"
+    )
+    with pytest.raises(AssetRepoError, match="^GitHub 拒绝了访问（403）.*Resource not accessible"):
+        await github.repo().open_pr("pipelines/shop", FILES, "aep/b", "t", "", "m")
+
+    # The connector is not running: said so, without its address' secrets.
+    down = fake_git.FakeGit()
+    gone = AssetRepo(down.settings(), McpTools(1, resolve=lambda url: "http://127.0.0.1:9/mcp"))
+    with pytest.raises(AssetRepoError, match="^连不上连接器"):
+        await gone.open_pr("pipelines/shop", FILES, "aep/b", "t", "", "m")
+
+
+async def test_the_repo_goes_through_the_git_connector_only_when_set():
+    tools = McpTools(5)
+    assert AssetRepo.from_settings(Settings(assets_repo="a/b"), tools) is None
+    assert AssetRepo.from_settings(Settings(assets_git_url="http://g/mcp"), tools) is None
+    github = fake_git.FakeGit()
+    await github.repo().open_pr("pipelines/shop", FILES, "aep/shop/v1", "t", "b", "m")
+    ((tool, args),) = github.calls
+    assert tool == "open_pull_request"
+    assert args["replace_directory"] is True and args["base"] == "main"
+    assert args["directory"] == "pipelines/shop" and args["repo"] == fake_git.REPO
 
 
 async def test_versions_are_reserved_once_per_run_and_revision():
@@ -109,7 +130,7 @@ def services(workspace, github, assets=None, runs=1, **settings):
 async def test_each_passing_version_becomes_a_pr_with_its_approval_trail(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.job_outputs = [PASSED, PASSED]
-    github = fake_github.FakeGitHub()
+    github = fake_git.FakeGit()
     service, sources, assets = services(workspace, github)
     shop = await sources.create("示例库", "postgres", fake_connector.URL)
 
@@ -123,11 +144,11 @@ async def test_each_passing_version_becomes_a_pr_with_its_approval_trail(tmp_pat
     asset = view.result["asset"]
     assert asset == {
         "status": "proposed",
-        "repo": fake_github.REPO,
+        "repo": fake_git.REPO,
         "path": "pipelines/shop_orders",
         "version": 1,
         "pr_number": 1,
-        "pr_url": f"https://github.test/{fake_github.REPO}/pull/1",
+        "pr_url": f"https://github.test/{fake_git.REPO}/pull/1",
         "branch": f"aep/shop_orders/v1-{run_id[:8]}",
         "commit": github.refs[f"aep/shop_orders/v1-{run_id[:8]}"],
     }
@@ -199,7 +220,7 @@ class CrashOnFirstRecord(MemoryAssetStore):
 async def test_a_publish_cut_short_reuses_its_version_and_pr_when_recovered(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.job_outputs = [PASSED]
-    github = fake_github.FakeGitHub()
+    github = fake_git.FakeGit()
     service, sources, assets = services(workspace, github, CrashOnFirstRecord())
     shop = await sources.create("示例库", "postgres", fake_connector.URL)
 
@@ -238,7 +259,7 @@ async def test_without_an_assets_repository_the_run_says_so(tmp_path):
 async def test_a_trial_run_does_not_publish(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.job_outputs = [PASSED]
-    github = fake_github.FakeGitHub()
+    github = fake_git.FakeGit()
     service, sources, _ = services(workspace, github)
     shop = await sources.create("示例库", "postgres", fake_connector.URL)
 
@@ -253,8 +274,10 @@ async def test_a_trial_run_does_not_publish(tmp_path):
 async def test_a_failed_publish_is_reported_and_the_release_still_waits(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.job_outputs = [PASSED]
-    github = fake_github.FakeGitHub()
-    github.fail("/git/trees", 403, "Resource not accessible by personal access token")
+    github = fake_git.FakeGit()
+    github.fail(
+        "open_pull_request", "GitHub 拒绝了访问（403），请检查令牌的权限：Resource not accessible"
+    )
     service, sources, assets = services(workspace, github)
     shop = await sources.create("示例库", "postgres", fake_connector.URL)
 
@@ -277,13 +300,13 @@ async def test_a_failed_publish_is_reported_and_the_release_still_waits(tmp_path
 async def test_a_failed_pr_comment_keeps_the_release_outcome(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.job_outputs = [PASSED]
-    github = fake_github.FakeGitHub()
+    github = fake_git.FakeGit()
     service, sources, assets = services(workspace, github)
     shop = await sources.create("示例库", "postgres", fake_connector.URL)
     run_id = await start(service, shop.datasource_id, name="shop_orders")
     await decide(service, run_id, "approve")
 
-    github.fail("/comments", 502, "Bad Gateway")
+    github.fail("comment_pull_request", "GitHub 返回 502（POST /issues/1/comments）：Bad Gateway")
     view = await decide(service, run_id, "approve")
 
     assert view.record.status == "done", view.record.error
@@ -296,7 +319,7 @@ async def test_a_failed_pr_comment_keeps_the_release_outcome(tmp_path):
 async def test_unnamed_runs_for_the_same_table_are_versions_of_one_asset(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.job_outputs = [PASSED, PASSED]
-    github = fake_github.FakeGitHub()
+    github = fake_git.FakeGit()
     service, sources, assets = services(workspace, github, runs=2)
     shop = await sources.create("示例库", "postgres", fake_connector.URL)
 

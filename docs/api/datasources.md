@@ -7,6 +7,7 @@
 - **连接器**：一个 MCP 服务（Streamable HTTP）。平台只保存它的地址。数据库账号密码配在连接器上（本地放 `.env`，Azure 放 Key Vault），平台不保存。
 - **数据源**：给 ETL 和数据节点读数据用的连接器，类型是 `postgres`、`mysql`、`sqlserver`、`file`（上传的 CSV、XLSX，由平台的文件连接器提供）或 `databricks`（Databricks 上已有的表，见“Databricks 数据源”）。数据源必须提供 ETL 需要的 6 个工具：`list_schemas`、`list_tables`、`describe_table`、`table_stats`、`sample_rows`、`read_rows`，参数和返回同 `connectors/postgres`。
 - **工具服务**：新类型 `mcp`。它只提供工具，不用于 ETL，比如查工单、查 CRM。工具名不限，但至少要有一个。工具服务只能用在编排应用的 `tool`（调用工具）节点和 `agent`（智能体）节点里；`etl_profile`、`databricks_ingest` 和 `etl` 应用都不接受它。
+- **代码仓库**：类型 `git`（第 5 批）。Git 连接器（GitHub 或 Bitbucket Data Center），只用在编排应用的「提交 PR」节点和资产仓库里，别的节点和 `etl` 应用都不接受它；测试连接时要求 6 个 Git 工具。见 [git.md](git.md)。
 - **只读标记**：工具的 `read_only` 取自连接器自报的 `annotations.readOnlyHint`，没报就是 `false`。它只用来展示，不是安全边界（代码沙箱的 `run_python` 也自称只读）。
 - **第一阶段只支持只读工具**：数据源连接器都是只读的；登记工具服务的人要确认它的工具不会修改数据。平台不核实 `read_only`，也不拦没声明只读的工具，所以第一阶段不提供「试一下工具」。
 
@@ -17,7 +18,7 @@
 {
   "datasource_id": "uuid",
   "name": "MySQL 示例库",               // 1–100 字符，去掉首尾空白；不能和别的数据源、工具服务重名
-  "kind": "postgres" | "mysql" | "sqlserver" | "file" | "databricks" | "mcp",
+  "kind": "postgres" | "mysql" | "sqlserver" | "file" | "databricks" | "mcp" | "git",
   "connector_url": "http://connector-mysql:8002/mcp",
                                         // 旧数据里如果带账号或敏感参数，返回时这部分换成 ***，库里存的不变
   "description": "本地 MySQL 示例源库……",  // 最多 2000 字符
@@ -127,7 +128,7 @@ JSON 列表，每一项是下面一种写法：
 
 1. 先做上面的地址检查。没通过时只有一条问题，不去连这个地址。
 2. 再在 `AEP_CONNECTOR_CHECK_SECONDS`（默认 5 秒，最多 8 秒）内连上连接器、完成握手、列出工具。工具分页时最多读 10 页、500 个工具。
-3. 数据源类型对照 6 个 ETL 工具，缺了就列在 `missing_tools` 里，并加一条 `missing_tools` 问题。工具服务一个工具都没有时，加一条 `no_tools` 问题。
+3. 数据源类型对照 6 个 ETL 工具，缺了就列在 `missing_tools` 里，并加一条 `missing_tools` 问题；代码仓库对照 6 个 Git 工具，问题文字见 [git.md](git.md)。工具服务一个工具都没有时，加一条 `no_tools` 问题。
 
 连不上时只给出分类和中文说明，原始报错（里面可能有地址、对方的返回内容）只写进平台日志。
 

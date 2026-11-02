@@ -22,6 +22,7 @@ from aep.connector_check import PROBLEM_TEXT, ConnectorCheck
 from aep.connector_urls import TEXT
 from aep.datasources import (
     ETL_TOOLS,
+    GIT_TOOLS,
     DuplicateName,
     MemoryDataSourceStore,
     register_defaults,
@@ -34,7 +35,7 @@ from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import MemoryRunStore
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError
-from tests import fake_connector
+from tests import fake_connector, fake_git
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 CONNECTION_WORDS = {
@@ -131,6 +132,7 @@ class Connectors:
             "partial.connector.test": partial_server(),
             "tools.connector.test": ticket_server(),
             "empty.connector.test": MCPServer("empty"),
+            "git.connector.test": fake_git.FakeGit().server,
         }
         self.handlers = {
             "timeout.connector.test": slow,
@@ -808,3 +810,43 @@ async def test_slow_connector_times_out():
             fake_connector.URL, "describe_table", {"schema": "sales", "table": "orders"}
         )
     assert caught.value.reason == "timeout"
+
+
+# Code repositories (docs/api/git.md)
+
+
+async def test_a_code_repository_needs_the_six_git_tools(platform):
+    missing = await platform.test("http://tools.connector.test/mcp", "git")
+    assert missing["missing_tools"] == list(GIT_TOOLS)
+    assert [p["code"] for p in missing["problems"]] == ["missing_tools"]
+    assert missing["problems"][0]["message"].startswith(
+        "缺少代码仓库需要的工具：list_repos、list_files"
+    )
+    good = await platform.test("http://git.connector.test/mcp", "git")
+    assert good["ok"] and good["missing_tools"] == []
+
+    repo = await platform.register("资产仓库", "http://git.connector.test/mcp", "git")
+    assert repo["kind"] == "git"
+    listed = await platform.api.get(f"/datasources/{repo['datasource_id']}/repos")
+    assert listed.status_code == 200, listed.text
+    assert listed.json() == {
+        "provider": "github",
+        "branch_prefix": "aep/",
+        "repos": [
+            {
+                "repo": fake_git.REPO,
+                "default_branch": "main",
+                "url": f"https://github.test/{fake_git.REPO}",
+            }
+        ],
+    }
+    shop = await platform.register()
+    other = await platform.api.get(f"/datasources/{shop['datasource_id']}/repos")
+    assert other.status_code == 409 and other.json()["detail"] == "「shop」不是代码仓库"
+
+    broken = fake_git.FakeGit()
+    platform.connectors.servers["git.connector.test"] = broken.server
+    broken.fail("list_repos", "GitHub 拒绝了访问（401），请检查令牌的权限：Bad credentials")
+    failed = await platform.api.get(f"/datasources/{repo['datasource_id']}/repos")
+    assert failed.status_code == 502
+    assert failed.json()["detail"] == "GitHub 拒绝了访问（401），请检查令牌的权限：Bad credentials"
