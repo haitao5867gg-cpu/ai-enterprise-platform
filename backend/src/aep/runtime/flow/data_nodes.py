@@ -504,7 +504,8 @@ def _schema_line(t: Target, existing: list[dict[str, Any]] | None) -> str | None
     if not t.load.add_columns:
         return f"- 表结构：表已经存在（{len(have)} 列），结构不变"
     added = "；".join(
-        f"`{c.name}`（放在 `{c.after}` 后面）" if c.after else f"`{c.name}`（放在最前面）"
+        f"`{c.name}`{f' {c.type.upper()}' if c.type else ''}，可为空"
+        + (f"（放在 `{c.after}` 后面）" if c.after else "（放在最前面）")
         for c in t.load.add_columns
     )
     return (
@@ -690,7 +691,74 @@ def _no_plan() -> dict[str, Any]:
         "result_table": "",
         "result_keys": [],
         "checks": [],
+        "dropped": [],
     }
+
+
+def _asked(raw: Any) -> list[dict[str, Any]]:
+    """What a plan reply holds that a person may have asked for (jadeflow I-15): its
+    checks (known by id or label) and its target tables' columns."""
+    items: list[dict[str, Any]] = []
+    if not isinstance(raw, dict):
+        return items
+    proposed = raw.get("checks")
+    for check in proposed if isinstance(proposed, list) else []:
+        if not isinstance(check, dict):
+            continue
+        keys = [str(check.get(k) or "").strip() for k in ("id", "label")]
+        keys = [k for k in keys if k]
+        if keys:
+            items.append({"check": keys, "text": f"检查「{keys[-1]}」"})
+    targets = raw.get("targets")
+    for target in targets if isinstance(targets, list) else []:
+        if not isinstance(target, dict) or not isinstance(target.get("name"), str):
+            continue
+        columns = target.get("columns")
+        for column in columns if isinstance(columns, list) else []:
+            name = column.get("name") if isinstance(column, dict) else None
+            if isinstance(name, str) and name.strip():
+                items.append(
+                    {
+                        "table": target["name"],
+                        "column": name,
+                        "text": f"{target['name']} 的列 {name}",
+                    }
+                )
+    return items
+
+
+def _dropped(
+    rejected: list[dict[str, Any]], plan: EtlPlan, project: dict[str, Any] | None
+) -> list[str]:
+    """What a version the platform sent back had and the plan that passed has not: a
+    check (by id or label; the project's own acceptance checks run anyway) or a column of
+    a table the plan still writes. A model may drop what the platform does not support
+    instead of saying so (jadeflow I-15); the person confirming the plan is told."""
+    kept: set[str] = set()
+    for check in plan.checks if isinstance(plan, EtlPlanV3) else []:
+        kept |= {str(check.get(k) or "").strip().lower() for k in ("id", "label")}
+    owned = (project or {}).get("checks") or []
+    kept |= {str(c.get("id") or "").lower() for c in owned if isinstance(c, dict)}
+    kept.discard("")
+    columns = {t.name.lower(): {c.name.lower() for c in t.columns} for t in plan.targets}
+    gone: list[str] = []
+    for item in rejected:
+        if "check" in item:
+            if {str(k).lower() for k in item["check"]} & kept:
+                continue
+        else:
+            have = columns.get(str(item.get("table")).lower())
+            if have is None or str(item.get("column")).lower() in have:
+                continue  # a table renamed or dropped altogether is not a lost column
+        gone.append(str(item["text"]))
+    return list(dict.fromkeys(gone))
+
+
+def _dropped_text(dropped: list[str]) -> str:
+    return (
+        f"> 注意：方案被平台校验退回后，这一版去掉了{'、'.join(dropped)}。"
+        "请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法，或者在问题里说明。"
+    )
 
 
 async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
@@ -751,7 +819,11 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     private: dict[str, Any] = {"failures": 0 if stuck else failures}
     if v2:
         private["answered"] = memory
+    # What the versions sent back since the last plan that passed held.
+    rejected = list(_mine(state, node).get("rejected") or [])
     if plan is None:
+        if held := list({str(i["text"]): i for i in rejected + _asked(raw)}.values()):
+            private["rejected"] = held
         text = "方案没有通过平台校验，带着问题让模型重写：\n" + "\n".join(
             f"- {p}" for p in problems
         )
@@ -792,10 +864,15 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         "targets": [t.name for t in plan.targets],
     } | _no_plan()
     outputs |= {"references": dumped["references"], "summary": summary}
+    dropped = _dropped(rejected, plan, state.get("project") or None)
+    if dropped:
+        outputs["dropped"] = dropped
+        outputs["message"] = _dropped_text(dropped) + "\n\n" + outputs["message"]
     if isinstance(plan, EtlPlanV2):
         answer = answer_output(plan)
+        message = plan_message_v2(plan, answer, existing)
         outputs |= {
-            "message": plan_message_v2(plan, answer, existing),
+            "message": _dropped_text(dropped) + "\n\n" + message if dropped else message,
             "brief": dumped["brief"],
             "questions": human_fields(plan),
             "answer": answer,
@@ -1392,6 +1469,7 @@ TYPES: dict[str, NodeType] = {
                 "result_table",
                 "result_keys",
                 "checks",
+                "dropped",
             ),
             outputs=(
                 ("ok", "是否通过"),
@@ -1413,6 +1491,7 @@ TYPES: dict[str, NodeType] = {
                     "checks",
                     "方案建议的数据检查，可以整段给数据检查节点的 include（第 3 版方案）",
                 ),
+                ("dropped", "方案被校验退回后，通过的这一版去掉了的检查和列"),
             ),
             defaults={
                 "reply": "",

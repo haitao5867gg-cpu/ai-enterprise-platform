@@ -39,6 +39,9 @@ export type PlanColumn = {
   label: string;
   source: string;
   description: string;
+  // Version 3: the column's Spark SQL type when the plan gives one (a column added to an
+  // existing table always has one).
+  type: string | null;
 };
 export type QualityRule = {
   name: string;
@@ -60,7 +63,7 @@ export type PlanTarget = {
     key: string | null;
     where: string | null;
     keys: string[];
-    add_columns: { name: string; after: string | null }[];
+    add_columns: { name: string; after: string | null; type: string | null }[];
   };
   quality_rules: QualityRule[];
 };
@@ -225,6 +228,7 @@ export function readPlanV2(value: unknown): PlanV2 | null {
           label: text(column.label),
           source: text(column.source),
           description: text(column.description),
+          type: textOrNull(column.type),
         })),
         primary_key: texts(target.primary_key),
         load: {
@@ -235,6 +239,7 @@ export function readPlanV2(value: unknown): PlanV2 | null {
           add_columns: records(load.add_columns).map((column) => ({
             name: text(column.name),
             after: textOrNull(column.after),
+            type: textOrNull(column.type),
           })),
         },
         quality_rules: records(target.quality_rules).map((rule) => ({

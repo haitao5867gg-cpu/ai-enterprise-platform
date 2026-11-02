@@ -300,7 +300,8 @@ def describe_existing(existing: list[dict[str, Any]] | None, project: dict[str, 
     lines = [
         f"{where}里已经有下面这些本项目的表。目标表和其中一张同名，就是写到这张表：",
         "- 按条件替换、追加、按键合并会保留表里其他的行，columns 要写出表里已有的全部列；"
-        "要加的列写在 columns 里想放的位置，确认方案后平台按这个位置在表里加列；",
+        "要加的列写在 columns 里想放的位置，并写上 type（Spark SQL 类型），"
+        "确认方案后平台按这个位置和类型在表里加列；",
         "- 整表覆盖（overwrite）会删掉表里现有的全部行，按方案重建表结构。",
     ]
     for t in existing:

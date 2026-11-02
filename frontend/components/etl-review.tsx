@@ -69,6 +69,8 @@ export type PlanReview = {
   design: AnswerDesign | null;
   uncited: string[];
   cleaned: string[];
+  // What the plan lost after the platform sent a version back (checks, columns).
+  dropped: string[];
   returned: ReviewRecord | null;
   previous: ReviewRecord | null;
 };
@@ -86,6 +88,7 @@ export function readPlanReview(data: unknown): PlanReview | null {
     design: readAnswerDesign(data.answer),
     uncited: strings(data.uncited),
     cleaned: strings(data.cleaned),
+    dropped: strings(data.dropped),
     returned: readRecord(data.returned),
     previous: readRecord(data.previous),
   };
@@ -186,6 +189,26 @@ export function EtlPlanReview({
                 <li key={note.item}>
                   {note.label}：{note.text}
                 </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {review.dropped.length > 0 && (
+          <div
+            className="review-returned"
+            role="note"
+            aria-label="校验退回后去掉的内容"
+          >
+            <h3>
+              <Icon name="alert" size={16} />
+              方案被平台校验退回后，这一版去掉了一些内容
+            </h3>
+            <p>
+              请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法。
+            </p>
+            <ul>
+              {review.dropped.map((line) => (
+                <li key={line}>{line}</li>
               ))}
             </ul>
           </div>

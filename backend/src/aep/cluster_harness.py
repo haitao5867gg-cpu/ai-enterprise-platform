@@ -147,6 +147,125 @@ def _quote(*parts: str) -> str:
     return ".".join("`" + part.replace("`", "``") + "`" for part in parts)
 
 
+# Column types (docs/api/data-nodes.md, "表结构变化"): written the way Spark writes a
+# column's ``dataType.simpleString()``, so a plan's type compares with a result's.
+SIMPLE_TYPES = {
+    "string",
+    "int",
+    "bigint",
+    "smallint",
+    "tinyint",
+    "double",
+    "float",
+    "boolean",
+    "date",
+    "timestamp",
+    "timestamp_ntz",
+    "binary",
+}
+TYPE_ALIASES = {
+    "integer": "int",
+    "long": "bigint",
+    "short": "smallint",
+    "byte": "tinyint",
+    "real": "float",
+    "bool": "boolean",
+    "text": "string",
+    "timestamp_ltz": "timestamp",
+}
+_TYPE_TOKEN = re.compile(r"[a-z_][a-z0-9_]*|\d+|[<>(),:]")
+
+
+def spark_type(text: Any) -> str | None:
+    """``text`` as Spark writes the type: lower case, no spaces, other names for the same
+    type made one (INTEGER is int, VARCHAR(10) is string, DECIMAL is decimal(10,0));
+    None when it is not a Spark SQL type."""
+    if not isinstance(text, str):
+        return None
+    plain = text.strip().lower()
+    tokens = _TYPE_TOKEN.findall(plain)
+    if not tokens or "".join(tokens) != re.sub(r"\s+", "", plain):
+        return None
+    at = 0
+
+    def take(expected: str | None = None) -> str:
+        nonlocal at
+        if at >= len(tokens) or (expected is not None and tokens[at] != expected):
+            raise ValueError(expected)
+        at += 1
+        return tokens[at - 1]
+
+    def number() -> int:
+        token = take()
+        if not token.isdigit():
+            raise ValueError(token)
+        return int(token)
+
+    def one() -> str:
+        word = take()
+        word = TYPE_ALIASES.get(word, word)
+        if word in SIMPLE_TYPES:
+            return word
+        if word in ("decimal", "numeric", "dec"):
+            precision, scale = 10, 0
+            if at < len(tokens) and tokens[at] == "(":
+                take("(")
+                precision = number()
+                if tokens[at : at + 1] == [","]:
+                    take(",")
+                    scale = number()
+                take(")")
+            if not 1 <= precision <= 38 or scale > precision:
+                raise ValueError(word)
+            return f"decimal({precision},{scale})"
+        if word in ("varchar", "char"):
+            take("(")
+            number()
+            take(")")
+            return "string"
+        if word == "array":
+            take("<")
+            inner = one()
+            take(">")
+            return f"array<{inner}>"
+        if word == "map":
+            take("<")
+            key = one()
+            take(",")
+            value = one()
+            take(">")
+            return f"map<{key},{value}>"
+        if word == "struct":
+            take("<")
+            fields = []
+            while True:
+                name = take()
+                take(":")
+                fields.append(f"{name}:{one()}")
+                if take() == ">":
+                    break
+            return f"struct<{','.join(fields)}>"
+        raise ValueError(word)
+
+    try:
+        found = one()
+    except (ValueError, IndexError):
+        return None
+    return found if at == len(tokens) else None
+
+
+def type_family(kind: str) -> str:
+    """What a column of type ``kind`` (as ``spark_type`` writes it) holds: numbers of any
+    width, and timestamps with or without a zone, are each one family."""
+    if kind in ("tinyint", "smallint", "int", "bigint", "float", "double"):
+        return "number"
+    if kind.startswith("decimal("):
+        return "number"
+    if kind in ("timestamp", "timestamp_ntz"):
+        return "timestamp"
+    return kind
+
+
 class _Refused(Exception):
     """A table the run must not write, or a result its write mode cannot store."""
 
@@ -193,11 +312,23 @@ def _new_columns(
     plan lists them in ``load["add_columns"]``. The result must have every column of the
     table and no new column the plan did not confirm; raises ``_Refused`` otherwise. A
     confirmed column the table already has (an earlier run added it) is left alone."""
-    have = {c.lower(): c for c in spark.read.table(stored).columns}
+    table = spark.read.table(stored)
+    have = {c.lower(): c for c in table.columns}
+    kinds = {f.name.lower(): f.dataType.simpleString() for f in table.schema.fields}
     fields = {f.name.lower(): f for f in df.schema.fields}
     missing = [c for low, c in have.items() if low not in fields]
     if missing:
         raise _Refused(f"{name}: 结果里没有表里已有的列 {'、'.join(missing)}，没有写")
+    # A column whose values are of another kind than the table's (text for numbers, a
+    # list for text) would fail Delta's write or change what the column means.
+    clashes = []
+    for low, column in have.items():
+        want = spark_type(kinds.get(low))
+        got = spark_type(fields[low].dataType.simpleString())
+        if want and got and type_family(want) != type_family(got):
+            clashes.append(f"{column} 在表里是 {want.upper()}，结果里是 {got.upper()}")
+    if clashes:
+        raise _Refused(f"{name}: 列的类型和表里的不一致（{'；'.join(clashes)}），没有写")
     approved = [c for c in load.get("add_columns") or [] if isinstance(c, dict)]
     confirmed = {str(c.get("name") or "").lower() for c in approved}
     extra = [f.name for low, f in fields.items() if low not in have and low not in confirmed]
@@ -211,6 +342,16 @@ def _new_columns(
         field = fields.get(str(column.get("name") or "").lower())
         if field is None or field.name.lower() in known:
             continue
+        # The type the person confirmed with the plan (plans confirmed before types
+        # were asked for have none: the result's type is taken).
+        confirmed = column.get("type")
+        got = field.dataType.simpleString()
+        if confirmed is not None and spark_type(got) != spark_type(confirmed):
+            want = (spark_type(confirmed) or str(confirmed)).upper()
+            raise _Refused(
+                f"{name}: 确认的方案里新加的列 {field.name} 是 {want}，结果里是 {got.upper()}，"
+                f"没有加列，也没有写：代码要让这一列是 {want}（需要时用 cast）"
+            )
         after = column.get("after")
         if after is None:
             position = "FIRST"
