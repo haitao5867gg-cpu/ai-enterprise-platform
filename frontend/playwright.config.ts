@@ -41,6 +41,7 @@ export default defineConfig({
         "app-access.spec.ts",
         "evals.spec.ts",
         "release.spec.ts",
+        "schedules.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

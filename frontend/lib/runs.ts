@@ -87,6 +87,13 @@ export type RunSummary = {
   project?: RunProject | null;
   // The data outbound policy in force for the run (docs/api/projects.md).
   policy?: RunPolicy;
+  // What started it when no person did (docs/api/schedules.md); null otherwise.
+  trigger?: RunTrigger | null;
+};
+export type RunTrigger = {
+  kind: "schedule";
+  schedule_id: string;
+  title: string;
 };
 export type RunProject = {
   project_id: string;

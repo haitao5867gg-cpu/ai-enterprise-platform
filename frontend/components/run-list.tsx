@@ -219,7 +219,14 @@ export function RunList() {
                           )}
                         </Link>
                       </td>
-                      <td className="run-cell">{run.created_by || "—"}</td>
+                      <td className="run-cell">
+                        {run.created_by || "—"}
+                        {run.trigger && (
+                          <span className="run-step">
+                            定时：{run.trigger.title}
+                          </span>
+                        )}
+                      </td>
                       <td>
                         <span className="app-tag">
                           <Icon name="spark" size={14} />

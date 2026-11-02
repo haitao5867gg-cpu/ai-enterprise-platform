@@ -181,6 +181,10 @@ LABELS: dict[str, str] = {
     "PATCH /webhooks/{webhook_id}": "修改 Webhook",
     "DELETE /webhooks/{webhook_id}": "删除 Webhook",
     "POST /webhooks/{webhook_id}/test": "测试 Webhook",
+    "POST /apps/{app}/schedules": "新建定时",
+    "PATCH /schedules/{schedule_id}": "修改定时",
+    "DELETE /schedules/{schedule_id}": "删除定时",
+    "POST /schedules/{schedule_id}/run": "立即跑一次定时",
 }
 
 
@@ -199,7 +203,7 @@ PUBLIC = frozenset(
         ("POST", "/auth/login"),
     }
 )
-BUILT = ("/apps", "/skills", "/knowledge-bases", "/datasources", "/projects")
+BUILT = ("/apps", "/skills", "/knowledge-bases", "/datasources", "/projects", "/schedules")
 
 
 def _under(path: str, prefix: str) -> bool:

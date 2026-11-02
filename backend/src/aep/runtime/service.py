@@ -513,12 +513,58 @@ class RunService:
         project: dict[str, Any] | None = None,
         seed: dict[str, Any] | None = None,
         start_at: dict[str, Any] | None = None,
+        trigger: dict[str, Any] | None = None,
     ) -> RunRecord:
         """Start a run of the app's current version, or of ``app_version``; with ``config``
         (a draft's configuration, for its eval) or ``draft`` (the draft as it is now) the
         run belongs to no version. A flow app's input must fit its start node's inputs.
         ``requester`` is who asks for it, as they say; ``project`` the project it binds
-        (``project_id``, ``environment``, ``params``; docs/api/projects.md)."""
+        (``project_id``, ``environment``, ``params``; docs/api/projects.md); ``trigger``
+        what started it when no person did (docs/api/schedules.md)."""
+        app_version, config, bound, rules = await self._prepare(
+            app, input, app_version, config, draft, project
+        )
+        record = await self._store.create(
+            app,
+            input,
+            app_version,
+            config,
+            requester,
+            rerun_of,
+            rules.as_dict(),
+            bound,
+            start_at,
+            trigger,
+        )
+        # A rerun from a step starts there, with the state the source run had then.
+        payload = {**(seed or {}), "input": input}
+        if start_at:
+            payload["jump"] = start_at["node"]
+        self._spawn(record, payload, "start", input)
+        return record
+
+    async def check_start(
+        self, app: str, input: dict[str, Any], project: dict[str, Any] | None
+    ) -> None:
+        """Raise what :meth:`create` would for a run of the app's current version with this
+        input and project, without starting one (a schedule is checked when saved)."""
+        await self._prepare(app, input, None, None, False, project)
+
+    async def status_of(self, run_id: str) -> str | None:
+        found = await self._store.get(run_id)
+        return found.status if found else None
+
+    async def _prepare(
+        self,
+        app: str,
+        input: dict[str, Any],
+        app_version: int | None,
+        config: dict[str, Any] | None,
+        draft: bool,
+        project: dict[str, Any] | None,
+    ) -> tuple[int | None, dict[str, Any], dict[str, Any] | None, policy.DataPolicy]:
+        """The version and configuration a new run uses, the project it binds and the
+        outbound policy in force, all checked."""
         kind = await self.kind(app)
         if kind is None:
             raise UnknownApp(app)
@@ -549,15 +595,7 @@ class RunService:
                 problem = policy.model_problem(rules, model, where, named)
                 if problem:
                     raise ModelNotAllowed(problem)
-        record = await self._store.create(
-            app, input, app_version, config, requester, rerun_of, rules.as_dict(), bound, start_at
-        )
-        # A rerun from a step starts there, with the state the source run had then.
-        payload = {**(seed or {}), "input": input}
-        if start_at:
-            payload["jump"] = start_at["node"]
-        self._spawn(record, payload, "start", input)
-        return record
+        return app_version, config, bound, rules
 
     async def _bind(
         self, app: str, kind: str, config: dict[str, Any], asked: dict[str, Any] | None
