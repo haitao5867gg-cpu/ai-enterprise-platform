@@ -13,6 +13,7 @@ import {
 } from "../lib/auth";
 import { isRecord, requestJson } from "../lib/runs";
 import { Icon } from "./icons";
+import { NotificationBell } from "./notification-bell";
 import { PasswordDialog } from "./password-dialog";
 import { SessionProvider, useSession } from "./session";
 import { EmptyState } from "./ui";
@@ -86,6 +87,12 @@ const NAV: NavItem[] = [
     active: under("/projects"),
   },
   { href: "/users", label: "账号", icon: "user", active: under("/users") },
+  {
+    href: "/notification-channels",
+    label: "通知渠道",
+    icon: "bell",
+    active: under("/notification-channels"),
+  },
   { href: "/audit", label: "操作记录", icon: "log", active: under("/audit") },
   {
     href: "/runs/new",
@@ -95,9 +102,14 @@ const NAV: NavItem[] = [
   },
 ];
 
+// Pages that exist only with sign-in on: accounts and the record of changes.
+const accountsOnly = (pathname: string) =>
+  under("/users")(pathname) || under("/audit")(pathname);
+
 function crumb(pathname: string) {
   if (pathname === "/") return "运行记录";
   if (pathname === "/runs/new") return "新建运行";
+  if (pathname === "/notifications") return "通知";
   const item = NAV.find((nav) => nav.href !== "/" && nav.active(pathname));
   return item?.label ?? "运行详情";
 }
@@ -211,7 +223,10 @@ function Shell({
             <span className="crumb-divider">/</span>
             {crumb(pathname)}
           </span>
-          <BackendHealth />
+          <span className="topbar-tools">
+            {loaded && !signedOut && <NotificationBell />}
+            <BackendHealth />
+          </span>
         </header>
         {mockEnabled && (
           <div className="mock-banner">
@@ -228,7 +243,7 @@ function Shell({
               <span className="spinner" />
               正在加载…
             </div>
-          ) : !signIn && needed === "admin" ? (
+          ) : !signIn && accountsOnly(pathname) ? (
             <EmptyState title="没有打开登录">
               账号和操作记录在打开登录（AEP_AUTH_ENABLED）后才有。
             </EmptyState>

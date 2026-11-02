@@ -22,6 +22,7 @@ from aep.api import (
     flows,
     knowledge,
     models,
+    notifications,
     projects,
     runs,
     skills,
@@ -37,6 +38,7 @@ from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
 from aep.models import GatewayAdmin, ModelService, PostgresCallStore
+from aep.notify import Notifier, PostgresNotificationStore
 from aep.projects import PostgresProjectStore
 from aep.runtime.catalog import AppCatalog, GatewayModels
 from aep.runtime.flow.store import PostgresFlowAppStore, PostgresSecretStore
@@ -159,6 +161,12 @@ def create_app() -> FastAPI:
         auth_service = AuthService.from_settings(PostgresAuthStore(pool), settings)
         await auth_service.setup()
         app.state.auth = auth_service
+        # Notices when a run waits for a person, finishes or fails
+        # (docs/api/notifications.md).
+        notifier = Notifier(PostgresNotificationStore(pool), settings, auth_service)
+        await notifier.setup()
+        service.on_settled = notifier.run_settled
+        app.state.notifier = notifier
         llm.set_recorder(call_store.record)
         catalog.model_choices = model_service.choices
         if tracer.enabled:
@@ -226,6 +234,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(knowledge.router)
     app.include_router(models.router)
+    app.include_router(notifications.router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

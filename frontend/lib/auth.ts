@@ -10,6 +10,7 @@ export type User = {
   disabled: boolean;
   created_at: string;
   last_login_at: string | null;
+  email?: string | null;
 };
 export type AuthStatus = {
   enabled: boolean;
@@ -54,7 +55,8 @@ export function hasRole(user: User | null | undefined, role: Role): boolean {
 export function pageRole(pathname: string): Role {
   const under = (prefix: string) =>
     pathname === prefix || pathname.startsWith(`${prefix}/`);
-  if (under("/users") || under("/audit")) return "admin";
+  if (under("/users") || under("/audit") || under("/notification-channels"))
+    return "admin";
   if (
     ["/apps", "/skills", "/knowledge", "/datasources", "/projects", "/models"]
       .map(under)
@@ -90,10 +92,13 @@ export const createUser = (input: {
   display_name: string;
   roles: Role[];
   password: string;
+  email?: string;
 }) => requestJson("/users", json("POST", input)) as Promise<User>;
 export const updateUser = (
   id: string,
-  changes: Partial<Pick<User, "display_name" | "roles" | "disabled">>,
+  changes: Partial<Pick<User, "display_name" | "roles" | "disabled">> & {
+    email?: string;
+  },
 ) =>
   requestJson(
     `/users/${encodeURIComponent(id)}`,

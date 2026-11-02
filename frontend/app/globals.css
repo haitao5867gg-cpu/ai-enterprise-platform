@@ -1103,6 +1103,129 @@ nav {
   gap: 7px;
   white-space: nowrap;
 }
+.topbar-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+}
+.notification-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: #5f5b6d;
+}
+.notification-bell:hover,
+.notification-bell.active {
+  background: #f3f0fb;
+  color: var(--purple);
+}
+.notification-count {
+  position: absolute;
+  top: 1px;
+  right: -3px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #d94848;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 17px;
+  text-align: center;
+}
+.notification-actions {
+  align-items: center;
+  gap: 16px;
+}
+.notification-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.notification-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.notification-items li + li {
+  border-top: 1px solid var(--line);
+}
+.notification-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 14px 6px;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+.notification-item:hover {
+  background: #faf9fd;
+}
+.notification-items li:not(.unread) strong {
+  font-weight: 500;
+  color: #5f5b6d;
+}
+.notification-items li.unread strong::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #d94848;
+  vertical-align: middle;
+}
+.notification-text {
+  display: grid;
+  gap: 4px;
+}
+.notification-body {
+  color: #74717f;
+  font-size: 13px;
+  white-space: pre-line;
+}
+.notification-event {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #eef0f6;
+  white-space: nowrap;
+}
+.notification-event.run\.waiting {
+  background: #fff4e0;
+  color: #9a5b00;
+}
+.notification-event.run\.done {
+  background: #e7f6ec;
+  color: #1f7a3d;
+}
+.notification-event.run\.error {
+  background: #fdeaea;
+  color: #b42318;
+}
+.webhook-apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-left: 24px;
+}
+.webhook-apps label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .dot {
   width: 6px;
   height: 6px;

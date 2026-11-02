@@ -49,6 +49,13 @@ async function handle(request: Request, context: Context) {
     [/^users\/[a-zA-Z0-9_-]{1,64}$/, ["PATCH", "DELETE"]],
     [/^users\/[a-zA-Z0-9_-]{1,64}\/password$/, ["PUT"]],
     [/^audit$/, ["GET"]],
+    // Notifications and their channels (docs/api/notifications.md).
+    [/^notifications$/, ["GET"]],
+    [/^notifications\/read$/, ["POST"]],
+    [/^notification-channels$/, ["GET"]],
+    [/^webhooks$/, ["POST"]],
+    [/^webhooks\/[a-zA-Z0-9_-]{1,64}$/, ["PATCH", "DELETE"]],
+    [/^webhooks\/[a-zA-Z0-9_-]{1,64}\/test$/, ["POST"]],
     // `defaults` comes before the alias rule: the first match wins.
     [/^models$/, ["GET", "POST"]],
     [/^models\/defaults$/, ["PUT"]],
@@ -135,6 +142,13 @@ async function handle(request: Request, context: Context) {
         await import("../../../lib/server/mock-knowledge");
       return mockKnowledge(request, path);
     }
+    if (
+      ["notifications", "notification-channels", "webhooks"].includes(path[0])
+    ) {
+      const { mockNotifications } =
+        await import("../../../lib/server/mock-notifications");
+      return mockNotifications(request, path);
+    }
     if (["auth", "users", "audit"].includes(path[0])) {
       const { mockAuth } = await import("../../../lib/server/mock-auth");
       return mockAuth(request, path);
@@ -193,6 +207,8 @@ async function handle(request: Request, context: Context) {
           isUpload
             ? 300_000
             : /\/nodes\/[^/]+\/test$/.test(endpoint) ||
+                // Testing a webhook waits up to 10 seconds for the other end.
+                /^webhooks\/[^/]+\/test$/.test(endpoint) ||
                 // Saving or testing a model calls it on the gateway first.
                 (/^models(\/[^/]+(\/test)?)?$/.test(endpoint) &&
                   ["POST", "PATCH"].includes(request.method))

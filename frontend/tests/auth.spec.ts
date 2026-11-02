@@ -30,6 +30,7 @@ test("登录关着时和以前一样：不用登录，没有账号页", async ({
     "数据源与工具",
     "模型",
     "项目",
+    "通知渠道",
     "新建运行",
   ]);
   await expect(page.getByRole("button", { name: "退出" })).toHaveCount(0);

@@ -36,6 +36,7 @@ import {
 } from "../apps";
 import { defaultValues, inputPayload, validateFields } from "../input-fields";
 import { mockAppSnapshot, mockAppTitle } from "./mock-apps";
+import { announceMockRun } from "./mock-notifications";
 import {
   allSources,
   flowView,
@@ -286,6 +287,13 @@ function setStatus(run: Run, status: RunStatus) {
   run.status = status;
   run.updated_at = now.toISOString();
   run.finished_at = isFinished(status) ? run.updated_at : null;
+  // After the handler has set what the run waits for (docs/api/notifications.md).
+  queueMicrotask(() =>
+    announceMockRun({
+      ...run,
+      app_title: mockAppTitle(run.app) ?? run.app_title,
+    }),
+  );
 }
 
 function runTitle(value: unknown): string | null {

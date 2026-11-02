@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -218,6 +219,17 @@ class RunView:
     sources: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class RunSettled:
+    """A run that just started waiting for a person, finished or failed, with what a
+    notice about it needs (aep.notify)."""
+
+    record: RunRecord
+    pending: dict[str, Any] | None
+    app_title: str
+    title: str | None
+
+
 def _config(run_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": run_id}}
 
@@ -315,6 +327,8 @@ class RunService:
         self._tasks: set[asyncio.Task] = set()
         # The task executing each run in this process, to stop it when it is cancelled.
         self._running: dict[str, asyncio.Task] = {}
+        # Told each time a run settles (waiting, done, error): the platform's notices.
+        self.on_settled: Callable[[RunSettled], Awaitable[None]] | None = None
 
     @property
     def tools(self) -> Any:
@@ -854,7 +868,32 @@ class RunService:
 
     async def _finish(self, run_id: str, status: RunStatus, **kwargs: Any) -> None:
         # Only a run still running ends this way: a cancelled one stays cancelled.
-        await self._store.set_status(run_id, status, expected=("running",), **kwargs)
+        if await self._store.set_status(run_id, status, expected=("running",), **kwargs):
+            self._announce(run_id)
+
+    def _announce(self, run_id: str) -> None:
+        """Tell ``on_settled`` in the background: a slow mail server or webhook never
+        holds up the run, and a failure there is only logged."""
+        listener = self.on_settled
+        if listener is None:
+            return
+
+        async def announce() -> None:
+            try:
+                view = await self.get(run_id)
+                titles = await self.app_titles()
+                record = view.record
+                await listener(
+                    RunSettled(
+                        record, view.pending, titles.get(record.app, record.app), self.title(record)
+                    )
+                )
+            except Exception:
+                log.exception("could not announce run %s", run_id)
+
+        task = asyncio.create_task(announce())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _drive(self, record: RunRecord, payload: Any, step: str, step_input: Any) -> None:
         config = _config(record.run_id)
