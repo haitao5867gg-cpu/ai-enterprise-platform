@@ -5367,3 +5367,67 @@ fieldset.project-form-section > legend + * {
 .project-picker label[for="project-environment"] {
   margin-top: 14px;
 }
+
+/* App page tabs: every panel stays mounted; hidden ones take no space. */
+.app-tabs {
+  justify-self: start;
+}
+.app-tab-panel {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.app-tab-panel[hidden] {
+  display: none;
+}
+
+/* An app's use page (/use/{app}). */
+.app-use {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.app-use-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 20px;
+  align-items: start;
+}
+.app-use-side {
+  display: grid;
+  gap: 16px;
+}
+.app-use-side .panel {
+  padding: 20px;
+}
+.app-use-side h2 {
+  font-size: 1rem;
+  margin: 0 0 10px;
+}
+.app-use-human,
+.app-use-runs {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 10px;
+}
+.app-use-runs {
+  list-style: none;
+  padding-left: 0;
+}
+.app-use-runs li {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+.app-use-human p {
+  margin: 2px 0 0;
+}
+.form-section[hidden] {
+  display: none;
+}
+@media (max-width: 900px) {
+  .app-use-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

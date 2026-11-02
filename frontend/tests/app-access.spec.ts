@@ -6,7 +6,11 @@ test("应用页给出 API 和 MCP 用法，新建的密钥只显示一次", asyn
   context,
 }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.goto("/apps/hello");
+  await page.goto("/apps/hello#access");
+  await expect(page.getByRole("tab", { name: "接入" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   const section = page.getByRole("region", { name: "API 和 MCP" });
   await expect(section).toBeVisible();
   await expect(section).toContainText("/api/v1/apps/hello/runs");
@@ -50,4 +54,72 @@ test("应用页给出 API 和 MCP 用法，新建的密钥只显示一次", asyn
     "已删除密钥「CRM 系统」。",
   );
   await expect(row).toBeHidden();
+});
+
+test("应用页分成概览、编排、评测与发布、接入四个标签", async ({ page }) => {
+  await page.goto("/apps/hello");
+  const tabs = page.getByRole("tablist", { name: "应用页" });
+  await expect(tabs.getByRole("tab")).toHaveText([
+    "概览",
+    "编排",
+    "评测与发布",
+    "接入",
+  ]);
+  // The editor first; the banner (draft or current) goes with editing and release.
+  await expect(tabs.getByRole("tab", { name: "编排" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(
+    page.getByRole("region", { name: "正在查看的配置" }),
+  ).toBeVisible();
+  await expect(page.getByRole("region", { name: "版本历史" })).toBeHidden();
+
+  await tabs.getByRole("tab", { name: "评测与发布" }).click();
+  await expect(page).toHaveURL(/#release$/);
+  await expect(page.getByRole("region", { name: "版本历史" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "发布应用" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "正在查看的配置" }),
+  ).toBeVisible();
+
+  // Arrow keys move between tabs.
+  await tabs.getByRole("tab", { name: "评测与发布" }).press("ArrowLeft");
+  await expect(tabs.getByRole("tab", { name: "编排" })).toBeFocused();
+  await tabs.getByRole("tab", { name: "编排" }).press("ArrowLeft");
+  await expect(page.getByRole("group", { name: "应用说明书" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "正在查看的配置" }),
+  ).toBeHidden();
+
+  // A link straight to a tab opens it.
+  await page.goto("/apps/hello#release");
+  await expect(page.getByRole("region", { name: "版本历史" })).toBeVisible();
+});
+
+test("使用页只跑这一个应用，说明在哪里会问人，列出最近的运行", async ({
+  page,
+}) => {
+  await page.goto("/apps/hello");
+  await page.getByRole("link", { name: "使用页" }).click();
+  await expect(page).toHaveURL(/\/use\/hello$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("问答示例");
+  await expect(page.getByLabel("应用", { exact: true })).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "复制使用页链接" }),
+  ).toBeVisible();
+  const asks = page.getByRole("region", { name: "会在哪里问你" });
+  await expect(asks.getByRole("listitem").first()).toBeVisible();
+
+  await page.getByLabel("你想完成什么？").fill("使用页发起的一次运行");
+  await page.getByRole("button", { name: "开始运行" }).click();
+  await expect(page).toHaveURL(/\/runs\/[^/]+$/);
+  await page.goBack();
+  const recent = page.getByRole("list", { name: "这个应用最近的运行" });
+  await expect(
+    recent.getByRole("link", { name: "使用页发起的一次运行" }),
+  ).toBeVisible();
+
+  await page.goto("/use/nope");
+  await expect(page.getByText("没有找到应用 nope。")).toBeVisible();
 });

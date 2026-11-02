@@ -70,6 +70,7 @@ test("intent template → input → after-sales rejection and approval → resul
     (await diagram.locator(".flow-edge-label").allTextContents()).sort(),
   ).toEqual(["售后", "产品咨询", "都不是", "驳回重写", "确认回复"].sort());
   await fits(page);
+  await page.getByRole("tab", { name: "评测与发布" }).click();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出", exact: true }).click();
   expect((await download).suggestedFilename()).toBe(`${app}-v1.yaml`);
@@ -328,6 +329,7 @@ test("copy a hello version, rename and archive; historical runs remain readable"
       (item: { version: number }) => item.version === 1,
     ).config,
   );
+  await page.getByRole("tab", { name: "概览" }).click();
   await page.getByRole("button", { name: "修改名称和简介" }).click();
   await page.getByLabel("名称", { exact: true }).fill("改名后的问答");
   await page.getByLabel("简介", { exact: true }).fill("新的简介");

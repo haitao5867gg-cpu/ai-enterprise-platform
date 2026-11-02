@@ -48,7 +48,12 @@ const NO_PROJECT: PickedProject = {
   values: {},
 };
 
-export function NewRun({ from }: { from?: string } = {}) {
+// ``locked``: the app's own use page (/use/{app}) runs only that app and brings its
+// own heading.
+export function NewRun({
+  from,
+  locked,
+}: { from?: string; locked?: string } = {}) {
   const router = useRouter();
   const [text, setText] = useState("");
   const [app, setApp] = useState("");
@@ -152,7 +157,9 @@ export function NewRun({ from }: { from?: string } = {}) {
         // A copy keeps the copied run's app.
         if (from) return;
         const requested =
-          new URLSearchParams(window.location.search).get("app") ?? "hello";
+          locked ??
+          new URLSearchParams(window.location.search).get("app") ??
+          "hello";
         setApp((previous) =>
           items.some((item) => item.app === previous)
             ? previous
@@ -165,7 +172,7 @@ export function NewRun({ from }: { from?: string } = {}) {
         if (!controller.signal.aborted) setAppsError(errorMessage(err));
       });
     return () => controller.abort();
-  }, [from, appsRevision]);
+  }, [from, locked, appsRevision]);
   useEffect(() => {
     if (!app) return;
     const controller = new AbortController();
@@ -280,25 +287,31 @@ export function NewRun({ from }: { from?: string } = {}) {
       setSubmitting(false);
     }
   }
+  if (locked && apps.length && !apps.some((item) => item.app === locked))
+    return <ErrorNotice message={`没有找到应用 ${locked}。`} />;
   return (
     <>
-      <Link
-        className="back-link"
-        href={from ? `/runs/${encodeURIComponent(from)}` : "/"}
-      >
-        <Icon name="back" size={16} />
-        {from ? "返回原运行" : "返回运行记录"}
-      </Link>
-      <div className="page-heading">
-        <div>
-          <h1>{from ? "复制并重新发起" : "新建运行"}</h1>
-          <p>
-            {from
-              ? "需求已经照原运行填好，改完后重新发起，会是一次新的运行。"
-              : "告诉应用你想完成什么，接下来的过程在这里展开。"}
-          </p>
+      {!locked && (
+        <Link
+          className="back-link"
+          href={from ? `/runs/${encodeURIComponent(from)}` : "/"}
+        >
+          <Icon name="back" size={16} />
+          {from ? "返回原运行" : "返回运行记录"}
+        </Link>
+      )}
+      {!locked && (
+        <div className="page-heading">
+          <div>
+            <h1>{from ? "复制并重新发起" : "新建运行"}</h1>
+            <p>
+              {from
+                ? "需求已经照原运行填好，改完后重新发起，会是一次新的运行。"
+                : "告诉应用你想完成什么，接下来的过程在这里展开。"}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
       {from && sourceError && (
         <ErrorNotice
           message={sourceError}
@@ -318,14 +331,14 @@ export function NewRun({ from }: { from?: string } = {}) {
               : `，沿用它的应用版本（${versionLabel(source) || "当前版本"}）。`}
         </p>
       )}
-      <div className="new-run-grid">
+      <div className={locked ? "use-run" : "new-run-grid"}>
         <form
           className="panel new-run-form"
           onSubmit={submit}
           noValidate
           aria-label="新建运行"
         >
-          <div className="form-section">
+          <div className="form-section" hidden={Boolean(locked)}>
             <span className="step-label">
               01<span>选择应用</span>
             </span>
@@ -638,31 +651,33 @@ export function NewRun({ from }: { from?: string } = {}) {
             </button>
           </div>
         </form>
-        <aside className="guide-card">
-          <span className="guide-icon">
-            <Icon name="spark" size={24} />
-          </span>
-          <h2>让需求有迹可循</h2>
-          <p>每一次运行，都是一段完整的协作。</p>
-          <ol className="guide-steps">
-            <li>
-              <strong>描述目标</strong>
-              <span>用自然语言提出你的需求</span>
-            </li>
-            <li>
-              <strong>查看过程</strong>
-              <span>跟随应用消息，了解执行进展</span>
-            </li>
-            <li>
-              <strong>确认方向</strong>
-              <span>需要时确认继续，或写下修改意见</span>
-            </li>
-            <li>
-              <strong>获得结果</strong>
-              <span>随时回来查看本次运行</span>
-            </li>
-          </ol>
-        </aside>
+        {!locked && (
+          <aside className="guide-card">
+            <span className="guide-icon">
+              <Icon name="spark" size={24} />
+            </span>
+            <h2>让需求有迹可循</h2>
+            <p>每一次运行，都是一段完整的协作。</p>
+            <ol className="guide-steps">
+              <li>
+                <strong>描述目标</strong>
+                <span>用自然语言提出你的需求</span>
+              </li>
+              <li>
+                <strong>查看过程</strong>
+                <span>跟随应用消息，了解执行进展</span>
+              </li>
+              <li>
+                <strong>确认方向</strong>
+                <span>需要时确认继续，或写下修改意见</span>
+              </li>
+              <li>
+                <strong>获得结果</strong>
+                <span>随时回来查看本次运行</span>
+              </li>
+            </ol>
+          </aside>
+        )}
       </div>
     </>
   );
