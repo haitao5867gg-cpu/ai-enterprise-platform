@@ -268,7 +268,8 @@ export function readPlanV2(value: unknown): PlanV2 | null {
         id: text(check.id),
         label: text(check.label) || text(check.id),
         kind: text(check.kind),
-        severity: text(check.severity) || "error",
+        // The plan check fills in warn for a check the model wrote no severity for.
+        severity: text(check.severity) || "warn",
         text: describeCheck(check),
       })),
   };

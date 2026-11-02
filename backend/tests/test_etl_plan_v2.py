@@ -212,6 +212,7 @@ def test_a_good_plan_is_a_superset_of_version_one():
         "order_by": [{"column": "order_count", "desc": True}],
         "top_n": 10,
         "chart": {"type": "bar", "label": ["city"], "value": "order_count"},
+        "add_up": [],
     }
     assert dumped["brief"]["metrics"][0] == {
         "id": "m1",
@@ -679,12 +680,33 @@ def test_labels_and_the_answer_come_from_the_brief():
         "order_by": [{"column": "order_count", "desc": True}],
         "top_n": 10,
         "chart": {"type": "bar", "label": ["channel", "city"], "value": "order_count"},
+        "add_up": [],
     }
     assert cleaned == [
         "给 order_facts 的 4 列补了显示名称 label",
         "给 city_daily 的 6 列补了显示名称 label",
         "模型没写答案设计，平台按业务说明生成了一份",
     ]
+
+
+def test_a_model_answer_over_many_rows_a_group_says_what_adds_up():
+    raw = brief_plan()
+    raw["brief"]["metrics"] = [
+        {"id": "m1", "name": "商品数量", "definition": "数量之和 [1]", "column": "quantity"}
+    ]
+    raw["questions"][0]["affects"] = None
+    raw["answer"] = {"target": "order_facts", "group_by": ["city"], "measures": ["quantity"]}
+    found = problems(raw)
+    assert len(found) == 1 and found[0].startswith(
+        "answer 按 city 汇总时一组会有多行（结果表 order_facts 的主键是 order_id），quantity"
+    )
+    raw["answer"]["add_up"] = ["quantity"]
+    plan, _ = check(raw)
+    assert plan.answer is not None and plan.answer.add_up == ["quantity"]
+    out = answer_output(plan)
+    assert out is not None and out["columns"][1]["agg"] == "sum"
+    assert out["columns"][1]["declared"] is True
+    assert out["text"].endswith("商品数量按方案说明逐行相加。")
 
 
 def test_a_brief_without_metrics_has_no_answer():
@@ -1182,6 +1204,7 @@ def test_the_answer_output_has_columns_and_a_sentence():
         "order_by",
         "top_n",
         "chart",
+        "add_up",
         "columns",
         "text",
     ]

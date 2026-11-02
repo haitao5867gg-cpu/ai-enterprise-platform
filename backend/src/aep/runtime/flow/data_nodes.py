@@ -10,6 +10,7 @@ in between are ordinary ``llm`` nodes. They reuse what the code app ``etl`` does
 and branches are documented in docs/api/data-nodes.md.
 """
 
+import json
 import re
 from dataclasses import fields
 from typing import Any
@@ -252,8 +253,9 @@ def _check_branches(node: dict[str, Any]) -> list[str]:
     return ["ok", "retry", *([STUCK] if node.get("on_stuck") == "branch" else [])]
 
 
-def _stuck_text(what: str, failures: int, problems: list[str], reply: str) -> str:
-    """For the person a stuck check hands over to: why, and the reply that failed."""
+def _stuck_text(what: str, failures: int, problems: list[str], reply: str, fence: str = "") -> str:
+    """For the person a stuck check hands over to: why, and the reply that failed
+    (``fence`` is the code block's language)."""
     lines = [
         f"模型连续 {failures} 次没写出能通过平台检查的{what}。最后一次的问题：",
         *(f"- {p}" for p in problems),
@@ -262,7 +264,14 @@ def _stuck_text(what: str, failures: int, problems: list[str], reply: str) -> st
         "或者终止这次运行。",
     ]
     if reply.strip():
-        lines += ["", f"最后一版{what}（没有通过检查）：", "", "```", reply.strip()[:20000], "```"]
+        lines += [
+            "",
+            f"最后一版{what}（没有通过检查，问题里的位置指的就是这里）：",
+            "",
+            "```" + fence,
+            reply.strip()[:20000],
+            "```",
+        ]
     return "\n".join(lines)
 
 
@@ -624,10 +633,12 @@ def _check_lines(found: list[dict[str, Any]]) -> list[str]:
     lines.append("开发环境试算之后检查（填了老系统结果表时另加一条逐行对比）：")
     lines.append("")
     for check in found:
-        level = check.get("severity") or "error"
-        soft = "" if level == "error" else f"（{checks.SEVERITY_TEXT[level]}）"
+        level = check.get("severity") or "warn"
+        shown = checks.SEVERITY_TEXT[level]
+        if level == "error":
+            shown += "：不通过时结果不能直接通过"
         kind = checks.KIND_TEXT[check["kind"]]
-        lines.append(f"- **{check['label']}**{soft}：{kind}，{checks.describe(check)}")
+        lines.append(f"- **{check['label']}**（{shown}）：{kind}，{checks.describe(check)}")
     return lines
 
 
@@ -746,7 +757,12 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         )
         said = _rewrite_said(f"方案有 {len(problems)} 处没通过校验", not_json, failures, node)
         if stuck:
-            text = _stuck_text("方案", failures, problems, refs.render(node["reply"], get))
+            # The plan as JSON laid out for reading when it is one (jadeflow S-11).
+            if isinstance(raw, dict):
+                shown, fence = json.dumps(raw, ensure_ascii=False, indent=2), "json"
+            else:
+                shown, fence = refs.render(node["reply"], get), ""
+            text = _stuck_text("方案", failures, problems, shown, fence)
             said = f"方案连续 {failures} 次没通过校验，交给人决定：按意见重写，还是终止"
         outputs = {
             "ok": False,
@@ -1082,6 +1098,8 @@ def write_text(write: dict[str, Any] | None) -> str:
         parts.append(f"版本 {write['version']}")
     counts = (("rows_written", "写入"), ("rows_updated", "更新"), ("rows_deleted", "删除"))
     parts += [f"{label} {write[key]} 行" for key, label in counts if write.get(key) is not None]
+    if write.get("rows_copied"):
+        parts.append(f"另把同一文件里 {write['rows_copied']} 行其他数据原样写回（Delta 重写文件）")
     for column in write.get("columns_added") or []:
         after = column.get("after")
         place = f"放在 {after} 后面" if after else "放在最前面"

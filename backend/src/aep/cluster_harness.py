@@ -170,11 +170,18 @@ def _history(spark: Any, stored: str, mode: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - the history says how much was written, nothing more
         metrics = {}
     merged = found["operation"] == "MERGE"
-    return found | {
-        "rows_written": _metric(metrics, "numTargetRowsInserted" if merged else "numOutputRows"),
+    written = _metric(metrics, "numTargetRowsInserted" if merged else "numOutputRows")
+    # Replacing rows rewrites the files they were in: the other rows of those files are
+    # written back as they were and Delta counts them as output too (jadeflow S-9).
+    copied = None if merged else _metric(metrics, "numCopiedRows")
+    found |= {
+        "rows_written": written - copied if written is not None and copied else written,
         "rows_updated": _metric(metrics, "numTargetRowsUpdated"),
         "rows_deleted": _metric(metrics, "numTargetRowsDeleted", "numDeletedRows"),
     }
+    if copied:
+        found["rows_copied"] = copied
+    return found
 
 
 def _new_columns(

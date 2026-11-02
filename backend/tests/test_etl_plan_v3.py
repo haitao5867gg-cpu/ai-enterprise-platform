@@ -95,8 +95,9 @@ def test_a_good_version_three_plan():
         "where": "stat_day like concat(${param.update_month}, '%')",
         "keys": ["stat_day", "city"],
     }
-    # Checks keep what they say; a missing severity is error.
-    assert plan.checks == [{**TOTAL, "severity": "error"}, KEYS, {**RECONCILE, "severity": "error"}]
+    # Checks keep what they say; a missing severity is warn (a model's check only warns
+    # unless the plan says it must hold).
+    assert plan.checks == [{**TOTAL, "severity": "warn"}, KEYS, {**RECONCILE, "severity": "warn"}]
     dumped = plan.model_dump()
     assert dumped["checks"] == plan.checks
     # The code check and the dev run read it as a version 1 plan.
@@ -275,7 +276,7 @@ async def test_the_node_gives_the_data_check_its_table_keys_and_checks():
         "- 写表方式：按 `city` 合并，有的更新，没有的插入",
         "### 数据检查",
         "- **每天每个城市一行**（警告）：键不重复，`city_totals` 按 `city` 没有重复的行",
-        "- **明细和订单表对得上**：对账，`order_facts` 的 `sum(quantity)`"
+        "- **明细和订单表对得上**（警告）：对账，`order_facts` 的 `sum(quantity)`"
         "和 `sales.orders` 的 `sum(quantity)`一致",
     ):
         assert text in message, message
@@ -341,7 +342,7 @@ def test_empty_parts_the_model_writes_out_do_not_send_the_plan_back():
     plan, cleaned = check3(raw)
     assert cleaned == []
     assert [c["id"] for c in plan.checks] == ["total", "orders", "keys"]
-    assert plan.checks[0]["severity"] == "error"
+    assert plan.checks[0]["severity"] == "warn"
     assert "group_by" not in plan.checks[0] and "where" not in plan.checks[0]
     assert plan.targets[1].load.keys == []
     # What still matters still goes back: replacing rows needs its condition.

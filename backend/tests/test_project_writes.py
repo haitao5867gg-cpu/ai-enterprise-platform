@@ -569,6 +569,17 @@ MINE = {"aep.project": "jade-ibf"}
 SAME = ["sku", "qty", "note"]  # the columns of the result (Frame)
 
 
+def test_rows_written_back_from_rewritten_files_are_not_counted_as_written():
+    spark = Spark({STORED: {"props": MINE, "columns": SAME}})
+    spark.history["operationMetrics"] = {
+        "numOutputRows": "12",
+        "numDeletedRows": "1",
+        "numCopiedRows": "2",
+    }
+    found = store(spark, mode="replace_where", where="update_month = '2026-10'")
+    assert (found["rows_written"], found["rows_deleted"], found["rows_copied"]) == (10, 1, 2)
+
+
 def test_replace_where():
     where = "update_month = ${param.update_month}"
     spark = Spark({STORED: {"props": MINE, "columns": SAME}})
@@ -944,6 +955,11 @@ def test_write_text():
 
     assert write_text(None) == "—"
     assert write_text({"mode": "append", "version": None, "rows_written": None}) == "追加"
+    copied = {"mode": "replace_where", "version": 3, "rows_written": 10, "rows_deleted": 1}
+    assert write_text(copied | {"rows_copied": 2}) == (
+        "按条件替换，版本 3，写入 10 行，删除 1 行，"
+        "另把同一文件里 2 行其他数据原样写回（Delta 重写文件）"
+    )
     added = [
         {"name": "platform_original", "type": "string", "after": "platform"},
         {"name": "code", "type": "int", "after": None},

@@ -46,3 +46,6 @@ answer 是结果页上最后给人看的那张答案卡：
     写 count(order_id)，不用 count(DISTINCT order_id)；
   - 去重客户数这类计数照常写 count(DISTINCT …)，答案卡不给它算合计；
   - 比值写成两个可加的列相除，如 sales_amount / order_count，不要求平均值 avg(…)。
+- 结果表一行不是一组时（比如结果表到航线，答案只按平台分组），指标要能逐行相加：
+  重量、金额、件数这类每行的值，写进 add_up，答案卡按 sum 汇总；不能相加的（单价、比例、
+  去重计数）就把主键都放进 group_by 或 filter，或者换一个指标。

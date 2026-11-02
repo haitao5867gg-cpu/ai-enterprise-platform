@@ -239,7 +239,8 @@ async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
     assert message.startswith("模型连续 3 次没写出能通过平台检查的方案。最后一次的问题：\n")
     assert "- order_facts 引用了不存在的源表 'sales.missing'" in message
     assert "可以写意见让模型按意见重写方案" in message
-    assert "最后一版方案（没有通过检查）：" in message and '"sales.missing"' in message
+    assert "最后一版方案（没有通过检查，问题里的位置指的就是这里）：\n\n```json\n{\n" in message
+    assert '"sales.missing"' in message
     assert stuck.messages[0]["content"] == (
         "方案连续 3 次没通过校验，交给人决定：按意见重写，还是终止"
     )
