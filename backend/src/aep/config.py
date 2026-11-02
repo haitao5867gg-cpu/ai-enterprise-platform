@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
     session_hours: int = Field(168, ge=1, le=24 * 90)
     cookie_secure: bool = False
+    # Email notifications (aep.notify; docs/api/notifications.md): none without a host.
+    smtp_host: str | None = None
+    smtp_port: int = Field(587, ge=1, le=65535)
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
 
     # Model gateway (LiteLLM). Every model call goes through it; see infra/litellm.
     llm_gateway_url: str = "http://localhost:4000"

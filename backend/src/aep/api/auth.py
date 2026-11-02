@@ -30,6 +30,7 @@ router = APIRouter(
             "old_password": "原密码",
             "roles": "角色",
             "disabled": "停用",
+            "email": "邮箱",
         }
     ),
 )
@@ -41,6 +42,13 @@ DisplayName = Annotated[
 ]
 Password = Annotated[str, StringConstraints(min_length=PASSWORD_MIN, max_length=PASSWORD_MAX)]
 RoleName = Literal["user", "approver", "builder", "admin"]
+# Loose on purpose: the mail server is the judge; "" (in a change) clears it.
+Email = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, max_length=200, pattern=r"^([^@\s]+@[^@\s]+\.[^@\s]+)?$"
+    ),
+]
 
 
 class UserOut(BaseModel):
@@ -51,6 +59,7 @@ class UserOut(BaseModel):
     disabled: bool
     created_at: datetime
     last_login_at: datetime | None
+    email: str | None = None
 
 
 class Status(BaseModel):
@@ -88,6 +97,7 @@ class CreateUser(NoNulls):
     display_name: DisplayName
     roles: list[RoleName] = Field(min_length=1, max_length=4)
     password: Password
+    email: Email | None = None
 
     _username = field_validator("username")(_valid_username)
 
@@ -96,6 +106,7 @@ class UpdateUser(NoNulls):
     display_name: DisplayName | None = None
     roles: list[RoleName] | None = Field(None, min_length=1, max_length=4)
     disabled: bool | None = None
+    email: Email | None = None
 
 
 class ResetPassword(NoNulls):
@@ -211,7 +222,7 @@ async def list_users(request: Request) -> list[UserOut]:
 async def create_user(body: CreateUser, request: Request) -> UserOut:
     try:
         user = await _auth(request).create(
-            body.username, body.display_name, list(body.roles), body.password
+            body.username, body.display_name, list(body.roles), body.password, body.email or None
         )
     except AuthProblem as exc:
         raise _problem(exc) from exc
@@ -226,6 +237,7 @@ async def update_user(user_id: str, body: UpdateUser, request: Request) -> UserO
             display_name=body.display_name,
             roles=list(body.roles) if body.roles is not None else None,
             disabled=body.disabled,
+            email=body.email,
         )
     except AuthProblem as exc:
         raise _problem(exc) from exc

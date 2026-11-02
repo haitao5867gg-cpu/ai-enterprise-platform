@@ -85,8 +85,11 @@ function UserForm({
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");
   const [roles, setRoles] = useState<Role[]>(user?.roles ?? ["user"]);
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState(user?.email ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const emailOk =
+    !email.trim() || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
   const blocker =
     !user && !USERNAME.test(username.trim().toLowerCase())
       ? `登录名${USERNAME_HINT}`
@@ -96,7 +99,9 @@ function UserForm({
           ? "至少选一个角色。"
           : !user && password.length < 8
             ? "初始密码至少 8 个字符。"
-            : "";
+            : !emailOk
+              ? "邮箱的格式不对。"
+              : "";
   return (
     <form
       className="asset-form"
@@ -112,12 +117,14 @@ function UserForm({
               ? await updateUser(user.user_id, {
                   display_name: displayName.trim(),
                   roles,
+                  email: email.trim(),
                 })
               : await createUser({
                   username: username.trim().toLowerCase(),
                   display_name: displayName.trim(),
                   roles,
                   password,
+                  ...(email.trim() ? { email: email.trim() } : {}),
                 }),
           );
         } catch (err) {
@@ -160,6 +167,21 @@ function UserForm({
           placeholder="运行和审批记录里写的名字，例如：张三"
           onChange={(event) => setDisplayName(event.target.value)}
         />
+      </div>
+      <div className="asset-field">
+        <label htmlFor={`${id}-email`}>邮箱（选填）</label>
+        <input
+          id={`${id}-email`}
+          type="email"
+          autoComplete="off"
+          maxLength={200}
+          value={email}
+          aria-describedby={`${id}-email-hint`}
+          onChange={(event) => setEmail(event.target.value)}
+        />
+        <p className="field-hint" id={`${id}-email-hint`}>
+          填了才收邮件通知（服务器要配好邮件，见「通知渠道」）。
+        </p>
       </div>
       <RolePicker value={roles} onChange={setRoles} />
       {!user && (

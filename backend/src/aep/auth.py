@@ -52,6 +52,8 @@ class User:
     disabled: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_login_at: datetime | None = None
+    # Where email notifications go (docs/api/notifications.md); None: no email.
+    email: str | None = None
 
     def has(self, role: str) -> bool:
         """Whether this account may act as ``role``: everyone is a user, an admin is all."""
@@ -66,6 +68,7 @@ class User:
             "disabled": self.disabled,
             "created_at": self.created_at,
             "last_login_at": self.last_login_at,
+            "email": self.email,
         }
 
 
@@ -165,6 +168,10 @@ LABELS: dict[str, str] = {
     "POST /models/{alias}/test": "测试模型",
     "PUT /models/defaults": "设置默认模型",
     "POST /llm/chat": "试调模型",
+    "POST /webhooks": "新建 Webhook",
+    "PATCH /webhooks/{webhook_id}": "修改 Webhook",
+    "DELETE /webhooks/{webhook_id}": "删除 Webhook",
+    "POST /webhooks/{webhook_id}/test": "测试 Webhook",
 }
 
 
@@ -193,7 +200,7 @@ def _under(path: str, prefix: str) -> bool:
 def required(method: str, path: str) -> str | None:
     if (method, path) in PUBLIC:
         return None
-    if _under(path, "/users") or _under(path, "/audit"):
+    if any(_under(path, p) for p in ("/users", "/audit", "/webhooks", "/notification-channels")):
         return "admin"
     if _under(path, "/models"):
         return "admin" if method in WRITES else "builder"
@@ -372,6 +379,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at  timestamptz
 )""",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users (tenant_id, username)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email text",
     """
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash  text PRIMARY KEY,
@@ -397,7 +405,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
 )""",
     "CREATE INDEX IF NOT EXISTS audit_events_at ON audit_events (tenant_id, id DESC)",
 ]
-_USER_COLUMNS = "user_id, username, display_name, roles, disabled, created_at, last_login_at"
+_USER_COLUMNS = "user_id, username, display_name, roles, disabled, created_at, last_login_at, email"
 
 
 def _user(row: dict[str, Any]) -> User:
@@ -409,6 +417,7 @@ def _user(row: dict[str, Any]) -> User:
         row["disabled"],
         row["created_at"],
         row["last_login_at"],
+        row["email"],
     )
 
 
@@ -462,7 +471,8 @@ class PostgresAuthStore:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 "INSERT INTO users (user_id, tenant_id, username, display_name, roles,"
-                " password_hash, disabled, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                " password_hash, disabled, created_at, email)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 " ON CONFLICT (tenant_id, username) DO NOTHING RETURNING user_id",
                 (
                     user.user_id,
@@ -473,6 +483,7 @@ class PostgresAuthStore:
                     password_hash,
                     user.disabled,
                     user.created_at,
+                    user.email,
                 ),
             )
             if await cur.fetchone() is None:
@@ -483,12 +494,13 @@ class PostgresAuthStore:
         async with self._pool.connection() as conn:
             await conn.execute(
                 "UPDATE users SET display_name = %s, roles = %s, disabled = %s,"
-                " last_login_at = %s WHERE tenant_id = %s AND user_id = %s",
+                " last_login_at = %s, email = %s WHERE tenant_id = %s AND user_id = %s",
                 (
                     user.display_name,
                     user.roles,
                     user.disabled,
                     user.last_login_at,
+                    user.email,
                     DEFAULT_TENANT,
                     user.user_id,
                 ),
@@ -707,9 +719,16 @@ class AuthService:
     # Accounts
 
     async def create(
-        self, username: str, display_name: str, roles: list[str], password: str
+        self,
+        username: str,
+        display_name: str,
+        roles: list[str],
+        password: str,
+        email: str | None = None,
     ) -> User:
-        user = User("u_" + secrets.token_hex(8), username, display_name, ordered(roles))
+        user = User(
+            "u_" + secrets.token_hex(8), username, display_name, ordered(roles), email=email
+        )
         digest = await asyncio.to_thread(hash_password, password)
         try:
             return await self.store.create_user(user, digest)
@@ -738,7 +757,9 @@ class AuthService:
         display_name: str | None = None,
         roles: list[str] | None = None,
         disabled: bool | None = None,
+        email: str | None = None,
     ) -> User:
+        """Change what is given; ``email`` "" clears it."""
         async with self._lock:
             user = await self._get(user_id)
             before = replace(user, roles=list(user.roles))
@@ -748,6 +769,8 @@ class AuthService:
                 user.roles = ordered(roles)
             if disabled is not None:
                 user.disabled = disabled
+            if email is not None:
+                user.email = email or None
             await self._keeps_admin(before, user)
             await self.store.save_user(user)
         if user.disabled:
@@ -849,6 +872,8 @@ def require(request: Request, role: str, message: str) -> None:
 
 # Recorded on their own, with what was tried.
 _SELF_RECORDED = frozenset({"/auth/login", "/auth/setup", "/auth/logout"})
+# Not changes worth a record: marking one's own notifications read.
+_UNRECORDED = frozenset({"/notifications/read"})
 
 
 async def audit_middleware(
@@ -858,7 +883,8 @@ async def audit_middleware(
     auth = _service(request)
     route = request.scope.get("route")
     path = getattr(route, "path", None)
-    if auth is None or request.method not in WRITES or path is None or path in _SELF_RECORDED:
+    skipped = path is None or path in _SELF_RECORDED or path in _UNRECORDED
+    if auth is None or request.method not in WRITES or skipped:
         return response
     user = getattr(request.state, "user", None)
     await auth.record(

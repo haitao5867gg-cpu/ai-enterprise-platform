@@ -256,3 +256,10 @@ export async function mockAuth(request: Request, path: string[]) {
   record("PATCH /users/{user_id}", "修改账号", user);
   return mockJson(out(next));
 }
+
+// Who the mock request is from, for other mocks: whether sign-in is on, and the
+// signed-in account (undefined when signed out or off).
+export function mockWho(request: Request): { on: boolean; user?: User } {
+  const user = signedIn(request);
+  return { on: Boolean(mode(request)), user: user ? out(user) : undefined };
+}

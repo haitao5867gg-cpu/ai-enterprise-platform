@@ -36,7 +36,8 @@
   "roles": ["builder", "approver"], // 按 user、approver、builder、admin 的顺序
   "disabled": false,
   "created_at": "…",
-  "last_login_at": "…" | null
+  "last_login_at": "…" | null,
+  "email": "zhangsan@example.com" | null   // 收邮件通知用（notifications.md）
 }
 
 // AuthStatus

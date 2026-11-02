@@ -16,7 +16,8 @@ type IconName =
   | "folder"
   | "chip"
   | "user"
-  | "log";
+  | "log"
+  | "bell";
 const paths: Record<IconName, string> = {
   grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   runs: "M5 4h14v16H5z M9 8h6 M9 12h6 M9 16h3",
@@ -34,6 +35,7 @@ const paths: Record<IconName, string> = {
   folder: "M3 6h6l2 2h10v11H3z",
   user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0",
   log: "M6 3h9l4 4v14H6z M15 3v4h4 M9 12h7 M9 16h7",
+  bell: "M6 17V11a6 6 0 0 1 12 0v6l2 2H4z M10 21h4",
   chip: "M7 7h10v10H7z M10 3v4 M14 3v4 M10 17v4 M14 17v4 M3 10h4 M3 14h4 M17 10h4 M17 14h4",
 };
 
