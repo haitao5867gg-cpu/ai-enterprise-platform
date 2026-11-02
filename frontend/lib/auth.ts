@@ -58,7 +58,15 @@ export function pageRole(pathname: string): Role {
   if (under("/users") || under("/audit") || under("/notification-channels"))
     return "admin";
   if (
-    ["/apps", "/skills", "/knowledge", "/datasources", "/projects", "/models"]
+    [
+      "/catalog",
+      "/apps",
+      "/skills",
+      "/knowledge",
+      "/datasources",
+      "/projects",
+      "/models",
+    ]
       .map(under)
       .some(Boolean)
   )

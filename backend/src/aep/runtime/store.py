@@ -109,6 +109,11 @@ class RunStore(Protocol):
         node; its ``trigger`` says so), or None."""
         ...
 
+    async def outcomes(self, since: datetime) -> dict[str, tuple[int, int]]:
+        """Per app, how many runs created since ``since`` ended ``done`` and ``error``
+        (cancelled and unfinished runs do not count): ``{app: (done, error)}``."""
+        ...
+
 
 class MemoryRunStore:
     """In-process store for tests and quick experiments."""
@@ -162,6 +167,14 @@ class MemoryRunStore:
             and r.trigger.get("node") == node  # type: ignore[union-attr]
         ]
         return max(found, key=lambda r: r.created_at) if found else None
+
+    async def outcomes(self, since: datetime) -> dict[str, tuple[int, int]]:
+        found: dict[str, tuple[int, int]] = {}
+        for r in self._runs.values():
+            if r.created_at >= since and r.status in ("done", "error"):
+                done, error = found.get(r.app, (0, 0))
+                found[r.app] = (done + 1, error) if r.status == "done" else (done, error + 1)
+        return found
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         runs = sorted(self._runs.values(), key=lambda r: r.created_at, reverse=True)
@@ -317,6 +330,16 @@ class PostgresRunStore:
             )
             row = await cur.fetchone()
             return _record(row) if row else None
+
+    async def outcomes(self, since: datetime) -> dict[str, tuple[int, int]]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT app, count(*) FILTER (WHERE status = 'done') AS done,"
+                " count(*) FILTER (WHERE status = 'error') AS error FROM runs"
+                " WHERE created_at >= %s AND status IN ('done', 'error') GROUP BY app",
+                (since,),
+            )
+            return {row["app"]: (row["done"], row["error"]) for row in await cur.fetchall()}
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         async with self._pool.connection() as conn:

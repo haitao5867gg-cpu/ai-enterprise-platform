@@ -36,6 +36,8 @@ class Published:
     url: str
     branch: str
     commit: str
+    created: bool = True  # False: an open PR on the branch was updated
+    changed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,14 @@ class AssetRepo:
                 "replace_directory": True,
             },
         )
-        return Published(int(made["number"]), str(made["url"]), branch, str(made["commit"]))
+        return Published(
+            int(made["number"]),
+            str(made["url"]),
+            branch,
+            str(made["commit"]),
+            bool(made.get("created", True)),
+            tuple(str(path) for path in made.get("changed") or ()),
+        )
 
     async def comment(self, number: int, body: str) -> None:
         await self._call(

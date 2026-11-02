@@ -380,6 +380,10 @@ class RunService:
         found = await self.flows.get(app)
         return "flow" if found is not None and found.archived_at is None else None
 
+    async def outcomes(self, since: datetime) -> dict[str, tuple[int, int]]:
+        """Per app, runs since ``since`` that ended done and error (aep.runtime.store)."""
+        return await self._store.outcomes(since)
+
     async def app_names(self) -> list[str]:
         await self.ensure_flows()
         return sorted([*self._graphs, *(a.app for a in await self.flows.all())])

@@ -52,6 +52,11 @@ def _decode(path: Path) -> str:
             raise ExtractError("文字编码必须为 UTF-8 或 GB18030") from exc
 
 
+def read_text(path: Path) -> str:
+    """A Markdown or text document's text (UTF-8 or GB18030; ExtractError otherwise)."""
+    return _decode(path)
+
+
 def _markdown(text: str, result: _Paragraphs) -> None:
     buffer: list[str] = []
     fence: str | None = None

@@ -24,6 +24,7 @@ test("登录关着时和以前一样：不用登录，没有账号页", async ({
   await page.goto("/");
   await expect(nav(page)).toHaveText([
     "运行记录",
+    "资产目录",
     "应用",
     "Skill",
     "知识库",

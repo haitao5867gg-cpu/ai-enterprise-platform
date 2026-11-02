@@ -65,6 +65,12 @@ const NAV: NavItem[] = [
     icon: "runs",
     active: (p) => p === "/" || (p.startsWith("/runs/") && p !== "/runs/new"),
   },
+  {
+    href: "/catalog",
+    label: "资产目录",
+    icon: "folder",
+    active: under("/catalog"),
+  },
   { href: "/apps", label: "应用", icon: "grid", active: under("/apps") },
   { href: "/skills", label: "Skill", icon: "spark", active: under("/skills") },
   {

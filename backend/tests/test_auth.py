@@ -107,6 +107,8 @@ def test_route_rules():
     assert required("POST", "/datasources") == "builder"
     assert required("GET", "/apps/{app}") == "user"
     assert required("PUT", "/apps/{app}/draft") == "builder"
+    assert required("GET", "/catalog") == "builder"
+    assert required("POST", "/catalog/{kind}/{asset_id}/pull-request") == "builder"
     assert required("POST", "/knowledge-bases/{kb}/search") == "builder"
     assert required("GET", "/models") == "builder"
     assert required("POST", "/models") == "admin"
