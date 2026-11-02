@@ -44,6 +44,7 @@ import { GeneratedFiles } from "./generated-files";
 import { RunFlow } from "./run-flow";
 import { RunManual } from "./app-manual";
 import { savedActor, saveActor } from "../lib/actor";
+import { useMay, useSignedIn } from "./session";
 import {
   initialValues,
   inputPayload,
@@ -143,6 +144,8 @@ export function RunDetail({
   const [comment, setComment] = useState("");
   // On the server there is no storage and "" comes back; the field only renders after loading.
   const [actor, setActor] = useState(savedActor);
+  const me = useSignedIn();
+  const mayApprove = useMay("approver");
   const [actorError, setActorError] = useState("");
   const actorInput = useRef<HTMLInputElement>(null);
   const [submitting, setSubmitting] = useState<Decision | null>(null);
@@ -274,8 +277,9 @@ export function RunDetail({
           ? questionErrors(fields, values)
           : {};
     setValueErrors(issues);
-    // The record says who decided: the page asks for a name (the API does not).
-    const nameless = !actor.trim();
+    // The record says who decided: the page asks for a name (the API does not),
+    // unless sign-in is on and the API takes the signed-in name.
+    const nameless = !me && !actor.trim();
     if (nameless) {
       setActorError("先填你的名字再提交，记录里会写是谁处理的。");
       actorInput.current?.focus();
@@ -409,7 +413,12 @@ export function RunDetail({
     }
   }
 
-  const controlsDisabled = submitting !== null || rechecking || Boolean(error);
+  // Only approvers decide; anyone signed in fills in a form (docs/api/auth.md).
+  const approvalBlocked = Boolean(
+    run?.pending && run.pending.kind !== "form" && !mayApprove,
+  );
+  const controlsDisabled =
+    submitting !== null || rechecking || Boolean(error) || approvalBlocked;
   const plan =
     run?.status === "waiting" ? getEtlPlan(run.pending?.details) : null;
   const release =
@@ -1019,36 +1028,52 @@ export function RunDetail({
                           prefix="human"
                         />
                       )}
-                      <label htmlFor="approval-actor">
-                        你的名字
-                        <span className="muted">（必填，浏览器会记住）</span>
-                      </label>
-                      <input
-                        id="approval-actor"
-                        ref={actorInput}
-                        autoComplete="name"
-                        value={actor}
-                        maxLength={80}
-                        aria-required
-                        aria-invalid={Boolean(actorError)}
-                        aria-describedby={
-                          actorError ? "approval-actor-error" : undefined
-                        }
-                        onChange={(e) => {
-                          setActor(e.target.value);
-                          setActorError("");
-                          saveActor(e.target.value.trim());
-                        }}
-                        disabled={controlsDisabled}
-                      />
-                      {actorError && (
-                        <p
-                          className="field-error"
-                          id="approval-actor-error"
-                          role="alert"
-                        >
-                          {actorError}
+                      {approvalBlocked && (
+                        <p className="datasource-note warn" role="note">
+                          这一步要审批者确认。你可以看内容，但不能提交；需要的话请找管理员给你加上审批者角色。
                         </p>
+                      )}
+                      {me ? (
+                        <p className="field-hint">
+                          以「{me.display_name}
+                          」的身份处理，记录里会写这个名字。
+                        </p>
+                      ) : (
+                        <>
+                          <label htmlFor="approval-actor">
+                            你的名字
+                            <span className="muted">
+                              （必填，浏览器会记住）
+                            </span>
+                          </label>
+                          <input
+                            id="approval-actor"
+                            ref={actorInput}
+                            autoComplete="name"
+                            value={actor}
+                            maxLength={80}
+                            aria-required
+                            aria-invalid={Boolean(actorError)}
+                            aria-describedby={
+                              actorError ? "approval-actor-error" : undefined
+                            }
+                            onChange={(e) => {
+                              setActor(e.target.value);
+                              setActorError("");
+                              saveActor(e.target.value.trim());
+                            }}
+                            disabled={controlsDisabled}
+                          />
+                          {actorError && (
+                            <p
+                              className="field-error"
+                              id="approval-actor-error"
+                              role="alert"
+                            >
+                              {actorError}
+                            </p>
+                          )}
+                        </>
                       )}
                       {dropped.length > 0 && (
                         <div className="dropped-questions" role="note">

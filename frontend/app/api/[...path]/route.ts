@@ -12,6 +12,25 @@ function jsonError(detail: string, status: number) {
   );
 }
 
+// What the API needs from the browser's request: the body's type, the sign-in cookie
+// and the client's address for the record of changes. Nothing else is passed on.
+function forwarded(request: Request, hasBody: boolean, isUpload: boolean) {
+  const headers: Record<string, string> = {};
+  if (hasBody)
+    headers["Content-Type"] = isUpload
+      ? request.headers.get("content-type")!
+      : "application/json";
+  const session = request.headers
+    .get("cookie")
+    ?.split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("aep_session="));
+  if (session) headers.Cookie = session;
+  const client = request.headers.get("x-forwarded-for");
+  if (client) headers["X-Forwarded-For"] = client;
+  return headers;
+}
+
 async function handle(request: Request, context: Context) {
   const { path } = await context.params;
   const endpoint = path.join("/");
@@ -22,6 +41,14 @@ async function handle(request: Request, context: Context) {
     [/^datasources\/(files|test)$/, ["POST"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage)$/, ["GET"]],
+    // Sign-in, accounts and the record of changes (docs/api/auth.md).
+    [/^auth\/(status|me)$/, ["GET"]],
+    [/^auth\/(setup|login|logout)$/, ["POST"]],
+    [/^auth\/me\/password$/, ["PUT"]],
+    [/^users$/, ["GET", "POST"]],
+    [/^users\/[a-zA-Z0-9_-]{1,64}$/, ["PATCH", "DELETE"]],
+    [/^users\/[a-zA-Z0-9_-]{1,64}\/password$/, ["PUT"]],
+    [/^audit$/, ["GET"]],
     // `defaults` comes before the alias rule: the first match wins.
     [/^models$/, ["GET", "POST"]],
     [/^models\/defaults$/, ["PUT"]],
@@ -108,6 +135,10 @@ async function handle(request: Request, context: Context) {
         await import("../../../lib/server/mock-knowledge");
       return mockKnowledge(request, path);
     }
+    if (["auth", "users", "audit"].includes(path[0])) {
+      const { mockAuth } = await import("../../../lib/server/mock-auth");
+      return mockAuth(request, path);
+    }
     if (path[0] === "models") {
       const { mockModelsApi } = await import("../../../lib/server/mock-models");
       return mockModelsApi(request, path);
@@ -150,13 +181,7 @@ async function handle(request: Request, context: Context) {
       `${base.href.replace(/\/$/, "")}/${endpoint}${new URL(request.url).search}`,
       {
         method: request.method,
-        headers: hasBody
-          ? {
-              "Content-Type": isUpload
-                ? request.headers.get("content-type")!
-                : "application/json",
-            }
-          : undefined,
+        headers: forwarded(request, hasBody, isUpload),
         body: hasBody
           ? isUpload
             ? request.body
@@ -184,6 +209,9 @@ async function handle(request: Request, context: Context) {
     });
     const disposition = response.headers.get("Content-Disposition");
     if (disposition) headers.set("Content-Disposition", disposition);
+    // The sign-in cookie is set and cleared by the API (docs/api/auth.md).
+    for (const cookie of response.headers.getSetCookie())
+      headers.append("Set-Cookie", cookie);
     // Stream upstream bytes unchanged, including ZIP archives and error responses.
     return new Response(response.body, { status: response.status, headers });
   } catch (error) {

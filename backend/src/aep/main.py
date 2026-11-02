@@ -14,8 +14,20 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import apps, assets, datasources, flows, knowledge, models, projects, runs, skills
+from aep.api import (
+    apps,
+    assets,
+    auth,
+    datasources,
+    flows,
+    knowledge,
+    models,
+    projects,
+    runs,
+    skills,
+)
 from aep.assets import AssetRepo, PostgresAssetStore
+from aep.auth import AuthService, PostgresAuthStore, audit_middleware, authorize
 from aep.config import Settings, get_settings
 from aep.connector_check import ConnectorCheck
 from aep.databricks import DevTarget
@@ -143,6 +155,10 @@ def create_app() -> FastAPI:
             on_default_chat=set_default_chat,
         )
         await model_service.setup()
+        # Sign-in, roles and the record of changes (docs/api/auth.md).
+        auth_service = AuthService.from_settings(PostgresAuthStore(pool), settings)
+        await auth_service.setup()
+        app.state.auth = auth_service
         llm.set_recorder(call_store.record)
         catalog.model_choices = model_service.choices
         if tracer.enabled:
@@ -190,9 +206,17 @@ def create_app() -> FastAPI:
         await pool.close()
         await llm_client.close()
 
-    app = FastAPI(title="AI Enterprise Platform", version=__version__, lifespan=lifespan)
+    app = FastAPI(
+        title="AI Enterprise Platform",
+        version=__version__,
+        lifespan=lifespan,
+        # Who is asking and whether they may (docs/api/auth.md), before every route.
+        dependencies=[Depends(authorize)],
+    )
+    app.middleware("http")(audit_middleware)
     # Connector tests and each data source's health (kept for a minute in this process).
     app.state.connector_check = ConnectorCheck()
+    app.include_router(auth.router)
     app.include_router(runs.router)
     app.include_router(datasources.router)
     app.include_router(projects.router)

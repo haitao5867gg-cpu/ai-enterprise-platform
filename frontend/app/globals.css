@@ -530,6 +530,129 @@
 .datasource-save-row .field-hint {
   margin: 0;
 }
+/* Sign-in, accounts and the record of changes (docs/api/auth.md). */
+.login-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: var(--canvas);
+}
+.login-card {
+  width: min(420px, 100%);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 32px;
+  display: grid;
+  gap: 22px;
+}
+.login-card h1 {
+  margin: 0;
+  font-size: 22px;
+}
+.login-card .asset-form {
+  display: grid;
+  gap: 16px;
+}
+.login-submit {
+  justify-self: stretch;
+}
+.account {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+}
+.account-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #f1eefb;
+  color: var(--purple);
+  font-weight: 700;
+}
+.account-name {
+  display: grid;
+  min-width: 0;
+  font-size: 13px;
+}
+.account-name strong,
+.account-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-name .muted {
+  font-size: 11px;
+}
+.account-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 14px;
+}
+.account-actions .text-button {
+  color: var(--purple);
+}
+.user-roles {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+.user-roles legend {
+  padding: 0;
+  margin-bottom: 8px;
+}
+.user-roles label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13px;
+  color: var(--ink);
+}
+.user-roles label > span {
+  display: grid;
+  gap: 2px;
+}
+.user-roles .muted {
+  font-size: 12px;
+}
+.mapping-table.user-table {
+  min-width: 720px;
+}
+.mapping-table.audit-table {
+  min-width: 860px;
+}
+.audit-table td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.audit-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+}
+.audit-filters .asset-field {
+  flex: 1 1 200px;
+}
+.audit-more {
+  margin-top: 16px;
+}
+@media (max-width: 900px) {
+  .account {
+    margin-top: 0;
+    border-top: 0;
+    padding-top: 0;
+  }
+}
 /* Model page (docs/api/models.md). */
 .mapping-table.model-table {
   min-width: 900px;

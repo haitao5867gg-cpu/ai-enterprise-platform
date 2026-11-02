@@ -201,6 +201,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
+from aep.auth import require, who
 from aep.knowledge.citations import CitedSource
 from aep.policy import DataPolicy
 from aep.projects import run_summary
@@ -489,7 +490,7 @@ async def _detail(v: RunView, service: RunService, app_titles: dict[str, str]) -
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_run(body: CreateRun, service: Service) -> RunRef:
+async def create_run(body: CreateRun, service: Service, request: Request) -> RunRef:
     if body.draft and body.app_version is not None:
         raise HTTPException(422, "draft 和 app_version 不能同时给")
     try:
@@ -498,7 +499,7 @@ async def create_run(body: CreateRun, service: Service) -> RunRef:
             body.input,
             body.app_version,
             draft=body.draft,
-            requester=(body.requester or "").strip() or None,
+            requester=who(request, body.requester),
             project=body.project.model_dump() if body.project else None,
         )
     except UnknownApp as exc:
@@ -557,13 +558,20 @@ async def get_manual(run_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
-async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
+async def resume_run(run_id: str, body: Resume, service: Service, request: Request) -> RunRef:
+    try:
+        waiting = (await service.get(run_id)).pending
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    # A form is anyone's to fill in; every other step is a decision for approvers.
+    if waiting is not None and waiting.get("kind") != "form":
+        require(request, "approver", "没有权限：这一步要审批者确认")
     try:
         record = await service.resume(
             run_id,
             body.decision,
             body.comment,
-            body.actor,
+            who(request, body.actor),
             body.values,
             notes=[n.model_dump() for n in body.notes] if body.notes is not None else None,
             seen=body.seen,
@@ -591,11 +599,13 @@ async def resume_run(run_id: str, body: Resume, service: Service) -> RunRef:
 
 
 @router.post("/{run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
-async def cancel_run(run_id: str, service: Service, body: Cancel | None = None) -> RunRef:
+async def cancel_run(
+    run_id: str, service: Service, request: Request, body: Cancel | None = None
+) -> RunRef:
     body = body or Cancel()
     try:
         record = await service.cancel(
-            run_id, (body.actor or "").strip() or None, (body.reason or "").strip() or None
+            run_id, who(request, body.actor), (body.reason or "").strip() or None
         )
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
@@ -618,12 +628,12 @@ async def retry_run(run_id: str, service: Service, body: Retry | None = None) ->
 
 
 @router.post("/{run_id}/rerun", status_code=status.HTTP_201_CREATED)
-async def rerun_run(run_id: str, service: Service, body: Rerun | None = None) -> RunRef:
+async def rerun_run(
+    run_id: str, service: Service, request: Request, body: Rerun | None = None
+) -> RunRef:
     body = body or Rerun()
     try:
-        record = await service.rerun(
-            run_id, body.input, requester=(body.requester or "").strip() or None
-        )
+        record = await service.rerun(run_id, body.input, requester=who(request, body.requester))
     except RunNotFound as exc:
         raise HTTPException(404, "run not found") from exc
     except (UnknownApp, UnknownVersion) as exc:

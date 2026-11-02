@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
+from aep.auth import who
 from aep.runtime.catalog import AppCatalog
 from aep.skills import (
     NoDraft,
@@ -96,8 +97,10 @@ def _invalid(exc: SkillError) -> RequestValidationError:
     )
 
 
-def _draft(body: SkillDraft) -> SkillContent:
-    return SkillContent(body.description, body.body, body.references, created_by=body.actor)
+def _draft(body: SkillDraft, request: Request) -> SkillContent:
+    return SkillContent(
+        body.description, body.body, body.references, created_by=who(request, body.actor)
+    )
 
 
 @router.get("")
@@ -123,9 +126,11 @@ async def get_version(name: str, version: int, skills: Skills) -> dict[str, Any]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_skill(body: CreateSkill, skills: Skills, catalog: Catalog) -> dict[str, Any]:
+async def create_skill(
+    body: CreateSkill, skills: Skills, catalog: Catalog, request: Request
+) -> dict[str, Any]:
     try:
-        created = await skills.create(body.name, _draft(body))
+        created = await skills.create(body.name, _draft(body, request))
     except SkillError as exc:
         raise _invalid(exc) from exc
     except SkillExists as exc:
@@ -135,10 +140,10 @@ async def create_skill(body: CreateSkill, skills: Skills, catalog: Catalog) -> d
 
 @router.put("/{name}/draft")
 async def save_draft(
-    name: str, body: SkillDraft, skills: Skills, catalog: Catalog
+    name: str, body: SkillDraft, skills: Skills, catalog: Catalog, request: Request
 ) -> dict[str, Any]:
     try:
-        saved = await skills.save_draft(name, _draft(body))
+        saved = await skills.save_draft(name, _draft(body, request))
     except SkillError as exc:
         raise _invalid(exc) from exc
     except SkillNotFound as exc:
@@ -156,13 +161,15 @@ async def discard_draft(name: str, skills: Skills) -> Response:
 
 
 @router.post("/{name}/publish")
-async def publish(name: str, body: Publish, skills: Skills, catalog: Catalog) -> dict[str, Any]:
+async def publish(
+    name: str, body: Publish, skills: Skills, catalog: Catalog, request: Request
+) -> dict[str, Any]:
     if not body.note.strip():
         raise HTTPException(422, "发布说明不能为空")
     if await skills.get(name) is None:
         raise HTTPException(404, f"没有 Skill {name}")
     try:
-        published = await skills.publish(name, body.note.strip(), body.actor)
+        published = await skills.publish(name, body.note.strip(), who(request, body.actor))
     except NoDraft as exc:
         raise HTTPException(409, f"Skill {name} 没有草稿可以发布") from exc
     return await _detail(published, catalog)

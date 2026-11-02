@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://aep:aep@localhost:5432/aep"
     redis_url: str = "redis://localhost:6379/0"
     cors_origins: list[str] = ["http://localhost:3000"]
+    # Sign-in and roles (aep.auth; docs/api/auth.md). Off: everyone is the local user
+    # with every role, as before.
+    auth_enabled: bool = False
+    session_hours: int = Field(168, ge=1, le=24 * 90)
+    cookie_secure: bool = False
 
     # Model gateway (LiteLLM). Every model call goes through it; see infra/litellm.
     llm_gateway_url: str = "http://localhost:4000"

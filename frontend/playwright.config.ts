@@ -36,6 +36,7 @@ export default defineConfig({
         "run-inputs.spec.ts",
         "projects.spec.ts",
         "models.spec.ts",
+        "auth.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {
