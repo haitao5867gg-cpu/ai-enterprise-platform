@@ -105,6 +105,9 @@ $DC down                                 # 停止（数据卷保留）
   `AEP_COOKIE_SECURE=true`，再运行一次 `bash infra/vps/deploy.sh`，打开网页建第一个管理员，
   然后在「账号」页给每个人建账号（见 `docs/api/auth.md`）。打开之前，先给还在用这个站点的人
   （包括别的 AI 测试）建好账号。部署脚本不会替你打开。以后接 Entra ID 登录。
+- 例外：应用 API（`/api/v1/*`）和应用的 MCP 入口（`/api/mcp/*`）不要求访问口令，给别的系统
+  调用；它们只认应用的 API 密钥（搭建者在应用页「接入」里新建，见 `docs/api/app-access.md`），
+  没有密钥一律 401。不用的密钥在应用页删掉，立即失效。
 - 服务器上的 `.env` 有模型网关密钥、Databricks token 等，服务器被攻破就等于这些密钥泄露。
   Databricks 建议用只读或只有 dev schema 权限的 token。
 - 发给模型和从数据源读出的数据都会经过这台服务器。公司数据能否放在境外的个人服务器上，按公司规定办；

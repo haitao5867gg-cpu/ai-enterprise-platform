@@ -1,10 +1,11 @@
 # 对外唯一入口：自动申请证书（Let's Encrypt，失败时换 ZeroSSL），整站要求访问口令，
 # 再反代到 web。浏览器只和 web 打交道，web 经 /api/* 转发到后端，后端不对外。
+#
+# 例外：应用 API（/api/v1/*）和应用的 MCP 入口（/api/mcp/*）给别的系统调用，它们的
+# Authorization 头放的是应用的 API 密钥，带不了访问口令。这两个入口不要求口令，由后端
+# 自己检查 API 密钥（docs/api/app-access.md）；没有密钥或密钥不对一律 401。
 {$AEP_DOMAIN} {
 	encode zstd gzip
-
-	# basic_auth 块，deploy.sh 生成（infra/vps/auth.caddy）。
-	import /etc/caddy/auth.caddy
 
 	header {
 		Strict-Transport-Security "max-age=31536000"
@@ -13,8 +14,20 @@
 		-Server
 	}
 
-	reverse_proxy web:3000 {
-		# 运行页面有流式响应，不缓冲。
-		flush_interval -1
+	@external path /api/v1/* /api/mcp/*
+	handle @external {
+		reverse_proxy web:3000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		# basic_auth 块，deploy.sh 生成（infra/vps/auth.caddy）。
+		import /etc/caddy/auth.caddy
+
+		reverse_proxy web:3000 {
+			# 运行页面有流式响应，不缓冲。
+			flush_interval -1
+		}
 	}
 }

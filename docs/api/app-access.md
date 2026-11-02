@@ -88,7 +88,7 @@ curl -s -X POST https://平台地址/api/v1/apps/hello/runs \
 
 浏览器和外部系统都只经网页服务进来（`/api/…`）。网页服务把 `/api/v1/…` 和 `/api/mcp/…` 原样转给后端，只转发 `Authorization`、`Content-Type`、`Accept`、`Mcp-Session-Id`、`Mcp-Protocol-Version` 这些头，等待上限 90 秒。
 
-部署在整站有访问口令的环境时（比如 VPS 上的 Caddy basic auth），外部系统带不了口令：口令和 API 密钥都要放在 `Authorization` 头里，只能放一个。这时要让反向代理对 `/api/v1/*` 和 `/api/mcp/*` 不要求口令，由这两个入口自己要求 API 密钥。要不要放行由部署的人决定，仓库里的 infra/vps/Caddyfile 默认不放行，所以在 VPS 上暂时只能从平台页面使用应用。
+部署在整站有访问口令的环境时（比如 VPS 上的 Caddy basic auth），外部系统带不了口令：口令和 API 密钥都要放在 `Authorization` 头里，只能放一个。这时要让反向代理对 `/api/v1/*` 和 `/api/mcp/*` 不要求口令，由这两个入口自己要求 API 密钥。仓库里的 infra/vps/Caddyfile 就是这样放行的（2026-11-02 定）。
 
 ## 操作记录
 

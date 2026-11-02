@@ -88,8 +88,12 @@ done
 
 echo "== 启动"
 "${DC[@]}" up -d --remove-orphans --wait --wait-timeout 900
-# 口令文件是挂载进去的，改了不会让 compose 重建 Caddy，要让运行中的 Caddy 重新读配置。
-if [ "${auth_changed:-}" = 1 ]; then
+# Caddyfile 和口令文件是挂载进去的，改了不会让 compose 重建 Caddy。git pull 换掉的
+# Caddyfile 是新文件，运行中的容器还看着旧的，要重启 Caddy 才能挂上新的；只改了口令
+# 时让它重新读配置就够了。
+if [ "$("${DC[@]}" exec -T caddy cat /etc/caddy/Caddyfile | sha256sum)" != "$(sha256sum < infra/vps/Caddyfile)" ]; then
+  "${DC[@]}" restart caddy
+elif [ "${auth_changed:-}" = 1 ]; then
   "${DC[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 fi
 docker image prune -f >/dev/null
