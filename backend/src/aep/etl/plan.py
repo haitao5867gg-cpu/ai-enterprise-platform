@@ -16,7 +16,7 @@ import keyword
 import re
 import unicodedata
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter, ValidationError, field_validator
@@ -137,10 +137,13 @@ class PlanError(ValueError):
 
 @dataclass(frozen=True)
 class KnownValues:
-    """Every value the profile saw in a column; ``complete`` when the whole table was read."""
+    """Every value the profile saw in a column, trimmed and lower-cased (``values``) and as
+    the data writes them (``shown``, for messages); ``complete`` when the whole table was
+    read. A value a read filter names (one it filters out) counts as seen."""
 
     values: frozenset[str]
     complete: bool
+    shown: frozenset[str] = field(default=frozenset(), compare=False)
 
 
 # A column compared with a string literal: ``lower(trim(o.status)) = 'paid'``,
@@ -228,15 +231,16 @@ def _value_problems(
                 continue
             where = "整张表" if seen.complete else "样本"
             if show_values:
-                actual = "、".join(sorted(seen.values)) or "（全是空值）"
+                actual = "、".join(sorted(seen.shown or seen.values)) or "（全是空值）"
                 found = f"但{where}里 {column} 的取值只有 {actual}"
             else:
                 found = f"但{where}里 {column} 没有这个取值（按数据外发策略不列出实际取值）"
             problems.append(
                 f"{target.name} 拿 {column} 和 '{literal}' 比较，{found}。"
-                "需求说的取值对应其中某个时请改用实际取值；数据里确实没有时，"
+                "需求说的取值对应其中某个时请改用实际取值（大小写照数据写）；数据里确实没有时，"
                 "不要编造取值，做不了的指标去掉或给 null，并在 assumptions 里说明；"
-                f"确定要用 '{literal}'（比如用户指定了）就在 assumptions 里写明原因"
+                f"确定要用 '{literal}'（比如用户指定了）就在 assumptions 里写明原因。"
+                "不要为了通过校验改口径，比如把维度转成小写"
             )
     return problems
 
@@ -1307,11 +1311,14 @@ def _validated(
     if version == 3:
         modes = WRITE_MODES
         raw = _overwrite_by_default(raw)
-        proposed = raw.pop("checks", None)
+        proposed = _tidy_checks(raw.pop("checks", None))
     plan, structure = _parse_v2(raw, EtlPlanV3 if version == 3 else EtlPlanV2, modes)
     if plan is None:
         raise PlanError("；".join(structure), structure)
     cleaned: list[str] = []
+    _tidy_rule_names(plan, cleaned)
+    if version == 3 and project is not None:
+        _pyspark_for_filters(plan, project, cleaned)
     _drop_prefixes(plan, cleaned)
     _drop_numbering(plan, cleaned)
     _drop_repeats(plan, cleaned)
@@ -1484,7 +1491,9 @@ def result_table(plan: EtlPlanV2) -> LabeledTarget:
 
 
 def _overwrite_by_default(raw: dict[str, Any]) -> dict[str, Any]:
-    """``raw`` with ``load.mode`` overwrite where a target leaves it out."""
+    """``raw`` with ``load.mode`` overwrite where a target leaves it out, and the load's
+    unused parts left out when the model wrote them empty (``where`` blank, ``keys`` or
+    ``key`` null): the format says to write those as null or [], and either will do."""
     data = dict(raw)
     targets = data.get("targets")
     if not isinstance(targets, list):
@@ -1495,11 +1504,108 @@ def _overwrite_by_default(raw: dict[str, Any]) -> dict[str, Any]:
             load = target.get("load")
             if load is None:
                 target = {**target, "load": {"mode": "overwrite"}}
-            elif isinstance(load, dict) and _blank(load.get("mode")):
-                target = {**target, "load": {**load, "mode": "overwrite"}}
+            elif isinstance(load, dict):
+                load = {
+                    k: v
+                    for k, v in load.items()
+                    if not (k in ("where", "keys", "key") and (v is None or _blank_text(v)))
+                }
+                if _blank(load.get("mode")):
+                    load["mode"] = "overwrite"
+                target = {**target, "load": load}
         written.append(target)
     data["targets"] = written
     return data
+
+
+def _blank_text(value: Any) -> bool:
+    return isinstance(value, str) and not value.strip()
+
+
+# Parts of a check the model may write empty although the format leaves them out: they
+# mean "none" either way.
+_OPTIONAL_TEXTS = ("where", "expected_where")
+_OPTIONAL_LISTS = ("group_by",)
+
+
+def _tidy_checks(proposed: Any) -> Any:
+    """The plan's checks with what the model wrote empty left out: a part that is null
+    (every kind's fields written out, null where they do not apply), a blank condition
+    and an empty ``group_by``, also inside a reconcile's sides. Anything else is checked
+    as it is."""
+    if not isinstance(proposed, list):
+        return proposed
+    return [_tidy_check(check) if isinstance(check, dict) else check for check in proposed]
+
+
+def _tidy_check(check: dict[str, Any]) -> dict[str, Any]:
+    tidy: dict[str, Any] = {}
+    for key, value in check.items():
+        if value is None:
+            continue
+        if key in _OPTIONAL_TEXTS and _blank_text(value):
+            continue
+        if key in _OPTIONAL_LISTS and value == []:
+            continue
+        if key in ("left", "right") and isinstance(value, dict):
+            value = {
+                k: v
+                for k, v in value.items()
+                if v is not None and not (k == "where" and _blank_text(v))
+            }
+        tidy[key] = value
+    return tidy
+
+
+RULE_ID = re.compile(r"[^a-z0-9_]+")
+
+
+def _tidy_rule_names(plan: EtlPlanV2, cleaned: list[str]) -> None:
+    """Quality rule names the code can use, one per target: a lower-case identifier.
+    One that is not becomes its lower-case letters, digits and underscores, or
+    ``rule_<n>`` when nothing is left (a name in Chinese); a repeated one gets a number.
+    A name never sends the plan back."""
+    for target in plan.targets:
+        valid = {r.name for r in target.quality_rules if IDENTIFIER.match(r.name)}
+        used: set[str] = set()
+        renamed: list[tuple[str, str]] = []
+        for n, rule in enumerate(target.quality_rules, start=1):
+            if IDENTIFIER.match(rule.name) and rule.name not in used:
+                used.add(rule.name)
+                continue
+            base = RULE_ID.sub("_", rule.name.strip().lower()).strip("_")[:50]
+            if not base:
+                base = f"rule_{n}"
+            elif not base[0].isalpha():
+                base = f"rule_{base}"
+            name, k = base, 2
+            while name in used or (name in valid and name != rule.name):
+                name, k = f"{base}_{k}", k + 1
+            used.add(name)
+            renamed.append((rule.name, name))
+            rule.name = name
+        if renamed:
+            pairs = "、".join(f"「{old}」→ {new}" for old, new in renamed)
+            cleaned.append(f"{target.name} 的质量规则名改成了代码能用的名字：{pairs}")
+
+
+def _pyspark_for_filters(plan: EtlPlanV2, project: Mapping[str, Any], cleaned: list[str]) -> None:
+    """A plan in SQL that reads a table with a project read filter is written in PySpark
+    instead: only the PySpark code reads through the filter (``source()``)."""
+    if plan.language != "sql":
+        return
+    filtered = {
+        str(r.get("name")).lower()
+        for r in project.get("references") or []
+        if isinstance(r, dict) and r.get("name") and r.get("filter")
+    }
+    read = [s for t in plan.targets for s in t.sources if s.lower() in filtered]
+    if read:
+        plan.language = "pyspark"
+        cleaned.append(
+            f"{'、'.join(dict.fromkeys(read))} 有项目的读取筛选，SQL 代码暂不支持，"
+            "代码语言改成了 PySpark"
+        )
 
 
 def _param_problems(text: Any, where: str, project: Mapping[str, Any] | None) -> list[str]:
@@ -1570,24 +1676,12 @@ def _project_problems(plan: EtlPlanV2, project: Mapping[str, Any]) -> list[str]:
         for r in project.get("references") or []
         if isinstance(r, dict) and r.get("name")
     }
-    filtered = {
-        str(r.get("name")).lower()
-        for r in project.get("references") or []
-        if isinstance(r, dict) and r.get("name") and r.get("filter")
-    }
     for target in plan.targets:
         if prefix and not target.name.startswith(prefix):
             problems.append(f"目标表名 {target.name!r} 要以项目「{label}」的表名前缀 {prefix} 开头")
         same = read.get(target.name.lower())
         if same is not None:
             problems.append(f"目标表名 {target.name!r} 和项目引用的表 {same} 同名，请换一个")
-        if plan.language == "sql":
-            for source in target.sources:
-                if source.lower() in filtered:
-                    problems.append(
-                        f"{target.name} 的来源 {source} 有项目的读取筛选，SQL 代码暂不支持；"
-                        "请把 language 改成 pyspark"
-                    )
     return problems
 
 

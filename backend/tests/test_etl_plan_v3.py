@@ -315,13 +315,56 @@ def test_the_projects_acceptance_checks_and_filtered_sources():
         "checks[1].id：keys 是项目的验收检查，数据检查时会自动跑，方案里不用再写；"
         "要另加检查请换一个 id"
     ]
-    # SQL code cannot read a reference with a read filter: the plan says so already.
+    # SQL code cannot read a reference with a read filter: the platform writes the plan
+    # in PySpark instead of sending it back, and says so.
     filtered = {**PROJECT, "references": [{"name": "SALES.orders", "filter": "status <> 'test'"}]}
     raw = v3_plan()
     raw["language"] = "sql"
-    assert problems3(raw, filtered) == [
-        "order_facts 的来源 sales.orders 有项目的读取筛选，SQL 代码暂不支持；"
-        "请把 language 改成 pyspark"
-    ]
+    plan, cleaned = check3(raw, filtered)
+    assert plan.language == "pyspark"
+    assert "sales.orders 有项目的读取筛选，SQL 代码暂不支持，代码语言改成了 PySpark" in cleaned
     raw["language"] = "pyspark"
     assert check3(raw, filtered)[1] == []
+
+
+def test_empty_parts_the_model_writes_out_do_not_send_the_plan_back():
+    # The format says null or [] for parts that do not apply; either is fine, and so is a
+    # check that writes every field of every kind with null where it does not apply.
+    raw = v3_plan(
+        {**TOTAL, "group_by": [], "where": "", "max": None, "severity": None, "left": None},
+        {**RECONCILE, "group_by": [], "right": {**RECONCILE["right"], "where": None}},
+        {**KEYS, "where": None, "expr": None},
+    )
+    raw["targets"][0]["load"] = {"mode": "overwrite", "where": None, "keys": None, "key": None}
+    raw["targets"][1]["load"]["keys"] = None
+    plan, cleaned = check3(raw)
+    assert cleaned == []
+    assert [c["id"] for c in plan.checks] == ["total", "orders", "keys"]
+    assert plan.checks[0]["severity"] == "error"
+    assert "group_by" not in plan.checks[0] and "where" not in plan.checks[0]
+    assert plan.targets[1].load.keys == []
+    # What still matters still goes back: replacing rows needs its condition.
+    raw["targets"][1]["load"]["where"] = " "
+    assert problems3(raw) == ["city_daily 按条件替换（replace_where），要给出替换条件 load.where"]
+
+
+def test_quality_rule_names_are_made_usable_by_the_platform():
+    raw = v3_plan()
+    rules = [
+        {"name": "数量为正", "condition": "quantity > 0", "on_violation": "drop"},
+        {"name": "City-Not-Blank", "condition": "city <> ''", "on_violation": "warn"},
+        {"name": "rule_1", "condition": "order_id IS NOT NULL", "on_violation": "fail"},
+        {"name": "rule_1", "condition": "quantity < 1000", "on_violation": "warn"},
+    ]
+    raw["targets"][0]["quality_rules"] = rules
+    plan, cleaned = check3(raw)
+    assert [r.name for r in plan.targets[0].quality_rules] == [
+        "rule_1_2",
+        "city_not_blank",
+        "rule_1",
+        "rule_1_3",
+    ]
+    assert cleaned == [
+        "order_facts 的质量规则名改成了代码能用的名字："
+        "「数量为正」→ rule_1_2、「City-Not-Blank」→ city_not_blank、「rule_1」→ rule_1_3"
+    ]

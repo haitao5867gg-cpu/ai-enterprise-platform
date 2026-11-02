@@ -37,6 +37,8 @@ from aep.etl.plan import PLAN_MODES, EtlPlan, QualityRule, Target
 
 PIPELINE_PY = "src/pipeline.py"
 PIPELINE_SQL = "src/pipeline.sql"
+# Rows warn_rows() lists by default.
+WARN_ROWS = 10
 # A bundle deployed as a job: a notebook running the pipeline file through the harness.
 JOB_NOTEBOOK = "src/run.py"
 JOB_HARNESS = "src/aep_harness.py"
@@ -51,8 +53,10 @@ language 是 pyspark 时，代码是一个 Python 函数体（不含 def 那一�
 - 可以直接用 F（pyspark.sql.functions）和 Window；要用标准库时只能 import re、math、datetime、\
 decimal、calendar，pyspark 只能 import pyspark.sql 的 types、functions、window，别的都不要 import。
 - 数据有问题但不该停下时用 warn("说明") 记一条告警（写进运行报告，运行继续）；\
-该停下时 raise ValueError("说明")。
-- 只读和转换：不要写表、不要 collect / toPandas、不要调用 spark.sql、dbutils 或文件系统。
+要在告警里列出有问题的行（比如没分摊上的组合）时用 warn_rows(df, "说明")，\
+平台数一下行数、列出前 10 行；该停下时 raise ValueError("说明")。
+- 只读和转换：不要写表、不要 collect / toPandas（列出几行用 warn_rows）、\
+不要调用 spark.sql、dbutils 或文件系统。
 - 质量规则由平台按方案生成，函数体里不用再写。
 
 language 是 sql 时，代码是一条 SELECT（可以用 WITH），结尾不要分号：
@@ -194,6 +198,18 @@ def render_pyspark(
         '    """A warning about the data for the run report; the run goes on."""',
         "    WARNINGS.append(str(message))",
         '    print(f"WARNING: {message}")',
+        "",
+        "",
+        f"def warn_rows(df, message: str, limit: int = {WARN_ROWS}) -> None:",
+        '    """A warning listing the first rows of ``df`` and how many it has; none when',
+        '    ``df`` is empty. The code itself may not collect."""',
+        "    count = df.count()",
+        "    if not count:",
+        "        return",
+        "    rows = [row.asDict() for row in df.limit(max(1, min(int(limit), 100))).collect()]",
+        '    shown = "；".join(", ".join(f"{k}={v}" for k, v in row.items()) for row in rows)',
+        '    more = f"（只列出前 {len(rows)} 行）" if count > len(rows) else ""',
+        '    warn(f"{message}：共 {count} 行：{shown}{more}")',
     ]
     for target in plan.targets:
         parts += ["", ""]
@@ -512,10 +528,19 @@ FORBIDDEN_ATTRS = {
     "write", "writeStream", "save", "saveAsTable", "insertInto", "sql", "collect", "toPandas",
 }  # fmt: skip
 FORBIDDEN_NAMES = {"dbutils", "os", "sys", "subprocess", "open", "eval", "exec", "__import__"}
+# What to write instead of a forbidden call, when there is a way.
+INSTEAD = {
+    "collect": '（要在告警里列出几行用 warn_rows(df, "说明")，数据留在集群上算）',
+    "toPandas": '（要在告警里列出几行用 warn_rows(df, "说明")，数据留在集群上算）',
+    "sql": "（用 DataFrame 写，读源表用 source()）",
+    "write": "（不要写表：return 结果 DataFrame，平台按方案的写表方式写）",
+    "saveAsTable": "（不要写表：return 结果 DataFrame，平台按方案的写表方式写）",
+    "insertInto": "（不要写表：return 结果 DataFrame，平台按方案的写表方式写）",
+}
 # What the platform's part of the pipeline file defines; a body must not redefine them,
 # and reads parameters and filtered sources only through param() and source().
 PLATFORM_NAMES = {
-    "source", "param", "warn", "spark", "json", "dp", "F", "Window",
+    "source", "param", "warn", "warn_rows", "spark", "json", "dp", "F", "Window",
     "SOURCE_CATALOG", "SOURCE_FILTERS", "PARAMS", "WARNINGS",
 }  # fmt: skip
 HIDDEN_NAMES = {"SOURCE_FILTERS", "PARAMS", "WARNINGS"}
@@ -570,7 +595,8 @@ def _check_pyspark_body(
         if isinstance(node, ast.Import | ast.ImportFrom):
             problems += [f"{name}: {p}" for p in _import_problems(node)]
         elif isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRS:
-            problems.append(f"{name}: 不允许使用 .{node.attr}")
+            instead = INSTEAD.get(node.attr, "")
+            problems.append(f"{name}: 不允许使用 .{node.attr}{instead}")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
             problems.append(f"{name}: 不允许使用 {node.id}")
         elif isinstance(node, ast.Name) and node.id in PLATFORM_NAMES:

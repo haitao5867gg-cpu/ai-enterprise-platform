@@ -450,6 +450,8 @@ def test_row_level_rules_pass():
     ("body", "problem"),
     [
         ("return source('sales.orders').write", "不允许使用 .write"),
+        ("rows = source('sales.orders').collect()\nreturn rows", "warn_rows(df"),
+        ("return source('sales.orders').toPandas()", "warn_rows(df"),
         ("return dbutils.fs.ls('/')", "不允许使用 dbutils"),
         ("return source('sales.invoices')", "不在方案列出的来源里"),
         ("return spark.read.table('sales.orders')", "只能读本管道的其他目标表"),
@@ -460,6 +462,26 @@ def test_row_level_rules_pass():
 def test_pyspark_checks(body, problem):
     problems = codegen.check_code(EtlPlan.model_validate(plan()), {"order_facts": body})
     assert any(problem in p for p in problems), problems
+
+
+def test_the_code_lists_rows_in_a_warning_through_the_platform():
+    # The code may not collect, but warn_rows() (the platform's) lists a few rows.
+    body = (
+        "orders = source('sales.orders')\n"
+        "warn_rows(orders.where('quantity < 0'), '数量为负的订单')\n"
+        "return orders"
+    )
+    etl_plan = EtlPlan.model_validate(plan())
+    assert codegen.check_code(etl_plan, {"order_facts": body}) == []
+    assert any(
+        "重新定义平台提供的 warn_rows" in p
+        for p in codegen.check_code(
+            etl_plan, {"order_facts": "warn_rows = print\nreturn source('sales.orders')"}
+        )
+    )
+    header = codegen.render_pyspark(etl_plan, {"order_facts": body})
+    assert "def warn_rows(df, message: str, limit: int = 10) -> None:" in header
+    assert 'warn_rows(df, "说明")' in codegen.OUTPUT_FORMAT
 
 
 @pytest.mark.parametrize(
@@ -617,6 +639,32 @@ def test_known_values_from_the_profile():
     assert known == {"status": KnownValues(frozenset({"paid", "x", "new"}), complete=False)}
     alone = known_values([table(3, 1000, [{"name": "s", "distinct_count": 0, "top_values": []}])])
     assert alone == {"s": KnownValues(frozenset(), complete=True)}
+    # The values as the data writes them, for the message to the model.
+    assert known["status"].shown == {"Paid", "x", "new"}
+
+
+def test_values_a_read_filter_leaves_out_count_as_seen():
+    # A project's read filter leaves BU_X out, so the profile never sees it; a plan that
+    # names it (to leave it out too) is not making it up.
+    stats = [{"name": "bu", "distinct_count": 2, "top_values": [{"value": "BU_A", "count": 3}]}]
+    stats[0]["top_values"].append({"value": "BU_B", "count": 1})
+    table = {
+        "sample_row_count": 4,
+        "sample_limit": 1000,
+        "filter": "bu IS NULL OR TRIM(bu) NOT IN ('BU_X')",
+        "column_stats": stats,
+    }
+    known = known_values([table])
+    assert known["bu"].values == {"bu_a", "bu_b", "bu_x"}
+    assert known["bu"].shown == {"BU_A", "BU_B", "BU_X"}
+    tables = ["sales.orders", "sales.customers"]
+    named = plan()
+    named["targets"][0]["columns"].append({"name": "out_of_scope", "source": "o.bu = 'BU_X'"})
+    validate_plan(named, tables, known, trust_assumptions=False)
+    # A value neither the data nor the filter has still goes back, listed as written.
+    named["targets"][0]["columns"][-1]["source"] = "o.bu = 'BU_Y'"
+    with pytest.raises(PlanError, match="bu 的取值只有 BU_A、BU_B、BU_X"):
+        validate_plan(named, tables, known, trust_assumptions=False)
 
 
 def test_the_profile_text_says_when_its_stats_come_from_a_sample():
@@ -645,4 +693,6 @@ async def test_a_made_up_value_goes_back_to_the_model():
     view = await service.get(run_id)
     assert view.record.status == "waiting", view.record.error
     feedback = gateway.requests[1]["body"]["messages"][-1]["content"]
-    assert "整张表里 status 的取值只有 paid。" in feedback
+    # The values as the data writes them (case kept), so the model can copy one.
+    assert "整张表里 status 的取值只有 Paid、paid。" in feedback
+    assert "大小写照数据写" in feedback and "不要为了通过校验改口径" in feedback
