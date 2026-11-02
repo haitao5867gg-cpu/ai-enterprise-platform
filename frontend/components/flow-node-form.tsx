@@ -1507,6 +1507,33 @@ export function NodeSettings({
           />
         </>
       );
+    case "databricks_release":
+      return (
+        <>
+          <RefField
+            label="bundle"
+            value={node.bundle}
+            variables={variables}
+            issues={at("bundle")}
+            onChange={(bundle) => change({ ...node, bundle })}
+          />
+          <RefField
+            label="定时（Quartz cron）"
+            value={node.schedule ?? ""}
+            variables={variables}
+            issues={at("schedule")}
+            help="如每天 2 点：0 0 2 * * ?。可以引用上线审批的回答（如 {{release_review.values}}，取其中的 schedule）；空着用平台默认的定时。"
+            onChange={(schedule) => change({ ...node, schedule })}
+          />
+          <TextField
+            label="上线环境"
+            value={node.environment ?? "prod"}
+            issues={at("environment")}
+            help="只对绑定项目的运行有用：上线到项目的哪个环境。不绑定项目时上线到平台的 prod。"
+            onChange={(environment) => change({ ...node, environment })}
+          />
+        </>
+      );
     case "start":
       return (
         <>

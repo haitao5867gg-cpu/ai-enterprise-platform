@@ -135,6 +135,19 @@ export function dataNodeIssues(config: FlowConfig): ValidationIssue[] {
       integer("max_runs", node.max_runs, 1, 3);
       integer("preview_rows", node.preview_rows, 0, 100);
     }
+    if (node.type === "databricks_release") {
+      const schedule = node.schedule ?? "";
+      const parts = schedule.trim().split(/\s+/);
+      if (
+        schedule.trim() &&
+        !/\{\{/.test(schedule) &&
+        (![6, 7].includes(parts.length) ||
+          !parts.every((part) => /^[0-9A-Za-z*?/,#-]+$/.test(part)))
+      )
+        add("schedule", "定时要写成 Quartz cron，如每天 2 点：0 0 2 * * ?");
+      if (node.environment && !/^[a-z][a-z0-9_]{0,31}$/.test(node.environment))
+        add("environment", "上线环境要写项目环境的标识，如 prod");
+    }
     if (node.type === "data_check") {
       if (!Array.isArray(node.checks) || node.checks.length > 50)
         add("checks", "最多 50 条检查");

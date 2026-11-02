@@ -64,6 +64,14 @@ export const dataDefaults: FlowNode[] = [
     preview_rows: 20,
   },
   {
+    id: "release",
+    type: "databricks_release",
+    title: "上线到 prod",
+    bundle: "",
+    schedule: "",
+    environment: "prod",
+  },
+  {
     id: "data_check",
     type: "data_check",
     title: "数据检查",
@@ -79,6 +87,8 @@ export const dataDescriptions: Record<string, string> = {
   databricks_ingest: "从只读数据源抽取表数据，写入 Databricks 湖仓的源表。",
   etl_code_check: "检查模型生成的转换代码，并打包为 Databricks bundle。",
   databricks_dev_run: "在 Databricks dev 运行 bundle，检查质量并预览结果数据。",
+  databricks_release:
+    "把审核过的 bundle 部署到 prod（绑定项目时是项目的某个环境），按定时在 Databricks 上自动刷新",
   data_check:
     "经 Databricks 只读连接器核对结果数据：总数、和源表对账、键是否重复、不该有的行、和老系统逐行对比",
 };
@@ -508,7 +518,92 @@ export function simulateDataNode(
       outputs: { ...demoDevOutput(node.preview_rows) },
       branch: "passed",
     };
+  if (node.type === "databricks_release") return simulateRelease(rendered);
   return null;
+}
+
+// docs/api/data-nodes.md ("第五批：上线到 prod"): job 100 on the schedule asked for; a
+// bundle whose name has "fail" in it cannot be released.
+const QUARTZ = /^[0-9A-Za-z*?/,#-]+$/;
+const SAID: Record<string, string> = {
+  "0 0 2 * * ?": "每天 02:00",
+  "0 0 * * * ?": "每小时整点",
+  "0 0 2 ? * MON": "每周一 02:00",
+  "0 0 2 1 * ?": "每月 1 日 02:00",
+};
+function simulateRelease(rendered: Record<string, unknown>) {
+  const bundle = rendered.bundle as { name?: unknown } | null;
+  if (!bundle || typeof bundle.name !== "string")
+    throw new MockNodeFailure(
+      "input_error",
+      "bundle 要引用检查并打包节点的 bundle（代码通过检查后才有）",
+    );
+  let schedule: unknown = rendered.schedule;
+  if (schedule && typeof schedule === "object")
+    schedule = (schedule as Record<string, unknown>).schedule;
+  const cron =
+    typeof schedule === "string" && schedule.trim()
+      ? schedule.trim().split(/\s+/).join(" ")
+      : "0 0 2 * * ?";
+  const parts = cron.split(" ");
+  if (![6, 7].includes(parts.length) || !parts.every((p) => QUARTZ.test(p)))
+    throw new MockNodeFailure(
+      "input_error",
+      "定时要写成 Quartz cron，如每天 2 点：0 0 2 * * ?",
+    );
+  const timezone = "Asia/Shanghai";
+  const said = `${SAID[cron] ?? `按 Quartz cron ${cron}`}（${timezone}）`;
+  const environment = "prod";
+  const failed = bundle.name.includes("fail");
+  const errors = failed
+    ? "没有配置 prod 目标（AEP_DATABRICKS_PROD_CATALOG、AEP_DATABRICKS_PROD_SCHEMA）"
+    : "";
+  const where = "`demo_prod`.retail_mart";
+  const url = failed ? null : "https://adb-mock.azuredatabricks.net/#job/100";
+  const release = {
+    status: failed ? "failed" : "deployed",
+    mode: "job",
+    catalog: failed ? "" : "demo_prod",
+    schema: failed ? "" : "retail_mart",
+    schedule: cron,
+    timezone,
+    steps: failed ? [] : [{ name: "deploy", ok: true, output: "job 100" }],
+    errors: failed ? [errors] : [],
+    job_id: failed ? null : 100,
+    pipeline_id: null,
+    cluster_id: failed ? null : "0101-mock-cluster",
+    url,
+    environment,
+    job_name: bundle.name,
+  };
+  const summary = failed
+    ? `上线到 ${environment} 失败：${errors}`
+    : `已上线到 ${environment}：Job 100，${said}刷新 ${where}`;
+  const report = [
+    failed ? "## 上线失败" : "## 已上线",
+    "",
+    `- 环境：${environment}`,
+    `- 写到：${failed ? "`（未配置）`" : `\`${where}\``}`,
+    `- 方式：notebook Job「${bundle.name}」，在集群 ${release.cluster_id ?? "—"} 上运行`,
+    `- 定时：${said}`,
+    ...(url ? [`- Databricks 上的 Job：[打开](${url})`] : []),
+    ...(failed ? ["", "### 原因", "", `- ${errors}`] : []),
+  ].join("\n");
+  return {
+    outputs: {
+      status: release.status,
+      ok: !failed,
+      release,
+      url,
+      job_id: release.job_id,
+      schedule: cron,
+      schedule_text: said,
+      errors,
+      summary,
+      report,
+    },
+    branch: failed ? "failed" : "deployed",
+  };
 }
 
 // What a data node says in the run process, worded as the backend does
@@ -521,6 +616,7 @@ export function dataNodeSaid(
   if (
     node.type === "etl_profile" ||
     node.type === "databricks_ingest" ||
+    node.type === "databricks_release" ||
     node.type === "data_check"
   )
     return typeof outputs.summary === "string" ? outputs.summary : null;

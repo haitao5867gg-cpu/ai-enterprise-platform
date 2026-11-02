@@ -146,7 +146,8 @@ def test_template_follows_the_contract():
     )
     assert template.summary == (
         "探查数据源、按口径知识库出方案，确认方案后抽取到 Databricks，"
-        "按开发规范写 PySpark 代码，在开发环境试算并算出答案，审核通过后交付。"
+        "按开发规范写 PySpark 代码，在开发环境试算并算出答案，"
+        "审核通过后可以上线到 prod 定时刷新。"
     )
     nodes = {n["id"]: n for n in template.config["graph"]["nodes"]}
     assert [(i, n["type"], n["title"]) for i, n in nodes.items()] == [
@@ -164,6 +165,8 @@ def test_template_follows_the_contract():
         ("code_stuck", "human", "代码检查没通过"),
         ("dev_run", "databricks_dev_run", "开发环境试算"),
         ("data_review", "human", "审核试算结果"),
+        ("release_review", "human", "上线审批"),
+        ("release", "databricks_release", "上线到 prod"),
         ("end", "end", "交付"),
         ("stopped", "end", "终止"),
     ]
@@ -209,7 +212,13 @@ def test_template_follows_the_contract():
         9,
     )
     # The two people's steps are the contract's, word for word.
-    for human in contract_objects("两个人工节点：") + contract_objects("两个交给人的节点"):
+    contract = [
+        *contract_objects("两个人工节点："),
+        *contract_objects("两个交给人的节点"),
+        # And the release approval and the release (第五批).
+        *contract_objects("### 两个 ETL 模板加上线"),
+    ]
+    for human in contract:
         assert {k: v for k, v in nodes[human["id"]].items() if k != "note"} == human
     # The checks hand a reply that keeps failing to a person instead of failing the run.
     assert nodes["check_plan"]["on_stuck"] == nodes["check_code"]["on_stuck"] == "branch"
@@ -224,6 +233,7 @@ def test_template_follows_the_contract():
         "answer": ["{{dev_run.answer}}"], "code": ["{{check_code.bundle}}"],
         "quality": ["{{dev_run.quality}}"], "dev_url": ["{{dev_run.url}}"],
         "confirmed": ["{{review.record}}"], "reviewed": ["{{data_review.record}}"],
+        "release": ["{{release.summary}}"], "release_url": ["{{release.url}}"],
     }  # fmt: skip
     assert outputs["stopped"] == {
         "reason": [
@@ -249,8 +259,10 @@ def test_template_follows_the_contract():
         ("code_stuck", "rewrite", "codegen"), ("code_stuck", "stop", "stopped"),
         ("dev_run", "passed", "data_review"), ("dev_run", "failed", "data_review"),
         ("dev_run", "retry", "codegen"),
-        ("data_review", "approve", "end"), ("data_review", "fix_code", "codegen"),
+        ("data_review", "approve", "release_review"), ("data_review", "fix_code", "codegen"),
         ("data_review", "fix_plan", "plan"), ("data_review", "stop", "stopped"),
+        ("release_review", "release", "release"), ("release_review", "skip", "end"),
+        ("release", "deployed", "end"), ("release", "failed", "release_review"),
     }  # fmt: skip
 
 
@@ -462,6 +474,8 @@ async def test_demo_makes_everything_once_and_the_app_runs_to_the_end(platform, 
     assert view["status"] == "waiting", view["error"]
     assert view["step"]["node"] == "data_review"
     view = await platform.decide(run_id, "approve")
+    assert view["step"]["node"] == "release_review", view["error"]
+    view = await platform.decide(run_id, "skip", values={"schedule": "0 0 2 * * ?"})
     assert view["status"] == "done", view["error"]
     assert view["outcome"] == "delivered"
     result = view["result"]
@@ -473,7 +487,7 @@ async def test_demo_makes_everything_once_and_the_app_runs_to_the_end(platform, 
         "plan", "check_plan", "plan", "check_plan", "review",
         "plan", "check_plan", "review",
         "ingest", "codegen", "check_code", "codegen", "check_code", "dev_run",
-        "codegen", "check_code", "dev_run", "data_review", "end",
+        "codegen", "check_code", "dev_run", "data_review", "release_review", "end",
     ]  # fmt: skip
     prompts = [r["body"]["messages"] for r in platform.gateway.requests if "messages" in r["body"]]
     first_plan = prompts[0][-1]["content"]

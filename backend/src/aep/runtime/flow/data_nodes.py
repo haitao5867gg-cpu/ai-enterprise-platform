@@ -4,7 +4,9 @@
 ``etl_plan_check`` checks a model's ETL plan against them, ``databricks_ingest``
 copies the plan's source tables into Databricks, ``etl_code_check`` checks the
 model's code and packages it as a bundle, and ``databricks_dev_run`` runs the
-bundle on the dev target and reads the first rows of its tables. The model calls
+bundle on the dev target and reads the first rows of its tables, and
+``databricks_release`` deploys it to prod (or a project's environment) to run on a
+schedule. The model calls
 in between are ordinary ``llm`` nodes. They reuse what the code app ``etl`` does
 (``aep.etl``, ``aep.databricks``) rather than repeat its rules. Settings, outputs
 and branches are documented in docs/api/data-nodes.md.
@@ -18,7 +20,16 @@ from typing import Any
 from pydantic import ValidationError
 
 from aep import llm, policy
-from aep.databricks import DatabricksError, DevTarget, Landing, Placement, full_name
+from aep.databricks import (
+    PROD,
+    DatabricksError,
+    DevTarget,
+    Landing,
+    Placement,
+    Release,
+    full_name,
+    release_job_name,
+)
 from aep.datasources import SOURCE_KINDS, DataSource, tool_seconds
 from aep.etl import checks, codegen
 from aep.etl.answer import cluster_design, shown, with_defaults
@@ -56,6 +67,7 @@ from aep.etl.profile import (
     split_name,
 )
 from aep.knowledge.citations import IndexedHit
+from aep.projects import KEY as ENVIRONMENT_KEY
 from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
     INPUT_ERROR,
@@ -1298,19 +1310,12 @@ def _placement(
             INPUT_ERROR, "绑定项目的运行请用 job 或 cluster 方式（AEP_DATABRICKS_DEPLOY）"
         )
     names = list(settings.get("loads") or {}) or ([t.name for t in plan.targets] if plan else [])
-    prefix = project["table_prefix"]
-    wrong = [name for name in names if not name.startswith(prefix)]
-    if wrong:
-        raise NodeFailure(
-            INPUT_ERROR,
-            f"目标表 {'、'.join(wrong)} 不以项目「{project['name']}」的表名前缀 {prefix} 开头",
-        )
+    _check_prefix(project, names)
     return Placement.of(project, state.get("run_id") or "")
 
 
-async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
-    databricks = _databricks(rt)
-    get = rt.lookup(state)
+def _bundle(node: dict[str, Any], get: refs.Lookup) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The bundle the node's ``bundle`` names and its run settings."""
     bundle = refs.resolve(node["bundle"], get)
     if (
         not isinstance(bundle, dict)
@@ -1318,8 +1323,25 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         or not isinstance(bundle.get("files"), dict)
     ):
         raise NodeFailure(INPUT_ERROR, "bundle 要引用检查并打包节点的 bundle（代码通过检查后才有）")
-    plan, warning = _dev_plan(node, get)
     settings = bundle.get("settings") if isinstance(bundle.get("settings"), dict) else {}
+    return bundle, settings
+
+
+def _check_prefix(project: dict[str, Any], names: list[str]) -> None:
+    prefix = project["table_prefix"]
+    wrong = [name for name in names if not name.startswith(prefix)]
+    if wrong:
+        raise NodeFailure(
+            INPUT_ERROR,
+            f"目标表 {'、'.join(wrong)} 不以项目「{project['name']}」的表名前缀 {prefix} 开头",
+        )
+
+
+async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
+    databricks = _databricks(rt)
+    get = rt.lookup(state)
+    bundle, settings = _bundle(node, get)
+    plan, warning = _dev_plan(node, get)
     placement = _placement(state, databricks, settings, plan)
     order = {t.name: list(t.primary_key) for t in plan.targets} if plan else None
     card = answer_output(plan) if plan else None
@@ -1397,6 +1419,207 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         data=["preview", "answer", "report"],
         # The run's details keep the errors too.
         quoted=["errors", "run"],
+    )
+
+
+# databricks_release
+
+QUARTZ_PART = re.compile(r"^[0-9A-Za-z*?/,#-]+$")
+QUARTZ_PROBLEM = "定时要写成 Quartz cron，如每天 2 点：0 0 2 * * ?"
+WEEKDAYS = {
+    "MON": "一",
+    "TUE": "二",
+    "WED": "三",
+    "THU": "四",
+    "FRI": "五",
+    "SAT": "六",
+    "SUN": "日",
+    # Quartz counts the days of the week from Sunday, 1–7.
+    "1": "日",
+    "2": "一",
+    "3": "二",
+    "4": "三",
+    "5": "四",
+    "6": "五",
+    "7": "六",
+}
+
+
+def quartz_problem(text: str) -> str | None:
+    """Why ``text`` is not a Quartz cron expression (as a Databricks job takes it), or
+    None: 6 or 7 fields of digits, letters and ``* ? / , - #``."""
+    parts = text.split()
+    if len(parts) not in (6, 7) or not all(QUARTZ_PART.match(p) for p in parts):
+        return QUARTZ_PROBLEM
+    return None
+
+
+def schedule_text(cron: str, timezone: str) -> str:
+    """A schedule as people say it: "每天 02:00（Asia/Shanghai）" for the usual ones,
+    else the expression itself."""
+    parts = cron.split()
+    said = f"按 Quartz cron {cron}"
+    if len(parts) in (6, 7) and parts[0] == "0" and parts[4] == "*" and parts[6:] in ([], ["*"]):
+        _, minute, hour, day, _, week = parts[:6]
+        every = day in ("*", "?") and week in ("*", "?")
+        if minute.isdigit() and int(minute) < 60:
+            at = f"{int(hour):02d}:{int(minute):02d}" if hour.isdigit() and int(hour) < 24 else ""
+            if hour == "*" and every:
+                said = "每小时整点" if int(minute) == 0 else f"每小时第 {int(minute)} 分"
+            elif at and every:
+                said = f"每天 {at}"
+            elif at and day == "?" and week.upper() in WEEKDAYS:
+                said = f"每周{WEEKDAYS[week.upper()]} {at}"
+            elif at and day == "?" and week.upper() in ("MON-FRI", "2-6"):
+                said = f"周一到周五 {at}"
+            elif at and week == "?" and day.isdigit():
+                said = f"每月 {int(day)} 日 {at}"
+    return f"{said}（{timezone}）"
+
+
+async def check_release(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+    _whole(node, "bundle", p, "bundle", "{{check_code.bundle}}")
+    schedule = node.get("schedule")
+    if schedule is not None and schedule != "":
+        if not isinstance(schedule, str):
+            p.add(("schedule",), "定时要写成文字，如 0 0 2 * * ?，或引用一个变量")
+        elif not refs.find(schedule) and (problem := quartz_problem(schedule)):
+            p.add(("schedule",), problem)
+    environment = node.get("environment")
+    if environment is not None and environment != "":
+        if not isinstance(environment, str) or not re.match(ENVIRONMENT_KEY, environment):
+            p.add(("environment",), "上线环境要写项目环境的标识，如 prod")
+
+
+def _schedule(node: dict[str, Any], get: refs.Lookup) -> str | None:
+    """The schedule the node's ``schedule`` comes to (None: the platform's default)."""
+    raw = node.get("schedule")
+    if raw is None or raw == "":
+        return None
+    value = refs.resolve(raw, get)
+    if isinstance(value, dict):
+        # A person's answers (an approval's values): the question keyed "schedule".
+        value = value.get("schedule")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str) or quartz_problem(value):
+        raise NodeFailure(INPUT_ERROR, QUARTZ_PROBLEM)
+    return " ".join(value.split())
+
+
+class _Refused(Exception):
+    """A release that cannot go ahead as the run is: the message says why."""
+
+
+def _release_placement(
+    state: dict[str, Any], settings: dict[str, Any], environment: str, deploy_mode: str
+) -> Placement | None:
+    """Where a run bound to a project releases to: the project's ``environment`` (None
+    unbound), checked before anything is deployed; raises ``_Refused``."""
+    project = state.get("project")
+    if not project:
+        return None
+    if deploy_mode == "pipeline":
+        raise _Refused("绑定项目的运行请用 job 方式上线（AEP_DATABRICKS_DEPLOY）")
+    environments = project.get("environments")
+    if environments is None:
+        raise _Refused("这次运行绑定项目时还没有记下项目的全部环境，请重新发起运行")
+    found = next((e for e in environments if e.get("key") == environment), None)
+    if found is None:
+        raise _Refused(f"项目「{project['name']}」没有环境 {environment}")
+    if environment == project["environment"]["key"]:
+        raise _Refused(f"上线的环境 {environment} 就是这次试算的环境，请选别的环境")
+    try:
+        _check_prefix(project, list(settings.get("loads") or {}))
+    except NodeFailure as exc:
+        raise _Refused(exc.message) from exc
+    return Placement.of({**project, "environment": found}, state.get("run_id") or "")
+
+
+def _where(release: Release) -> str:
+    if release.catalog and release.schema:
+        return full_name(release.catalog, release.schema)
+    return "（未配置）"
+
+
+def release_report(release: Release, environment: str, job_name: str, said: str) -> str:
+    """The release as a person reads it (Markdown)."""
+    head = "## 已上线" if release.status == "deployed" else "## 上线失败"
+    lines = [head, ""]
+    lines.append(f"- 环境：{environment}")
+    lines.append(f"- 写到：{_code(_where(release))}")
+    if release.mode == "job":
+        cluster = release.cluster_id or "—"
+        lines.append(f"- 方式：notebook Job「{job_name}」，在集群 {cluster} 上运行")
+    else:
+        lines.append("- 方式：Lakeflow 管道")
+    lines.append(f"- 定时：{said}")
+    if release.url:
+        lines.append(f"- Databricks 上的 Job：[打开]({release.url})")
+    if release.steps:
+        lines += ["", "### 步骤", ""]
+        lines += [f"- {step.name}：{'成功' if step.ok else '失败'}" for step in release.steps]
+    if release.errors:
+        lines += ["", "### 原因", ""]
+        lines += [f"- {e[:500]}" for e in release.errors]
+    return "\n".join(lines)
+
+
+async def run_release(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
+    databricks = _databricks(rt)
+    get = rt.lookup(state)
+    bundle, settings = _bundle(node, get)
+    schedule = _schedule(node, get)
+    bound = bool(state.get("project"))
+    environment = (node.get("environment") or PROD) if bound else PROD
+    s = databricks.settings
+    try:
+        placement = _release_placement(state, settings, environment, s.databricks_deploy_mode)
+    except _Refused as exc:
+        # Nothing deployed: a person decides what next (the failed branch), as when the
+        # platform cannot release at all.
+        placement = None
+        mode = "job" if s.databricks_deploy_mode == "job" else "pipeline"
+        schedule = schedule or s.databricks_prod_schedule
+        release = Release("failed", mode, "", "", schedule, s.databricks_prod_timezone)
+        release.errors = [str(exc)]
+    else:
+        try:
+            release = await databricks.release(
+                codegen.Bundle(bundle["name"], bundle["files"], settings),
+                schedule,
+                placement,
+                environment,
+            )
+        except DatabricksError as exc:
+            raise NodeFailure("databricks_error", str(exc)) from exc
+    job_name = release_job_name(bundle["name"], placement, environment)
+    said = schedule_text(release.schedule, release.timezone)
+    deployed = release.status == "deployed"
+    errors = [policy.clip(e, ERROR_CHARS) for e in release.errors[:MAX_ERRORS]]
+    if deployed:
+        job = f"Job {release.job_id}" if release.job_id is not None else "Lakeflow 管道"
+        summary = f"已上线到 {environment}：{job}，{said}刷新 {_where(release)}"
+    else:
+        summary = f"上线到 {environment} 失败：{errors[0] if errors else '原因不明'}"[:300]
+    outputs = {
+        "status": release.status,
+        "ok": deployed,
+        "release": release.as_dict() | {"environment": environment, "job_name": job_name},
+        "url": release.url,
+        "job_id": release.job_id,
+        "schedule": release.schedule,
+        "schedule_text": said,
+        "errors": "\n".join(errors),
+        "summary": summary,
+        "report": release_report(release, environment, job_name, said),
+    }
+    return Outcome(
+        outputs,
+        "deployed" if deployed else "failed",
+        messages=[{"role": "assistant", "content": summary}],
+        # Errors from the workspace may quote values.
+        quoted=["errors", "release", "summary", "report"],
     )
 
 
@@ -1592,6 +1815,44 @@ TYPES: dict[str, NodeType] = {
                 "retry": "带着报错重写",
                 "failed": "失败",
             },
+        ),
+        NodeType(
+            "databricks_release",
+            "上线到 prod",
+            "把审核过的 bundle 部署到 prod（绑定项目时是项目的某个环境），按定时在 Databricks 上"
+            "自动刷新",
+            "data",
+            "tool",
+            check_release,
+            run_release,
+            _fixed("deployed", "failed"),
+            _fixed(
+                "status",
+                "ok",
+                "release",
+                "url",
+                "job_id",
+                "schedule",
+                "schedule_text",
+                "errors",
+                "summary",
+                "report",
+            ),
+            outputs=(
+                ("status", "deployed 或 failed"),
+                ("ok", "是否上线成功"),
+                ("release", "这次上线的详情"),
+                ("url", "Databricks 上这个 Job 的链接"),
+                ("job_id", "Job 的 id"),
+                ("schedule", "用的 Quartz cron"),
+                ("schedule_text", "定时的中文说法"),
+                ("errors", "失败时的原因"),
+                ("summary", "一句话总结"),
+                ("report", "上线报告（Markdown）"),
+            ),
+            defaults={"bundle": "", "schedule": "", "environment": "prod"},
+            error_handling=True,
+            branch_labels=lambda node: {"deployed": "已上线", "failed": "失败"},
         ),
     )
 }

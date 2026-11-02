@@ -41,7 +41,8 @@ PROJECT: dict[str, Any] = {
             "catalog": CATALOG,
             "schema": SCHEMA,
             "cluster_id": fake_databricks.CLUSTER_ID,
-        }
+        },
+        {"key": "prod", "label": "生产", "catalog": "icsd-ace-prod", "schema": "jade"},
     ],
     "references": [
         {"name": "prev.sales.forecast", "label": "预测表", "filter": "Type = 'Vol.'"},
@@ -362,10 +363,34 @@ async def test_a_bound_run_is_planned_checked_and_delivered(make, monkeypatch):
     assert "## 数据检查" in pending["details"]["show"]
 
     view = await lake.submit(run_id, "approve")
+    assert view["step"]["node"] == "release_review", view["error"]
+    view = await lake.submit(run_id, "release", values={"schedule": "0 0 2 1 * ?"})
     assert view["status"] == "done", view["error"]
     assert view["outcome"] == "delivered"
     assert view["result"]["checks"].startswith("## 数据检查\n\n3 项检查：3 项通过")
     assert view["project"]["project_id"] == "jade-ibf"
+
+    # Released to the project's prod environment, as a job of its own on a schedule.
+    assert view["result"]["release"] == (
+        "已上线到 prod：Job 101，每月 1 日 02:00（Asia/Shanghai）刷新 `icsd-ace-prod`.jade"
+    )
+    assert view["result"]["release_url"] == f"{fake_databricks.HOST}/#job/101"
+    prod = lake.ws.jobs[101]
+    assert prod["name"] == "ibf_table2（jade-ibf/prod）"
+    assert prod["tags"] == {
+        "aep_bundle": "ibf_table2",
+        "aep_target": "prod",
+        "aep_project": "jade-ibf",
+        "aep_environment": "prod",
+    }
+    assert prod["schedule"]["quartz_cron_expression"] == "0 0 2 1 * ?"
+    task = prod["tasks"][0]
+    # The environment names no cluster: the platform's.
+    assert task["existing_cluster_id"] == fake_databricks.CLUSTER_ID
+    parameters = task["notebook_task"]["base_parameters"]
+    assert (parameters["catalog"], parameters["schema"]) == ("icsd-ace-prod", "jade")
+    assert (parameters["project"], parameters["run_id"]) == ("jade-ibf", "{{job.run_id}}")
+    assert "/.bundle/ibf_table2/prod/releases/" in task["notebook_task"]["notebook_path"]
 
 
 async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, monkeypatch):

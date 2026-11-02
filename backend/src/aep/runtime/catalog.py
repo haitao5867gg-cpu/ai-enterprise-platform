@@ -784,7 +784,7 @@ class AppCatalog:
         spec = TYPES.get(node.get("type"))  # type: ignore[arg-type]
         if spec is None or node["type"] in ("start", "human", "end"):
             raise NotTestable("开始、人工和结束节点不能单独试跑")
-        if node["type"] in ("databricks_ingest", "databricks_dev_run"):
+        if node["type"] in ("databricks_ingest", "databricks_dev_run", "databricks_release"):
             raise NotTestable(f"{spec.label}节点会写 Databricks，不能单独试跑")
         if node["type"] == "data_check":
             raise NotTestable("数据检查节点要读这次运行的结果表和项目，不能单独试跑")

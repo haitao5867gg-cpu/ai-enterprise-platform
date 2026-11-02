@@ -231,6 +231,15 @@ export type DatabricksDevRunNode = NodeBase &
     max_runs: number;
     preview_rows: number;
   };
+// docs/api/data-nodes.md ("第五批：上线到 prod"): deploys the bundle to prod, or a bound
+// run's project environment, to run on a Quartz schedule.
+export type DatabricksReleaseNode = NodeBase &
+  Fallible & {
+    type: "databricks_release";
+    bundle: string;
+    schedule?: string;
+    environment?: string;
+  };
 // Checks are written as docs/api/data-nodes.md ("data_check") describes; the editor
 // edits them as JSON and the backend checks them when the draft is saved.
 export type DataCheckGolden = {
@@ -265,6 +274,7 @@ export type FlowNode =
   | DatabricksIngestNode
   | EtlCodeCheckNode
   | DatabricksDevRunNode
+  | DatabricksReleaseNode
   | DataCheckNode
   | EndNode;
 export type Edge = { from: string; to: string; branch?: string | null };

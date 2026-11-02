@@ -221,6 +221,9 @@ function NodeDetail({
                           node.id === "dev_run") && (
                           <TablePreviews output={step.output} />
                         )}
+                        {node.type === "databricks_release" && (
+                          <ReleaseOutput output={step.output} />
+                        )}
                         <JsonBlock value={step.output} />
                       </>
                     )}
@@ -251,6 +254,27 @@ function totalUsage(steps: FlowStep[]) {
       ? costs.reduce((n, u) => n + (u.cost_usd ?? 0), 0)
       : null,
   };
+}
+
+// What a release did (docs/api/data-nodes.md, "databricks_release"): the job and its
+// schedule, or why nothing was released.
+function ReleaseOutput({ output }: { output: unknown }) {
+  if (!isRecord(output) || typeof output.summary !== "string") return null;
+  const url = typeof output.url === "string" ? output.url : null;
+  return (
+    <div
+      className={`release-output ${output.ok === true ? "passed" : "failed"}`}
+      role="group"
+      aria-label="上线结果"
+    >
+      <p>{output.summary}</p>
+      {url && (
+        <a href={url} target="_blank" rel="noreferrer">
+          在 Databricks 上打开 Job ↗
+        </a>
+      )}
+    </div>
+  );
 }
 
 export function RunFlow({

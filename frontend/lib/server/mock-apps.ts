@@ -865,9 +865,12 @@ export async function mockApps(
     const node = config.graph?.nodes?.find((item) => item.id === path[3]);
     if (!node) return mockError("节点不存在", 404);
     if (
-      ["databricks_ingest", "databricks_dev_run", "data_check"].includes(
-        node.type,
-      )
+      [
+        "databricks_ingest",
+        "databricks_dev_run",
+        "databricks_release",
+        "data_check",
+      ].includes(node.type)
     )
       return mockError("该类型不支持单节点试跑", 400);
     if (["start", "human", "end"].includes(node.type))
