@@ -425,7 +425,9 @@ export function mockDatasourceUsage(id: string): DatasourceUsage["apps"] {
         const values =
           node.type === "tool" ||
           node.type === "etl_profile" ||
-          node.type === "databricks_ingest"
+          node.type === "databricks_ingest" ||
+          node.type === "data_check" ||
+          node.type === "git_pr"
             ? [node.datasource]
             : node.type === "agent"
               ? node.tools.map((item) => item.datasource)

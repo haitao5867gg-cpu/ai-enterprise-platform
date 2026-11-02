@@ -143,7 +143,7 @@ JSON 列表，每一项是下面一种写法：
 只看每个未归档编排应用的**当前版本**，草稿、旧版本和已归档应用都不算，规则和 Skill 的「被哪些应用使用」一样。代码应用（比如 `etl`）的数据源是运行时填的，也不算。按运行记录统计放到第二阶段。
 
 一个应用最多出现一次：
-- `literal`：`tool`、`etl_profile`、`databricks_ingest` 节点的 `datasource`，或 `agent` 节点 `tools[].datasource`，直接写了这个 id；或者写成整段 `{{env.xxx}}`，而常量（`env.vars` 里 `key` 为 `xxx` 的那一项）的 `value` 是这个 id。
+- `literal`：`tool`、`etl_profile`、`databricks_ingest`、`data_check`、`git_pr` 节点的 `datasource`，或 `agent` 节点 `tools[].datasource`，直接写了这个 id；或者写成整段 `{{env.xxx}}`，而常量（`env.vars` 里 `key` 为 `xxx` 的那一项）的 `value` 是这个 id。
 - `default_input`：开始节点（`type` 为 `start` 的那个节点，id 不一定是 `start`）的输入里，`datasource` 类型的字段默认值是这个 id；或者某个字段被上面这些设置整段引用（`{{<开始节点的 id>.xxx}}`），它的默认值是这个 id。`select` 字段的选项不算，只看默认值。
 
 两种都有时算 `literal`。比较 id 时不分大小写，`{…}` 写法的 UUID 也认。某个应用的配置读不出来时跳过它，不影响别的应用。

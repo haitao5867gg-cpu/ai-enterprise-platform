@@ -200,3 +200,12 @@ async def test_the_node_cannot_be_tried_alone():
         resp = await p.api.post("/apps/ship/nodes/pr/test", json={"values": {}})
         assert resp.status_code == 422
         assert resp.json()["detail"] == "提交 PR 节点会真的在代码仓库开 PR，不能单独试跑"
+
+
+async def test_the_repository_lists_the_apps_that_use_it():
+    async with GitPlatform([], fake_git.FakeGit()) as p:
+        await p.new_app("ship", git_flow(p.repo))
+        used = (await p.api.get(f"/datasources/{p.repo}/usage")).json()["apps"]
+        assert [(u["app"], u["via"]) for u in used] == [("ship", "literal")]
+        exported = await p.api.get("/apps/ship/versions/2/export")
+        assert "资产仓库" in exported.text
