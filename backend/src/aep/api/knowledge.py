@@ -3,14 +3,24 @@
 import asyncio
 import shutil
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Any
 from urllib.parse import quote
 
 import openai
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from pydantic import (
     BaseModel,
@@ -24,7 +34,9 @@ from pydantic import (
 
 from aep.api.apps import Catalog
 from aep.api.validation import NoNulls, chinese_errors
+from aep.auth import who
 from aep.config import Settings, get_settings
+from aep.knowledge.governance import DOC_TEMPLATES, MAX_CASES, regression_out, run_regression
 from aep.knowledge.rerank import RerankError
 from aep.knowledge.retrieval import Retrieval, defaults
 from aep.knowledge.search import search
@@ -34,10 +46,13 @@ from aep.knowledge.store import (
     Document,
     DocumentLimit,
     DuplicateName,
+    HitStats,
     KnowledgeBase,
     KnowledgeStore,
     MissingBase,
     ModelInUse,
+    ReplaceKind,
+    today_in,
 )
 from aep.knowledge.uploads import (
     MAX_FILES,
@@ -93,6 +108,7 @@ class BaseOut(BaseModel):
     document_count: int
     chunk_count: int
     status_counts: dict[str, int]
+    validity_counts: dict[str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -108,6 +124,56 @@ class DocumentOut(BaseModel):
     chunk_count: int
     created_at: datetime
     updated_at: datetime
+    owner: str | None
+    valid_from: date | None
+    valid_until: date | None
+    validity: str
+    version: int
+    uploaded_by: str | None
+    hits_30d: int
+    last_hit_at: datetime | None
+
+
+class UpdateDocument(BaseModel):
+    owner: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
+    valid_from: date | None = None
+    valid_until: date | None = None
+
+
+class VersionOut(BaseModel):
+    version: int
+    size_bytes: int
+    uploaded_by: str | None
+    uploaded_at: datetime
+
+
+CaseId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{1,40}$")]
+DocName = Annotated[str, StringConstraints(min_length=1, max_length=255)]
+
+
+class Case(NoNulls):
+    id: CaseId
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+    expected: list[DocName] = Field(min_length=1, max_length=5)
+
+
+class RegressionBody(NoNulls):
+    cases: list[Case] = Field(max_length=MAX_CASES)
+    retrieval: Retrieval = Field(default_factory=lambda: Retrieval(mode="hybrid"))
+    top_k: int = Field(5, ge=1, le=20)
+    min_score: float = Field(0.3, ge=0, le=1)
+    actor: str | None = Field(None, max_length=50)
+
+    @field_validator("retrieval")
+    @classmethod
+    def valid_retrieval(cls, value: Retrieval, info: ValidationInfo) -> Retrieval:
+        return Retrieval.model_validate(
+            value.model_dump(), context={"top_k": info.data.get("top_k", 5)}
+        )
+
+
+class RunRegression(NoNulls):
+    actor: str | None = Field(None, max_length=50)
 
 
 class ChunkOut(BaseModel):
@@ -129,6 +195,7 @@ class SearchBody(NoNulls):
     top_k: int = Field(5, ge=1, le=20)
     min_score: float = Field(0.3, ge=0, le=1)
     retrieval: Retrieval = Field(default_factory=Retrieval)
+    include_inactive: bool = False
 
     @field_validator("retrieval")
     @classmethod
@@ -144,8 +211,42 @@ def _base_out(base: KnowledgeBase) -> BaseOut:
     return BaseOut(**values)
 
 
-def _document_out(document: Document) -> DocumentOut:
-    return DocumentOut(**asdict(document))
+def _today(settings: Settings) -> date:
+    return today_in(settings.schedule_timezone)
+
+
+def _since() -> datetime:
+    return datetime.now(UTC) - timedelta(days=30)
+
+
+def _document_out(document: Document, today: date, stats: HitStats | None = None) -> DocumentOut:
+    stats = stats or HitStats()
+    return DocumentOut(
+        **asdict(document),
+        validity=document.validity(today),
+        hits_30d=stats.hits_30d,
+        last_hit_at=stats.last_hit_at,
+    )
+
+
+async def _documents_out(
+    store: KnowledgeStore, kb: str, documents: list[Document], settings: Settings
+) -> list[DocumentOut]:
+    stats = await store.hit_stats(kb, _since())
+    today = _today(settings)
+    return [_document_out(d, today, stats.get(d.document_id)) for d in documents]
+
+
+async def _rerank_allowed(retrieval: Retrieval, top_k: int, catalog: Catalog) -> None:
+    if not retrieval.rerank:
+        return
+    try:
+        Retrieval.model_validate(
+            retrieval.model_dump(),
+            context={"top_k": top_k, "rerank_models": await catalog.rerank_models()},
+        )
+    except ValidationError as exc:
+        raise HTTPException(422, str(exc.errors()[0].get("ctx", {}).get("error", exc))) from exc
 
 
 def _chunk_out(chunk: Chunk) -> ChunkOut:
@@ -196,6 +297,11 @@ async def options(settings: Config, catalog: Catalog, request: Request) -> dict[
         "retrieval": defaults(),
         "rerank_models": await catalog.rerank_models(),
     }
+
+
+@router.get("/doc-templates")
+async def doc_templates() -> list[dict[str, str]]:
+    return DOC_TEMPLATES
 
 
 @router.get("")
@@ -262,9 +368,9 @@ async def delete_base(kb: str, store: Store, settings: Config, catalog: Catalog)
 
 
 @router.get("/{kb}/documents")
-async def list_documents(kb: str, store: Store) -> list[DocumentOut]:
+async def list_documents(kb: str, store: Store, settings: Config) -> list[DocumentOut]:
     await _base(store, kb)
-    return [_document_out(document) for document in await store.documents(kb)]
+    return await _documents_out(store, kb, await store.documents(kb), settings)
 
 
 @router.post("/{kb}/documents", status_code=202)
@@ -274,39 +380,95 @@ async def upload_documents(
     settings: Config,
     request: Request,
     files: Annotated[list[UploadFile] | None, File()] = None,
+    replace: Annotated[str | None, Form()] = None,
+    uploaded_by: Annotated[str | None, Form(max_length=50)] = None,
 ) -> list[DocumentOut]:
     base = await _base(store, kb)
     if not files:
         raise HTTPException(422, "请选择至少一个 PDF、DOCX、MD 或 TXT 文件")
     if len(files) > MAX_FILES:
         raise HTTPException(422, "单次最多上传 20 个文件")
-    if base.document_count + len(files) > MAX_DOCUMENTS:
-        raise HTTPException(422, "一个知识库最多 500 个文档")
+    replacing = (replace or "").strip().lower() == "true"
+    before = {d.name: d for d in await store.documents(kb)} if replacing else {}
     try:
         documents = await asyncio.to_thread(
             validate_files, files, settings.knowledge_dir, base.kb_id
         )
     except UploadError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if replacing:
+        names = [d.name for d in documents]
+        if twice := next((name for name in names if names.count(name) > 1), None):
+            raise HTTPException(422, f"这次上传里有两个「{twice}」，替换时每个文件名只能传一个")
+    new = sum(d.name not in before for d in documents)
+    if base.document_count + new > MAX_DOCUMENTS:
+        raise HTTPException(422, "一个知识库最多 500 个文档")
     registered = False
     try:
         await asyncio.to_thread(save_files, files, documents)
-        added = await store.add_documents(base.kb_id, documents)
+        added = await store.add_documents(
+            base.kb_id, documents, replace=replacing, uploaded_by=who(request, uploaded_by)
+        )
         registered = True
-    except DocumentLimit as exc:
+    except (DocumentLimit, ReplaceKind) as exc:
         raise HTTPException(422, str(exc)) from exc
     except MissingBase as exc:
         raise HTTPException(404, "没有这个知识库") from exc
     finally:
         if not registered:
             await asyncio.to_thread(remove_files, documents)
+    # A replaced document keeps its id; its previous original file goes.
+    old = [
+        before[d.name]
+        for d in added
+        if d.name in before
+        and before[d.name].document_id == d.document_id
+        and before[d.name].path != d.path
+    ]
+    await asyncio.to_thread(remove_files, old)
     _wake(request)
-    return [_document_out(document) for document in added]
+    return await _documents_out(store, kb, added, settings)
 
 
 @router.get("/{kb}/documents/{doc}")
-async def get_document(kb: str, doc: str, store: Store) -> DocumentOut:
-    return _document_out(await _document(store, kb, doc))
+async def get_document(kb: str, doc: str, store: Store, settings: Config) -> DocumentOut:
+    document = await _document(store, kb, doc)
+    return (await _documents_out(store, kb, [document], settings))[0]
+
+
+@router.patch("/{kb}/documents/{doc}")
+async def update_document(
+    kb: str, doc: str, body: UpdateDocument, store: Store, settings: Config
+) -> DocumentOut:
+    document = await _document(store, kb, doc)
+    changes = body.model_dump(exclude_unset=True)
+    if "owner" in changes:
+        changes["owner"] = changes["owner"] or None
+    start = changes.get("valid_from", document.valid_from)
+    end = changes.get("valid_until", document.valid_until)
+    if start is not None and end is not None and end < start:
+        raise HTTPException(422, "失效日期不能早于生效日期")
+    updated = await store.update_document(kb, doc, **changes)
+    if updated is None:
+        raise HTTPException(404, "知识库里没有这篇文档")
+    return (await _documents_out(store, kb, [updated], settings))[0]
+
+
+@router.get("/{kb}/documents/{doc}/versions")
+async def document_versions(kb: str, doc: str, store: Store) -> list[VersionOut]:
+    document = await _document(store, kb, doc)
+    versions = await store.versions(doc)
+    if not versions:
+        # Documents from before versions were kept have just their first upload.
+        return [
+            VersionOut(
+                version=1,
+                size_bytes=document.size_bytes,
+                uploaded_by=document.uploaded_by,
+                uploaded_at=document.created_at,
+            )
+        ]
+    return [VersionOut(**asdict(version)) for version in versions]
 
 
 @router.delete("/{kb}/documents/{doc}", status_code=204)
@@ -344,11 +506,13 @@ async def list_chunks(
 
 
 @router.post("/{kb}/documents/{doc}/reindex", status_code=202)
-async def reindex_document(kb: str, doc: str, store: Store, request: Request) -> DocumentOut:
+async def reindex_document(
+    kb: str, doc: str, store: Store, request: Request, settings: Config
+) -> DocumentOut:
     await _document(store, kb, doc)
     await store.requeue(kb, doc)
     _wake(request)
-    return _document_out(await _document(store, kb, doc))
+    return await get_document(kb, doc, store, settings)
 
 
 @router.post("/{kb}/reindex", status_code=202)
@@ -363,17 +527,7 @@ async def reindex_base(kb: str, store: Store, request: Request) -> dict[str, int
 async def search_base(
     kb: str, body: SearchBody, store: Store, request: Request, settings: Config, catalog: Catalog
 ) -> dict[str, Any]:
-    if body.retrieval.rerank:
-        try:
-            Retrieval.model_validate(
-                body.retrieval.model_dump(),
-                context={
-                    "top_k": body.top_k,
-                    "rerank_models": await catalog.rerank_models(),
-                },
-            )
-        except ValidationError as exc:
-            raise HTTPException(422, str(exc.errors()[0].get("ctx", {}).get("error", exc))) from exc
+    await _rerank_allowed(body.retrieval, body.top_k, catalog)
     await _base(store, kb)
     started = perf_counter()
     try:
@@ -386,6 +540,7 @@ async def search_base(
             body.min_score,
             body.retrieval,
             settings=settings,
+            include_inactive=body.include_inactive,
         )
     except MissingBase as exc:
         raise HTTPException(404, "没有这个知识库") from exc
@@ -397,3 +552,65 @@ async def search_base(
         "hits": [asdict(hit) for hit in hits],
         "duration_ms": int((perf_counter() - started) * 1000),
     }
+
+
+@router.get("/{kb}/regression")
+async def get_regression(kb: str, store: Store) -> dict[str, Any]:
+    base = await _base(store, kb)
+    return regression_out(await store.get_regression(kb), base)
+
+
+@router.put("/{kb}/regression")
+async def save_regression(
+    kb: str, body: RegressionBody, store: Store, request: Request, catalog: Catalog
+) -> dict[str, Any]:
+    await _base(store, kb)
+    await _rerank_allowed(body.retrieval, body.top_k, catalog)
+    ids = [case.id for case in body.cases]
+    if twice := next((key for key in ids if ids.count(key) > 1), None):
+        raise HTTPException(422, f"用例编号「{twice}」重复了")
+    names = {d.name for d in await store.documents(kb)}
+    for case in body.cases:
+        if missing := next((name for name in case.expected if name not in names), None):
+            raise HTTPException(422, f"知识库里没有文档「{missing}」")
+    try:
+        record = await store.save_regression(
+            kb,
+            [
+                {**case.model_dump(), "expected": list(dict.fromkeys(case.expected))}
+                for case in body.cases
+            ],
+            body.retrieval.model_dump(),
+            body.top_k,
+            body.min_score,
+            who(request, body.actor),
+        )
+    except MissingBase as exc:
+        raise HTTPException(404, "没有这个知识库") from exc
+    return regression_out(record, await _base(store, kb))
+
+
+@router.post("/{kb}/regression/run")
+async def run_regression_now(
+    kb: str,
+    store: Store,
+    request: Request,
+    settings: Config,
+    body: RunRegression | None = None,
+) -> dict[str, Any]:
+    await _base(store, kb)
+    record = await store.get_regression(kb)
+    if record is None or not record.cases:
+        raise HTTPException(409, "先加检索用例再运行回归")
+    last_run = await run_regression(
+        store,
+        request.app.state.llm_client,
+        record,
+        settings=settings,
+        by=who(request, body.actor if body else None),
+    )
+    try:
+        record = await store.save_regression_run(kb, last_run)
+    except MissingBase as exc:
+        raise HTTPException(404, "没有这个知识库") from exc
+    return regression_out(record, await _base(store, kb))

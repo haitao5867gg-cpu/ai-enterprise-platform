@@ -10,6 +10,7 @@ import {
   documentStatusLabels,
   getKnowledgeBase,
   getKnowledgeOptions,
+  getRegression,
   listDocuments,
   reindexDocument,
   reindexKnowledgeBase,
@@ -17,15 +18,25 @@ import {
   updateKnowledgeBase,
   uploadDocuments,
   uploadProblem,
+  validityLabels,
+  validityRange,
   type Document,
   type Hit,
   type KnowledgeBase,
   type KnowledgeOptions,
+  type Regression,
   type Retrieval,
 } from "../lib/knowledge";
 import { retrievalProblems } from "../lib/retrieval";
 import { errorMessage } from "../lib/runs";
 import { AssetHeading, AssetLoading, AssetTime } from "./asset-ui";
+import { useActor } from "./catalog-list";
+import {
+  EditDocumentDialog,
+  RegressionPanel,
+  TemplateDialog,
+  VersionsDialog,
+} from "./knowledge-governance";
 import { ErrorNotice } from "./ui";
 import { KnowledgeForm } from "./knowledge-form";
 import { KnowledgeChunks } from "./knowledge-chunks";
@@ -46,6 +57,7 @@ function SearchTest({
   const [topK, setTopK] = useState(5);
   const [minScore, setMinScore] = useState(0.3);
   const [retrieval, setRetrieval] = useState<Retrieval>(options.retrieval);
+  const [inactive, setInactive] = useState(false);
   const retrievalErrors = Object.values(
     retrievalProblems(retrieval, topK, options.rerank_models),
   );
@@ -76,6 +88,7 @@ function SearchTest({
                 top_k: topK,
                 min_score: minScore,
                 retrieval,
+                ...(inactive ? { include_inactive: true } : {}),
               }),
             );
           } catch (err) {
@@ -129,6 +142,14 @@ function SearchTest({
           models={options.rerank_models}
           onChange={setRetrieval}
         />
+        <label className="check-field">
+          <input
+            type="checkbox"
+            checked={inactive}
+            onChange={(event) => setInactive(event.target.checked)}
+          />
+          也查没生效和已失效的文档（运行时不会用到它们）
+        </label>
         <button
           className="button primary"
           disabled={busy || !query.trim() || retrievalErrors.length > 0}
@@ -212,6 +233,12 @@ export function KnowledgeDetail({ id }: { id: string }) {
   const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [replace, setReplace] = useState(false);
+  const [editing, setEditing] = useState<Document | null>(null);
+  const [history, setHistory] = useState<Document | null>(null);
+  const [templating, setTemplating] = useState(false);
+  const [regression, setRegression] = useState<Regression | null>(null);
+  const actor = useActor();
   const fileInput = useRef<HTMLInputElement>(null);
   const hasPending = documents.some(
     (doc) => doc.status === "queued" || doc.status === "processing",
@@ -287,8 +314,22 @@ export function KnowledgeDetail({ id }: { id: string }) {
       setError(problem);
       return;
     }
-    void mutate(() => uploadDocuments(id, files));
+    void mutate(() =>
+      uploadDocuments(id, files, { replace, uploadedBy: actor() }),
+    );
   }
+  useEffect(() => {
+    if (tab !== "regression") return;
+    const controller = new AbortController();
+    getRegression(id, controller.signal)
+      .then((found) => {
+        if (!controller.signal.aborted) setRegression(found);
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(errorMessage(err));
+      });
+    return () => controller.abort();
+  }, [id, tab]);
   if (!base || !options)
     return error ? (
       <ErrorNotice message={error} onRetry={() => setRevision((n) => n + 1)} />
@@ -312,6 +353,12 @@ export function KnowledgeDetail({ id }: { id: string }) {
         <span>
           {base.status_counts.queued + base.status_counts.processing} 个处理中
         </span>
+        {base.validity_counts.expired > 0 && (
+          <span>{base.validity_counts.expired} 个已失效</span>
+        )}
+        {base.validity_counts.pending > 0 && (
+          <span>{base.validity_counts.pending} 个未生效</span>
+        )}
       </div>
       <div
         className="filter-tabs knowledge-tabs"
@@ -321,6 +368,7 @@ export function KnowledgeDetail({ id }: { id: string }) {
         {[
           ["documents", "文档"],
           ["search", "检索测试"],
+          ["regression", "检索回归"],
           ["settings", "设置"],
         ].map(([value, label]) => (
           <button
@@ -347,6 +395,13 @@ export function KnowledgeDetail({ id }: { id: string }) {
           <section className="panel knowledge-section">
             <div className="asset-section-heading">
               <h2>文档</h2>
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={() => setTemplating(true)}
+              >
+                用模板写文档
+              </button>
               <button
                 className="button secondary"
                 disabled={busy || !documents.length}
@@ -401,6 +456,15 @@ export function KnowledgeDetail({ id }: { id: string }) {
                 PDF / DOCX / MD / TXT · 每个文件最多 20 MB · 每次最多 20 个 ·
                 每库最多 500 个
               </small>
+              <label className="check-field">
+                <input
+                  type="checkbox"
+                  checked={replace}
+                  disabled={busy}
+                  onChange={(event) => setReplace(event.target.checked)}
+                />
+                同名文件替换原文档（版本加 1）
+              </label>
             </div>
             {hasPending && (
               <p className="muted" role="status">
@@ -419,6 +483,10 @@ export function KnowledgeDetail({ id }: { id: string }) {
                       "类型",
                       "大小",
                       "状态",
+                      "负责人",
+                      "有效期",
+                      "版本",
+                      "近 30 天被用到",
                       "片段数",
                       "上传时间",
                       "操作",
@@ -447,12 +515,48 @@ export function KnowledgeDetail({ id }: { id: string }) {
                           <p className="field-error">{doc.error}</p>
                         )}
                       </td>
+                      <td>
+                        {doc.owner ?? <span className="muted">未设</span>}
+                      </td>
+                      <td>
+                        {validityRange(doc)}
+                        {doc.validity !== "active" && (
+                          <span
+                            className={`knowledge-status ${doc.validity === "expired" ? "error" : ""}`}
+                          >
+                            {validityLabels[doc.validity]}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <button
+                          className="text-button"
+                          aria-label={`「${doc.name}」的版本记录`}
+                          onClick={() => setHistory(doc)}
+                        >
+                          v{doc.version}
+                        </button>
+                      </td>
+                      <td>
+                        {doc.hits_30d > 0 ? (
+                          `${doc.hits_30d} 次`
+                        ) : (
+                          <span className="muted">近 30 天没有运行用到</span>
+                        )}
+                      </td>
                       <td>{doc.chunk_count}</td>
                       <td>
                         <AssetTime value={doc.created_at} />
                       </td>
                       <td>
                         <div className="knowledge-doc-actions">
+                          <button
+                            className="text-button"
+                            aria-label={`编辑「${doc.name}」`}
+                            onClick={() => setEditing(doc)}
+                          >
+                            编辑
+                          </button>
                           <button
                             className="text-button"
                             disabled={doc.status !== "ready"}
@@ -519,6 +623,18 @@ export function KnowledgeDetail({ id }: { id: string }) {
         {tab === "search" && (
           <SearchTest kb={id} options={options} open={setSelection} />
         )}
+        {tab === "regression" &&
+          (regression ? (
+            <RegressionPanel
+              kb={id}
+              documents={documents}
+              options={options}
+              initial={regression}
+              changed={setRegression}
+            />
+          ) : (
+            <AssetLoading />
+          ))}
         {tab === "settings" && (
           <section className="panel knowledge-section" aria-label="知识库设置">
             <h2>知识库设置</h2>
@@ -559,6 +675,30 @@ export function KnowledgeDetail({ id }: { id: string }) {
           </section>
         )}
       </div>
+      {editing && (
+        <EditDocumentDialog
+          kb={id}
+          doc={editing}
+          close={() => setEditing(null)}
+          saved={() => {
+            setEditing(null);
+            void mutate(async () => undefined);
+          }}
+        />
+      )}
+      {history && (
+        <VersionsDialog kb={id} doc={history} close={() => setHistory(null)} />
+      )}
+      {templating && (
+        <TemplateDialog
+          kb={id}
+          close={() => setTemplating(false)}
+          saved={() => {
+            setTemplating(false);
+            void mutate(async () => undefined);
+          }}
+        />
+      )}
       {selection && (
         <KnowledgeChunks
           key={`${selection.documentId}-${selection.position}`}

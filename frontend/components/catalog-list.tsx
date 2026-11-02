@@ -37,12 +37,12 @@ function matches(item: CatalogItem, query: string) {
   );
 }
 
-function useActor() {
+export function useActor() {
   const me = useSignedIn();
   return () => (me ? undefined : savedActor().trim() || undefined);
 }
 
-function Dialog({
+export function Dialog({
   title,
   close,
   children,

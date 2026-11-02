@@ -3,12 +3,15 @@
 import asyncio
 import math
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from psycopg import AsyncConnection, errors
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from aep.knowledge.keywords import chunk_keywords
@@ -40,6 +43,23 @@ class MissingBase(Exception):
     pass
 
 
+class ReplaceKind(Exception):
+    """A replacement upload whose file type differs from the document it replaces."""
+
+    def __init__(self, name: str, kind: str) -> None:
+        super().__init__(f"「{name}」原来是 {kind}，替换时也要传 {kind}")
+        self.name = name
+        self.kind = kind
+
+
+VALIDITIES = ("active", "pending", "expired")
+Validity = Literal["active", "pending", "expired"]
+
+
+def today_in(timezone: str) -> date:
+    return datetime.now(ZoneInfo(timezone)).date()
+
+
 @dataclass(frozen=True)
 class KnowledgeBase:
     kb_id: str
@@ -54,6 +74,9 @@ class KnowledgeBase:
     document_count: int = 0
     chunk_count: int = 0
     status_counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(STATUSES, 0))
+    validity_counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(VALIDITIES, 0))
+    # When documents were last uploaded, replaced, deleted or had their dates changed.
+    docs_changed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +96,44 @@ class Document:
     # Internal snapshot: editing a base must not change already queued documents.
     chunk_size: int = 800
     chunk_overlap: int = 100
+    owner: str | None = None
+    valid_from: date | None = None
+    valid_until: date | None = None
+    version: int = 1
+    uploaded_by: str | None = None
+
+    def validity(self, on: date) -> Validity:
+        if self.valid_from is not None and self.valid_from > on:
+            return "pending"
+        if self.valid_until is not None and self.valid_until < on:
+            return "expired"
+        return "active"
+
+
+@dataclass(frozen=True)
+class DocumentVersion:
+    version: int
+    size_bytes: int
+    uploaded_by: str | None
+    uploaded_at: datetime
+
+
+@dataclass(frozen=True)
+class HitStats:
+    hits_30d: int = 0
+    last_hit_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Regression:
+    kb_id: str
+    cases: list[dict[str, Any]] = field(default_factory=list)
+    retrieval: dict[str, Any] | None = None
+    top_k: int = 5
+    min_score: float = 0.3
+    updated_by: str | None = None
+    updated_at: datetime | None = None
+    last_run: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -121,8 +182,32 @@ class KnowledgeStore(Protocol):
     async def update(self, kb_id: str, **changes: Any) -> KnowledgeBase | None: ...
     async def delete(self, kb_id: str) -> None: ...
     async def documents(self, kb_id: str) -> list[Document]: ...
-    async def add_documents(self, kb_id: str, documents: list[Document]) -> list[Document]: ...
+    async def add_documents(
+        self,
+        kb_id: str,
+        documents: list[Document],
+        *,
+        replace: bool = False,
+        uploaded_by: str | None = None,
+    ) -> list[Document]: ...
     async def get_document(self, kb_id: str, document_id: str) -> Document | None: ...
+    async def update_document(
+        self, kb_id: str, document_id: str, **changes: Any
+    ) -> Document | None: ...
+    async def versions(self, document_id: str) -> list[DocumentVersion]: ...
+    async def record_hits(self, run_id: str, hits: Iterable[tuple[str, str]]) -> None: ...
+    async def hit_stats(self, kb_id: str, since: datetime) -> dict[str, HitStats]: ...
+    async def get_regression(self, kb_id: str) -> Regression | None: ...
+    async def save_regression(
+        self,
+        kb_id: str,
+        cases: list[dict[str, Any]],
+        retrieval: dict[str, Any] | None,
+        top_k: int,
+        min_score: float,
+        updated_by: str | None,
+    ) -> Regression: ...
+    async def save_regression_run(self, kb_id: str, last_run: dict[str, Any]) -> Regression: ...
     async def delete_document(self, kb_id: str, document_id: str) -> None: ...
     async def chunks(
         self, document_id: str, offset: int, limit: int
@@ -134,18 +219,47 @@ class KnowledgeStore(Protocol):
     async def touch(self, document: Document) -> Document | None: ...
     async def replace_chunks(self, document: Document, chunks: list[Chunk]) -> None: ...
     async def fail(self, document: Document, error: str) -> None: ...
-    async def vector_candidates(self, kb_id: str, vector: list[float], n: int) -> list[str]: ...
-    async def keyword_candidates(self, kb_id: str, terms: list[str], n: int) -> list[str]: ...
+    async def vector_candidates(
+        self, kb_id: str, vector: list[float], n: int, *, include_inactive: bool = False
+    ) -> list[str]: ...
+    async def keyword_candidates(
+        self, kb_id: str, terms: list[str], n: int, *, include_inactive: bool = False
+    ) -> list[str]: ...
     async def score_chunks(
         self,
         kb_id: str,
         chunk_ids: list[str],
         vector: list[float] | None,
         terms: list[str] | None,
+        *,
+        include_inactive: bool = False,
     ) -> list[Hit]: ...
     async def search(
         self, kb_id: str, vector: list[float], top_k: int, min_score: float
     ) -> list[Hit]: ...
+
+
+def _copy[T](value: T, **changes: Any) -> T:
+    # dataclasses.replace, under a name the add_documents ``replace`` flag does not shadow.
+    return replace(value, **changes)  # type: ignore[type-var]
+
+
+def _replaced(
+    old: Document, path: str, size: int, base: KnowledgeBase, uploaded_by: str | None
+) -> Document:
+    return _copy(
+        old,
+        path=path,
+        size_bytes=size,
+        version=old.version + 1,
+        status="queued",
+        error=None,
+        chunk_count=0,
+        chunk_size=base.chunk_size,
+        chunk_overlap=base.chunk_overlap,
+        uploaded_by=uploaded_by,
+        updated_at=_now(),
+    )
 
 
 def _unique_filename(name: str, taken: set[str]) -> str:
@@ -161,16 +275,21 @@ def _unique_filename(name: str, taken: set[str]) -> str:
 class MemoryKnowledgeStore:
     """In-process store for tests; mutations do not yield partway through a batch."""
 
-    def __init__(self) -> None:
+    def __init__(self, timezone: str = "Asia/Shanghai") -> None:
+        self.timezone = timezone
         self._bases: dict[str, KnowledgeBase] = {}
         self._documents: dict[str, Document] = {}
         self._chunks: dict[str, list[Chunk]] = {}
+        self._versions: dict[str, list[DocumentVersion]] = {}
+        self._hits: dict[tuple[str, str], tuple[str, datetime]] = {}
+        self._regressions: dict[str, Regression] = {}
 
     async def setup(self) -> None:
         return None
 
     def _view(self, base: KnowledgeBase) -> KnowledgeBase:
         documents = [d for d in self._documents.values() if d.kb_id == base.kb_id]
+        today = today_in(self.timezone)
         return replace(
             base,
             document_count=len(documents),
@@ -178,7 +297,17 @@ class MemoryKnowledgeStore:
             status_counts={
                 status: sum(d.status == status for d in documents) for status in STATUSES
             },
+            validity_counts={
+                state: sum(d.validity(today) == state for d in documents) for state in VALIDITIES
+            },
         )
+
+    def _changed(self, kb_id: str) -> None:
+        if kb_id in self._bases:
+            self._bases[kb_id] = replace(self._bases[kb_id], docs_changed_at=_now())
+
+    def _active(self, document: Document, include_inactive: bool) -> bool:
+        return include_inactive or document.validity(today_in(self.timezone)) == "active"
 
     async def create(
         self,
@@ -220,10 +349,17 @@ class MemoryKnowledgeStore:
 
     async def delete(self, kb_id: str) -> None:
         self._bases.pop(kb_id, None)
+        self._regressions.pop(kb_id, None)
         for key, document in list(self._documents.items()):
             if document.kb_id == kb_id:
-                self._documents.pop(key)
-                self._chunks.pop(key, None)
+                self._drop_document(key)
+
+    def _drop_document(self, document_id: str) -> None:
+        self._documents.pop(document_id, None)
+        self._chunks.pop(document_id, None)
+        self._versions.pop(document_id, None)
+        for key in [key for key in self._hits if key[1] == document_id]:
+            self._hits.pop(key)
 
     async def documents(self, kb_id: str) -> list[Document]:
         return sorted(
@@ -232,33 +368,132 @@ class MemoryKnowledgeStore:
             reverse=True,
         )
 
-    async def add_documents(self, kb_id: str, documents: list[Document]) -> list[Document]:
+    async def add_documents(
+        self,
+        kb_id: str,
+        documents: list[Document],
+        *,
+        replace: bool = False,
+        uploaded_by: str | None = None,
+    ) -> list[Document]:
         if kb_id not in self._bases:
             raise MissingBase(kb_id)
-        taken = {d.name for d in self._documents.values() if d.kb_id == kb_id}
-        if len(taken) + len(documents) > MAX_DOCUMENTS:
+        existing = {d.name: d for d in self._documents.values() if d.kb_id == kb_id}
+        replaced = [d for d in documents if replace and d.name in existing]
+        for document in replaced:
+            if document.kind != existing[document.name].kind:
+                raise ReplaceKind(document.name, existing[document.name].kind)
+        taken = set(existing)
+        if len(taken) + len(documents) - len(replaced) > MAX_DOCUMENTS:
             raise DocumentLimit("一个知识库最多 500 个文档")
         base = self._bases[kb_id]
-        added = [
-            replace(
-                d,
-                name=_unique_filename(d.name, taken),
-                chunk_size=base.chunk_size,
-                chunk_overlap=base.chunk_overlap,
+        added = []
+        for d in documents:
+            old = existing.get(d.name) if replace else None
+            if old is not None:
+                if not self._versions.get(old.document_id):
+                    self._versions[old.document_id] = [
+                        DocumentVersion(
+                            old.version, old.size_bytes, old.uploaded_by, old.created_at
+                        )
+                    ]
+                new = _replaced(old, d.path, d.size_bytes, base, uploaded_by)
+                self._chunks.pop(old.document_id, None)
+                existing[d.name] = new
+            else:
+                new = _copy(
+                    d,
+                    name=_unique_filename(d.name, taken),
+                    chunk_size=base.chunk_size,
+                    chunk_overlap=base.chunk_overlap,
+                    uploaded_by=uploaded_by,
+                )
+            self._documents[new.document_id] = new
+            self._versions.setdefault(new.document_id, []).append(
+                DocumentVersion(new.version, new.size_bytes, uploaded_by, new.updated_at)
             )
-            for d in documents
-        ]
-        self._documents.update((d.document_id, d) for d in added)
+            added.append(new)
+        self._changed(kb_id)
         return added
 
     async def get_document(self, kb_id: str, document_id: str) -> Document | None:
         document = self._documents.get(document_id)
         return document if document and document.kb_id == kb_id else None
 
+    async def update_document(
+        self, kb_id: str, document_id: str, **changes: Any
+    ) -> Document | None:
+        if changes.keys() - {"owner", "valid_from", "valid_until"}:
+            raise ValueError("未知的文档字段")
+        document = await self.get_document(kb_id, document_id)
+        if document is None:
+            return None
+        document = _copy(document, **changes)
+        self._documents[document_id] = document
+        if changes.keys() & {"valid_from", "valid_until"}:
+            self._changed(kb_id)
+        return document
+
+    async def versions(self, document_id: str) -> list[DocumentVersion]:
+        return sorted(self._versions.get(document_id, []), key=lambda v: -v.version)
+
+    async def record_hits(self, run_id: str, hits: Iterable[tuple[str, str]]) -> None:
+        for kb_id, document_id in hits:
+            if document_id in self._documents:
+                self._hits.setdefault((run_id, document_id), (kb_id, _now()))
+
+    async def hit_stats(self, kb_id: str, since: datetime) -> dict[str, HitStats]:
+        found: dict[str, HitStats] = {}
+        for (_, document_id), (kb, at) in self._hits.items():
+            if kb != kb_id:
+                continue
+            stats = found.get(document_id, HitStats())
+            found[document_id] = HitStats(
+                stats.hits_30d + (at >= since),
+                max(at, stats.last_hit_at) if stats.last_hit_at else at,
+            )
+        return found
+
+    async def get_regression(self, kb_id: str) -> Regression | None:
+        return self._regressions.get(kb_id)
+
+    async def save_regression(
+        self,
+        kb_id: str,
+        cases: list[dict[str, Any]],
+        retrieval: dict[str, Any] | None,
+        top_k: int,
+        min_score: float,
+        updated_by: str | None,
+    ) -> Regression:
+        if kb_id not in self._bases:
+            raise MissingBase(kb_id)
+        old = self._regressions.get(kb_id)
+        record = Regression(
+            kb_id,
+            cases,
+            retrieval,
+            top_k,
+            min_score,
+            updated_by,
+            _now(),
+            old.last_run if old else None,
+        )
+        self._regressions[kb_id] = record
+        return record
+
+    async def save_regression_run(self, kb_id: str, last_run: dict[str, Any]) -> Regression:
+        old = self._regressions.get(kb_id)
+        if old is None or kb_id not in self._bases:
+            raise MissingBase(kb_id)
+        record = _copy(old, last_run=last_run)
+        self._regressions[kb_id] = record
+        return record
+
     async def delete_document(self, kb_id: str, document_id: str) -> None:
         if await self.get_document(kb_id, document_id):
-            self._documents.pop(document_id)
-            self._chunks.pop(document_id, None)
+            self._drop_document(document_id)
+            self._changed(kb_id)
 
     async def chunks(self, document_id: str, offset: int, limit: int) -> tuple[int, list[Chunk]]:
         chunks = sorted(self._chunks.get(document_id, []), key=lambda c: c.position)
@@ -349,17 +584,21 @@ class MemoryKnowledgeStore:
                 document, status="error", error=error, chunk_count=0, updated_at=_now()
             )
 
-    async def vector_candidates(self, kb_id: str, vector: list[float], n: int) -> list[str]:
+    async def vector_candidates(
+        self, kb_id: str, vector: list[float], n: int, *, include_inactive: bool = False
+    ) -> list[str]:
         ids = [c.chunk_id for chunks in self._chunks.values() for c in chunks if c.kb_id == kb_id]
-        hits = await self.score_chunks(kb_id, ids, vector, None)
+        hits = await self.score_chunks(kb_id, ids, vector, None, include_inactive=include_inactive)
         return [h.chunk_id for h in sorted(hits, key=lambda h: (-h.score, h.chunk_id))[:n]]
 
-    async def keyword_candidates(self, kb_id: str, terms: list[str], n: int) -> list[str]:
+    async def keyword_candidates(
+        self, kb_id: str, terms: list[str], n: int, *, include_inactive: bool = False
+    ) -> list[str]:
         terms = _query_terms(terms)
         if not terms:
             return []
         ids = [c.chunk_id for chunks in self._chunks.values() for c in chunks if c.kb_id == kb_id]
-        hits = await self.score_chunks(kb_id, ids, None, terms)
+        hits = await self.score_chunks(kb_id, ids, None, terms, include_inactive=include_inactive)
         return [
             h.chunk_id
             for h in sorted(hits, key=lambda h: (-h.score, h.chunk_id))[:n]
@@ -372,6 +611,8 @@ class MemoryKnowledgeStore:
         chunk_ids: list[str],
         vector: list[float] | None,
         terms: list[str] | None,
+        *,
+        include_inactive: bool = False,
     ) -> list[Hit]:
         base = self._bases.get(kb_id)
         if base is None:
@@ -380,7 +621,11 @@ class MemoryKnowledgeStore:
         wanted = set(terms or [])
         hits: list[Hit] = []
         for document in self._documents.values():
-            if document.kb_id != kb_id or document.status != "ready":
+            if (
+                document.kb_id != kb_id
+                or document.status != "ready"
+                or not self._active(document, include_inactive)
+            ):
                 continue
             for chunk in self._chunks.get(document.document_id, []):
                 if chunk.chunk_id not in selected:
@@ -476,6 +721,46 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS tsv tsvector"
     " GENERATED ALWAYS AS (to_tsvector('simple', coalesce(keywords, ''))) STORED",
     "CREATE INDEX IF NOT EXISTS knowledge_chunks_tsv_idx ON knowledge_chunks USING gin (tsv)",
+    # Governance (docs/api/knowledge-governance.md).
+    "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS docs_changed_at timestamptz",
+    "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS owner text",
+    "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS valid_from date",
+    "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS valid_until date",
+    "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS version integer NOT NULL DEFAULT 1",
+    "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS uploaded_by text",
+    """
+CREATE TABLE IF NOT EXISTS knowledge_document_versions (
+    document_id uuid NOT NULL REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
+    tenant_id text NOT NULL DEFAULT 'default',
+    version integer NOT NULL,
+    size_bytes bigint NOT NULL,
+    uploaded_by text,
+    uploaded_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (document_id, version)
+)""",
+    """
+CREATE TABLE IF NOT EXISTS knowledge_hits (
+    tenant_id text NOT NULL DEFAULT 'default',
+    run_id text NOT NULL,
+    document_id uuid NOT NULL REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
+    kb_id uuid NOT NULL REFERENCES knowledge_bases(kb_id) ON DELETE CASCADE,
+    at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, run_id, document_id)
+)""",
+    "CREATE INDEX IF NOT EXISTS knowledge_hits_kb_idx ON knowledge_hits (kb_id, at)",
+    "CREATE INDEX IF NOT EXISTS knowledge_hits_document_idx ON knowledge_hits (document_id)",
+    """
+CREATE TABLE IF NOT EXISTS knowledge_regressions (
+    kb_id uuid PRIMARY KEY REFERENCES knowledge_bases(kb_id) ON DELETE CASCADE,
+    tenant_id text NOT NULL DEFAULT 'default',
+    cases jsonb NOT NULL DEFAULT '[]',
+    retrieval jsonb,
+    top_k integer NOT NULL DEFAULT 5,
+    min_score double precision NOT NULL DEFAULT 0.3,
+    updated_by text,
+    updated_at timestamptz,
+    last_run jsonb
+)""",
 ]
 
 BASE_SELECT = """
@@ -487,14 +772,37 @@ SELECT b.*, b.kb_id::text AS kb_id,
            'processing', count(*) FILTER (WHERE d.status = 'processing'),
            'ready', count(*) FILTER (WHERE d.status = 'ready'),
            'error', count(*) FILTER (WHERE d.status = 'error')
-       ) AS status_counts
+       ) AS status_counts,
+       jsonb_build_object(
+           'pending', count(*) FILTER (WHERE d.valid_from > %(today)s),
+           'expired', count(*) FILTER (
+               WHERE d.valid_until < %(today)s
+               AND (d.valid_from IS NULL OR d.valid_from <= %(today)s))
+       ) AS validity_counts
 FROM knowledge_bases b LEFT JOIN knowledge_documents d ON b.kb_id = d.kb_id
-WHERE b.tenant_id = %s
+WHERE b.tenant_id = %(tenant)s
 """
 DOCUMENT_COLUMNS = (
     "document_id::text, kb_id::text, tenant_id, name, kind, size_bytes, path, status,"
-    " error, chunk_count, created_at, updated_at, chunk_size, chunk_overlap"
+    " error, chunk_count, created_at, updated_at, chunk_size, chunk_overlap,"
+    " owner, valid_from, valid_until, version, uploaded_by"
 )
+# Only documents in effect on %(today)s; d is knowledge_documents.
+ACTIVE = (
+    " AND (d.valid_from IS NULL OR d.valid_from <= %(today)s)"
+    " AND (d.valid_until IS NULL OR d.valid_until >= %(today)s)"
+)
+REGRESSION_COLUMNS = (
+    "kb_id::text, cases, retrieval, top_k, min_score, updated_by, updated_at, last_run"
+)
+
+
+def _base_row(row: dict[str, Any]) -> KnowledgeBase:
+    counts = row.pop("validity_counts")
+    active = row["document_count"] - counts["pending"] - counts["expired"]
+    return KnowledgeBase(**row, validity_counts={"active": active, **counts})
+
+
 CHUNK_COLUMNS = (
     "chunk_id::text, document_id::text, kb_id::text, tenant_id, position, text, heading, page,"
     " keywords"
@@ -518,9 +826,9 @@ def _query_terms(terms: list[str]) -> list[str]:
 
 
 KEYWORD_SCORE = (
-    "(SELECT count(*)::float8 FROM unnest(%s::text[]) AS q(term)"
+    "(SELECT count(*)::float8 FROM unnest(%(words)s::text[]) AS q(term)"
     " WHERE q.term = ANY(string_to_array(coalesce(c.keywords, ''), ' ')))"
-    " / greatest(cardinality(%s::text[]), 1)"
+    " / greatest(cardinality(%(words)s::text[]), 1)"
 )
 
 
@@ -538,8 +846,15 @@ def _vector(values: list[float]) -> str:
 class PostgresKnowledgeStore:
     """Postgres/pgvector store. The pool must use dict rows and autocommit."""
 
-    def __init__(self, pool: AsyncConnectionPool) -> None:
+    def __init__(self, pool: AsyncConnectionPool, timezone: str = "Asia/Shanghai") -> None:
         self._pool = pool
+        self.timezone = timezone
+
+    def _today(self) -> date:
+        return today_in(self.timezone)
+
+    def _active(self, include_inactive: bool) -> str:
+        return "" if include_inactive else ACTIVE
 
     async def setup(self) -> None:
         async with self._pool.connection() as conn:
@@ -548,10 +863,11 @@ class PostgresKnowledgeStore:
 
     async def _get(self, conn: AsyncConnection, kb_id: str) -> KnowledgeBase | None:
         cur = await conn.execute(
-            BASE_SELECT + " AND b.kb_id = %s GROUP BY b.kb_id", (DEFAULT_TENANT, _key(kb_id))
+            BASE_SELECT + " AND b.kb_id = %(kb)s GROUP BY b.kb_id",
+            {"today": self._today(), "tenant": DEFAULT_TENANT, "kb": _key(kb_id)},
         )
         row = await cur.fetchone()
-        return KnowledgeBase(**row) if row else None
+        return _base_row(row) if row else None
 
     async def create(
         self,
@@ -581,9 +897,10 @@ class PostgresKnowledgeStore:
     async def all(self) -> list[KnowledgeBase]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
-                BASE_SELECT + " GROUP BY b.kb_id ORDER BY b.name", (DEFAULT_TENANT,)
+                BASE_SELECT + " GROUP BY b.kb_id ORDER BY b.name",
+                {"today": self._today(), "tenant": DEFAULT_TENANT},
             )
-            return [KnowledgeBase(**row) for row in await cur.fetchall()]
+            return [_base_row(row) for row in await cur.fetchall()]
 
     async def update(self, kb_id: str, **changes: Any) -> KnowledgeBase | None:
         allowed = {"name", "description", "embedding_model", "chunk_size", "chunk_overlap"}
@@ -631,7 +948,14 @@ class PostgresKnowledgeStore:
             )
             return [Document(**row) for row in await cur.fetchall()]
 
-    async def add_documents(self, kb_id: str, documents: list[Document]) -> list[Document]:
+    async def add_documents(
+        self,
+        kb_id: str,
+        documents: list[Document],
+        *,
+        replace: bool = False,
+        uploaded_by: str | None = None,
+    ) -> list[Document]:
         # Serialize uploads and model edits on the base, including across API replicas.
         async with self._pool.connection() as conn, conn.transaction():
             cur = await conn.execute(
@@ -643,31 +967,192 @@ class PostgresKnowledgeStore:
             if base is None:
                 raise MissingBase(kb_id)
             cur = await conn.execute(
-                "SELECT name FROM knowledge_documents WHERE kb_id = %s", (_key(kb_id),)
+                "SELECT document_id, name, kind FROM knowledge_documents WHERE kb_id = %s",
+                (_key(kb_id),),
             )
-            taken = {row["name"] for row in await cur.fetchall()}
-            if len(taken) + len(documents) > MAX_DOCUMENTS:
+            existing = {row["name"]: row for row in await cur.fetchall()}
+            replaced = [d for d in documents if replace and d.name in existing]
+            for document in replaced:
+                if document.kind != existing[document.name]["kind"]:
+                    raise ReplaceKind(document.name, existing[document.name]["kind"])
+            taken = set(existing)
+            if len(taken) + len(documents) - len(replaced) > MAX_DOCUMENTS:
                 raise DocumentLimit("一个知识库最多 500 个文档")
             added: list[Document] = []
             for document in documents:
-                name = _unique_filename(document.name, taken)
+                old = existing.get(document.name) if replace else None
+                if old is not None:
+                    # Documents from before versions were kept get their first version now.
+                    await conn.execute(
+                        "INSERT INTO knowledge_document_versions"
+                        " (document_id, version, size_bytes, uploaded_by, uploaded_at)"
+                        " SELECT document_id, version, size_bytes, uploaded_by, created_at"
+                        " FROM knowledge_documents WHERE document_id = %s"
+                        " ON CONFLICT DO NOTHING",
+                        (old["document_id"],),
+                    )
+                    cur = await conn.execute(
+                        "UPDATE knowledge_documents SET path = %s, size_bytes = %s,"
+                        " version = version + 1, status = 'queued', error = NULL,"
+                        " chunk_count = 0, chunk_size = %s, chunk_overlap = %s,"
+                        " uploaded_by = %s, updated_at = now()"
+                        f" WHERE document_id = %s RETURNING {DOCUMENT_COLUMNS}",
+                        (
+                            document.path,
+                            document.size_bytes,
+                            base["chunk_size"],
+                            base["chunk_overlap"],
+                            uploaded_by,
+                            old["document_id"],
+                        ),
+                    )
+                    await conn.execute(
+                        "DELETE FROM knowledge_chunks WHERE document_id = %s",
+                        (old["document_id"],),
+                    )
+                else:
+                    name = _unique_filename(document.name, taken)
+                    cur = await conn.execute(
+                        "INSERT INTO knowledge_documents (document_id, kb_id, name, kind,"
+                        " size_bytes, path, chunk_size, chunk_overlap, uploaded_by)"
+                        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                        f" RETURNING {DOCUMENT_COLUMNS}",
+                        (
+                            document.document_id,
+                            kb_id,
+                            name,
+                            document.kind,
+                            document.size_bytes,
+                            document.path,
+                            base["chunk_size"],
+                            base["chunk_overlap"],
+                            uploaded_by,
+                        ),
+                    )
+                row = Document(**await cur.fetchone())
+                await conn.execute(
+                    "INSERT INTO knowledge_document_versions"
+                    " (document_id, version, size_bytes, uploaded_by)"
+                    " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    (_key(row.document_id), row.version, row.size_bytes, uploaded_by),
+                )
+                added.append(row)
+            await self._changed(conn, kb_id)
+            return added
+
+    async def _changed(self, conn: AsyncConnection, kb_id: str) -> None:
+        await conn.execute(
+            "UPDATE knowledge_bases SET docs_changed_at = now() WHERE kb_id = %s",
+            (_key(kb_id),),
+        )
+
+    async def update_document(
+        self, kb_id: str, document_id: str, **changes: Any
+    ) -> Document | None:
+        if changes.keys() - {"owner", "valid_from", "valid_until"}:
+            raise ValueError("未知的文档字段")
+        async with self._pool.connection() as conn, conn.transaction():
+            assignments = [f"{key} = %s" for key in changes] or ["owner = owner"]
+            cur = await conn.execute(
+                "UPDATE knowledge_documents SET "
+                + ", ".join(assignments)
+                + " WHERE kb_id = %s AND document_id = %s AND tenant_id = %s"
+                f" RETURNING {DOCUMENT_COLUMNS}",
+                (*changes.values(), _key(kb_id), _key(document_id), DEFAULT_TENANT),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            if changes.keys() & {"valid_from", "valid_until"}:
+                await self._changed(conn, kb_id)
+            return Document(**row)
+
+    async def versions(self, document_id: str) -> list[DocumentVersion]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT version, size_bytes, uploaded_by, uploaded_at"
+                " FROM knowledge_document_versions WHERE document_id = %s AND tenant_id = %s"
+                " ORDER BY version DESC",
+                (_key(document_id), DEFAULT_TENANT),
+            )
+            return [DocumentVersion(**row) for row in await cur.fetchall()]
+
+    async def record_hits(self, run_id: str, hits: Iterable[tuple[str, str]]) -> None:
+        rows = [(run_id, _key(doc), _key(kb)) for kb, doc in dict.fromkeys(hits)]
+        if not rows:
+            return
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            # A document deleted meanwhile is skipped rather than failing the batch.
+            await cur.executemany(
+                "INSERT INTO knowledge_hits (run_id, document_id, kb_id)"
+                " SELECT %s, %s, %s WHERE EXISTS (SELECT 1 FROM knowledge_documents"
+                " WHERE document_id = %s) ON CONFLICT DO NOTHING",
+                [(*row, row[1]) for row in rows],
+            )
+
+    async def hit_stats(self, kb_id: str, since: datetime) -> dict[str, HitStats]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT document_id::text, count(*) FILTER (WHERE at >= %s)::integer AS hits_30d,"
+                " max(at) AS last_hit_at FROM knowledge_hits"
+                " WHERE kb_id = %s AND tenant_id = %s GROUP BY document_id",
+                (since, _key(kb_id), DEFAULT_TENANT),
+            )
+            return {row.pop("document_id"): HitStats(**row) for row in await cur.fetchall()}
+
+    async def get_regression(self, kb_id: str) -> Regression | None:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {REGRESSION_COLUMNS} FROM knowledge_regressions"
+                " WHERE kb_id = %s AND tenant_id = %s",
+                (_key(kb_id), DEFAULT_TENANT),
+            )
+            row = await cur.fetchone()
+            return Regression(**row) if row else None
+
+    async def save_regression(
+        self,
+        kb_id: str,
+        cases: list[dict[str, Any]],
+        retrieval: dict[str, Any] | None,
+        top_k: int,
+        min_score: float,
+        updated_by: str | None,
+    ) -> Regression:
+        async with self._pool.connection() as conn:
+            try:
                 cur = await conn.execute(
-                    "INSERT INTO knowledge_documents"
-                    " (document_id, kb_id, name, kind, size_bytes, path, chunk_size, chunk_overlap)"
-                    f" VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING {DOCUMENT_COLUMNS}",
+                    "INSERT INTO knowledge_regressions"
+                    " (kb_id, cases, retrieval, top_k, min_score, updated_by, updated_at)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, now()) ON CONFLICT (kb_id) DO UPDATE"
+                    " SET cases = excluded.cases, retrieval = excluded.retrieval,"
+                    " top_k = excluded.top_k, min_score = excluded.min_score,"
+                    " updated_by = excluded.updated_by, updated_at = excluded.updated_at"
+                    f" RETURNING {REGRESSION_COLUMNS}",
                     (
-                        document.document_id,
-                        kb_id,
-                        name,
-                        document.kind,
-                        document.size_bytes,
-                        document.path,
-                        base["chunk_size"],
-                        base["chunk_overlap"],
+                        _key(kb_id),
+                        Jsonb(cases),
+                        Jsonb(retrieval) if retrieval is not None else None,
+                        top_k,
+                        min_score,
+                        updated_by,
                     ),
                 )
-                added.append(Document(**await cur.fetchone()))
-            return added
+            except errors.ForeignKeyViolation as exc:
+                raise MissingBase(kb_id) from exc
+            return Regression(**await cur.fetchone())
+
+    async def save_regression_run(self, kb_id: str, last_run: dict[str, Any]) -> Regression:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE knowledge_regressions SET last_run = %s"
+                f" WHERE kb_id = %s AND tenant_id = %s RETURNING {REGRESSION_COLUMNS}",
+                (Jsonb(last_run), _key(kb_id), DEFAULT_TENANT),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise MissingBase(kb_id)
+            return Regression(**row)
 
     async def get_document(self, kb_id: str, document_id: str) -> Document | None:
         async with self._pool.connection() as conn:
@@ -680,12 +1165,14 @@ class PostgresKnowledgeStore:
             return Document(**row) if row else None
 
     async def delete_document(self, kb_id: str, document_id: str) -> None:
-        async with self._pool.connection() as conn:
-            await conn.execute(
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
                 "DELETE FROM knowledge_documents"
-                " WHERE kb_id = %s AND document_id = %s AND tenant_id = %s",
+                " WHERE kb_id = %s AND document_id = %s AND tenant_id = %s RETURNING 1",
                 (_key(kb_id), _key(document_id), DEFAULT_TENANT),
             )
+            if await cur.fetchone():
+                await self._changed(conn, kb_id)
 
     async def chunks(self, document_id: str, offset: int, limit: int) -> tuple[int, list[Chunk]]:
         async with self._pool.connection() as conn, conn.transaction():
@@ -833,7 +1320,9 @@ class PostgresKnowledgeStore:
                 (error, _key(document.document_id)),
             )
 
-    async def vector_candidates(self, kb_id: str, vector: list[float], n: int) -> list[str]:
+    async def vector_candidates(
+        self, kb_id: str, vector: list[float], n: int, *, include_inactive: bool = False
+    ) -> list[str]:
         query = _vector(vector)
         async with self._pool.connection() as conn, conn.transaction():
             # HNSW filters after scanning: continue until this base has n ready rows. Order by
@@ -843,13 +1332,22 @@ class PostgresKnowledgeStore:
                 "SELECT c.chunk_id::text FROM knowledge_chunks c"
                 " JOIN knowledge_documents d USING (document_id)"
                 " JOIN knowledge_bases b ON b.kb_id = c.kb_id"
-                " WHERE c.kb_id = %s AND b.tenant_id = %s AND d.status = 'ready'"
-                " ORDER BY c.embedding <=> %s::vector LIMIT %s",
-                (_key(kb_id), DEFAULT_TENANT, query, n),
+                " WHERE c.kb_id = %(kb)s AND b.tenant_id = %(tenant)s AND d.status = 'ready'"
+                + self._active(include_inactive)
+                + " ORDER BY c.embedding <=> %(query)s::vector LIMIT %(n)s",
+                {
+                    "kb": _key(kb_id),
+                    "tenant": DEFAULT_TENANT,
+                    "today": self._today(),
+                    "query": query,
+                    "n": n,
+                },
             )
             return [row["chunk_id"] for row in await cur.fetchall()]
 
-    async def keyword_candidates(self, kb_id: str, terms: list[str], n: int) -> list[str]:
+    async def keyword_candidates(
+        self, kb_id: str, terms: list[str], n: int, *, include_inactive: bool = False
+    ) -> list[str]:
         terms = _query_terms(terms)
         if not terms:
             return []
@@ -858,10 +1356,18 @@ class PostgresKnowledgeStore:
                 "SELECT c.chunk_id::text, " + KEYWORD_SCORE + " AS score"
                 " FROM knowledge_chunks c JOIN knowledge_documents d USING (document_id)"
                 " JOIN knowledge_bases b ON b.kb_id = c.kb_id"
-                " WHERE c.kb_id = %s AND b.tenant_id = %s AND d.status = 'ready'"
-                " AND c.tsv @@ websearch_to_tsquery('simple', %s)"
-                " ORDER BY score DESC, c.chunk_id LIMIT %s",
-                (terms, terms, _key(kb_id), DEFAULT_TENANT, " or ".join(terms), n),
+                " WHERE c.kb_id = %(kb)s AND b.tenant_id = %(tenant)s AND d.status = 'ready'"
+                + self._active(include_inactive)
+                + " AND c.tsv @@ websearch_to_tsquery('simple', %(query)s)"
+                " ORDER BY score DESC, c.chunk_id LIMIT %(n)s",
+                {
+                    "words": terms,
+                    "kb": _key(kb_id),
+                    "tenant": DEFAULT_TENANT,
+                    "today": self._today(),
+                    "query": " or ".join(terms),
+                    "n": n,
+                },
             )
             return [row["chunk_id"] for row in await cur.fetchall()]
 
@@ -871,6 +1377,8 @@ class PostgresKnowledgeStore:
         chunk_ids: list[str],
         vector: list[float] | None,
         terms: list[str] | None,
+        *,
+        include_inactive: bool = False,
     ) -> list[Hit]:
         if not chunk_ids:
             return []
@@ -880,25 +1388,26 @@ class PostgresKnowledgeStore:
             cur = await conn.execute(
                 "SELECT b.kb_id::text, b.name AS kb_name, d.document_id::text,"
                 " d.name AS document_name, c.chunk_id::text, c.position, c.text, c.heading, c.page,"
-                " CASE WHEN %s::vector IS NULL THEN NULL"
-                " WHEN (c.embedding <=> %s::vector) = 'NaN'::float8 THEN 0.0"
-                " ELSE greatest(0.0, least(1.0, 1 - (c.embedding <=> %s::vector))) END AS vector,"
-                " CASE WHEN %s::boolean THEN " + KEYWORD_SCORE + " ELSE NULL END AS keyword"
+                " CASE WHEN %(query)s::vector IS NULL THEN NULL"
+                " WHEN (c.embedding <=> %(query)s::vector) = 'NaN'::float8 THEN 0.0"
+                " ELSE greatest(0.0, least(1.0, 1 - (c.embedding <=> %(query)s::vector)))"
+                " END AS vector,"
+                " CASE WHEN %(keyword)s::boolean THEN " + KEYWORD_SCORE + " ELSE NULL END"
+                " AS keyword"
                 " FROM knowledge_chunks c JOIN knowledge_documents d USING (document_id)"
                 " JOIN knowledge_bases b ON b.kb_id = c.kb_id"
-                " WHERE c.kb_id = %s AND b.tenant_id = %s AND d.status = 'ready'"
-                " AND c.chunk_id = ANY(%s::uuid[])",
-                (
-                    query,
-                    query,
-                    query,
-                    terms is not None,
-                    words,
-                    words,
-                    _key(kb_id),
-                    DEFAULT_TENANT,
-                    [_key(key) for key in chunk_ids],
-                ),
+                " WHERE c.kb_id = %(kb)s AND b.tenant_id = %(tenant)s AND d.status = 'ready'"
+                + self._active(include_inactive)
+                + " AND c.chunk_id = ANY(%(ids)s::uuid[])",
+                {
+                    "query": query,
+                    "keyword": terms is not None,
+                    "words": words,
+                    "kb": _key(kb_id),
+                    "tenant": DEFAULT_TENANT,
+                    "today": self._today(),
+                    "ids": [_key(key) for key in chunk_ids],
+                },
             )
             hits = []
             for row in await cur.fetchall():

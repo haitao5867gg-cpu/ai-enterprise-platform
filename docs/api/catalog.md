@@ -72,7 +72,7 @@
 | `template` | null | “模板本身不评测” |
 | `app` | 当前版本发布时的评测得分；没评测过时用近 30 天运行成功率（`done` / 结束了的运行，至少 3 次才算） | “评测通过率”或“近 30 天运行成功率” |
 | `skill` | 用到它、且当前版本评测过的应用的评测得分的平均 | “N 个应用的评测平均分” |
-| `knowledge` | 处理成功的文档 / 全部文档（第 6 批的检索回归上线后改用回归通过率） | “文档处理成功率” |
+| `knowledge` | 最近一次检索回归的通过率（见 [knowledge-governance.md](knowledge-governance.md)）；没跑过回归时用处理成功的文档 / 全部文档 | “检索回归通过率”或“文档处理成功率” |
 | `tool` | 用到它的应用近 30 天运行成功率的平均（至少 3 次运行） | “用到它的应用的运行成功率” |
 | `eval_set` | 应用当前版本的评测得分 | “最近一次评测通过率” |
 
@@ -99,7 +99,7 @@
 | --- | --- | --- |
 | `app` | `apps/{app}/` | `app.yaml`（当前版本的导出，同 `GET /apps/{app}/versions/{version}/export`）；有评测集时加 `eval-set.yaml` |
 | `skill` | `skills/{name}/` | `SKILL.md`（当前版本：开头是 name、description、version 的 YAML 头，后面是正文）；有参考资料时每个一个 `references/{文件名}` |
-| `knowledge` | `knowledge/{id}/` | `README.md`（名称、说明、向量模型、切块设置、文档清单）；md 和 txt 文档原文放 `docs/{文件名}`，PDF 和 Word 只列在清单里 |
+| `knowledge` | `knowledge/{id}/` | `README.md`（名称、说明、向量模型、切块设置、文档清单，含版本、负责人、有效期）；有检索用例时加 `regression.yaml`；md 和 txt 文档原文放 `docs/{文件名}`，PDF 和 Word 只列在清单里 |
 | `eval_set` | `evals/{app}/` | `eval-set.yaml`（门槛、评判模型、全部用例） |
 
 - 分支固定为 `aep/catalog/{kind}/{id}`：同一项再提交时更新同一个 PR，不重复开。

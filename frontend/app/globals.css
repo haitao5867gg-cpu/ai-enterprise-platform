@@ -5784,3 +5784,14 @@ fieldset.project-form-section > legend + * {
 .catalog-result a {
   color: var(--purple);
 }
+.knowledge-table .knowledge-status + .knowledge-status,
+.knowledge-table td > .knowledge-status:not(:first-child) {
+  margin-left: 6px;
+}
+.knowledge-section select[multiple] {
+  min-width: 180px;
+  min-height: 72px;
+}
+.knowledge-section textarea {
+  min-width: 220px;
+}

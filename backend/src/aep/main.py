@@ -110,7 +110,7 @@ def create_app() -> FastAPI:
         sources = PostgresDataSourceStore(pool)
         await sources.setup()
         await register_defaults(sources, settings.default_datasources)
-        knowledge_store = PostgresKnowledgeStore(pool)
+        knowledge_store = PostgresKnowledgeStore(pool, settings.schedule_timezone)
         await knowledge_store.setup()
         asset_store = PostgresAssetStore(pool)
         await asset_store.setup()

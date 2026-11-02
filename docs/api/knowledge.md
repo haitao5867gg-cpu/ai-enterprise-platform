@@ -2,6 +2,8 @@
 
 后端和前端按这份约定并行开发。本文只写新增和改变的部分，没提到的接口和字段保持不变；字段名 snake_case，错误格式同 [apps-and-skills.md](apps-and-skills.md)：`{"detail": "中文说明"}`，校验错误 422。
 
+文档负责人、生效和失效日期、文档版本、检索用例回归、引用次数和口径文档模板见 [knowledge-governance.md](knowledge-governance.md)。
+
 ## 概念
 
 - **知识库**：一组文档，用同一个向量模型、同一套切分设置。平台把文档切成片段、算向量、分词，存进 Postgres（pgvector 存向量，全文索引存关键词），按问题找最相关的片段。

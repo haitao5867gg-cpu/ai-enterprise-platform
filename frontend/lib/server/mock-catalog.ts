@@ -124,11 +124,19 @@ function rawItems(): Raw[] {
       version: null,
       updated_at: kb.updated_at,
       used_by: appsReferencingKnowledge(kb.kb_id).map((app) => user(app, "")),
-      quality: quality(
-        kb.document_count ? kb.status_counts.ready / kb.document_count : null,
-        "文档处理成功率",
-        `${kb.document_count} 个文档${failed ? `，${failed} 个处理失败` : ""}`,
-      ),
+      quality: kb.regression.last_run
+        ? quality(
+            kb.regression.last_run.score,
+            "检索回归通过率",
+            `${kb.regression.last_run.total} 条用例，通过 ${kb.regression.last_run.passed} 条${kb.regression.stale ? "，文档改过还没重跑" : ""}`,
+          )
+        : quality(
+            kb.document_count
+              ? kb.status_counts.ready / kb.document_count
+              : null,
+            "文档处理成功率",
+            `${kb.document_count} 个文档${failed ? `，${failed} 个处理失败` : ""}`,
+          ),
       facts: {
         documents: kb.document_count,
         chunks: kb.chunk_count,

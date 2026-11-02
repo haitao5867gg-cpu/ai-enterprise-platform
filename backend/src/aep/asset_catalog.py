@@ -20,6 +20,7 @@ from psycopg_pool import AsyncConnectionPool
 from aep.assets import AssetRepo
 from aep.config import Settings
 from aep.datasources import DataSourceStore, canon_id
+from aep.knowledge import governance
 from aep.knowledge.extract import ExtractError, read_text
 from aep.runtime.catalog import AppCatalog
 from aep.runtime.flow import builtin as flowbuiltin
@@ -520,11 +521,15 @@ class AssetCatalog:
 
     async def _knowledge_items(self, scan: _Scan) -> list[dict[str, Any]]:
         out = []
-        for kb in await self._runs.knowledge.all():
+        store = self._runs.knowledge
+        for kb in await store.all():
             total = kb.document_count
             ok = kb.status_counts.get("ready", 0)
             failed = kb.status_counts.get("error", 0)
             detail = f"{total} 个文档" + (f"，{failed} 个处理失败" if failed else "")
+            quality = _quality(ok / total if total else None, "文档处理成功率", detail)
+            if regressed := governance.quality(await store.get_regression(kb.kb_id), kb):
+                quality = _quality(regressed[0], "检索回归通过率", regressed[1])
             out.append(
                 self._item(
                     "knowledge",
@@ -534,7 +539,7 @@ class AssetCatalog:
                     f"/knowledge/{kb.kb_id}",
                     scan,
                     updated_at=kb.updated_at,
-                    quality=_quality(ok / total if total else None, "文档处理成功率", detail),
+                    quality=quality,
                     facts={
                         "documents": total,
                         "chunks": kb.chunk_count,
@@ -757,7 +762,15 @@ class AssetCatalog:
                     kept = f"[docs/{doc.name}](docs/{doc.name})"
                 except (OSError, ExtractError):
                     log.warning("could not read document %s", doc.document_id, exc_info=True)
-            rows.append(f"| {doc.name} | {doc.kind} | {doc.status} | {kept or '只列在清单里'} |")
+            dates = (
+                f"{doc.valid_from or ''}～{doc.valid_until or ''}"
+                if doc.valid_from or doc.valid_until
+                else "长期有效"
+            )
+            rows.append(
+                f"| {doc.name} | {doc.kind} | {doc.status} | {kept or '只列在清单里'}"
+                f" | v{doc.version} | {doc.owner or ''} | {dates} |"
+            )
         readme = [
             f"# {kb.name}",
             "",
@@ -766,12 +779,24 @@ class AssetCatalog:
             f"- 向量模型：{kb.embedding_model}",
             f"- 切块：{kb.chunk_size} 个字符，重叠 {kb.chunk_overlap}",
             "",
-            "| 文档 | 类型 | 状态 | 原文 |",
-            "| --- | --- | --- | --- |",
+            "| 文档 | 类型 | 状态 | 原文 | 版本 | 负责人 | 有效期 |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
             *rows,
             "",
         ]
         files["README.md"] = "\n".join(readme)
+        regression = await store.get_regression(kb_id)
+        if regression and regression.cases:
+            files["regression.yaml"] = yaml.safe_dump(
+                {
+                    "retrieval": regression.retrieval,
+                    "top_k": regression.top_k,
+                    "min_score": regression.min_score,
+                    "cases": regression.cases,
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            )
         return files
 
 
