@@ -166,13 +166,17 @@ async def update_app(app: str, body: UpdateApp, catalog: Catalog) -> dict[str, A
 
 
 @router.delete("/{app}", status_code=status.HTTP_204_NO_CONTENT)
-async def archive_app(app: str, catalog: Catalog) -> Response:
+async def archive_app(app: str, catalog: Catalog, request: Request) -> Response:
     try:
         await catalog.archive(app)
     except AppNotFound as exc:
         raise _not_found(app) from exc
     except NotAFlowApp as exc:
         raise HTTPException(409, str(exc)) from exc
+    # Its schedules go with it (docs/api/schedules.md).
+    schedules = getattr(request.app.state, "schedules", None)
+    if schedules is not None:
+        await schedules.delete_app(app)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

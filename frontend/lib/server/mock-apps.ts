@@ -826,6 +826,8 @@ export async function mockApps(
     if (entry.kind === "code") return mockError("代码应用不能改名或归档", 409);
     if (request.method === "DELETE") {
       entry.archived = true;
+      const { deleteMockSchedules } = await import("./mock-schedules");
+      deleteMockSchedules(entry.app);
       return noContent();
     }
     const body = await readBody(request);
@@ -837,6 +839,10 @@ export async function mockApps(
     return mockJson(detail(entry));
   }
   if (path[2] === "keys") return mockKeys(request, entry.app, path[3]);
+  if (path[2] === "schedules") {
+    const { mockAppSchedules } = await import("./mock-schedules");
+    return mockAppSchedules(request, entry.app);
+  }
   if (path[2] === "secrets") {
     if (request.method === "DELETE") {
       delete entry.secrets[path[3]];

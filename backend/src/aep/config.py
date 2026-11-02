@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     # Where people open the workbench, for links back to a run (in PRs, for example).
     web_url: str = "http://localhost:3000"
 
+    # Schedules (docs/api/schedules.md): the time zone a schedule uses when it names none,
+    # and how often the platform looks for schedules that are due.
+    schedule_timezone: str = "Asia/Shanghai"
+    schedule_poll_seconds: float = 30.0
+
     # Eval sets (app modules name theirs, e.g. etl/cases.yaml) and the publish gate: a
     # draft of an app with an eval set needs at least this average score. Its cases run
     # on eval_datasource (a name or id; empty: the first registered source).

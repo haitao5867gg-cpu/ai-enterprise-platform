@@ -99,7 +99,7 @@
 
 1. 公开：`GET /healthz`、`GET /readyz`、`GET /auth/status`、`POST /auth/setup`、`POST /auth/login`。
 2. 管理员：`/users` 下的全部、`/audit`、`/models` 下的 POST、PUT、PATCH、DELETE。
-3. 搭建者：`/models` 下的 GET，`POST /llm/chat`；`/apps`、`/skills`、`/knowledge-bases`、`/datasources`、`/projects` 下的 POST、PUT、PATCH、DELETE（`POST /datasources/files` 除外）。
+3. 搭建者：`/models` 下的 GET，`POST /llm/chat`；`/apps`、`/skills`、`/knowledge-bases`、`/datasources`、`/projects`、`/schedules` 下的 POST、PUT、PATCH、DELETE（`POST /datasources/files` 除外）。
 4. 其余：登录即可。
 
 没登录 401「请先登录」；角色不够 403「没有权限：这项操作需要{角色}」。

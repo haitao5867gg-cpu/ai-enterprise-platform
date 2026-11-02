@@ -44,6 +44,9 @@ run record (in the list and in ``GET /runs/{id}``) has:
   ``policy``: the data outbound policy in force for the run (``samples`` and
   ``models``), the platform's default when it has no project. See
   docs/api/projects.md.
+- ``trigger``: what started the run when no person did:
+  ``{"kind": "schedule", "schedule_id", "title"}`` for a schedule's run (also one it
+  was asked to run now; docs/api/schedules.md), null otherwise.
 
 ``GET /runs/{id}`` also has the run's ``input``; ``inputs``: what a copy of the run
 asks for, the start node's inputs (as in docs/api/flow-apps.md) of the configuration
@@ -346,6 +349,8 @@ class RunSummary(BaseModel):
     outcome: str | None
     project: RunProject | None
     policy: RunPolicy
+    # What started it when no person did, e.g. a schedule (docs/api/schedules.md).
+    trigger: dict[str, Any] | None = None
 
 
 class Message(BaseModel):
@@ -467,6 +472,7 @@ def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> d
         "outcome": r.outcome if r.status == "done" else None,
         "project": run_summary(r.project),
         "policy": DataPolicy.from_dict(r.policy).as_dict(),
+        "trigger": r.trigger,
     }
 
 

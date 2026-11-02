@@ -1,6 +1,7 @@
 "use client";
 
 import { AppAccess } from "./app-access";
+import { AppSchedules } from "./app-schedules";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import {
@@ -1016,6 +1017,12 @@ export function AppDetailView({ app }: { app: string }) {
       </TabPanel>
       <TabPanel tab="access" current={tab}>
         <AppAccess app={app} inputs={data.inputs} />
+        <AppSchedules
+          app={app}
+          inputs={data.inputs}
+          uses={data.project ?? null}
+          datasources={data.options.datasources}
+        />
       </TabPanel>
     </div>
   );

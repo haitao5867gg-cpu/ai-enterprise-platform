@@ -100,6 +100,11 @@ async function handle(request: Request, context: Context) {
     // API keys of an app (docs/api/app-access.md).
     [/^apps\/[a-z][a-z0-9-]{1,63}\/keys$/, ["GET", "POST"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/keys\/[a-zA-Z0-9_-]{1,64}$/, ["DELETE"]],
+    // Schedules (docs/api/schedules.md); `preview` comes before the id rule.
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/schedules$/, ["GET", "POST"]],
+    [/^schedules\/preview$/, ["GET"]],
+    [/^schedules\/[a-zA-Z0-9_-]{1,64}$/, ["GET", "PATCH", "DELETE"]],
+    [/^schedules\/[a-zA-Z0-9_-]{1,64}\/run$/, ["POST"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/draft\/import$/, ["POST"]],
     [
       /^apps\/[a-z][a-z0-9-]{1,63}\/nodes\/[a-z][a-z0-9_]{0,31}\/test$/,
@@ -170,6 +175,11 @@ async function handle(request: Request, context: Context) {
       const { mockProjects } =
         await import("../../../lib/server/mock-projects");
       return mockProjects(request, path);
+    }
+    if (path[0] === "schedules") {
+      const { mockSchedules } =
+        await import("../../../lib/server/mock-schedules");
+      return mockSchedules(request, path);
     }
     if (path[0] === "skills") {
       const { mockSkills } = await import("../../../lib/server/mock-skills");

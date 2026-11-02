@@ -27,6 +27,7 @@ from aep.api import (
     notifications,
     projects,
     runs,
+    schedules,
     skills,
 )
 from aep.app_access import ApiKeys, PostgresApiKeyStore
@@ -52,6 +53,7 @@ from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import PostgresRunStore
 from aep.runtime.versions import PostgresAppVersionStore
+from aep.schedules import PostgresScheduleStore, Scheduler
 from aep.skills import PostgresSkillStore
 from aep.tools.mcp import McpTools
 
@@ -211,12 +213,25 @@ def create_app() -> FastAPI:
         knowledge_worker = KnowledgeWorker(knowledge_store, llm_client)
         app.state.knowledge_worker = knowledge_worker
         knowledge_task = asyncio.create_task(knowledge_worker.run())
+        # Runs started on a schedule (docs/api/schedules.md).
+        schedule_store = PostgresScheduleStore(pool)
+        await schedule_store.setup()
+        scheduler = Scheduler(
+            schedule_store,
+            schedules.starter(service),
+            service.status_of,
+            settings.schedule_poll_seconds,
+        )
+        app.state.schedules = schedule_store
+        app.state.scheduler = scheduler
+        schedule_task = asyncio.create_task(scheduler.run())
         try:
             yield
         finally:
-            knowledge_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await knowledge_task
+            for task in (schedule_task, knowledge_task):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
         try:
             await asyncio.wait_for(service.wait_idle(), timeout=10)
         except TimeoutError:
@@ -254,6 +269,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(notifications.router)
     app.include_router(app_access.router)
+    app.include_router(schedules.router)
     # Each app as an MCP tool; it checks API keys itself.
     app.mount("/mcp/apps", AppMcpEndpoint())
     # Links back to a run (notices, the app API).

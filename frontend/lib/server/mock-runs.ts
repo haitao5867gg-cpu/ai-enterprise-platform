@@ -12,6 +12,7 @@ import {
   type Run,
   type RunStatus,
   type RunSummary,
+  type RunTrigger,
 } from "../runs";
 import { getEtlResult, type EtlLanguage, type EtlPlan } from "../etl";
 import { isFileMap } from "../etl-v2";
@@ -325,6 +326,7 @@ const summaryKeys: (keyof RunSummary)[] = [
   "created_by",
   "cancelled_by",
   "rerun_of",
+  "trigger",
   "outcome",
   "project",
   "policy",
@@ -772,10 +774,13 @@ function json(value: unknown, status = 200) {
 }
 
 // Create a run, or a copy of one: `copy` names the run it copies and, for a
-// draft's run, the configuration it ran with.
+// draft's run, the configuration it ran with. `trigger` marks a schedule's run; with
+// `check` nothing starts, the answer says whether it could (a schedule being saved).
 function create(
   body: unknown,
   copy?: { rerunOf: string; config?: AppConfig },
+  trigger?: RunTrigger,
+  check = false,
 ): Response {
   if (!isRecord(body) || !isRecord(body.input)) {
     return json({ detail: "Provide app and input" }, 422);
@@ -864,6 +869,7 @@ function create(
         !["pyspark", "sql"].includes(input.language as string)))
   )
     return json({ detail: "Invalid app or input" }, 422);
+  if (check) return json({ ok: true });
   const created = new Date().toISOString();
   const requester =
     typeof body.requester === "string" && body.requester.trim()
@@ -879,6 +885,7 @@ function create(
     status: "running",
     input,
     rerun_of: copy?.rerunOf ?? null,
+    trigger: trigger ?? null,
     cancelled_by: null,
     project: runProject(bound),
     policy: projectPolicy(bound),
@@ -1039,6 +1046,21 @@ function timed(entry: StoredRun, steps: MockSteps): MockSteps {
         : null,
     };
   });
+}
+
+export function mockRunStatus(runId: string): RunStatus | null {
+  const entry = store.get(runId);
+  return entry ? refresh(entry).status : null;
+}
+
+// A schedule's run (docs/api/schedules.md), or with `check` whether it could start.
+export function mockScheduledRun(
+  body: Record<string, unknown>,
+  trigger: RunTrigger | null,
+): Response {
+  return trigger
+    ? create(body, undefined, trigger)
+    : create(body, undefined, undefined, true);
 }
 
 export async function mockRuns(request: Request, path: string[]) {

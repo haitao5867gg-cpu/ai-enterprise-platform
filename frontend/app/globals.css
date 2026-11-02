@@ -1135,6 +1135,44 @@ nav {
 .app-access .asset-section-heading {
   margin-top: 18px;
 }
+.app-schedules {
+  margin-top: 18px;
+}
+.schedule-when-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.schedule-form .schedule-when-row select,
+.schedule-form .schedule-when-row input {
+  width: auto;
+}
+.schedule-cron {
+  flex: 1 1 220px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.schedule-preview {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.schedule-preview ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink);
+}
+.schedule-error {
+  margin: 4px 0 0;
+  color: #b0661a;
+  font-size: 12px;
+}
+.schedule-actions {
+  white-space: nowrap;
+}
+.schedule-actions .text-button + .text-button {
+  margin-left: 10px;
+}
 .app-access-secret {
   display: block;
   padding: 12px 14px;

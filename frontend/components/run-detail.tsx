@@ -560,6 +560,7 @@ export function RunDetail({
             <p className="detail-meta">
               {[
                 run.created_by && `${run.created_by} 提出`,
+                run.trigger && `定时：${run.trigger.title}`,
                 run.created_at && timeAgo(run.created_at, now),
                 durationText(run, now),
                 [run.app_title || run.app, versionLabel(run)]
@@ -928,6 +929,12 @@ export function RunDetail({
                     <dt>提出人</dt>
                     <dd>{run.created_by || "—"}</dd>
                   </div>
+                  {run.trigger && (
+                    <div>
+                      <dt>发起方式</dt>
+                      <dd>定时：{run.trigger.title}</dd>
+                    </div>
+                  )}
                   {run.project && (
                     <div>
                       <dt>项目</dt>
