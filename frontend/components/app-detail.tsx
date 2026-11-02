@@ -2,7 +2,7 @@
 
 import { AppAccess } from "./app-access";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   activateAppVersion,
   isFlowConfig,
@@ -204,6 +204,78 @@ function ConfigDiff({
   );
 }
 
+type Tab = "overview" | "design" | "release" | "access";
+const TABS: [Tab, string][] = [
+  ["overview", "概览"],
+  ["design", "编排"],
+  ["release", "评测与发布"],
+  ["access", "接入"],
+];
+
+function AppTabs({
+  tab,
+  onChange,
+}: {
+  tab: Tab;
+  onChange: (tab: Tab) => void;
+}) {
+  return (
+    <div className="filter-tabs app-tabs" role="tablist" aria-label="应用页">
+      {TABS.map(([key, label], i) => (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          id={`app-tab-${key}`}
+          aria-selected={tab === key}
+          aria-controls={`app-panel-${key}`}
+          className={tab === key ? "selected" : ""}
+          tabIndex={tab === key ? 0 : -1}
+          onClick={() => onChange(key)}
+          onKeyDown={(event) => {
+            const step =
+              event.key === "ArrowRight"
+                ? 1
+                : event.key === "ArrowLeft"
+                  ? -1
+                  : 0;
+            if (!step) return;
+            event.preventDefault();
+            const [next] = TABS[(i + step + TABS.length) % TABS.length];
+            onChange(next);
+            document.getElementById(`app-tab-${next}`)?.focus();
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Every panel stays mounted, so switching tabs keeps unsaved edits and loaded data.
+function TabPanel({
+  tab,
+  current,
+  children,
+}: {
+  tab: Tab;
+  current: Tab;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      role="tabpanel"
+      id={`app-panel-${tab}`}
+      aria-labelledby={`app-tab-${tab}`}
+      className="app-tab-panel"
+      hidden={tab !== current}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function AppDetailView({ app }: { app: string }) {
   const [data, setData] = useState<AppDetail | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -220,6 +292,24 @@ export function AppDetailView({ app }: { app: string }) {
   const [retry, setRetry] = useState(0);
   const [issues, setIssues] = useState<FlowIssues>(noIssues);
   const [manualDraft, setManualDraft] = useState(false);
+  const [tab, setTab] = useState<Tab>("design");
+  useEffect(() => {
+    // The tab is in the address (#release) so a link can open it; only known here.
+    const follow = () => {
+      const wanted = window.location.hash.slice(1);
+      if (TABS.some(([key]) => key === wanted)) setTab(wanted as Tab);
+    };
+    const frame = requestAnimationFrame(follow);
+    window.addEventListener("hashchange", follow);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("hashchange", follow);
+    };
+  }, []);
+  function selectTab(next: Tab) {
+    setTab(next);
+    window.history.replaceState(null, "", `#${next}`);
+  }
   const manualRevision = data
     ? JSON.stringify([data.current, data.draft, data.summary])
     : "";
@@ -465,368 +555,389 @@ export function AppDetailView({ app }: { app: string }) {
           {data.kind === "flow" ? "编排应用" : "代码应用"}
         </span>
         <Link
+          className="button secondary"
+          href={`/use/${encodeURIComponent(app)}`}
+        >
+          使用页
+        </Link>
+        <Link
           className="button primary"
           href={`/runs/new?app=${encodeURIComponent(app)}`}
         >
           新建运行
         </Link>
       </div>
-      {data.kind === "flow" && (
-        <AppMetadata
-          data={data}
-          changed={(value) => accept(value, "应用信息已保存。")}
-        />
-      )}
       {error && <ErrorNotice message={error} />}
       {notice && (
         <p className="asset-notice" role="status">
           {notice}
         </p>
       )}
-      <section
-        className={`panel config-banner ${view}`}
-        aria-label="正在查看的配置"
-      >
-        <div>
-          <strong>
-            {view === "draft"
-              ? "正在查看：草稿"
-              : `正在查看：当前版本 v${data.current_version}`}
-          </strong>
-          <p>
-            {dirty
-              ? "有未保存的修改"
-              : view === "draft"
-                ? `草稿已保存 · 当前发布版本 v${data.current_version}`
-                : data.kind === "flow"
-                  ? "新运行使用当前发布版本。"
-                  : "编辑节点设置后，可保存为草稿。"}
-          </p>
-        </div>
-        <div className="asset-actions">
-          {data.draft && (
-            <>
-              <button
-                type="button"
-                className="button secondary"
-                disabled={busy || view === "current"}
-                onClick={() => switchView("current")}
-              >
-                查看当前版本
-              </button>
-              <button
-                type="button"
-                className="button secondary"
-                disabled={busy || view === "draft"}
-                onClick={() => switchView("draft")}
-              >
-                查看草稿
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            className="button primary"
-            disabled={busy || running || !dirty}
-            onClick={save}
-          >
-            保存草稿
-          </button>
-          <button
-            type="button"
-            className="button secondary"
-            disabled={busy || (!data.draft && !dirty)}
-            onClick={() => {
-              if (!window.confirm("确定放弃草稿和未保存的修改吗？")) return;
-              void action(async () => {
-                // With only unsaved edits there is no draft on the server to delete.
-                if (data.draft) await deleteAppDraft(app);
-                accept(await getApp(app), "已放弃草稿。");
-              });
-            }}
-          >
-            放弃草稿
-          </button>
-        </div>
-      </section>
-      <AppManualPanel
-        resource={manual}
-        controls={
-          data.draft && (
-            <div
-              className="asset-actions manual-version"
-              role="group"
-              aria-label="说明书版本"
-            >
-              <button
-                type="button"
-                className="button secondary"
-                aria-pressed={manualDraft}
-                onClick={() => setManualDraft(true)}
-              >
-                看草稿
-              </button>
-              <button
-                type="button"
-                className="button secondary"
-                aria-pressed={!manualDraft}
-                onClick={() => setManualDraft(false)}
-              >
-                看生效版本
-              </button>
-            </div>
-          )
-        }
-      />
-      {isFlowConfig(config) ? (
-        <>
-          <FlowEditor
-            app={app}
-            data={data}
-            config={config}
-            manual={canvasManual.manual}
-            setConfig={(value) => {
-              setConfig(value);
-              setNotice("");
-            }}
-            issues={issues}
-            dirty={dirty}
-            disabled={busy || running}
-          />
-          <FlowEnv
-            app={app}
-            config={config}
-            setConfig={(value) => {
-              setConfig(value);
-              setNotice("");
-            }}
-            secrets={data.secrets}
-            setSecrets={(secrets) => setData({ ...data, secrets })}
-            issues={issues.env}
-            disabled={busy || running}
-          />
-        </>
-      ) : (
-        <section className="panel run-flow app-design" aria-label="应用设计">
-          <div className="section-heading">
-            <h2>应用设计与节点配置</h2>
-            <span className="muted">点选节点查看设计与设置</span>
+      <AppTabs tab={tab} onChange={selectTab} />
+      {(tab === "design" || tab === "release") && (
+        <section
+          className={`panel config-banner ${view}`}
+          aria-label="正在查看的配置"
+        >
+          <div>
+            <strong>
+              {view === "draft"
+                ? "正在查看：草稿"
+                : `正在查看：当前版本 v${data.current_version}`}
+            </strong>
+            <p>
+              {dirty
+                ? "有未保存的修改"
+                : view === "draft"
+                  ? `草稿已保存 · 当前发布版本 v${data.current_version}`
+                  : data.kind === "flow"
+                    ? "新运行使用当前发布版本。"
+                    : "编辑节点设置后，可保存为草稿。"}
+            </p>
           </div>
-          <div className="flow-about">
-            <dl>
-              <div>
-                <dt>运行方式</dt>
-                <dd>{data.pattern}</dd>
-              </div>
-              <div>
-                <dt>知识库</dt>
-                <dd>{data.knowledge}</dd>
-              </div>
-              <div>
-                <dt>Skill</dt>
-                <dd>{data.skills_text}</dd>
-              </div>
-            </dl>
-          </div>
-          <div className="flow-body">
-            <FlowDiagram
-              flow={graph}
-              selectedId={node?.id}
-              select={setSelected}
-              designMode
-            />
-            {node && (
-              <div
-                className="flow-detail"
-                role="region"
-                aria-label={`节点 ${node.title}`}
-              >
-                <FlowNodeDesign
-                  node={graph.nodes.find((item) => item.id === node.id)!}
-                />
-                {node.settings.length > 0 && codeNodes[node.id] ? (
-                  <AppSettings
-                    key={node.id}
-                    node={node}
-                    config={codeNodes[node.id]}
-                    options={data.options}
-                    disabled={busy || running}
-                    onChange={(value) => {
-                      setConfig({ nodes: { ...codeNodes, [node.id]: value } });
-                      setNotice("");
-                    }}
-                  />
-                ) : (
-                  <p className="muted">此节点没有可调设置。</p>
-                )}
-              </div>
+          <div className="asset-actions">
+            {data.draft && (
+              <>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={busy || view === "current"}
+                  onClick={() => switchView("current")}
+                >
+                  查看当前版本
+                </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={busy || view === "draft"}
+                  onClick={() => switchView("draft")}
+                >
+                  查看草稿
+                </button>
+              </>
             )}
+            <button
+              type="button"
+              className="button primary"
+              disabled={busy || running || !dirty}
+              onClick={save}
+            >
+              保存草稿
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              disabled={busy || (!data.draft && !dirty)}
+              onClick={() => {
+                if (!window.confirm("确定放弃草稿和未保存的修改吗？")) return;
+                void action(async () => {
+                  // With only unsaved edits there is no draft on the server to delete.
+                  if (data.draft) await deleteAppDraft(app);
+                  accept(await getApp(app), "已放弃草稿。");
+                });
+              }}
+            >
+              放弃草稿
+            </button>
           </div>
         </section>
       )}
-      <div className="asset-two-columns">
-        <section className="panel asset-section" aria-label="发布前评测">
-          <div className="asset-section-heading">
-            <h2>发布前评测</h2>
-            {data.has_eval_set && (
-              <button
-                className="button secondary"
-                type="button"
-                disabled={
-                  busy || running || dirty || !data.draft || view !== "draft"
-                }
-                onClick={() =>
-                  void action(async () =>
-                    accept(
-                      await evaluateAppDraft(app),
-                      "评测已开始，每 5 秒更新结果。",
-                    ),
-                  )
-                }
-              >
-                {running ? "评测运行中…" : "运行评测"}
-              </button>
-            )}
-          </div>
-          {data.has_eval_set ? (
-            <>
-              <p className="muted">
-                当前展示
-                {view === "draft"
-                  ? "草稿最近一次"
-                  : `版本 v${data.current_version} 发布时的`}
-                评测。
-              </p>
-              <Evaluation evaluation={displayedEval} />
-            </>
-          ) : (
-            <p className="muted">此应用没有评测集，保存草稿后可直接发布。</p>
-          )}
-        </section>
-        <section className="panel asset-section" aria-label="发布应用">
-          <h2>发布应用</h2>
-          <form
-            className="asset-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void action(async () => {
-                accept(
-                  await publishAppDraft(
-                    app,
-                    note.trim(),
-                    actorPayload(actor).actor,
-                  ),
-                  "应用已发布为新版本。",
-                );
-                setNote("");
-                await refreshHistory();
-              });
-            }}
-          >
-            <label className="asset-field">
-              发布说明（必填）
-              <textarea
-                required
-                value={note}
-                disabled={busy}
-                onChange={(event) => setNote(event.target.value)}
-                rows={3}
-              />
-            </label>
-            <ActorField actor={actor} onChange={setActor} disabled={busy} />
-            {publishReason && (
-              <p className="muted" id="app-publish-reason">
-                {publishReason}
-              </p>
-            )}
-            <button
-              className="button primary"
-              disabled={busy || Boolean(publishReason) || !note.trim()}
-              aria-describedby={
-                publishReason ? "app-publish-reason" : undefined
-              }
-            >
-              发布新版本
-            </button>
-          </form>
-        </section>
-      </div>
-      <section className="panel asset-section" aria-label="版本历史">
-        <h2>版本历史</h2>
-        {historyError && (
-          <ErrorNotice
-            message={historyError}
-            onRetry={() => void refreshHistory()}
+      <TabPanel tab="overview" current={tab}>
+        {data.kind === "flow" && (
+          <AppMetadata
+            data={data}
+            changed={(value) => accept(value, "应用信息已保存。")}
           />
         )}
-        <ul className="asset-history">
-          {versions.map((version) => (
-            <li key={version.version}>
-              <div>
-                <strong>
-                  v{version.version} ·{" "}
-                  {version.status === "current" ? "当前版本" : "历史版本"}
-                </strong>
-                <p>{version.note}</p>
-                <small>
-                  {version.created_by ?? "未署名"} ·{" "}
-                  <AssetTime value={version.created_at} /> · 评测分{" "}
-                  {scoreText(version.eval?.score)}
-                </small>
-              </div>
-              {data.kind === "flow" && (
+        <AppManualPanel
+          resource={manual}
+          controls={
+            data.draft && (
+              <div
+                className="asset-actions manual-version"
+                role="group"
+                aria-label="说明书版本"
+              >
                 <button
                   type="button"
                   className="button secondary"
-                  disabled={busy}
+                  aria-pressed={manualDraft}
+                  onClick={() => setManualDraft(true)}
+                >
+                  看草稿
+                </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  aria-pressed={!manualDraft}
+                  onClick={() => setManualDraft(false)}
+                >
+                  看生效版本
+                </button>
+              </div>
+            )
+          }
+        />
+      </TabPanel>
+      <TabPanel tab="design" current={tab}>
+        {isFlowConfig(config) ? (
+          <>
+            <FlowEditor
+              app={app}
+              data={data}
+              config={config}
+              manual={canvasManual.manual}
+              setConfig={(value) => {
+                setConfig(value);
+                setNotice("");
+              }}
+              issues={issues}
+              dirty={dirty}
+              disabled={busy || running}
+            />
+            <FlowEnv
+              app={app}
+              config={config}
+              setConfig={(value) => {
+                setConfig(value);
+                setNotice("");
+              }}
+              secrets={data.secrets}
+              setSecrets={(secrets) => setData({ ...data, secrets })}
+              issues={issues.env}
+              disabled={busy || running}
+            />
+          </>
+        ) : (
+          <section className="panel run-flow app-design" aria-label="应用设计">
+            <div className="section-heading">
+              <h2>应用设计与节点配置</h2>
+              <span className="muted">点选节点查看设计与设置</span>
+            </div>
+            <div className="flow-about">
+              <dl>
+                <div>
+                  <dt>运行方式</dt>
+                  <dd>{data.pattern}</dd>
+                </div>
+                <div>
+                  <dt>知识库</dt>
+                  <dd>{data.knowledge}</dd>
+                </div>
+                <div>
+                  <dt>Skill</dt>
+                  <dd>{data.skills_text}</dd>
+                </div>
+              </dl>
+            </div>
+            <div className="flow-body">
+              <FlowDiagram
+                flow={graph}
+                selectedId={node?.id}
+                select={setSelected}
+                designMode
+              />
+              {node && (
+                <div
+                  className="flow-detail"
+                  role="region"
+                  aria-label={`节点 ${node.title}`}
+                >
+                  <FlowNodeDesign
+                    node={graph.nodes.find((item) => item.id === node.id)!}
+                  />
+                  {node.settings.length > 0 && codeNodes[node.id] ? (
+                    <AppSettings
+                      key={node.id}
+                      node={node}
+                      config={codeNodes[node.id]}
+                      options={data.options}
+                      disabled={busy || running}
+                      onChange={(value) => {
+                        setConfig({
+                          nodes: { ...codeNodes, [node.id]: value },
+                        });
+                        setNotice("");
+                      }}
+                    />
+                  ) : (
+                    <p className="muted">此节点没有可调设置。</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+      </TabPanel>
+      <TabPanel tab="release" current={tab}>
+        <div className="asset-two-columns">
+          <section className="panel asset-section" aria-label="发布前评测">
+            <div className="asset-section-heading">
+              <h2>发布前评测</h2>
+              {data.has_eval_set && (
+                <button
+                  className="button secondary"
+                  type="button"
+                  disabled={
+                    busy || running || dirty || !data.draft || view !== "draft"
+                  }
                   onClick={() =>
-                    void action(() => exportAppVersion(app, version.version!))
+                    void action(async () =>
+                      accept(
+                        await evaluateAppDraft(app),
+                        "评测已开始，每 5 秒更新结果。",
+                      ),
+                    )
                   }
                 >
-                  导出
+                  {running ? "评测运行中…" : "运行评测"}
                 </button>
               )}
-              {version.status !== "current" && (
-                <button
-                  type="button"
-                  className="button secondary"
-                  disabled={busy || dirty}
-                  onClick={() => {
-                    if (
-                      !window.confirm(
-                        `确定将 v${version.version} 设为当前版本吗？新运行将使用该版本。`,
+            </div>
+            {data.has_eval_set ? (
+              <>
+                <p className="muted">
+                  当前展示
+                  {view === "draft"
+                    ? "草稿最近一次"
+                    : `版本 v${data.current_version} 发布时的`}
+                  评测。
+                </p>
+                <Evaluation evaluation={displayedEval} />
+              </>
+            ) : (
+              <p className="muted">此应用没有评测集，保存草稿后可直接发布。</p>
+            )}
+          </section>
+          <section className="panel asset-section" aria-label="发布应用">
+            <h2>发布应用</h2>
+            <form
+              className="asset-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void action(async () => {
+                  accept(
+                    await publishAppDraft(
+                      app,
+                      note.trim(),
+                      actorPayload(actor).actor,
+                    ),
+                    "应用已发布为新版本。",
+                  );
+                  setNote("");
+                  await refreshHistory();
+                });
+              }}
+            >
+              <label className="asset-field">
+                发布说明（必填）
+                <textarea
+                  required
+                  value={note}
+                  disabled={busy}
+                  onChange={(event) => setNote(event.target.value)}
+                  rows={3}
+                />
+              </label>
+              <ActorField actor={actor} onChange={setActor} disabled={busy} />
+              {publishReason && (
+                <p className="muted" id="app-publish-reason">
+                  {publishReason}
+                </p>
+              )}
+              <button
+                className="button primary"
+                disabled={busy || Boolean(publishReason) || !note.trim()}
+                aria-describedby={
+                  publishReason ? "app-publish-reason" : undefined
+                }
+              >
+                发布新版本
+              </button>
+            </form>
+          </section>
+        </div>
+        <section className="panel asset-section" aria-label="版本历史">
+          <h2>版本历史</h2>
+          {historyError && (
+            <ErrorNotice
+              message={historyError}
+              onRetry={() => void refreshHistory()}
+            />
+          )}
+          <ul className="asset-history">
+            {versions.map((version) => (
+              <li key={version.version}>
+                <div>
+                  <strong>
+                    v{version.version} ·{" "}
+                    {version.status === "current" ? "当前版本" : "历史版本"}
+                  </strong>
+                  <p>{version.note}</p>
+                  <small>
+                    {version.created_by ?? "未署名"} ·{" "}
+                    <AssetTime value={version.created_at} /> · 评测分{" "}
+                    {scoreText(version.eval?.score)}
+                  </small>
+                </div>
+                {data.kind === "flow" && (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={() =>
+                      void action(() => exportAppVersion(app, version.version!))
+                    }
+                  >
+                    导出
+                  </button>
+                )}
+                {version.status !== "current" && (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={busy || dirty}
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          `确定将 v${version.version} 设为当前版本吗？新运行将使用该版本。`,
+                        )
                       )
-                    )
-                      return;
-                    void action(async () => {
-                      accept(
-                        await activateAppVersion(
-                          app,
-                          version.version!,
-                          actorPayload(actor).actor,
-                        ),
-                        `已将 v${version.version} 设为当前版本。`,
-                      );
-                      await refreshHistory();
-                    });
-                  }}
-                >
-                  设为当前版本
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-        {versions.length >= 2 && (
-          <VersionPicker
-            versions={versions.map((item) => item.version!)}
-            selected={compare}
-            onChange={setCompare}
-          />
-        )}
-        {left && right && <ConfigDiff left={left} right={right} data={data} />}
-      </section>
-      <AppAccess app={app} inputs={data.inputs} />
+                        return;
+                      void action(async () => {
+                        accept(
+                          await activateAppVersion(
+                            app,
+                            version.version!,
+                            actorPayload(actor).actor,
+                          ),
+                          `已将 v${version.version} 设为当前版本。`,
+                        );
+                        await refreshHistory();
+                      });
+                    }}
+                  >
+                    设为当前版本
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {versions.length >= 2 && (
+            <VersionPicker
+              versions={versions.map((item) => item.version!)}
+              selected={compare}
+              onChange={setCompare}
+            />
+          )}
+          {left && right && (
+            <ConfigDiff left={left} right={right} data={data} />
+          )}
+        </section>
+      </TabPanel>
+      <TabPanel tab="access" current={tab}>
+        <AppAccess app={app} inputs={data.inputs} />
+      </TabPanel>
     </div>
   );
 }

@@ -14,7 +14,11 @@ async function appDetail(
   expect(response.ok()).toBeTruthy();
   return response.json();
 }
+async function tab(page: Page, name: "编排" | "评测与发布") {
+  await page.getByRole("tab", { name }).click();
+}
 async function planSettings(page: Page) {
+  await tab(page, "编排");
   await page
     .getByRole("group", { name: "流程图", exact: true })
     .getByRole("button", { name: /^出方案/ })
@@ -85,6 +89,7 @@ test("application draft, evaluation, publish, configuration comparison and confi
   await expect(plan.getByLabel("最多重写次数", { exact: true })).toHaveValue(
     "4",
   );
+  await tab(page, "评测与发布");
   await page.getByLabel("发布说明（必填）").fill("改用 DeepSeek，允许四次重写");
   await expect(page.getByRole("button", { name: "发布新版本" })).toBeDisabled();
   await expect(
@@ -166,6 +171,7 @@ test("failed evaluation blocks publishing; saving a correction clears previous r
   const plan = await planSettings(page);
   await plan.getByLabel("最多重写次数", { exact: true }).fill("1");
   await saveDraft(page);
+  await tab(page, "评测与发布");
   await page.getByRole("button", { name: "运行评测", exact: true }).click();
   await expect(page.getByText("评测未通过", { exact: true })).toBeVisible({
     timeout: 16_000,
@@ -178,8 +184,10 @@ test("failed evaluation blocks publishing; saving a correction clears previous r
   });
   expect(blocked.status()).toBe(409);
   expect((await blocked.json()).detail).toContain("通过评测");
+  await tab(page, "编排");
   await plan.getByLabel("最多重写次数", { exact: true }).fill("3");
   await saveDraft(page);
+  await tab(page, "评测与发布");
   await expect(
     page.getByText("尚未运行评测。每次保存草稿后，需要重新评测。"),
   ).toBeVisible();
@@ -217,6 +225,7 @@ test("hello publishes without evaluation and tolerates unavailable browser stora
   ).toHaveCount(0);
   const noEval = await request.post("/api/apps/hello/draft/eval", { data: {} });
   expect(noEval.status()).toBe(409);
+  await tab(page, "评测与发布");
   await expect(
     page.getByText("此应用没有评测集，保存草稿后可直接发布。"),
   ).toBeVisible();
@@ -289,6 +298,7 @@ test("invalid integer values and backend 422 / 409 details are visible", async (
       json: { detail: "当前版本已变化，请刷新后重试" },
     }),
   );
+  await tab(page, "评测与发布");
   await page.getByLabel("发布说明（必填）").fill("冲突测试");
   await page.getByRole("button", { name: "发布新版本" }).click();
   await expect(page.getByRole("main").getByRole("alert")).toContainText(
@@ -562,7 +572,7 @@ test("in-app links ask before leaving unsaved edits", async ({ page }) => {
   });
   await nav.getByRole("link", { name: "Skill", exact: true }).click();
   expect(asked).toContain("未保存");
-  await expect(page).toHaveURL(/\/apps\/etl$/);
+  await expect(page).toHaveURL(/\/apps\/etl(#design)?$/);
   await expect(plan.getByLabel("最多重写次数", { exact: true })).toHaveValue(
     "2",
   );

@@ -16,7 +16,7 @@ import { DatasourceDialog } from "./datasource-form";
 import { useMay } from "./session";
 import { ErrorNotice } from "./ui";
 
-function CopyButton({ text, label }: { text: string; label: string }) {
+export function CopyButton({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
   return (
     <button

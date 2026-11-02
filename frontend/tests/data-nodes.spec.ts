@@ -317,7 +317,7 @@ test("flow manual shows ordered steps, resource groups, documents and working re
   request,
 }, info) => {
   const app = await create(request, { app: "retail-etl" });
-  await page.goto(`/apps/${app}`);
+  await page.goto(`/apps/${app}#overview`);
   const book = manual(page);
   await expect(book).toHaveAttribute("open", "");
   await expect(book.locator(".manual-steps > li")).toHaveCount(12);
@@ -352,7 +352,7 @@ test("flow manual shows ordered steps, resource groups, documents and working re
   await expect(page.getByRole("heading", { level: 1 })).toContainText(
     "etl-plan",
   );
-  await page.goto(`/apps/${app}`);
+  await page.goto(`/apps/${app}#overview`);
   await manual(page)
     .getByRole("link", { name: "零售数据口径", exact: true })
     .click();
@@ -371,7 +371,7 @@ test("manual switches between saved draft and effective config; code apps share 
   config.graph.nodes.find((node) => node.id === "profile")!.note =
     "只有草稿里的讲解";
   await request.put(`/api/apps/${app}/draft`, { data: { config } });
-  await page.goto(`/apps/${app}`);
+  await page.goto(`/apps/${app}#overview`);
   const book = manual(page);
   await expect(book).toContainText("生效版本 v1");
   await expect(book).not.toContainText("只有草稿里的讲解");
@@ -379,7 +379,7 @@ test("manual switches between saved draft and effective config; code apps share 
   await expect(book).toContainText("只有草稿里的讲解");
   await book.getByRole("button", { name: "看生效版本", exact: true }).click();
   await expect(book).not.toContainText("只有草稿里的讲解");
-  await page.goto("/apps/etl");
+  await page.goto("/apps/etl#overview");
   await expect(manual(page)).toHaveAttribute("open", "");
   await expect(
     manual(page).getByRole("region", { name: "Skill", exact: true }),
@@ -387,7 +387,7 @@ test("manual switches between saved draft and effective config; code apps share 
   await expect(
     manual(page).getByRole("region", { name: "外部系统", exact: true }),
   ).toContainText("Databricks");
-  await page.goto(`/apps/${await create(request)}`);
+  await page.goto(`/apps/${await create(request)}#overview`);
   await expect(
     manual(page).getByRole("region", { name: "Skill", exact: true }),
   ).toHaveCount(0);
