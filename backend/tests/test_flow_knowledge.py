@@ -1,6 +1,7 @@
 """Knowledge nodes through the same save/run/test/import APIs as tool nodes."""
 
 import copy
+import re
 from unittest.mock import AsyncMock
 
 import httpx
@@ -594,3 +595,108 @@ def test_context_format_with_headings_pages_and_multiple_hits():
         context(hits)
         == "[1]《退货.pdf》第三章 退货 > 3.2 期限（第 5 页）\n第一段\n\n[2]《说明.txt》\n第二段"
     )
+
+
+# Full-text mode: a short spec the plan must follow end to end goes into the prompt whole.
+
+SPEC = [
+    f"S{i} 第 {i} 步的计算规则写在这里，按版本取 Table 1 的行，再按平台汇总，不适用的月份写零。"
+    for i in range(1, 9)
+]
+
+
+async def upload(p, kb_id: str, name: str, text: str) -> str:
+    uploaded = await p.api.post(
+        f"/knowledge-bases/{kb_id}/documents", files={"files": (name, text.encode())}
+    )
+    assert uploaded.status_code == 202, uploaded.text
+    return uploaded.json()[0]["document_id"]
+
+
+@pytest.mark.parametrize(
+    ("settings", "loc"),
+    [
+        ({"mode": "all"}, "mode"),
+        ({"mode": "full", "max_chars": 999}, "max_chars"),
+        ({"mode": "full", "max_chars": 120_001}, "max_chars"),
+        ({"mode": "full", "max_chars": True}, "max_chars"),
+        ({"mode": "full", "max_chars": 1.5}, "max_chars"),
+        ({"mode": "full", "query": 3}, "query"),
+        ({"mode": "search", "query": ""}, "query"),
+    ],
+)
+async def test_full_text_settings_are_checked(p, settings, loc):
+    kb = await p.knowledge.create("资料")
+    await p.api.post("/apps", json={"app": "ask-policy", "title": "问答"})
+    config = knowledge_flow([kb.kb_id], **settings)
+    response = await p.api.put("/apps/ask-policy/draft", json={"config": config})
+    assert response.status_code == 422, response.text
+    assert ["body", "config", "graph", "nodes", "kb", loc] in [
+        problem["loc"] for problem in response.json()["detail"]
+    ]
+
+
+async def test_full_text_gives_every_chunk_in_order_with_the_overlap_once(p):
+    spec = await p.knowledge.create("试点说明", chunk_size=120, chunk_overlap=20)
+    other = await p.knowledge.create("规范")
+    await upload(p, spec.kb_id, "说明.md", "# 计算逻辑\n\n" + "\n\n".join(SPEC))
+    await upload(p, spec.kb_id, "附录.md", "# 附录\n\n" + POLICY)
+    await upload(p, other.kb_id, "规范.md", "# 加载\n\n" + OTHER)
+    while await p.worker.process_once():
+        pass
+    _, chunks = await p.knowledge.chunks(
+        (await p.knowledge.documents(spec.kb_id))[-1].document_id, 0, 100
+    )
+    assert len(chunks) > 3  # The spec is split, and chunks repeat the overlap.
+    assert all(c.text[:20] == b.text[-20:] for b, c in zip(chunks, chunks[1:], strict=False))
+    # Bounds of the setting are accepted, and full text needs no question.
+    await p.publish(
+        knowledge_flow([spec.kb_id, other.kb_id], mode="full", max_chars=1000, query="")
+    )
+    run = await p.run("")
+    assert run["status"] == "done", run["error"]
+    hits = run["result"]["hits"]
+    assert [h["document_name"] for h in hits] == ["说明.md"] * len(chunks) + ["附录.md", "规范.md"]
+    assert [h["index"] for h in hits] == list(range(1, len(hits) + 1))
+    assert [h["text"] for h in hits[: len(chunks)]] == [c.text for c in chunks]
+    assert {h["score"] for h in hits} == {1.0}
+    context = run["result"]["context"]
+    pieces = re.split(r"(?:^|\n\n)\[\d+\]《[^》]*》[^\n]*\n", context)
+    assert pieces[0] == "" and len(pieces) == len(hits) + 1
+    assert "".join(pieces[1 : len(chunks) + 1]) == "\n\n".join(SPEC)
+    assert context.startswith("[1]《说明.md》计算逻辑\nS1 ")
+    assert context.endswith(f"[{len(hits)}]《规范.md》加载\n{OTHER}")
+    assert [s["index"] for s in run["sources"]] == [h["index"] for h in hits]
+    assert p.gateway.requests == []  # No embedding call, no model call.
+
+    tried = await p.api.post("/apps/ask-policy/nodes/kb/test", json={"values": {}})
+    assert tried.status_code == 200, tried.text
+    assert tried.json()["outputs"] == run["result"]
+
+
+@pytest.mark.parametrize("problem", ["too_long", "not_ready"])
+async def test_full_text_never_cuts_and_waits_for_documents(p, problem):
+    kb = await p.knowledge.create("试点说明")
+    await upload(p, kb.kb_id, "说明.md", "# 计算逻辑\n\n" + "\n\n".join(SPEC * 3))
+    if problem == "too_long":
+        assert await p.worker.process_once()
+    on_error = {"then": "default", "default": {"hits": [], "context": "没有资料"}}
+    config = knowledge_flow([kb.kb_id], mode="full", max_chars=1000, on_error=on_error)
+    config["graph"]["nodes"][-1]["outputs"].append(
+        {"key": "error_message", "from": ["{{kb.error_message}}"]}
+    )
+    await p.publish(config)
+    run = await p.run()
+    assert run["status"] == "done", run["error"]
+    assert run["result"]["context"] == "没有资料" and run["sources"] == []
+    message = run["result"]["error_message"]
+    if problem == "too_long":
+        assert message == (
+            "知识库整篇读取失败：知识库的内容超过整篇放进去的上限 1,000 个字符，没有截断："
+            "调高 max_chars，或者改用检索（mode 写 search）"
+        )
+    else:
+        assert message == (
+            "知识库整篇读取失败：知识库「试点说明」里 说明.md（排队中）还没处理好；"
+            "整篇放进去要等文档都处理好（处理失败的请重新处理或删掉）"
+        )

@@ -121,6 +121,9 @@ export type KnowledgeNode = NodeBase &
   Fallible & {
     type: "knowledge";
     knowledge_bases: string[];
+    // "full" puts every chunk of the bases into the context instead of searching.
+    mode?: "search" | "full";
+    max_chars?: number;
     query: string;
     top_k: number;
     min_score: number;

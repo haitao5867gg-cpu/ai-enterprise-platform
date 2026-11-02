@@ -159,17 +159,24 @@
 
 ```jsonc
 {"knowledge_bases": ["kb-uuid-1", "kb-uuid-2"],   // 1–5 个
- "query": "{{start.question}}",                   // 必填，最多 2000 字符；引用替换后为空时产出为空、不报错
+ "mode": "search",                                // 可选，"search"（默认，检索相关片段）或 "full"（整篇放进去）
+ "query": "{{start.question}}",                   // search 时必填，最多 2000 字符；引用替换后为空时产出为空、不报错
  "top_k": 5,                                      // 1–20
  "min_score": 0.3,                                // 0–1
- "retrieval": {"mode": "hybrid", "vector_weight": 0.7, "rerank": null}}   // 可选，Retrieval；不写等于只用向量
+ "retrieval": {"mode": "hybrid", "vector_weight": 0.7, "rerank": null},   // 可选，Retrieval；不写等于只用向量
+ "max_chars": 40000}                              // 可选，只在 full 时有效，1000–120000
 ```
+
+**整篇放进去（`mode: "full"`）**：资料是一份必须从头到尾照着做的短说明（比如几十 KB 的计算口径）时，检索按问题挑片段，总会漏掉几块，这时用整篇。
+- 不检索，也不调向量模型：按 `knowledge_bases` 的顺序，每个知识库的文档按上传先后，每个文档的片段按 `position`，全部取出。`query`、`top_k`、`min_score`、`retrieval` 不起作用（`query` 可以为空）。
+- `hits` 是全部片段，`score` 都是 1；编号规则、`sources` 和检索时一样。`context` 的格式也一样，只是同一标题、同一页里相邻的两块，后一块开头和前一块重复的那段（切分时的重叠 `chunk_overlap`）只出现一次，所以把各段正文接起来就是原文。
+- 不截断：正文合计超过 `max_chars`（默认 40000）个字符时，节点出错（`knowledge_error`），提示调高 `max_chars` 或改用检索；有文档还没处理好（排队中、处理中、处理失败）时也出错，列出是哪几个文档。出错照常按 `on_error` 处理。
 
 产出：
 - `hits`：`Hit[]`，每项多一个 `index`（引用编号）。编号在**一次运行里统一分配**：从 1 开始，同一个片段在这次运行里不管被哪个知识检索节点、第几次命中，都用同一个编号；新片段接着已用过的最大编号往下编。所以一个提示词里放了几个检索节点的 `context`，`[n]` 也不会撞号。编号记在运行状态里（变量池之外，比如 `citations: {chunk_id: index}`）。单节点试跑从 1 开始。
 - `context`：可以直接放进提示词的文字，每段形如 `[1]《退换货政策.pdf》第三章 退货 > 3.2 期限（第 5 页）\n片段内容`，段之间空一行；没有命中时为 `""`。
 
-无分支。可以设 `on_error`，出错类型新增 `knowledge_error`（知识库不存在、向量模型报错）。`GET /node-types` 里 `category` 为 `"tool"`，`error_handling: true`，默认设置 `{"knowledge_bases": [], "query": "", "top_k": 5, "min_score": 0.3, "retrieval": {"mode": "hybrid", "vector_weight": 0.7, "rerank": null}}`；流程视图里 `kind` 为 `tool`。
+无分支。可以设 `on_error`，出错类型新增 `knowledge_error`（知识库不存在、向量模型报错；整篇放进去时内容超过上限、文档没处理好）。`GET /node-types` 里 `category` 为 `"tool"`，`error_handling: true`，默认设置 `{"knowledge_bases": [], "query": "", "top_k": 5, "min_score": 0.3, "retrieval": {"mode": "hybrid", "vector_weight": 0.7, "rerank": null}}`；流程视图里 `kind` 为 `tool`。
 
 - 保存草稿时检查知识库存在；导出文件的 `requires` 新增 `knowledge_bases: [{kb_id, name}]`，导入时缺失的知识库在 `problems` 里报 `{"kind": "knowledge_base", "kb_id", "name", "message": "没有这个知识库，请在节点里重新选择"}`。
 - 单节点试跑（`POST /apps/{app}/nodes/{node}/test`）支持这个节点，`rendered` 里有替换后的 `query`。

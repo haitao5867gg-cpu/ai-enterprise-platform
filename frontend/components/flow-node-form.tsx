@@ -1560,48 +1560,83 @@ export function NodeSettings({
               </p>
             ))}
           </fieldset>
-          <RefField
-            label="检索问题"
-            value={node.query}
-            multiline
-            variables={variables}
-            issues={at("query")}
-            help="最多 2000 字符，可引用前面节点的变量。"
-            onChange={(query) => change({ ...node, query })}
-          />
-          <NumberField
-            label="top_k"
-            value={node.top_k}
-            min={1}
-            max={20}
-            issues={at("top_k")}
-            onChange={(top_k) => change({ ...node, top_k })}
-          />
-          <label className="asset-field">
-            min_score
-            <input
-              type="number"
-              min={0}
-              max={1}
-              step="any"
-              value={Number.isNaN(node.min_score) ? "" : node.min_score}
-              onChange={(event) =>
-                change({ ...node, min_score: event.target.valueAsNumber })
+          <SelectField
+            label="取资料的方式"
+            value={node.mode ?? "search"}
+            choices={[
+              { value: "search", label: "检索相关片段" },
+              { value: "full", label: "整篇放进去" },
+            ]}
+            issues={at("mode")}
+            help="资料是一份要从头到尾照着做的短说明时用整篇：不检索，知识库里所有文档的全部片段按顺序放进 context，超过字数上限时节点报错，不截断。"
+            onChange={(mode) => {
+              const next = { ...node };
+              if (mode === "full") {
+                next.mode = "full";
+                next.max_chars = node.max_chars ?? 40000;
+              } else {
+                delete next.mode;
+                delete next.max_chars;
               }
-            />
-            {at("min_score").map((message) => (
-              <span key={message} className="field-error">
-                {message}
-              </span>
-            ))}
-          </label>
-          <RetrievalFields
-            value={node.retrieval}
-            topK={node.top_k}
-            models={options.rerank_models ?? []}
-            issues={at("retrieval")}
-            onChange={(retrieval) => change({ ...node, retrieval })}
+              change(next);
+            }}
           />
+          {node.mode === "full" ? (
+            <NumberField
+              label="字数上限"
+              value={node.max_chars ?? 40000}
+              min={1000}
+              max={120000}
+              issues={at("max_chars")}
+              help="1000–120000 个字符；知识库的正文超过它时节点报错。"
+              onChange={(max_chars) => change({ ...node, max_chars })}
+            />
+          ) : (
+            <>
+              <RefField
+                label="检索问题"
+                value={node.query}
+                multiline
+                variables={variables}
+                issues={at("query")}
+                help="最多 2000 字符，可引用前面节点的变量。"
+                onChange={(query) => change({ ...node, query })}
+              />
+              <NumberField
+                label="top_k"
+                value={node.top_k}
+                min={1}
+                max={20}
+                issues={at("top_k")}
+                onChange={(top_k) => change({ ...node, top_k })}
+              />
+              <label className="asset-field">
+                min_score
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step="any"
+                  value={Number.isNaN(node.min_score) ? "" : node.min_score}
+                  onChange={(event) =>
+                    change({ ...node, min_score: event.target.valueAsNumber })
+                  }
+                />
+                {at("min_score").map((message) => (
+                  <span key={message} className="field-error">
+                    {message}
+                  </span>
+                ))}
+              </label>
+              <RetrievalFields
+                value={node.retrieval}
+                topK={node.top_k}
+                models={options.rerank_models ?? []}
+                issues={at("retrieval")}
+                onChange={(retrieval) => change({ ...node, retrieval })}
+              />
+            </>
+          )}
         </>
       );
     case "llm":
