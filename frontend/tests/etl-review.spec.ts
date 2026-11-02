@@ -347,6 +347,23 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
     "整表覆盖",
     "按条件替换 · stat_month = ${param.update_month}",
   ]);
+  // The result table exists: the plan says which column it adds and where.
+  const resultTable = review.getByRole("article", {
+    name: "目标表 ads_sales_city_member_m",
+  });
+  await expect(resultTable).toContainText(
+    "加列表已经存在，确认方案后在表里加 1 列：avg_order_value（放在 customer_count 后面）",
+  );
+  await expect(resultTable.locator(".column-added")).toHaveCount(1);
+  await expect(
+    resultTable.getByRole("row", { name: /avg_order_value/ }),
+  ).toContainText("新加");
+  await expect(
+    review
+      .getByRole("article", { name: /^目标表 / })
+      .first()
+      .getByText("加列"),
+  ).toHaveCount(0);
   const proposed = review.getByRole("region", { name: "建议的数据检查" });
   await expect(proposed).toContainText("每月每个城市每个等级一行");
   await expect(proposed).toContainText(

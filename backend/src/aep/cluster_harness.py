@@ -177,12 +177,54 @@ def _history(spark: Any, stored: str, mode: str) -> dict[str, Any]:
     }
 
 
+def _new_columns(
+    spark: Any, df: Any, stored: str, name: str, load: dict[str, Any]
+) -> list[tuple[Any, str | None, str]]:
+    """The columns a project's existing table gets before ``df`` is written to it with a
+    mode that keeps its other rows (docs/api/data-nodes.md, "表结构变化"): each (field,
+    the column it goes after or None for first, the position in SQL), in the order the
+    plan lists them in ``load["add_columns"]``. The result must have every column of the
+    table and no new column the plan did not confirm; raises ``_Refused`` otherwise. A
+    confirmed column the table already has (an earlier run added it) is left alone."""
+    have = {c.lower(): c for c in spark.read.table(stored).columns}
+    fields = {f.name.lower(): f for f in df.schema.fields}
+    missing = [c for low, c in have.items() if low not in fields]
+    if missing:
+        raise _Refused(f"{name}: 结果里没有表里已有的列 {'、'.join(missing)}，没有写")
+    approved = [c for c in load.get("add_columns") or [] if isinstance(c, dict)]
+    confirmed = {str(c.get("name") or "").lower() for c in approved}
+    extra = [f.name for low, f in fields.items() if low not in have and low not in confirmed]
+    if extra:
+        raise _Refused(
+            f"{name}: 结果比表多了列 {'、'.join(extra)}，确认的方案里没有要加这些列，没有写"
+        )
+    added: list[tuple[Any, str | None, str]] = []
+    known = dict(have)
+    for column in approved:
+        field = fields.get(str(column.get("name") or "").lower())
+        if field is None or field.name.lower() in known:
+            continue
+        after = column.get("after")
+        if after is None:
+            position = "FIRST"
+        elif str(after).lower() in known:
+            position = "AFTER " + _quote(known[str(after).lower()])
+        else:
+            raise _Refused(
+                f"{name}: 方案要把列 {field.name} 加在 {after} 后面，表里没有列 {after}，没有写"
+            )
+        known[field.name.lower()] = field.name
+        added.append((field, after, position))
+    return added
+
+
 def _store(spark: Any, df: Any, name: str, spec: dict[str, Any]) -> dict[str, Any]:
     """Writes ``df`` to table ``name`` in ``spec["write"]`` (catalog, schema) the way
     ``spec["loads"]`` says (overwrite when it says nothing) and returns its Delta history.
     With ``spec["project"]`` only a table of the project is written, and the table is
-    marked with the project and ``spec["run_id"]``. Raises ``_Refused`` with the reason
-    when the table is not written."""
+    marked with the project and ``spec["run_id"]``; an existing table keeps its columns
+    and only gets the ones the plan confirmed (``columns_added`` in the result). Raises
+    ``_Refused`` with the reason when the table is not written."""
     write = spec["write"]
     stored = _quote(write["catalog"], write["schema"], name)
     shown = f"{write['catalog']}.{write['schema']}.{name}"
@@ -200,6 +242,12 @@ def _store(spark: Any, df: Any, name: str, spec: dict[str, Any]) -> dict[str, An
                 f"项目标记是另一个项目 {mark}" if mark else "没有项目标记，也没有登记在“已有的表”里"
             )
             raise _Refused(f"表 {shown} 已经存在，不属于项目「{project['name']}」（{why}），没有写")
+    # A project's existing table changes its columns only as the confirmed plan says; an
+    # unbound run's write takes in whatever new columns the result has.
+    keeping = exists and mode in ("replace_where", "append", "merge")
+    guarded = bool(project) and keeping
+    new = _new_columns(spark, df, stored, name, load) if guarded else []
+    condition = ""
     if mode == "replace_where":
         condition = with_params(
             load["where"], spec.get("params") or {}, spec.get("param_types") or {}
@@ -207,36 +255,63 @@ def _store(spark: Any, df: Any, name: str, spec: dict[str, Any]) -> dict[str, An
         outside = df.filter(f"NOT coalesce(({condition}), false)").count()
         if outside:
             raise _Refused(f"{name}: 有 {outside} 行不满足替换条件 {condition}，没有写")
-        writer = df.write.mode("overwrite")
-        if exists:
-            writer = writer.option("replaceWhere", condition).option("mergeSchema", "true")
-        writer.saveAsTable(stored)
-    elif mode == "append":
-        df.write.mode("append").option("mergeSchema", "true").saveAsTable(stored)
     elif mode == "merge":
         keys = list(load["keys"])
         repeated = df.groupBy(*keys).count().filter("count > 1").count()
         if repeated:
             raise _Refused(f"{name}: 合并键 {'、'.join(keys)} 有 {repeated} 组重复，没有写")
-        if not exists:
-            df.write.saveAsTable(stored)
+    added: list[dict[str, Any]] = []
+    for field, after, position in new:
+        kind = field.dataType.simpleString()
+        spark.sql(f"ALTER TABLE {stored} ADD COLUMNS ({_quote(field.name)} {kind} {position})")
+        added.append({"name": field.name, "type": kind, "after": after})
+
+    def write() -> None:
+        if mode == "replace_where":
+            writer = df.write.mode("overwrite")
+            if exists:
+                writer = writer.option("replaceWhere", condition)
+                if not guarded:
+                    writer = writer.option("mergeSchema", "true")
+            writer.saveAsTable(stored)
+        elif mode == "append":
+            writer = df.write.mode("append")
+            if not guarded:
+                writer = writer.option("mergeSchema", "true")
+            writer.saveAsTable(stored)
+        elif mode == "merge":
+            if not exists:
+                df.write.saveAsTable(stored)
+            else:
+                if not guarded:
+                    have = {c.lower() for c in spark.read.table(stored).columns}
+                    more = [f for f in df.schema.fields if f.name.lower() not in have]
+                    if more:
+                        columns = ", ".join(
+                            f"{_quote(f.name)} {f.dataType.simpleString()}" for f in more
+                        )
+                        spark.sql(f"ALTER TABLE {stored} ADD COLUMNS ({columns})")
+                view = f"aep_merge_{name}"
+                df.createOrReplaceTempView(view)
+                on = " AND ".join(f"t.{_quote(k)} <=> s.{_quote(k)}" for k in keys)
+                spark.sql(
+                    f"MERGE INTO {stored} AS t USING {view} AS s ON {on} "
+                    "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
+                )
+                spark.catalog.dropTempView(view)
         else:
-            have = {c.lower() for c in spark.read.table(stored).columns}
-            added = [f for f in df.schema.fields if f.name.lower() not in have]
-            if added:
-                columns = ", ".join(f"{_quote(f.name)} {f.dataType.simpleString()}" for f in added)
-                spark.sql(f"ALTER TABLE {stored} ADD COLUMNS ({columns})")
-            view = f"aep_merge_{name}"
-            df.createOrReplaceTempView(view)
-            on = " AND ".join(f"t.{_quote(k)} <=> s.{_quote(k)}" for k in keys)
-            spark.sql(
-                f"MERGE INTO {stored} AS t USING {view} AS s ON {on} "
-                "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
-            )
-            spark.catalog.dropTempView(view)
-    else:
-        df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(stored)
+            df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(stored)
+
+    try:
+        write()
+    except Exception as exc:
+        if not added:
+            raise
+        columns = "、".join(c["name"] for c in added)
+        raise _Refused(_error(name, exc) + f"（列 {columns} 已经加到表里，数据没有写）") from exc
     found = _history(spark, stored, mode)
+    if added:
+        found["columns_added"] = added
     if project:
         marks = f"'aep.project' = {sql_literal(project['id'])}, "
         marks += f"'aep.run_id' = {sql_literal(spec.get('run_id') or '')}"

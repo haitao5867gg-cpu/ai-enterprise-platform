@@ -794,6 +794,7 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 | 代码读源表、读参数，写到项目环境、只写本项目的表、按方式写表 | 节点（`etl_code_check`、`databricks_dev_run`）和平台的集群程序 |
 | 数据检查 | 新节点 `data_check` |
 | 方案第 3 版 | 节点 `etl_plan_check` 的格式 |
+| 已有的表加列要在方案里确认（验收后新增） | 节点（`etl_profile`、`etl_plan_check`）和平台的集群程序 |
 | 模板 `etl-lakehouse` 第 3 版（模板 id `etl-lakehouse-project`）、两个新的内置 Skill | 应用 |
 
 节点从运行的项目快照里取项目信息（环境、前缀、引用表、参数），不用在设置里写；没绑定项目的运行和以前完全一样。
@@ -809,6 +810,7 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 - `tables` 为空时：Databricks 数据源上，运行绑定了项目就探查项目的引用表（`references`，表名按项目里写的原样，超过 20 张时 `input_error`；项目没有登记引用表时 `input_error`“项目「…」没有登记引用表，Databricks 数据源请写要探查的表”），没绑定时 `input_error`“Databricks 数据源请写要探查的表”；其他数据源照旧探查全部表。
 - 读取筛选：探查的表是项目的引用表（表名不分大小写，`tables` 里写明的表也算）、并且带 `filter` 时，`table_stats` 和 `sample_rows` 带上 `where`，样本和统计都只算筛选后的行。另外用连接器的 `aggregate`（`count(*)`，不带 `where`）数一遍全表（试点后新增），让模型知道筛选去掉了多少行。只在 Databricks 数据源上用，数据库数据源上的表不受影响。
 - 调 Databricks 数据源的工具时超时用 `AEP_DATABRICKS_TOOL_SECONDS`（[datasources.md](datasources.md)），`tool`、`agent` 节点也一样。
+- 已有的表（验收后新增）：运行绑定了项目、数据源是 Databricks 时，另外列出项目在这次运行的环境里已经有的表，见下面“表结构变化”。
 - 产出的 `tables[]` 每张表多三个键：`filter`（用了的读取筛选，没有为 null）、`unfiltered_row_count`（有筛选时全表的行数，没有筛选为 null；`estimated_row_count` 是筛选后的行数）和 `comment`（表注释，没有为 null）；列多 `comment`（没有为 null）。别的数据源同样有这几个键，值为 null（连接器给了注释时照用）；代码应用 `etl` 的探查结果也一样。`description` 里写上表和列的注释、筛选（“只读 Type = 'Vol.' 的行（项目登记的读取筛选，统计和样本也只算这些行；全表 3 行，筛掉了 1 行）”，策略是“只发结构”时不写行数）和引用表的说明，并按数据外发策略生成（[projects.md](projects.md)“四个级别”）。
 
 ### databricks_ingest：Databricks 的表不复制
@@ -884,9 +886,30 @@ def warn(message: str) -> None:
   - `replace_where`：`mode("overwrite")` 加 `replaceWhere`；结果里有不满足条件的行时 Delta 会拒绝，记写入错误“有行不满足替换条件 …”。
   - `append`：`mode("append")`。
   - `merge`：先查结果在 `keys` 上不重复，重复时记写入错误“合并键 order_id 有 3 组重复”；再 `MERGE INTO … WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *`。源里没有的行不删。
-  - 后三种在表不存在时直接建表；表已存在、结果多了新列时自动加列（`mergeSchema`，`merge` 先 `ALTER TABLE … ADD COLUMNS`）；列的类型变了时写入失败，报错原样带回。
-- 写完（打项目标记之前）读一次 `DESCRIBE HISTORY … LIMIT 1`，`databricks_dev_run` 的 `tables[]` 新增 `write`：`{"mode": "replace_where", "version": 12, "operation": "WRITE", "rows_written": 1200, "rows_updated": null, "rows_deleted": 340}`（取 Delta 的操作指标，没有的为 null；`merge` 的 `rows_written` 是插入的行数）；没写的表（`cluster` 模式不落表、写入失败）没有这一项。运行报告的结果表多一列“写表”。
+  - 后三种在表不存在时直接建表。表已存在时：绑定项目的运行只按确认的方案加列（见下面“表结构变化”，验收后改的；以前结果多了新列就自动加在表的最后，人看不到也没确认过）；没绑定项目的运行照旧自动加列（`mergeSchema`，`merge` 先 `ALTER TABLE … ADD COLUMNS`）。列的类型变了时写入失败，报错原样带回。
+- 写完（打项目标记之前）读一次 `DESCRIBE HISTORY … LIMIT 1`，`databricks_dev_run` 的 `tables[]` 新增 `write`：`{"mode": "replace_where", "version": 12, "operation": "WRITE", "rows_written": 1200, "rows_updated": null, "rows_deleted": 340}`（取 Delta 的操作指标，没有的为 null；`merge` 的 `rows_written` 是插入的行数）；这次给表加了列时另有 `columns_added`（见“表结构变化”）。没写的表（`cluster` 模式不落表、写入失败）没有这一项。运行报告的结果表多一列“写表”，如“按条件替换，版本 4，写入 4 行，加列 platform_original（string，放在 platform 后面）”。
 - 方案第 1、2 版的 `full` 当作 `overwrite`，`incremental` 照旧只写进方案说明、按整表覆盖执行，结果不变。
+
+### 表结构变化（验收后新增）
+
+jadeflow 验收时发现：结果表已经存在、方案多了一列时，集群程序用 `mergeSchema` 把新列静默加在表的最后，人在确认方案和审核结果时都看不到。现在已有的表的结构只按确认过的方案变：方案写明加哪些列、加在哪一列后面，确认方案就是同意加列；集群程序只加这些列，加在方案写的位置。三处配合：
+
+- **探查（`etl_profile`）**：运行绑定了项目（快照里有环境的 catalog 和 schema）、数据源是 Databricks 时，经只读连接器 `list_tables` 列出环境 `<catalog>.<schema>` 里以项目前缀开头的表（按表名排序，最多 20 张），每张 `describe_table` 读列；只读结构，不读行、不做统计。新产出：
+  - `existing`：`[{"name": "t2p_table2_lane", "table": "icsd-ace-dev.aep_t2_pilot.t2p_table2_lane", "columns": [{"name": "version_id", "data_type": "string", "nullable": false, "comment": null}, …]}]`；环境里还没有本项目的表时为 `[]`；没列（没绑定项目、数据源不是 Databricks）或列表失败时为 `null`，失败原因写在 `summary` 里（“没能列出项目在环境里已有的表：…”），节点照样通过。
+  - `existing_description`：给模型看的已有的表（列名、类型、非空、列注释，不受数据外发策略限制）和写到这些表的规则：同名就是写到这张表；按条件替换、追加、按键合并要写出表里已有的全部列，要加的列写在 `columns` 里想放的位置；整表覆盖删掉现有的全部行、按方案重建表结构。没有表时写“环境「开发」的 `…`里还没有本项目的表，目标表都会新建。”，没列时写“（平台没有列出…里已有的表；写表时会再核对表结构，不会加方案外的列）”；没绑定项目时为空。
+  - `summary` 末尾加“；项目在环境里已有的表：t2p_table2_lane”（没有时“没有”）。
+- **校验方案（`etl_plan_check`，只在 `format: 3`）**：新设置 `existing`（可选，整段引用，如 `{{profile.existing}}`；`format` 不是 3 时保存报错“只有方案版本 format 为 3 时才能写已有的表”，不是整段引用时“已有的表必须恰好是一个变量，如 {{profile.existing}}”）。运行时引用的值是 null 或没设 `existing` 时不做下面这些（平台不知道哪些表已经存在）；值不是表的列表时节点以 `output_format` 失败“已有的表要引用探查数据节点的 existing”。目标表名和某张已有的表同名（不分大小写）时：
+  - 写表方式是 `replace_where`、`append`、`merge`：表里的列（不分大小写）都要在方案的 `columns` 里，少了让模型重写：“t2p_table2_lane 已经存在，表里的列 loaded_at_utc 不在方案的 columns 里：按条件替换会保留表里其他的行，要写出表里已有的全部列，新加的列写在想放的位置；要去掉列或重建表，请用 overwrite”。方案里有、表里没有的列由平台按方案的列顺序写进 `load.add_columns`：`[{"name": "platform_original", "after": "platform"}]`（`after` 是方案里它前面的那一列，排在第一时为 null；连着加几列时后一列跟在前一列后面）。
+  - `overwrite`：不加列，表按方案重建。
+  - `load.add_columns` 只由平台写：模型写了的先去掉，不提示。第 1、2 版方案和不同名的表为 `[]`。`Load.stored` 在 `add_columns` 不为空时带上它，随 `settings.loads` 进 bundle，Job 的 notebook 传给集群程序。
+  - `message` 里每张目标表在写表方式下面多一行“表结构”：“表还不存在，按方案新建”“表已经存在（22 列），结构不变”“表已经存在（22 列），确认方案后加 1 列：`platform_original`（放在 `platform` 后面）”“表已经存在（22 列），整表覆盖会删掉现有的全部行，按方案重建表结构”；不知道已有的表时没有这一行。确认方案页的技术方案在主键下面列出“加列”，列映射里新加的列标“新加”；接口看 `pending.details.data.plan.targets[].load.add_columns`。
+- **集群程序写表**：绑定项目、表已经存在、写表方式是 `replace_where`、`append`、`merge` 时，写之前先比对结果和表的列（不分大小写）：
+  - 结果少了表里的列：不写，写入错误“t2p_table2_lane: 结果里没有表里已有的列 loaded_at_utc，没有写”。
+  - 结果多了 `add_columns` 里没有的列：不写，“…: 结果比表多了列 x，确认的方案里没有要加这些列，没有写”。
+  - `add_columns` 里的列（结果里有、表里还没有的）按方案的顺序逐列 `ALTER TABLE … ADD COLUMNS (<列> <结果里的类型> AFTER <列>)`（`after` 为 null 时 `FIRST`）；`after` 那一列表里没有时不写，“…: 方案要把列 x 加在 y 后面，表里没有列 y，没有写”。表里已经有的（以前的运行加过）跳过，所以同一个方案重跑不会再加。替换条件、合并键这些写前检查先做，都通过了才加列。
+  - 加完列再写，不再用 `mergeSchema`。加了列之后写入失败时，写入错误后面加“（列 x 已经加到表里，数据没有写）”。
+  - 结果的 `write` 多 `columns_added`：`[{"name": "platform_original", "type": "string", "after": "platform"}]`，没加列时没有这一项。
+  - `overwrite` 照旧 `overwriteSchema`；没绑定项目的运行照旧 `mergeSchema`。prod 等别的环境写表时同样按 `add_columns` 比对那个环境里的表。
 
 ### data_check 数据检查（新节点）
 
@@ -994,8 +1017,8 @@ def warn(message: str) -> None:
 
 - 开始节点 `project: "required"`；输入：数据源 `datasource`（必填；Databricks 数据源，数据检查也经它读表）、需求 `request`（必填）、表范围 `tables`（高级选项，空着时探查项目的引用表）、老系统结果表 `golden`（高级选项，三段式名，可选）。不再有 bundle 名 `name`，bundle 用第一张目标表的名字。
 - 确认方案：说明和提示里加上写表方式和建议的数据检查，确认后“写代码，在项目的开发环境试算”（Databricks 上的表不复制）。
-- 出方案：Skill `etl-plan-project`（版本 1），`system` 为 `OUTPUT_FORMAT_V3`，提示词在需求后面加“项目说明（环境、表名前缀、引用表、运行参数）：{{project.brief}}”。
-- 校验方案：`format: 3`，不设 `language`（默认 PySpark，模型可以在方案里写 `sql`）。
+- 出方案：Skill `etl-plan-project`（版本 1），`system` 为 `OUTPUT_FORMAT_V3`，提示词在需求后面加“项目说明（环境、表名前缀、引用表、运行参数）：{{project.brief}}”，在源表后面加“本项目在环境里已有的表（不是源表）：{{profile.existing_description}}”（验收后新增）。
+- 校验方案：`format: 3`，`existing: "{{profile.existing}}"`（验收后新增），不设 `language`（默认 PySpark，模型可以在方案里写 `sql`）。
 - 写代码：Skill `etl-codegen-project`（版本 1），提示词开头加“项目说明（表名前缀、引用表、运行参数）：{{project.brief}}”。
 - 开发环境试算之后加节点 `checks`（`data_check`，标题“数据检查”，`datasource: "{{start.datasource}}"`，`include: ["{{project.checks}}", "{{check_plan.checks}}"]`（项目的验收检查在前，试点后加上），`golden: {"expected": "{{start.golden}}", "table": "{{check_plan.result_table}}", "keys": "{{check_plan.result_keys}}"}`，`only_if: "{{dev_run.ok}}"`，`max_visits: 9`，出错重试 2 次）。用户填了老系统结果表时多一条和老系统的逐行对比，没填时没有。试算的 `passed`、`failed` 都连到它，它的两个分支都到“审核试算结果”；试算没通过时它不调连接器，`summary` 为“前一步没有通过，没有做数据检查”。
 - 审核试算结果：`data` 加 `checks: "{{checks.results}}"`、`checks_summary: "{{checks.summary}}"`，`show` 在试算报告后接检查报告；“通过”的 `requires` 是 `["{{dev_run.ok}}", "{{checks.ok}}"]`，试算和检查都通过才显示。意见可以挂在某条检查上（`check:<检查 id>`，`feedback` 里叫“数据检查「名称」”）。
@@ -1024,6 +1047,7 @@ def warn(message: str) -> None:
   - 写表：绑定项目时结果写到环境的 catalog 和 schema、用环境的集群；前缀不对时 `input_error`；归属的三种情况（不存在、有项目标记或登记在 `adopted`、别的项目或没有标记）；写完的表属性；四种写表方式各自的 Spark 调用、`merge` 键重复、`tables[].write`（假的 `DESCRIBE HISTORY`）；第 1、2 版方案的 `full`、`incremental` 结果不变。
   - `data_check`：`only_if` 不成立时不调连接器、走 `failed`；五种检查各自调的连接器工具和参数（表名换成三段式、筛选和 `where` 用 AND 连起来、`${param.*}` 换成字面值）、通过和不通过、`tolerance` 和 `relative`、`group_by` 对不上的组、golden 的 missing/extra/different、节点 `golden` 加检查（`expected` 为空时不加、`keys` 为空时 error、已有 id golden 时不加）、键重复时 failed 或 error、`rows` 查出行、不是 Databricks 数据源时 `input_error`、单条出错不影响其他条、`skipped`、`severity` 和 `ok`、表名解析和筛选、id 重复时 `input_error`。
   - 方案第 3 版：写表方式的检查、前缀、`checks` 的检查和产出、没绑定项目时用 `${param.*}` 让模型重写；第 2 版的产出不变；检查 id 和项目验收检查重复、SQL 方案读带筛选的引用表都让模型重写（试点后新增）。
+  - 表结构变化（验收后新增）：探查列出环境里前缀开头的表（只读结构）、没有时为 `[]`、列表失败和不是 Databricks 时为 null；方案里加的列和位置（第一列、连着加几列）、模型写的 `add_columns` 被去掉、少了已有的列让模型重写、`overwrite` 不加列、`message` 的“表结构”一行、`existing` 的保存检查；集群程序只加确认的列（位置、大小写、已经有的跳过）、少列和多列不写、`after` 不在表里不写、加列后写入失败的提示、不再 `mergeSchema`，没绑定项目时照旧；`write_text` 写出加了的列。
   - `data_check` 的节点 `golden` 带 `tolerance`、`severity`（试点后新增）：传给连接器的容差、结果的级别、只警告时节点照样通过、保存时的取值检查。
   - 模板第 3 版用假模型、假 Databricks 和假的 Databricks 连接器跑通：绑定项目、探查引用表（带读取筛选）、在项目环境试算、检查读环境里的结果表并和老系统对比后交付；检查不通过时不能选“通过”，挂在检查上的意见带给模型；试算失败时不做检查。
 - 不连真实 Databricks 和真实模型；`DevTarget.ingest`、`preview` 用假 HTTP 测请求内容。

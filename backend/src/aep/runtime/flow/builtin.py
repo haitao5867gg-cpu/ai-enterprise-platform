@@ -729,6 +729,10 @@ def _etl_lakehouse() -> dict[str, Any]:
 PROJECT_PLAN_PROMPT = PLAN_PROMPT.replace(
     "期望的代码语言：{{start.language}}\n",
     "\n项目说明（环境、表名前缀、引用表、运行参数）：\n{{project.brief}}\n",
+).replace(
+    "{{profile.description}}\n\n",
+    "{{profile.description}}\n\n本项目在环境里已有的表（不是源表）：\n"
+    "{{profile.existing_description}}\n\n",
 )
 PROJECT_CODEGEN_PROMPT = (
     "项目说明（表名前缀、引用表、运行参数）：\n{{project.brief}}\n\n" + CODEGEN_PROMPT
@@ -773,8 +777,10 @@ def _etl_lakehouse_project() -> dict[str, Any]:
     }
     found["check_plan"] |= {
         "note": "平台逐条对照探查结果校验方案，另外检查表名前缀、写表方式、运行参数"
-        "和建议的数据检查；不过就带着问题让模型重写，连续 3 次不过就交给人：按意见重写或终止。",
+        "和建议的数据检查；写到已有的表时，列出要在表里加哪些列、加在哪。"
+        "不过就带着问题让模型重写，连续 3 次不过就交给人：按意见重写或终止。",
         "format": 3,
+        "existing": "{{profile.existing}}",
     }
     del found["check_plan"]["language"]
     found["review"] |= {

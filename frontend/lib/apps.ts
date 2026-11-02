@@ -197,6 +197,8 @@ export type EtlPlanCheckNode = NodeBase &
     profile: string;
     hits: string[];
     language?: string;
+    // Version 3: the project's tables already in the environment ({{profile.existing}}).
+    existing?: string;
     max_attempts: number;
     // After max_attempts failures in a row: fail the node, or take branch "stuck".
     on_stuck?: "fail" | "branch";

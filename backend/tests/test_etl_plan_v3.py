@@ -17,6 +17,7 @@ from aep.etl.plan import (
     validate_plan_v2,
     validate_plan_v3,
 )
+from aep.runtime.flow.nodes import NodeFailure
 from tests.test_etl_plan_v2 import HIT, KNOWN, SEEN, SOURCES, brief_plan
 from tests.test_flow_data_nodes import (
     brief_reply,
@@ -368,3 +369,132 @@ def test_quality_rule_names_are_made_usable_by_the_platform():
         "order_facts 的质量规则名改成了代码能用的名字："
         "「数量为正」→ rule_1_2、「City-Not-Blank」→ city_not_blank、「rule_1」→ rule_1_3"
     ]
+
+
+# 表结构变化: a target named like one of the project's tables in the environment writes to
+# it. A write that keeps its other rows keeps its columns; the columns the plan adds go
+# into load.add_columns, where the plan puts them.
+
+CITY_DAILY = {
+    "name": "City_Daily",  # not case sensitive
+    "table": "c.s.City_Daily",
+    "columns": [
+        {"name": n, "data_type": "string", "nullable": True, "comment": None}
+        for n in ("stat_day", "city", "order_count")
+    ],
+}
+
+
+def check_existing(raw: dict, existing: list[dict] | None) -> tuple[EtlPlanV3, list[str]]:
+    return validate_plan_v3(
+        raw,
+        SOURCES,
+        KNOWN,
+        SEEN,
+        references=[HIT],
+        project=copy.deepcopy(PROJECT),
+        existing=existing,
+    )
+
+
+def test_columns_added_to_an_existing_table_are_worked_out_by_the_platform():
+    raw = v3_plan()
+    # What the model writes there is the platform's to set.
+    raw["targets"][1]["load"]["add_columns"] = [{"name": "nonsense", "after": None}]
+    plan, _ = check_existing(raw, [CITY_DAILY])
+    load = plan.targets[1].load
+    assert [c.model_dump() for c in load.add_columns] == [
+        {"name": "quantity_sum", "after": "order_count"},
+        {"name": "avg_quantity", "after": "quantity_sum"},
+    ]
+    assert load.stored(plan.targets[1].primary_key)["add_columns"] == [
+        {"name": "quantity_sum", "after": "order_count"},
+        {"name": "avg_quantity", "after": "quantity_sum"},
+    ]
+    # order_facts is not in the environment yet: nothing to add, nothing stored.
+    assert plan.targets[0].load.add_columns == []
+    assert "add_columns" not in plan.targets[0].load.stored(["order_id"])
+
+    # A new first column goes first.
+    raw = v3_plan()
+    columns = raw["targets"][1]["columns"]
+    columns.insert(0, columns.pop(3))  # quantity_sum
+    plan, _ = check_existing(raw, [CITY_DAILY])
+    assert [c.model_dump() for c in plan.targets[1].load.add_columns] == [
+        {"name": "quantity_sum", "after": None},
+        {"name": "avg_quantity", "after": "order_count"},
+    ]
+
+    # Overwriting rebuilds the table; existing tables unknown: nothing is added either.
+    raw = v3_plan()
+    raw["targets"][1]["load"] = {"mode": "overwrite"}
+    assert check_existing(raw, [CITY_DAILY])[0].targets[1].load.add_columns == []
+    assert check_existing(v3_plan(), None)[0].targets[1].load.add_columns == []
+
+
+def test_a_write_that_keeps_the_rows_keeps_every_column():
+    wide = copy.deepcopy(CITY_DAILY)
+    wide["columns"].insert(2, {"name": "Region", "data_type": "string"})
+    wide["columns"].append({"name": "loaded_at", "data_type": "timestamp"})
+    for mode in ({"mode": "append"}, {"mode": "merge"}):
+        raw = v3_plan()
+        raw["targets"][1]["load"] = mode
+        with pytest.raises(PlanError) as failed:
+            check_existing(raw, [wide])
+        name = {"append": "追加", "merge": "按键合并"}[mode["mode"]]
+        assert failed.value.problems == [
+            "city_daily 已经存在，表里的列 Region、loaded_at 不在方案的 columns 里："
+            f"{name}会保留表里其他的行，要写出表里已有的全部列，新加的列写在想放的位置；"
+            "要去掉列或重建表，请用 overwrite"
+        ]
+    raw = v3_plan()
+    raw["targets"][1]["load"] = {"mode": "overwrite"}
+    check_existing(raw, [wide])  # rebuilt as the plan says
+
+
+async def test_the_node_says_what_writing_does_to_each_table():
+    rt, ds = await node_env()
+    tables = await profiled(rt, ds)
+    totals = {
+        "name": "city_totals",
+        "table": "c.s.city_totals",
+        "columns": [{"name": "city", "data_type": "string"}, {"name": "order_count"}],
+    }
+
+    def with_existing(raw: dict, existing: Any) -> dict:
+        st = v2_state(tables, raw) | {"project": PROJECT}
+        st["vars"]["profile"]["existing"] = existing
+        return st
+
+    node = check_node(format=3, existing="{{profile.existing}}")
+    raw = brief_reply()
+    raw["targets"][0]["load"] = {"mode": "overwrite"}
+    raw["targets"][1]["load"] = {"mode": "merge"}
+    out = await run(node, with_existing(raw, [totals]), rt)
+    assert out.branch == "ok", out.outputs["problems"]
+    assert out.outputs["plan"]["targets"][1]["load"]["add_columns"] == [
+        {"name": "quantity_sum", "after": "order_count"},
+        {"name": "avg_quantity", "after": "quantity_sum"},
+    ]
+    message = out.outputs["message"]
+    assert "- 表结构：表还不存在，按方案新建" in message  # order_facts
+    assert (
+        "- 表结构：表已经存在（2 列），确认方案后加 2 列：`quantity_sum`（放在 `order_count` "
+        "后面）；`avg_quantity`（放在 `quantity_sum` 后面）"
+    ) in message
+
+    # The same columns: nothing changes. Overwriting says it drops the rows.
+    same = totals | {"columns": [{"name": c["name"]} for c in raw["targets"][1]["columns"]]}
+    out = await run(node, with_existing(raw, [same]), rt)
+    assert "- 表结构：表已经存在（4 列），结构不变" in out.outputs["message"]
+    raw["targets"][1]["load"] = {"mode": "overwrite"}
+    out = await run(node, with_existing(raw, [totals]), rt)
+    assert "整表覆盖会删掉现有的全部行，按方案重建表结构" in out.outputs["message"]
+    assert out.outputs["plan"]["targets"][1]["load"]["add_columns"] == []
+
+    # Not listed (None): no word on the structure.
+    out = await run(node, with_existing(raw, None), rt)
+    assert out.branch == "ok" and "表结构" not in out.outputs["message"]
+    # Something else there is the app's mistake.
+    with pytest.raises(NodeFailure, match="已有的表要引用探查数据节点的 existing"):
+        await run(node, with_existing(raw, "city_totals"), rt)

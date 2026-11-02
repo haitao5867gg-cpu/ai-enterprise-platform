@@ -296,6 +296,28 @@ export function TechPlanView({
                   <code>{target.primary_key.join(", ") || "未设置"}</code>
                 </dd>
               </div>
+              {target.load.add_columns.length > 0 && (
+                <div>
+                  <dt>加列</dt>
+                  <dd>
+                    表已经存在，确认方案后在表里加{" "}
+                    {target.load.add_columns.length} 列：
+                    {target.load.add_columns.map((column, i) => (
+                      <span key={column.name}>
+                        {i > 0 && "；"}
+                        <code>{column.name}</code>
+                        {column.after ? (
+                          <>
+                            （放在 <code>{column.after}</code> 后面）
+                          </>
+                        ) : (
+                          "（放在最前面）"
+                        )}
+                      </span>
+                    ))}
+                  </dd>
+                </div>
+              )}
             </dl>
             <div className="table-scroll">
               <table
@@ -316,6 +338,9 @@ export function TechPlanView({
                       <td>{column.label || "—"}</td>
                       <td className="column-name">
                         <code>{column.name}</code>
+                        {target.load.add_columns.some(
+                          (added) => added.name === column.name,
+                        ) && <span className="column-added">新加</span>}
                       </td>
                       <td>
                         <code>{column.source}</code>

@@ -853,7 +853,8 @@ function planFor(state: EtlV2State) {
     summary: brief.goal,
     language: "pyspark",
     brief,
-    // Version 3 says how each table is written: the month's rows are replaced.
+    // Version 3 says how each table is written: the month's rows are replaced. The result
+    // table exists already, without the average (表结构变化): confirming adds it.
     targets: v3
       ? targets.map((target, i) => ({
           ...target,
@@ -863,8 +864,11 @@ function planFor(state: EtlV2State) {
                   mode: "replace_where",
                   where: "stat_month = ${param.update_month}",
                   keys: [],
+                  add_columns: [
+                    { name: "avg_order_value", after: "customer_count" },
+                  ],
                 }
-              : { mode: "overwrite", keys: [] },
+              : { mode: "overwrite", keys: [], add_columns: [] },
         }))
       : targets,
     rules: [...baseRules, ...confirmed],
