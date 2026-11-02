@@ -118,8 +118,14 @@ export function dataNodeIssues(config: FlowConfig): ValidationIssue[] {
       integer("sample_rows", node.sample_rows, 1, 20);
     if (node.type === "databricks_ingest")
       integer("max_rows", node.max_rows, 1, 1_000_000);
-    if (node.type === "etl_plan_check" || node.type === "etl_code_check")
+    if (node.type === "etl_plan_check" || node.type === "etl_code_check") {
       integer("max_attempts", node.max_attempts, 1, 5);
+      if (
+        node.on_stuck !== undefined &&
+        !["fail", "branch"].includes(node.on_stuck)
+      )
+        add("on_stuck", "连续不过之后只能报错停下或交给人");
+    }
     if (
       node.type === "etl_plan_check" &&
       (!Array.isArray(node.hits) || node.hits.length > 5)

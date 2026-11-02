@@ -321,10 +321,12 @@ PLAN_PROMPT = """需求：{{start.request}}
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}
+校验连续没通过、交给人时人的意见（为空时忽略）：{{plan_stuck.feedback}}
 确认方案时的意见（为空时忽略）：{{review.feedback}}
 审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
-意见开头写着第几轮、哪一步、什么决定。两段意见都有时，确认方案时的意见是最新的，两者冲突时\
-以它为准；审核试算结果时的意见上一版方案已经按它改过。只处理最新一轮、和方案有关的意见；\
+意见开头写着第几轮、哪一步、什么决定。校验连续没通过时人的意见是针对上一版方案和这些问题写的，\
+按它和问题一起改，只改格式和写法，不要为了通过校验改口径。两段意见都有时，\
+确认方案时的意见是最新的，两者冲突时以它为准；审核试算结果时的意见上一版方案已经按它改过。只处理最新一轮、和方案有关的意见；\
 上一版方案里已经按它改过的，不要重复处理。有上一版方案时，在它的基础上按问题和意见修改，\
 输出完整方案。"""
 
@@ -339,6 +341,7 @@ CODEGEN_PROMPT = """已确认的方案：
 
 上一版代码（第一次写时为空，忽略）：{{check_code.code}}
 静态检查发现的问题（为空时忽略）：{{check_code.problems}}
+检查连续没通过、交给人时人的意见（为空时忽略）：{{code_stuck.feedback}}
 Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
 意见开头写着第几轮、哪一步、什么决定。只处理和代码有关的意见；上一版代码里已经按它改过的，\
@@ -347,6 +350,31 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 # The standards are needed in full every time, whatever the request says: the query
 # is the documents' subjects and top_k takes nearly every chunk.
 STANDARDS_QUERY = "分层与命名、主键与字段类型、数据质量规则、加载策略、PySpark 编码规范"
+
+
+def _stuck_node(
+    node_id: str, title: str, what: str, show: str, data: dict[str, str]
+) -> dict[str, Any]:
+    """The person a check hands over to when the model's replies failed it too often in a
+    row (the check's ``on_stuck: branch``): rewrite with their comment, or stop."""
+    return {
+        "id": node_id,
+        "type": "human",
+        "title": title,
+        "note": f"人工兜底：模型连续 3 次没写出能通过平台检查的{what}时，不直接报错终止，"
+        f"把最后一版{what}和问题交给人。写意见让模型按意见重写（重写次数重新算），或者终止。",
+        "mode": "approval",
+        "prompt": f"模型连续几次没写出能通过平台检查的{what}。请看问题和最后一版{what}："
+        f"写明怎么改，让模型按意见重写；或者终止这次运行并写明原因。",
+        "show": show,
+        "data": data,
+        "options": [
+            {"key": "rewrite", "label": "按意见重写"},
+            {"key": "stop", "label": "终止"},
+        ],
+        "comment_required": ["rewrite", "stop"],
+        "max_visits": 3,
+    }
 
 
 def _retry(times: int, interval_seconds: int) -> dict[str, Any]:
@@ -459,8 +487,8 @@ def _etl_lakehouse() -> dict[str, Any]:
             "type": "etl_plan_check",
             "title": "校验方案",
             "note": "模型可能编出数据里没有的表、列或取值，平台在这里逐条对照探查结果，"
-            "不过就带着问题让模型重写，连续 3 次不过才停下。平台还会先自动整理："
-            "去掉业务文字里的代码和英文前缀，第 6 题起和已经答过的题改成规则。"
+            "不过就带着问题让模型重写，连续 3 次不过就交给人：按意见重写或终止。"
+            "平台还会先自动整理：去掉业务文字里的代码和英文前缀，第 6 题起和已经答过的题改成规则。"
             "通过后把方案整理成给人看的格式，列出引用的资料。",
             "reply": "{{plan.text}}",
             "profile": "{{profile.tables}}",
@@ -469,8 +497,16 @@ def _etl_lakehouse() -> dict[str, Any]:
             "format": 2,
             "answered": "{{review.record}}",
             "max_attempts": 3,
+            "on_stuck": "branch",
             "max_visits": 10,
         },
+        _stuck_node(
+            "plan_stuck",
+            "方案校验没通过",
+            "方案",
+            "{{check_plan.message}}",
+            {"problems": "{{check_plan.problems}}", "plan": "{{check_plan.plan}}"},
+        ),
         {
             "id": "review",
             "type": "human",
@@ -545,8 +581,16 @@ def _etl_lakehouse() -> dict[str, Any]:
             "source_name": "{{profile.source_name}}",
             "name": "{{start.name}}",
             "max_attempts": 3,
+            "on_stuck": "branch",
             "max_visits": 10,
         },
+        _stuck_node(
+            "code_stuck",
+            "代码检查没通过",
+            "代码",
+            "{{check_code.summary}}",
+            {"problems": "{{check_code.problems}}", "code": "{{check_code.code}}"},
+        ),
         {
             "id": "dev_run",
             "type": "databricks_dev_run",
@@ -620,13 +664,18 @@ def _etl_lakehouse() -> dict[str, Any]:
             "id": "stopped",
             "type": "end",
             "title": "终止",
-            "note": "审核时选了终止：运行停在这里，记下原因、业务说明、方案、运行报告和两次人工处理"
-            "的记录。没通过审核的数字和代码不作为结果交付。",
+            "note": "审核时，或者校验连续没通过、交给人时选了终止：运行停在这里，记下原因、"
+            "业务说明、方案、运行报告和人工处理的记录。没通过审核的数字和代码不作为结果交付。",
             "outcome": "stopped",
             "outputs": [
                 {
                     "key": "reason",
-                    "from": ["{{data_review.comment}}", "{{data_review.feedback}}"],
+                    "from": [
+                        "{{data_review.comment}}",
+                        "{{data_review.feedback}}",
+                        "{{code_stuck.comment}}",
+                        "{{plan_stuck.comment}}",
+                    ],
                 },
                 {"key": "brief", "from": ["{{check_plan.brief}}"]},
                 {"key": "plan", "from": ["{{check_plan.plan}}"]},
@@ -644,12 +693,18 @@ def _etl_lakehouse() -> dict[str, Any]:
         ("plan", None, "check_plan"),
         ("check_plan", "ok", "review"),
         ("check_plan", "retry", "plan"),
+        ("check_plan", "stuck", "plan_stuck"),
+        ("plan_stuck", "rewrite", "plan"),
+        ("plan_stuck", "stop", "stopped"),
         ("review", "approve", "ingest"),
         ("review", "revise", "plan"),
         ("ingest", None, "codegen"),
         ("codegen", None, "check_code"),
         ("check_code", "ok", "dev_run"),
         ("check_code", "retry", "codegen"),
+        ("check_code", "stuck", "code_stuck"),
+        ("code_stuck", "rewrite", "codegen"),
+        ("code_stuck", "stop", "stopped"),
         ("dev_run", "passed", "data_review"),
         ("dev_run", "failed", "data_review"),
         ("dev_run", "retry", "codegen"),
@@ -718,7 +773,7 @@ def _etl_lakehouse_project() -> dict[str, Any]:
     }
     found["check_plan"] |= {
         "note": "平台逐条对照探查结果校验方案，另外检查表名前缀、写表方式、运行参数"
-        "和建议的数据检查；不过就带着问题让模型重写，连续 3 次不过才停下。",
+        "和建议的数据检查；不过就带着问题让模型重写，连续 3 次不过就交给人：按意见重写或终止。",
         "format": 3,
     }
     del found["check_plan"]["language"]

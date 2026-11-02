@@ -200,6 +200,14 @@ test("add and save all five data nodes using the existing selectors and branch c
   await insert(page, "数据源名称", "{{etl_profile.source_name}}");
   await insert(page, "bundle 名", "{{start.name}}");
   await panel(page).getByLabel("最多连续重写次数", { exact: true }).fill("1");
+  // Handing over to a person adds the branch 交给人.
+  await expect(
+    panel(page).getByRole("group", { name: "下一步" }).getByLabel("交给人"),
+  ).toHaveCount(0);
+  await panel(page)
+    .getByLabel("连续不过之后", { exact: true })
+    .selectOption("branch");
+  await next(page, "交给人", "end");
   await select(page, "databricks_dev_run");
   await next(page, "通过", "end");
   await next(page, "带着报错重写", "answer");
@@ -225,6 +233,16 @@ test("add and save all five data nodes using the existing selectors and branch c
   expect(
     saved.graph.nodes.find((node) => node.id === "etl_plan_check"),
   ).toMatchObject({ hits: ["{{glossary.hits}}"], max_attempts: 5 });
+  expect(
+    saved.graph.nodes.find((node) => node.id === "etl_code_check"),
+  ).toMatchObject({ max_attempts: 1, on_stuck: "branch" });
+  expect(saved.graph.edges).toContainEqual(
+    expect.objectContaining({
+      from: "etl_code_check",
+      branch: "stuck",
+      to: "end",
+    }),
+  );
   expect(
     saved.graph.nodes.find((node) => node.id === "databricks_dev_run"),
   ).toMatchObject({
@@ -742,7 +760,9 @@ test("数据检查节点：只列 Databricks 数据源，检查写成 JSON，和
   await golden.getByLabel("结果表", { exact: true }).fill("ibf_table2");
   await golden.getByLabel("主键", { exact: true }).fill("sku, month");
   await golden.getByLabel("容差（选填）", { exact: true }).fill("0.001");
-  await golden.getByLabel("不一致时", { exact: true }).selectOption({ label: "只警告" });
+  await golden
+    .getByLabel("不一致时", { exact: true })
+    .selectOption({ label: "只警告" });
   await insert(page, "只在这个值为 true 时检查", "{{answer.text}}");
 
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
@@ -777,7 +797,9 @@ test("数据检查节点：只列 Databricks 数据源，检查写成 JSON，和
   await golden.getByLabel("结果表", { exact: true }).fill("");
   await golden.getByLabel("主键", { exact: true }).fill("");
   await golden.getByLabel("容差（选填）", { exact: true }).fill("");
-  await golden.getByLabel("不一致时", { exact: true }).selectOption({ value: "" });
+  await golden
+    .getByLabel("不一致时", { exact: true })
+    .selectOption({ value: "" });
   await panel(page)
     .getByLabel("只在这个值为 true 时检查", { exact: true })
     .fill("");
