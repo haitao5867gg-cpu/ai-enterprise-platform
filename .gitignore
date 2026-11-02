@@ -16,3 +16,6 @@ next-env.d.ts
 
 # Eval reports (make eval)
 evals/reports/
+
+# VPS deploy (infra/vps/deploy.sh): Caddy access password hash
+infra/vps/auth.caddy
