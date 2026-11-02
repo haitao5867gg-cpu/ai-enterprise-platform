@@ -5,7 +5,7 @@
 ## 概念
 
 - **连接器**：一个 MCP 服务（Streamable HTTP）。平台只保存它的地址。数据库账号密码配在连接器上（本地放 `.env`，Azure 放 Key Vault），平台不保存。
-- **数据源**：给 ETL 和数据节点读数据用的连接器，类型是 `postgres`、`mysql`、`sqlserver`、`file`（上传的 CSV、XLSX，由平台的文件连接器提供）或 `databricks`（Databricks 上已有的表，见“Databricks 数据源”）。数据源必须提供 ETL 需要的 6 个工具：`list_schemas`、`list_tables`、`describe_table`、`table_stats`、`sample_rows`、`read_rows`，参数和返回同 `connectors/postgres`。
+- **数据源**：给 ETL 和数据节点读数据用的连接器，类型是 `postgres`、`mysql`、`sqlserver`、`file`（上传的 CSV、XLSX，由平台的文件连接器提供）或 `databricks`（Databricks 上已有的表，见“Databricks 数据源”）。数据源必须提供 ETL 需要的 6 个工具：`list_schemas`、`list_tables`、`describe_table`、`table_stats`、`sample_rows`、`read_rows`，参数和返回同 `connectors/postgres`。平台自带的只读连接器：`connectors/postgres`、`connectors/mysql`、`connectors/sqlserver`（在 SQL Server 2022 上测过，见它的 README）。
 - **工具服务**：新类型 `mcp`。它只提供工具，不用于 ETL，比如查工单、查 CRM。工具名不限，但至少要有一个。工具服务只能用在编排应用的 `tool`（调用工具）节点和 `agent`（智能体）节点里；`etl_profile`、`databricks_ingest` 和 `etl` 应用都不接受它。
 - **代码仓库**：类型 `git`（第 5 批）。Git 连接器（GitHub 或 Bitbucket Data Center），只用在编排应用的「提交 PR」节点和资产仓库里，别的节点和 `etl` 应用都不接受它；测试连接时要求 6 个 Git 工具。见 [git.md](git.md)。
 - **只读标记**：工具的 `read_only` 取自连接器自报的 `annotations.readOnlyHint`，没报就是 `false`。它只用来展示，不是安全边界（代码沙箱的 `run_python` 也自称只读）。

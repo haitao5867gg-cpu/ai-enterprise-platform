@@ -58,6 +58,70 @@ services:
       timeout: 5s
       retries: 20
 
+  # SQL Server sample source (profile "sqlserver"; `make up-sqlserver`). The image is
+  # about 1.5 GB and x86-64 only (Apple Silicon runs it under Rosetta), so it is not
+  # part of `make up`. Register it on the data source page: kind SQL Server,
+  # address http://connector-sqlserver:8007/mcp.
+  source-sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    profiles: ["sqlserver"]
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${AEP_SOURCE_SQLSERVER_ADMIN_PASSWORD:-Local-Source-Admin1}
+    ports:
+      - "127.0.0.1:1433:1433"
+    volumes:
+      - source-sqlserver-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -b -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -o /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Loads connectors/sqlserver/seed (the database once, the reader account every time).
+  source-sqlserver-seed:
+    build: ./connectors/sqlserver
+    profiles: ["sqlserver"]
+    command: ["aep-sqlserver-seed", "/seed"]
+    environment:
+      AEP_SQLSERVER_HOST: source-sqlserver
+      AEP_SQLSERVER_PORT: 1433
+      AEP_SQLSERVER_PASSWORD: ${AEP_SQLSERVER_PASSWORD:-Local-Source-Reader1}
+      AEP_SOURCE_SQLSERVER_ADMIN_PASSWORD: ${AEP_SOURCE_SQLSERVER_ADMIN_PASSWORD:-Local-Source-Admin1}
+    volumes:
+      - ./connectors/sqlserver/seed:/seed:ro
+    depends_on:
+      source-sqlserver:
+        condition: service_healthy
+    restart: "no"
+
+  connector-sqlserver:
+    build: ./connectors/sqlserver
+    profiles: ["sqlserver"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AEP_SQLSERVER_HOST: source-sqlserver
+      AEP_SQLSERVER_PORT: 1433
+      AEP_SQLSERVER_DATABASE: source
+      AEP_SQLSERVER_USER: source_reader
+      AEP_SQLSERVER_PASSWORD: ${AEP_SQLSERVER_PASSWORD:-Local-Source-Reader1}
+      AEP_SQLSERVER_MCP_HOST: 0.0.0.0
+      AEP_SQLSERVER_MCP_PORT: 8007
+    ports:
+      - "127.0.0.1:8007:8007"
+    depends_on:
+      source-sqlserver-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
   source-postgres:
     image: postgres:17-alpine
     environment:
@@ -338,5 +402,6 @@ volumes:
   postgres-data:
   source-postgres-data:
   source-mysql-data:
+  source-sqlserver-data:
   uploads:
   knowledge-data:
