@@ -97,6 +97,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
   databricks_dev_run: ["bundle", "max_runs", "preview_rows"],
   databricks_release: ["bundle", "schedule", "environment"],
   data_check: ["datasource", "checks", "include", "golden", "only_if"],
+  app: ["app", "input", "outputs", "timeout_seconds"],
 };
 
 function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {

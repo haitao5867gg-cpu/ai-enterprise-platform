@@ -51,6 +51,7 @@ ERROR_TYPES = (
     "sandbox_unavailable",
     "step_limit",
     "databricks_error",
+    "app_error",
     "input_error",
 )
 # The run's input or the node's settings are wrong: trying again gives the same failure,
@@ -102,6 +103,35 @@ class CheckEnv:
             {"model": "mock", "kind": "llm"},
         ]
     )
+    # What an app node needs to know about the app it calls (aep.runtime.flow.app_node);
+    # None: unknown, any app is taken.
+    apps: "Callable[[str], Awaitable[AppShape | None]] | None" = None
+
+
+@dataclass(frozen=True)
+class AppShape:
+    """An app as a node calling it sees it: its kind and title, and for a flow app the
+    start node's inputs, whether it uses a project and its end nodes' output keys, all
+    of its current version."""
+
+    app: str
+    kind: str
+    title: str
+    inputs: list[dict[str, Any]] = field(default_factory=list)
+    outputs: list[str] = field(default_factory=list)
+    project: str | None = None
+
+
+@dataclass(frozen=True)
+class AppCall:
+    """A finished run an app node started: its id, the called app's title and result."""
+
+    run_id: str
+    title: str
+    result: dict[str, Any]
+
+
+CallApp = Callable[[str, dict[str, Any], dict[str, Any], str, int], Awaitable[AppCall]]
 
 
 def _refers(outputs: dict[str, Any], setting: Any) -> bool:
@@ -138,6 +168,9 @@ class Runtime:
     settings: Settings = field(default_factory=Settings)
     databricks: DevTarget | None = None
     people: frozenset[str] = frozenset()
+    # Starts a run of another app and waits for it (app nodes): app, input, the calling
+    # run's state, the node's id and the seconds to wait. None: apps cannot be called.
+    call_app: CallApp | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -2127,7 +2160,8 @@ TYPES: dict[str, NodeType] = {
 }
 
 # The data-engineering types use the helpers above; they register themselves here.
-from aep.runtime.flow import data_check, data_nodes  # noqa: E402
+from aep.runtime.flow import app_node, data_check, data_nodes  # noqa: E402
 
 TYPES.update(data_nodes.TYPES)
 TYPES.update(data_check.TYPES)
+TYPES.update(app_node.TYPES)

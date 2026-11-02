@@ -42,6 +42,7 @@ export default defineConfig({
         "evals.spec.ts",
         "release.spec.ts",
         "schedules.spec.ts",
+        "app-node.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

@@ -240,6 +240,15 @@ export type DatabricksReleaseNode = NodeBase &
     schedule?: string;
     environment?: string;
   };
+// docs/api/flow-apps.md ("app 调用应用"): runs another published flow app as a step.
+export type AppCallNode = NodeBase &
+  Fallible & {
+    type: "app";
+    app: string;
+    input: Record<string, unknown>;
+    outputs: string[];
+    timeout_seconds?: number;
+  };
 // Checks are written as docs/api/data-nodes.md ("data_check") describes; the editor
 // edits them as JSON and the backend checks them when the draft is saved.
 export type DataCheckGolden = {
@@ -276,6 +285,7 @@ export type FlowNode =
   | DatabricksDevRunNode
   | DatabricksReleaseNode
   | DataCheckNode
+  | AppCallNode
   | EndNode;
 export type Edge = { from: string; to: string; branch?: string | null };
 export type FlowConfig = {

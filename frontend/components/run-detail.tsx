@@ -27,6 +27,7 @@ import {
   versionLabel,
   type Decision,
   type Run,
+  triggerText,
 } from "../lib/runs";
 import { Icon } from "./icons";
 import { paramText } from "../lib/projects";
@@ -560,7 +561,7 @@ export function RunDetail({
             <p className="detail-meta">
               {[
                 run.created_by && `${run.created_by} 提出`,
-                run.trigger && `定时：${run.trigger.title}`,
+                run.trigger && triggerText(run.trigger),
                 run.created_at && timeAgo(run.created_at, now),
                 durationText(run, now),
                 [run.app_title || run.app, versionLabel(run)]
@@ -932,7 +933,18 @@ export function RunDetail({
                   {run.trigger && (
                     <div>
                       <dt>发起方式</dt>
-                      <dd>定时：{run.trigger.title}</dd>
+                      <dd>
+                        {run.trigger.kind === "app" ? (
+                          <Link
+                            className="text-button"
+                            href={`/runs/${encodeURIComponent(run.trigger.run_id)}`}
+                          >
+                            {triggerText(run.trigger)}
+                          </Link>
+                        ) : (
+                          triggerText(run.trigger)
+                        )}
+                      </dd>
                     </div>
                   )}
                   {run.project && (

@@ -30,6 +30,7 @@ people (``flows``) or shipped with the platform (``BuiltinFlow``, like ``hello``
 """
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -146,8 +147,11 @@ TEMPORARY = frozenset(
         "knowledge_error",
         "databricks_error",
         "sandbox_unavailable",
+        "app_error",
     }
 )
+# How deep app nodes may call apps: A calls B calls C.
+MAX_CALL_DEPTH = 3
 
 
 def retryable(record: RunRecord) -> bool:
@@ -421,7 +425,146 @@ class RunService:
             people=frozenset(
                 n["id"] for n in flowgraph.nodes(config) if n["type"] in ("start", "human")
             ),
+            call_app=self.call_app,
         )
+
+    async def app_shape(self, app: str) -> flownodes.AppShape | None:
+        """The app as an app node calling it sees it (its current version), or None when
+        there is no such app."""
+        kind = await self.kind(app)
+        if kind is None:
+            return None
+        title = (await self.app_titles()).get(app, app)
+        if kind != "flow":
+            return flownodes.AppShape(app, kind, title)
+        await self.ensure_versions(app)
+        found = await self.versions.version(app, await self.versions.current(app))
+        if found is None:
+            return None
+        config = self.flow_config(app, found.config)
+        nodes = flowgraph.nodes(config)
+        start = next((n for n in nodes if n["type"] == "start"), {})
+        outputs: list[str] = []
+        for n in nodes:
+            if n["type"] == "end":
+                outputs += [o["key"] for o in n.get("outputs") or [] if o["key"] not in outputs]
+        return flownodes.AppShape(
+            app, kind, title, list(start.get("inputs") or []), outputs, start.get("project")
+        )
+
+    async def _callers(self, record: RunRecord) -> list[str]:
+        """The apps up the chain of app nodes that led to this run, this run's first."""
+        chain = [record.app]
+        current: RunRecord | None = record
+        while current is not None and (current.trigger or {}).get("kind") == "app":
+            current = await self._store.get(str(current.trigger["run_id"]))  # type: ignore[index]
+            if current is not None:
+                chain.append(current.app)
+            if len(chain) > MAX_CALL_DEPTH + 1:
+                break
+        return chain
+
+    async def call_app(
+        self, app: str, input: dict[str, Any], state: dict[str, Any], node: str, timeout: int
+    ) -> flownodes.AppCall:
+        """Run ``app`` for node ``node`` of the run whose state this is and wait for it
+        (docs/api/flow-apps.md, "app 调用应用"). A run of it the node started before a
+        restart and that has not finished is waited for, not started again."""
+        fail = flownodes.NodeFailure
+        caller = await self._store.get(str(state.get("run_id")))
+        if caller is None:
+            raise fail(flownodes.INPUT_ERROR, "这里不能调用别的应用")
+        shape = await self.app_shape(app)
+        title = shape.title if shape else app
+        if shape is None or shape.kind != "flow":
+            raise fail(flownodes.INPUT_ERROR, f"没有可以调用的编排应用 {app}")
+        chain = await self._callers(caller)
+        if app in chain:
+            raise fail(flownodes.INPUT_ERROR, f"应用「{title}」已经在调用链上，不能再调用它")
+        if len(chain) >= MAX_CALL_DEPTH:
+            raise fail(flownodes.INPUT_ERROR, f"应用最多嵌套调用 {MAX_CALL_DEPTH} 层")
+        record = await self._store.called_by(caller.run_id, node)
+        if record is None:
+            bound = caller.project
+            project = (
+                {
+                    "project_id": bound["project_id"],
+                    "environment": bound["environment"]["key"],
+                    "params": {k: v for k, v in bound["values"].items() if v is not None},
+                }
+                if bound and shape.project
+                else None
+            )
+            titles = await self.app_titles()
+            try:
+                # Its own run, in a context of its own: the caller's step tracking and
+                # trace (context variables) must not see the called run's steps.
+                record = await asyncio.create_task(
+                    self.create(
+                        app,
+                        input,
+                        requester=caller.created_by,
+                        project=project,
+                        trigger={
+                            "kind": "app",
+                            "run_id": caller.run_id,
+                            "node": node,
+                            "title": titles.get(caller.app, caller.app),
+                        },
+                    ),
+                    context=contextvars.Context(),
+                )
+            except InvalidValues as exc:
+                said = "；".join(f"{k}：{v}" for k, v in exc.problems.items())
+                raise fail(flownodes.INPUT_ERROR, f"调用「{title}」的输入不对：{said}") from exc
+            except (UnknownApp, UnknownVersion, ProjectProblem, ModelNotAllowed) as exc:
+                raise fail(flownodes.INPUT_ERROR, f"不能调用「{title}」：{exc}") from exc
+        try:
+            done = await self._wait_called(record.run_id, timeout)
+        except asyncio.CancelledError:
+            # The calling run was cancelled (or the process stops): so is the called one.
+            await self._stop_called(record.run_id, "调用它的运行停了")
+            raise
+        if done.status == "waiting":
+            await self._stop_called(record.run_id, "被调用的应用不能等人工处理")
+            raise fail(
+                flownodes.INPUT_ERROR,
+                f"应用「{title}」要人工处理，不能被调用；人工确认请放在调用它的应用里",
+            )
+        if done.status == "running":
+            await self._stop_called(record.run_id, f"超过 {timeout} 秒还没结束")
+            raise fail("timeout", f"调用「{title}」超过 {timeout} 秒还没结束")
+        if done.status != "done":
+            why = done.error or ("被取消了" if done.status == "cancelled" else "失败了")
+            raise fail("app_error", f"调用「{title}」没有完成：{why}")
+        view = await self.get(record.run_id)
+        result = view.result if isinstance(view.result, dict) else {}
+        return flownodes.AppCall(record.run_id, title, result)
+
+    async def _wait_called(self, run_id: str, timeout: int) -> RunRecord:
+        """The called run once it is done, failed, cancelled or waits for a person, or as
+        it is when ``timeout`` seconds are up."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            found = await self._store.get(run_id)
+            if found is None:
+                raise flownodes.NodeFailure("app_error", "被调用的运行不见了")
+            left = deadline - loop.time()
+            if found.status != "running" or left <= 0:
+                return found
+            task = self._running.get(run_id)
+            if task is not None:
+                await asyncio.wait({task}, timeout=min(left, 5))
+            else:
+                # Run by another process (or not started yet): look again shortly.
+                await asyncio.sleep(min(left, 0.5))
+
+    async def _stop_called(self, run_id: str, reason: str) -> None:
+        try:
+            await self.cancel(run_id, None, reason)
+        except (RunNotFound, NotCancellable):
+            pass
 
     async def _models(
         self, app: str, config: dict[str, Any], input: dict[str, Any], default: str | None = None

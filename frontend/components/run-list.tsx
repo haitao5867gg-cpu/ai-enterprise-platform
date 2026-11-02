@@ -13,6 +13,7 @@ import {
   stepText,
   timeAgo,
   versionLabel,
+  triggerText,
   type RunStatus,
   type RunSummary,
 } from "../lib/runs";
@@ -223,7 +224,7 @@ export function RunList() {
                         {run.created_by || "—"}
                         {run.trigger && (
                           <span className="run-step">
-                            定时：{run.trigger.title}
+                            {triggerText(run.trigger)}
                           </span>
                         )}
                       </td>

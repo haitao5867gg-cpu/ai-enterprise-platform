@@ -520,6 +520,7 @@ class AppCatalog:
             rerank_options(
                 self._settings, models if models is not None else [self._runs.default_model]
             ),
+            apps=self._runs.app_shape,
         )
 
     async def check_flow(self, raw: Any, strict: bool = True) -> dict[str, Any]:
@@ -788,6 +789,8 @@ class AppCatalog:
             raise NotTestable(f"{spec.label}节点会写 Databricks，不能单独试跑")
         if node["type"] == "data_check":
             raise NotTestable("数据检查节点要读这次运行的结果表和项目，不能单独试跑")
+        if node["type"] == "app":
+            raise NotTestable("调用应用节点会真的发起一次运行，不能单独试跑")
         p = Problems(("config", "graph", "nodes", node_id))
         check_common(node, p)
         await spec.check(node, p, self._env(await self.models()))
