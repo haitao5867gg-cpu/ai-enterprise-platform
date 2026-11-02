@@ -1,7 +1,11 @@
 import { requestJson } from "./runs";
 
 // docs/api/notifications.md is the source of truth for these wire types.
-export type NotificationEvent = "run.waiting" | "run.done" | "run.error";
+export type NotificationEvent =
+  | "run.waiting"
+  | "run.done"
+  | "run.error"
+  | "app.budget";
 export type WebhookKind = "generic" | "wecom" | "dingtalk" | "feishu";
 export type AppNotification = {
   id: number;
@@ -50,11 +54,13 @@ export const EVENTS: NotificationEvent[] = [
   "run.waiting",
   "run.done",
   "run.error",
+  "app.budget",
 ];
 export const eventLabels: Record<NotificationEvent, string> = {
   "run.waiting": "待确认",
   "run.done": "完成",
   "run.error": "失败",
+  "app.budget": "模型预算",
 };
 export const KINDS: WebhookKind[] = ["wecom", "dingtalk", "feishu", "generic"];
 export const kindLabels: Record<WebhookKind, string> = {

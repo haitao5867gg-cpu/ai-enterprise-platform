@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 from aep.api.validation import NoNulls, chinese_errors
 from aep.auth import current_user, enabled
-from aep.notify import Notifier, Webhook
+from aep.notify import EVENTS, Notifier, Webhook
 
 router = APIRouter(
     tags=["notifications"],
@@ -25,7 +25,7 @@ router = APIRouter(
     ),
 )
 
-EventName = Literal["run.waiting", "run.done", "run.error"]
+EventName = Literal["run.waiting", "run.done", "run.error", "app.budget"]
 KindName = Literal["generic", "wecom", "dingtalk", "feishu"]
 Name = Annotated[
     str,
@@ -93,7 +93,7 @@ class CreateWebhook(NoNulls):
     name: Name
     kind: KindName
     url: Url
-    events: list[EventName] = Field(min_length=1, max_length=3)
+    events: list[EventName] = Field(min_length=1, max_length=4)
     apps: list[AppName] | None = Field(None, min_length=1, max_length=100)
     enabled: bool = True
 
@@ -103,7 +103,7 @@ class UpdateWebhook(BaseModel):
     name: Name | None = None
     kind: KindName | None = None
     url: Url | None = None
-    events: list[EventName] | None = Field(None, min_length=1, max_length=3)
+    events: list[EventName] | None = Field(None, min_length=1, max_length=4)
     apps: list[AppName] | None = Field(None, min_length=1, max_length=100)
     enabled: bool | None = None
 
@@ -193,7 +193,7 @@ async def update_webhook(webhook_id: str, body: UpdateWebhook, request: Request)
     if body.url is not None:
         hook.url = body.url
     if body.events is not None:
-        hook.events = [e for e in ("run.waiting", "run.done", "run.error") if e in body.events]
+        hook.events = [e for e in EVENTS if e in body.events]
     if "apps" in given:
         hook.apps = body.apps
     if body.enabled is not None:

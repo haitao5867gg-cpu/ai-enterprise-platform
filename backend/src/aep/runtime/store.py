@@ -114,6 +114,33 @@ class RunStore(Protocol):
         (cancelled and unfinished runs do not count): ``{app: (done, error)}``."""
         ...
 
+    async def stats(self, since: datetime) -> list["RunStat"]:
+        """Runs created since ``since``, without a draft's trial and evaluation runs, for
+        the operations dashboard (docs/api/ops.md)."""
+        ...
+
+    async def apps_of(self, run_ids: list[str]) -> dict[str, str]:
+        """The app of each of these runs that exists."""
+        ...
+
+
+@dataclass(frozen=True)
+class RunStat:
+    run_id: str
+    app: str
+    status: RunStatus
+    outcome: str | None
+    rerun_of: str | None
+    created_at: datetime
+    updated_at: datetime
+    wait_seconds: float | None
+    reran: bool  # another run was copied from this one
+
+
+def _counted(record: RunRecord) -> bool:
+    # A draft's trial and evaluation runs belong to no version (as for notifications).
+    return not (record.app_version is None and record.config is not None)
+
 
 class MemoryRunStore:
     """In-process store for tests and quick experiments."""
@@ -175,6 +202,27 @@ class MemoryRunStore:
                 done, error = found.get(r.app, (0, 0))
                 found[r.app] = (done + 1, error) if r.status == "done" else (done, error + 1)
         return found
+
+    async def stats(self, since: datetime) -> list[RunStat]:
+        copied = {r.rerun_of for r in self._runs.values() if r.rerun_of}
+        return [
+            RunStat(
+                r.run_id,
+                r.app,
+                r.status,
+                r.outcome,
+                r.rerun_of,
+                r.created_at,
+                r.updated_at,
+                r.wait_seconds,
+                r.run_id in copied,
+            )
+            for r in self._runs.values()
+            if r.created_at >= since and _counted(r)
+        ]
+
+    async def apps_of(self, run_ids: list[str]) -> dict[str, str]:
+        return {key: self._runs[key].app for key in run_ids if key in self._runs}
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         runs = sorted(self._runs.values(), key=lambda r: r.created_at, reverse=True)
@@ -341,6 +389,28 @@ class PostgresRunStore:
             )
             return {row["app"]: (row["done"], row["error"]) for row in await cur.fetchall()}
 
+    async def stats(self, since: datetime) -> list[RunStat]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT r.run_id::text, r.app, r.status, r.outcome, r.rerun_of::text,"
+                " r.created_at, r.updated_at, r.wait_seconds,"
+                " EXISTS (SELECT 1 FROM runs c WHERE c.rerun_of = r.run_id) AS reran"
+                " FROM runs r WHERE r.created_at >= %s"
+                " AND NOT (r.app_version IS NULL AND r.config IS NOT NULL)",
+                (since,),
+            )
+            return [RunStat(**row) for row in await cur.fetchall()]
+
+    async def apps_of(self, run_ids: list[str]) -> dict[str, str]:
+        keys = [key for key in run_ids if _uuid(key)]
+        if not keys:
+            return {}
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT run_id::text, app FROM runs WHERE run_id = ANY(%s::uuid[])", (keys,)
+            )
+            return {row["run_id"]: row["app"] for row in await cur.fetchall()}
+
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
@@ -403,3 +473,11 @@ class PostgresRunStore:
                 "UPDATE runs SET step = %s WHERE run_id = %s",
                 (Jsonb({"node": node, "title": title}), uuid.UUID(run_id)),
             )
+
+
+def _uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True

@@ -195,7 +195,7 @@ function rawItems(): Raw[] {
 
 const keyOf = (kind: string, id: string) => `${kind}:${id}`;
 
-function items(): CatalogItem[] {
+export function mockCatalogItems(): CatalogItem[] {
   const raw = rawItems();
   const live = new Set(raw.map((item) => keyOf(item.kind, item.id)));
   for (const key of state.meta.keys())
@@ -213,7 +213,7 @@ function items(): CatalogItem[] {
 }
 
 function find(kind: string, id: string) {
-  return items().find((item) => item.kind === kind && item.id === id);
+  return mockCatalogItems().find((item) => item.kind === kind && item.id === id);
 }
 
 export async function mockCatalog(request: Request, path: string[]) {
@@ -224,7 +224,7 @@ export async function mockCatalog(request: Request, path: string[]) {
     if (kind && !catalogKinds.some(([key]) => key === kind))
       return mockError(`不认识的类别 ${kind}`, 422);
     return mockJson({
-      items: items().filter(
+      items: mockCatalogItems().filter(
         (item) =>
           (!kind || item.kind === kind) &&
           (!q ||

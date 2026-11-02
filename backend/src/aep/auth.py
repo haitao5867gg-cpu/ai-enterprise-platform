@@ -190,6 +190,9 @@ LABELS: dict[str, str] = {
     "POST /schedules/{schedule_id}/run": "立即跑一次定时",
     "PUT /catalog/{kind}/{asset_id}": "修改资产信息",
     "POST /catalog/{kind}/{asset_id}/pull-request": "把资产提交到资产仓库",
+    "PUT /ops/settings": "修改算力单价",
+    "PUT /apps/{app}/budget": "设置应用模型预算",
+    "DELETE /apps/{app}/budget": "删除应用模型预算",
 }
 
 
@@ -229,6 +232,8 @@ def required(method: str, path: str) -> str | None:
         return "admin" if method in WRITES else "builder"
     if path == "/llm/chat" or _under(path, "/catalog"):
         return "builder"
+    if _under(path, "/ops") or path == "/apps/{app}/budget":
+        return "admin" if method in WRITES else "builder"
     if (
         method in WRITES
         and path != "/datasources/files"

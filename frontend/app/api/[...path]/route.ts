@@ -103,6 +103,10 @@ async function handle(request: Request, context: Context) {
     [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set$/, ["GET", "PUT"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set\/cases\/from-run$/, ["POST"]],
     // API keys of an app (docs/api/app-access.md).
+    // The operations dashboard and per-app model budgets (docs/api/ops.md).
+    [/^ops\/summary$/, ["GET"]],
+    [/^ops\/settings$/, ["PUT"]],
+    [/^apps\/[a-zA-Z0-9_-]{1,128}\/budget$/, ["GET", "PUT", "DELETE"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/keys$/, ["GET", "POST"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/keys\/[a-zA-Z0-9_-]{1,64}$/, ["DELETE"]],
     // Schedules (docs/api/schedules.md); `preview` comes before the id rule.
@@ -162,6 +166,10 @@ async function handle(request: Request, context: Context) {
     return jsonError("请使用 multipart 表单上传文件", 415);
 
   if (endpoint !== "readyz" && isLocalMockEnabled()) {
+    if (path[0] === "ops" || (path[0] === "apps" && path[2] === "budget")) {
+      const { mockOps } = await import("../../../lib/server/mock-ops");
+      return mockOps(request, path);
+    }
     if (["apps", "node-types", "app-templates"].includes(path[0])) {
       const { mockApps } = await import("../../../lib/server/mock-apps");
       return mockApps(request, path);

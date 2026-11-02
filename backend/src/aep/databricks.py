@@ -52,7 +52,7 @@ from urllib.parse import quote
 import httpx
 import yaml
 
-from aep import cluster_harness, cluster_tasks
+from aep import cluster_harness, cluster_tasks, compute
 from aep.config import Settings
 from aep.etl.codegen import (
     PIPELINE_PY,
@@ -642,6 +642,7 @@ class DevTarget:
         )
         ids = {"clusterId": cluster_id, "contextId": context["id"]}
         deadline = time.monotonic() + self._settings.databricks_timeout_seconds
+        started: float | None = None
         try:
             while (await self._get("/api/1.2/contexts/status", **ids)).get("status") != "Running":
                 if time.monotonic() > deadline:
@@ -650,6 +651,7 @@ class DevTarget:
             cmd = await self._post(
                 "/api/1.2/commands/execute", ids | {"language": "python", "command": command}
             )
+            started = time.monotonic()
             while True:
                 status = await self._get("/api/1.2/commands/status", **ids, commandId=cmd["id"])
                 if status.get("status") in ("Finished", "Error", "Cancelled"):
@@ -660,6 +662,8 @@ class DevTarget:
                     raise DatabricksError(f"集群上的程序超过 {limit:g} 秒没有结束")
                 await asyncio.sleep(POLL_SECONDS)
         finally:
+            if started is not None:
+                await compute.record("command", cluster_id, time.monotonic() - started)
             try:
                 await self._post("/api/1.2/contexts/destroy", ids)
             except DatabricksError:
@@ -874,6 +878,7 @@ class DevTarget:
         try:
             dev.run_id = int((await self._post("/api/2.1/jobs/run-now", now))["run_id"])
             run = await self._wait_run(dev.run_id)
+            await compute.record("job", cluster_id, _run_seconds(run))
             dev.url = run.get("run_page_url")
             tasks = sorted(run.get("tasks") or [], key=lambda t: t.get("attempt_number", 0))
             output = await self._get("/api/2.1/jobs/runs/get-output", run_id=tasks[-1]["run_id"])
@@ -1205,6 +1210,17 @@ def release_job_name(name: str, placement: Placement | None, environment: str = 
     if placement is None:
         return name
     return f"{name}（{placement.values['project']}/{environment}）"
+
+
+def _run_seconds(run: dict[str, Any]) -> float:
+    """How long a Jobs API run held its cluster, in seconds."""
+    total = run.get("run_duration")
+    if not isinstance(total, int | float) or total <= 0:
+        parts = [
+            run.get(key) for key in ("setup_duration", "execution_duration", "cleanup_duration")
+        ]
+        total = sum(part for part in parts if isinstance(part, int | float))
+    return float(total) / 1000
 
 
 def _reads_catalog(bundle: Bundle) -> bool:
