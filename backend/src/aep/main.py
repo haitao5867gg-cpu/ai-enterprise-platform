@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
 from aep.api import (
+    app_access,
     apps,
     assets,
     auth,
@@ -27,6 +28,8 @@ from aep.api import (
     runs,
     skills,
 )
+from aep.app_access import ApiKeys, PostgresApiKeyStore
+from aep.app_mcp import AppMcpEndpoint
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.auth import AuthService, PostgresAuthStore, audit_middleware, authorize
 from aep.config import Settings, get_settings
@@ -167,6 +170,10 @@ def create_app() -> FastAPI:
         await notifier.setup()
         service.on_settled = notifier.run_settled
         app.state.notifier = notifier
+        # API keys for the app API and each app's MCP endpoint (docs/api/app-access.md).
+        key_store = PostgresApiKeyStore(pool)
+        await key_store.setup()
+        app.state.api_keys = ApiKeys(key_store)
         llm.set_recorder(call_store.record)
         catalog.model_choices = model_service.choices
         if tracer.enabled:
@@ -235,6 +242,11 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router)
     app.include_router(models.router)
     app.include_router(notifications.router)
+    app.include_router(app_access.router)
+    # Each app as an MCP tool; it checks API keys itself.
+    app.mount("/mcp/apps", AppMcpEndpoint())
+    # Links back to a run (notices, the app API).
+    app.state.web_url = settings.web_url
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

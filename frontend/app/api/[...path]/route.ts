@@ -91,6 +91,9 @@ async function handle(request: Request, context: Context) {
     [/^apps\/import$/, ["POST"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}$/, ["GET", "PATCH", "DELETE"]],
     [/^apps\/[a-zA-Z0-9_-]{1,128}\/manual$/, ["GET"]],
+    // API keys of an app (docs/api/app-access.md).
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/keys$/, ["GET", "POST"]],
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/keys\/[a-zA-Z0-9_-]{1,64}$/, ["DELETE"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/draft\/import$/, ["POST"]],
     [
       /^apps\/[a-z][a-z0-9-]{1,63}\/nodes\/[a-z][a-z0-9_]{0,31}\/test$/,

@@ -87,12 +87,34 @@ test("登录打开时，确认通知只发给审批者", async ({ page, context 
   await readAll(page);
   await startWaitingRun(page);
   await page.goto("/notifications");
-  await expect(bell(page)).toHaveAccessibleName("通知");
+  await page.getByLabel("只看未读").check();
+  await expect(
+    page
+      .getByRole("list", { name: "通知" })
+      .or(page.getByRole("heading", { name: "没有未读通知" })),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({ hasText: "整理客户数据清洗方案" })
+      .filter({ hasText: "等你确认" }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "退出" }).click();
   await expect(page).toHaveURL(/\/login$/);
 
   await signIn(context, page, "hanmeimei");
-  await expect(bell(page)).toHaveAccessibleName("通知，1 条未读");
+  // Runs other tests left behind may still announce to everyone meanwhile, so look
+  // for this run's approval rather than count.
+  await expect(bell(page)).toHaveAccessibleName(/^通知，\d+ 条未读$/);
+  await page.goto("/notifications");
+  await page.getByLabel("只看未读").check();
+  await expect(
+    page
+      .getByRole("list", { name: "通知" })
+      .getByRole("listitem")
+      .filter({ hasText: "整理客户数据清洗方案" })
+      .filter({ hasText: "等你确认" }),
+  ).toHaveCount(1);
   // Accounts can have an email for email notices; the channels page is admins'.
   await page.goto("/notification-channels");
   await expect(page.getByRole("heading", { name: "没有权限" })).toBeVisible();
