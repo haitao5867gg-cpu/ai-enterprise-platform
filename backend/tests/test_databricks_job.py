@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aep import cluster_harness
+from aep import cluster_harness, compute
 from aep.config import Settings
 from aep.databricks import DevTarget
 from aep.etl import codegen
@@ -270,3 +270,22 @@ async def test_runs_of_one_bundle_verify_one_at_a_time(tmp_path, monkeypatch):
     imports = [i for i, path in enumerate(paths) if path.endswith("/workspace/import")]
     # The second run's files go up only after the first run's job has reported.
     assert imports[len(first.files)] > first_output
+
+
+async def test_job_runs_record_their_databricks_time(tmp_path):
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    workspace.job_outputs = [PASSED]
+    target = as_job(workspace)
+    recorded: list[compute.ComputeRecord] = []
+
+    async def keep(record: compute.ComputeRecord) -> None:
+        recorded.append(record)
+
+    compute.set_recorder(keep)
+    try:
+        await target.run(job_bundle())
+    finally:
+        compute.set_recorder(None)
+    assert [(r.kind, r.cluster_id, r.seconds) for r in recorded] == [
+        ("job", fake_databricks.CLUSTER_ID, 90.0)
+    ]

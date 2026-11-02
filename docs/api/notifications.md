@@ -11,6 +11,7 @@
 | 待确认 | `run.waiting` | 等的是表单（人工节点 `mode: form`）：发起人；其他确认（审批、方案确认、上线审批）：所有审批者（有 `approver` 角色的账号，管理员也算） |
 | 完成 | `run.done` | 发起人 |
 | 失败 | `run.error` | 发起人 |
+| 模型预算 | `app.budget` | 管理员（登录关着时所有人）；应用本月模型预算过了提醒线或用完，每月各一次，链接到运营看板，见 [ops.md](ops.md) |
 
 - 取消不发通知（是人自己取消的）。
 - 草稿的试跑和评测运行（不属于任何版本的运行）不发通知，免得评测一次几十条。
@@ -42,7 +43,7 @@
 // Notification
 {
   "id": 42,
-  "event": "run.waiting",            // run.waiting | run.done | run.error
+  "event": "run.waiting",            // run.waiting | run.done | run.error | app.budget
   "run_id": "…",
   "app": "retail-etl",
   "title": "「零售 ETL」等你确认",      // 一句话

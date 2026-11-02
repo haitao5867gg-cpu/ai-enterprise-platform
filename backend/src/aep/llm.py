@@ -68,7 +68,28 @@ def set_recorder(recorder: Recorder | None) -> None:
     _recorder = recorder
 
 
-def _run_context() -> tuple[str | None, str | None]:
+class BudgetExceeded(RuntimeError):
+    """The run's app has used up its monthly model budget (docs/api/ops.md, 「预算」);
+    the call was not sent."""
+
+
+# Called with the run a model call is made from before it is sent; raises
+# BudgetExceeded to stop it. None checks nothing (tests, scripts).
+Guard = Callable[[str | None], Awaitable[None]]
+_guard: Guard | None = None
+
+
+def set_guard(guard: Guard | None) -> None:
+    global _guard
+    _guard = guard
+
+
+async def _check() -> None:
+    if _guard is not None:
+        await _guard(run_context()[0])
+
+
+def run_context() -> tuple[str | None, str | None]:
     """The run and graph node the current call is made from, when it is made in one."""
     try:
         config = get_config()
@@ -90,7 +111,7 @@ async def _record(
 ) -> None:
     if _recorder is None:
         return
-    run_id, node = _run_context()
+    run_id, node = run_context()
     record = CallRecord(
         model=model,
         kind=kind,
@@ -164,6 +185,7 @@ async def chat(
     **params: object,
 ) -> ChatResult:
     """Send one chat completion through the gateway and return its text and usage."""
+    await _check()
     trace_meta = tracing.gateway_metadata()
     if trace_meta:
         extra_body = dict(params.pop("extra_body", None) or {})
@@ -209,6 +231,7 @@ async def embed(client: AsyncOpenAI, texts: list[str], model: str) -> list[list[
     """Embed at most ten texts per gateway request, preserving input order."""
     if model == "mock-embed":
         return [_mock_embedding(text) for text in texts]
+    await _check()
     vectors: list[list[float]] = []
     for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
         batch = texts[start : start + EMBEDDING_BATCH_SIZE]

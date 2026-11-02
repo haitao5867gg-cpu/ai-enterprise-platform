@@ -15,8 +15,9 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 import httpx
 from openai import AsyncOpenAI
@@ -242,10 +243,25 @@ class UsageSummary:
     last_error: str | None = None  # the code of the last call when it failed
 
 
+@dataclass(frozen=True)
+class CallRollup:
+    """Calls made from one run (None: outside runs) on one day of the platform timezone,
+    for the operations dashboard (docs/api/ops.md)."""
+
+    run_id: str | None
+    day: date
+    calls: int = 0
+    unpriced: int = 0  # calls the gateway reported no cost for
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float | None = None
+
+
 class CallStore(Protocol):
     async def setup(self) -> None: ...
     async def record(self, call: llm.CallRecord) -> None: ...
     async def summary(self, since: datetime) -> dict[str, UsageSummary]: ...
+    async def rollup(self, since: datetime, timezone: str) -> list[CallRollup]: ...
     async def prune(self, before: datetime) -> int: ...
     async def for_run(self, run_id: str) -> list[tuple[datetime, llm.CallRecord]]: ...
 
@@ -276,6 +292,27 @@ class MemoryCallStore:
 
     async def for_run(self, run_id: str) -> list[tuple[datetime, llm.CallRecord]]:
         return [(at, c) for at, c in self.calls if c.run_id == run_id]
+
+    async def rollup(self, since: datetime, timezone: str) -> list[CallRollup]:
+        zone = ZoneInfo(timezone)
+        found: dict[tuple[str | None, date], CallRollup] = {}
+        for at, call in self.calls:
+            if at < since:
+                continue
+            key = (call.run_id, at.astimezone(zone).date())
+            old = found.get(key, CallRollup(*key))
+            cost = old.cost_usd
+            if call.cost_usd is not None:
+                cost = (cost or 0.0) + call.cost_usd
+            found[key] = CallRollup(
+                *key,
+                calls=old.calls + 1,
+                unpriced=old.unpriced + (call.cost_usd is None),
+                prompt_tokens=old.prompt_tokens + call.prompt_tokens,
+                completion_tokens=old.completion_tokens + call.completion_tokens,
+                cost_usd=cost,
+            )
+        return list(found.values())
 
     async def prune(self, before: datetime) -> int:
         kept = [(at, c) for at, c in self.calls if at >= before]
@@ -398,6 +435,19 @@ class PostgresCallStore:
                 )
                 for row in await cur.fetchall()
             }
+
+    async def rollup(self, since: datetime, timezone: str) -> list[CallRollup]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT run_id, (at AT TIME ZONE %s)::date AS day, count(*)::integer AS calls,"
+                " count(*) FILTER (WHERE cost_usd IS NULL)::integer AS unpriced,"
+                " coalesce(sum(prompt_tokens), 0)::bigint AS prompt_tokens,"
+                " coalesce(sum(completion_tokens), 0)::bigint AS completion_tokens,"
+                " sum(cost_usd) AS cost_usd FROM model_calls"
+                " WHERE tenant_id = %s AND at >= %s GROUP BY run_id, day",
+                (timezone, DEFAULT_TENANT, since),
+            )
+            return [CallRollup(**row) for row in await cur.fetchall()]
 
     async def for_run(self, run_id: str) -> list[tuple[datetime, llm.CallRecord]]:
         async with self._pool.connection() as conn:

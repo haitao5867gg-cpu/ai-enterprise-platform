@@ -118,6 +118,11 @@ def test_route_rules():
     assert required("GET", "/users") == "admin"
     assert required("GET", "/audit") == "admin"
     assert required("POST", "/llm/chat") == "builder"
+    assert required("GET", "/ops/summary") == "builder"
+    assert required("PUT", "/ops/settings") == "admin"
+    assert required("GET", "/apps/{app}/budget") == "builder"
+    assert required("PUT", "/apps/{app}/budget") == "admin"
+    assert required("DELETE", "/apps/{app}/budget") == "admin"
 
 
 async def test_off_everyone_is_the_local_user_and_names_come_from_the_client():

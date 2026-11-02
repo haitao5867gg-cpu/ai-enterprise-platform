@@ -66,6 +66,7 @@ export function pageRole(pathname: string): Role {
       "/datasources",
       "/projects",
       "/models",
+      "/ops",
     ]
       .map(under)
       .some(Boolean)

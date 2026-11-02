@@ -1,6 +1,7 @@
 "use client";
 
 import { AppAccess } from "./app-access";
+import { AppBudget } from "./app-budget";
 import { AppSchedules } from "./app-schedules";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
@@ -937,6 +938,7 @@ export function AppDetailView({ app }: { app: string }) {
             );
           }}
         />
+        <AppBudget app={app} title={data.title} />
         <section className="panel asset-section" aria-label="版本历史">
           <h2>版本历史</h2>
           {historyError && (

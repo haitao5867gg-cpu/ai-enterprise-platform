@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-Event = Literal["run.waiting", "run.done", "run.error"]
-EVENTS: tuple[Event, ...] = ("run.waiting", "run.done", "run.error")
+Event = Literal["run.waiting", "run.done", "run.error", "app.budget"]
+EVENTS: tuple[Event, ...] = ("run.waiting", "run.done", "run.error", "app.budget")
 WebhookKind = Literal["generic", "wecom", "dingtalk", "feishu"]
 KINDS: tuple[WebhookKind, ...] = ("generic", "wecom", "dingtalk", "feishu")
 KEEP_DAYS = 90
@@ -437,11 +437,12 @@ async def http_post(url: str, body: dict[str, Any]) -> tuple[int, Any]:
 
 
 def webhook_body(kind: str, notice: Notice, link: str) -> dict[str, Any]:
+    page = "打开运营看板" if notice.event == "app.budget" else "打开运行页"
     if kind == "wecom":
-        text = f"**{notice.title}**\n{notice.body}\n[打开运行页]({link})\n> {KEYWORD}"
+        text = f"**{notice.title}**\n{notice.body}\n[{page}]({link})\n> {KEYWORD}"
         return {"msgtype": "markdown", "markdown": {"content": text}}
     if kind == "dingtalk":
-        text = f"#### {notice.title}\n\n{notice.body}\n\n[打开运行页]({link})\n\n> {KEYWORD}"
+        text = f"#### {notice.title}\n\n{notice.body}\n\n[{page}]({link})\n\n> {KEYWORD}"
         return {"msgtype": "markdown", "markdown": {"title": notice.title, "text": text}}
     if kind == "feishu":
         text = f"[{KEYWORD}] {notice.title}\n{notice.body}\n{link}".replace("\n\n", "\n")
@@ -534,6 +535,37 @@ class Notifier:
             self.now(),
         )
         to = await self._recipients(event, form, record.created_by)
+        await self.deliver(notice, to)
+
+    async def budget(
+        self,
+        app: str,
+        app_title: str,
+        run_id: str,
+        *,
+        over: bool,
+        spent: float,
+        monthly: float,
+        block: bool,
+    ) -> None:
+        """An app's monthly model budget passed its warning line or ran out
+        (docs/api/ops.md); to admins, or everyone's inbox while sign-in is off."""
+        if over:
+            title = f"「{app_title}」本月模型预算已用完"
+            then = "之后这个应用的模型调用会被拦下" if block else "预算设成只提醒，调用不受影响"
+        else:
+            title = f"「{app_title}」本月模型预算快用完了"
+            then = "用完后" + ("会拦下这个应用的模型调用" if block else "只提醒，不拦截")
+        body = f"本月已用 ${spent:.2f}，预算 ${monthly:g}；{then}。"
+        notice = Notice("app.budget", run_id, app, app_title, title, body, "/ops", self.now())
+        accounts: list[User] = []
+        if self.auth is not None and self.auth.enabled:
+            accounts = [
+                u for u in await self.auth.store.list_users() if not u.disabled and u.has("admin")
+            ]
+        to = Recipients(
+            [u.user_id for u in accounts] or [None], [u.email for u in accounts if u.email]
+        )
         await self.deliver(notice, to)
 
     async def _recipients(self, event: str, form: bool, requester: str | None) -> Recipients:

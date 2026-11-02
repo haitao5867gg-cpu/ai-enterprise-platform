@@ -46,6 +46,7 @@ export default defineConfig({
         "git-pr.spec.ts",
         "catalog.spec.ts",
         "knowledge-governance.spec.ts",
+        "ops.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

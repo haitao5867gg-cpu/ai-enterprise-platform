@@ -394,6 +394,7 @@ class FakeWorkspace:
                 json={
                     "run_id": run_id,
                     "state": state,
+                    "run_duration": 90_000,
                     "run_page_url": f"{HOST}/#job/{self.job_runs[run_id - 501]}/run/{run_id}",
                     "tasks": [{"run_id": run_id + 1000, "task_key": "run", "attempt_number": 0}],
                 },

@@ -92,6 +92,7 @@ const NAV: NavItem[] = [
     icon: "folder",
     active: under("/projects"),
   },
+  { href: "/ops", label: "运营看板", icon: "chart", active: under("/ops") },
   { href: "/users", label: "账号", icon: "user", active: under("/users") },
   {
     href: "/notification-channels",

@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-from aep import __version__, llm, tracing
+from aep import __version__, compute, llm, tracing
 from aep.api import (
     app_access,
     apps,
@@ -33,6 +33,9 @@ from aep.api import (
 from aep.api import (
     catalog as catalog_api,
 )
+from aep.api import (
+    ops as ops_api,
+)
 from aep.app_access import ApiKeys, PostgresApiKeyStore
 from aep.app_mcp import AppMcpEndpoint
 from aep.asset_catalog import AssetCatalog, PostgresAssetMetaStore
@@ -50,6 +53,7 @@ from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
 from aep.models import GatewayAdmin, ModelService, PostgresCallStore
 from aep.notify import Notifier, PostgresNotificationStore
+from aep.ops import Ops, PostgresOpsStore, reuse_from
 from aep.projects import PostgresProjectStore
 from aep.runtime.catalog import AppCatalog, GatewayModels
 from aep.runtime.flow.store import PostgresFlowAppStore, PostgresSecretStore
@@ -209,7 +213,30 @@ def create_app() -> FastAPI:
         # Every platform asset in one list (docs/api/catalog.md).
         asset_meta = PostgresAssetMetaStore(pool)
         await asset_meta.setup()
-        app.state.asset_catalog = AssetCatalog(catalog, sources, asset_meta, asset_repo, settings)
+        asset_catalog = AssetCatalog(catalog, sources, asset_meta, asset_repo, settings)
+        app.state.asset_catalog = asset_catalog
+        # The operations dashboard, Databricks time and per-app model budgets
+        # (docs/api/ops.md).
+        ops_store = PostgresOpsStore(pool)
+        await ops_store.setup()
+
+        async def reuse() -> dict[str, Any]:
+            return reuse_from(await asset_catalog.items())
+
+        ops = Ops(
+            store,
+            call_store,
+            ops_store,
+            ops_store,
+            call_store,
+            service.app_titles,
+            timezone=settings.schedule_timezone,
+            reuse=reuse,
+            notifier=notifier,
+        )
+        app.state.ops = ops
+        compute.set_recorder(ops_store.record)
+        llm.set_guard(ops.guard)
         app.state.models = model_service
         app.state.skills = skill_store
         app.state.datasources = sources
@@ -250,6 +277,8 @@ def create_app() -> FastAPI:
         if asset_repo is not None:
             await asset_repo.close()
         llm.set_recorder(None)
+        llm.set_guard(None)
+        compute.set_recorder(None)
         await gateway_admin.close()
         await pool.close()
         await llm_client.close()
@@ -279,6 +308,7 @@ def create_app() -> FastAPI:
     app.include_router(app_access.router)
     app.include_router(schedules.router)
     app.include_router(catalog_api.router)
+    app.include_router(ops_api.router)
     # Each app as an MCP tool; it checks API keys itself.
     app.mount("/mcp/apps", AppMcpEndpoint())
     # Links back to a run (notices, the app API).
