@@ -9,6 +9,7 @@ import type {
   Setting,
   SkillRef,
 } from "../lib/apps";
+import { chatModelChoices } from "../lib/apps";
 import { getSkill, type SkillVersion } from "../lib/skills";
 import { KnowledgePicker } from "./knowledge-form";
 import { errorMessage } from "../lib/runs";
@@ -232,16 +233,13 @@ export function AppSettings({
                 }
               >
                 <option value="">平台默认（{options.default_model}）</option>
-                {[
-                  ...new Set([
-                    ...options.models,
-                    ...(config.model ? [config.model] : []),
-                  ]),
-                ].map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
+                {chatModelChoices(options, config.model ?? null).map(
+                  (choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ),
+                )}
               </select>
             ) : setting.type === "skills" ? (
               <SkillPicker

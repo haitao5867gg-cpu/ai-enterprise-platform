@@ -21,6 +21,7 @@ import type {
   ToolNode,
   ValueType,
 } from "../lib/apps";
+import { chatModelChoices } from "../lib/apps";
 import {
   cachedTools,
   isToolService,
@@ -213,17 +214,7 @@ function ModelFields({
         onChange={(model) => change({ ...node, model: model || null })}
         choices={[
           { value: "", label: `平台默认（${options.default_model}）` },
-          ...[
-            ...new Set([
-              ...options.models,
-              ...(node.model ? [node.model] : []),
-            ]),
-          ].map((model) => ({
-            value: model,
-            label: options.models.includes(model)
-              ? model
-              : `${model}（网关上没有）`,
-          })),
+          ...chatModelChoices(options, node.model),
         ]}
       />
       <div className="asset-field">

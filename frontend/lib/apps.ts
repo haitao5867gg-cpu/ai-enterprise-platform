@@ -410,6 +410,8 @@ export type AppDetail = AppSummary & {
     models: string[];
     rerank_models: RerankModel[];
     default_model: string;
+    // Models with display names (docs/api/models.md); [] when the gateway is down.
+    model_choices?: ModelChoice[];
     skills: {
       name: string;
       description: string;
@@ -417,6 +419,37 @@ export type AppDetail = AppSummary & {
     }[];
   };
 };
+
+export type ModelChoice = {
+  alias: string;
+  label: string;
+  purpose: "chat" | "embedding" | "rerank";
+  allowed: boolean;
+};
+
+// The model dropdown for nodes: chat models by display name, falling back to the bare
+// aliases when the gateway did not list any; a model the node names but the gateway lacks
+// stays selectable and says so.
+export function chatModelChoices(
+  options: Pick<AppDetail["options"], "models" | "model_choices">,
+  current: string | null,
+): { value: string; label: string }[] {
+  const listed = (options.model_choices ?? []).filter(
+    (choice) => choice.purpose === "chat",
+  );
+  const entries = listed.length
+    ? listed.map((choice) => ({
+        value: choice.alias,
+        label:
+          (choice.label && choice.label !== choice.alias
+            ? `${choice.label}（${choice.alias}）`
+            : choice.alias) + (choice.allowed ? "" : "（外发策略不允许）"),
+      }))
+    : options.models.map((model) => ({ value: model, label: model }));
+  return current && !entries.some((entry) => entry.value === current)
+    ? [...entries, { value: current, label: `${current}（网关上没有）` }]
+    : entries;
+}
 
 function isSummary(
   value: unknown,

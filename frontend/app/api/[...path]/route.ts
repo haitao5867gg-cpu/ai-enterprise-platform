@@ -22,6 +22,12 @@ async function handle(request: Request, context: Context) {
     [/^datasources\/(files|test)$/, ["POST"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage)$/, ["GET"]],
+    // `defaults` comes before the alias rule: the first match wins.
+    [/^models$/, ["GET", "POST"]],
+    [/^models\/defaults$/, ["PUT"]],
+    [/^models\/[a-z][a-z0-9_-]{1,39}$/, ["GET", "PATCH", "DELETE"]],
+    [/^models\/[a-z][a-z0-9_-]{1,39}\/test$/, ["POST"]],
+    [/^models\/[a-z][a-z0-9_-]{1,39}\/usage$/, ["GET"]],
     // `options` comes before the id rule: the first match wins.
     [/^projects$/, ["GET", "POST"]],
     [/^projects\/options$/, ["GET"]],
@@ -98,15 +104,17 @@ async function handle(request: Request, context: Context) {
       return mockApps(request, path);
     }
     if (path[0] === "knowledge-bases") {
-      const { mockKnowledge } = await import(
-        "../../../lib/server/mock-knowledge"
-      );
+      const { mockKnowledge } =
+        await import("../../../lib/server/mock-knowledge");
       return mockKnowledge(request, path);
     }
+    if (path[0] === "models") {
+      const { mockModelsApi } = await import("../../../lib/server/mock-models");
+      return mockModelsApi(request, path);
+    }
     if (path[0] === "projects") {
-      const { mockProjects } = await import(
-        "../../../lib/server/mock-projects"
-      );
+      const { mockProjects } =
+        await import("../../../lib/server/mock-projects");
       return mockProjects(request, path);
     }
     if (path[0] === "skills") {
@@ -159,7 +167,10 @@ async function handle(request: Request, context: Context) {
         signal: AbortSignal.timeout(
           isUpload
             ? 300_000
-            : /\/nodes\/[^/]+\/test$/.test(endpoint)
+            : /\/nodes\/[^/]+\/test$/.test(endpoint) ||
+                // Saving or testing a model calls it on the gateway first.
+                (/^models(\/[^/]+(\/test)?)?$/.test(endpoint) &&
+                  ["POST", "PATCH"].includes(request.method))
               ? 120_000
               : 10_000,
         ),

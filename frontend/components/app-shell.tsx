@@ -98,6 +98,13 @@ export function AppShell({
             数据源与工具
           </Link>
           <Link
+            href="/models"
+            className={`nav-link ${pathname.startsWith("/models") ? "active" : ""}`}
+          >
+            <Icon name="chip" />
+            模型
+          </Link>
+          <Link
             href="/projects"
             className={`nav-link ${pathname.startsWith("/projects") ? "active" : ""}`}
           >
@@ -130,9 +137,11 @@ export function AppShell({
                       ? "Skill"
                       : pathname.startsWith("/datasources")
                         ? "数据源与工具"
-                        : pathname.startsWith("/projects")
-                          ? "项目"
-                          : "运行详情"}
+                        : pathname.startsWith("/models")
+                          ? "模型"
+                          : pathname.startsWith("/projects")
+                            ? "项目"
+                            : "运行详情"}
           </span>
           <BackendHealth />
         </header>
