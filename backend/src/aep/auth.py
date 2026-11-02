@@ -168,6 +168,10 @@ LABELS: dict[str, str] = {
     "POST /models/{alias}/test": "测试模型",
     "PUT /models/defaults": "设置默认模型",
     "POST /llm/chat": "试调模型",
+    "POST /apps/{app}/keys": "新建 API 密钥",
+    "DELETE /apps/{app}/keys/{key_id}": "删除 API 密钥",
+    "POST /v1/apps/{app}/runs": "经 API 发起运行",
+    "POST /v1/runs/{run_id}/answer": "经 API 填表单",
     "POST /webhooks": "新建 Webhook",
     "PATCH /webhooks/{webhook_id}": "修改 Webhook",
     "DELETE /webhooks/{webhook_id}": "删除 Webhook",
@@ -200,6 +204,11 @@ def _under(path: str, prefix: str) -> bool:
 def required(method: str, path: str) -> str | None:
     if (method, path) in PUBLIC:
         return None
+    # The app API answers to API keys only (docs/api/app-access.md), checked there.
+    if _under(path, "/v1"):
+        return None
+    if path.startswith("/apps/{app}/keys"):
+        return "builder"
     if any(_under(path, p) for p in ("/users", "/audit", "/webhooks", "/notification-channels")):
         return "admin"
     if _under(path, "/models"):
@@ -887,13 +896,14 @@ async def audit_middleware(
     if auth is None or request.method not in WRITES or skipped:
         return response
     user = getattr(request.state, "user", None)
+    target = {k: str(v) for k, v in (request.scope.get("path_params") or {}).items()}
+    key = getattr(request.state, "api_key", None)
+    if key is not None:
+        # Calls with an API key are nobody's; the key's name says whose system it was.
+        user, target["key"] = None, key.name
     await auth.record(
         AuditRecord(
-            f"{request.method} {path}",
-            response.status_code,
-            user,
-            {k: str(v) for k, v in (request.scope.get("path_params") or {}).items()},
-            client_ip(request),
+            f"{request.method} {path}", response.status_code, user, target, client_ip(request)
         )
     )
     return response

@@ -1103,6 +1103,46 @@ nav {
   gap: 7px;
   white-space: nowrap;
 }
+.app-access-endpoints {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 14px 0;
+}
+.app-access-endpoints dt {
+  font-weight: 600;
+}
+.app-access-endpoints dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.app-access-example {
+  margin: 10px 0;
+}
+.app-access-example summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.app-access-example pre {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f6f5fa;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.app-access .asset-section-heading {
+  margin-top: 18px;
+}
+.app-access-secret {
+  display: block;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f6f5fa;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .topbar-tools {
   display: inline-flex;
   align-items: center;

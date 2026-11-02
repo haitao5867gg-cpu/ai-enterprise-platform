@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { ETL_V2_APP, etlV2Config } from "./mock-etl-v2";
 import {
   knowledgeExists,
@@ -810,6 +811,7 @@ export async function mockApps(
     if (typeof body.summary === "string") entry.summary = body.summary;
     return mockJson(detail(entry));
   }
+  if (path[2] === "keys") return mockKeys(request, entry.app, path[3]);
   if (path[2] === "secrets") {
     if (request.method === "DELETE") {
       delete entry.secrets[path[3]];
@@ -1050,4 +1052,48 @@ export function appsReferencingKnowledge(kb: string): string[] {
           );
     })
     .map((entry) => `${entry.title}（${entry.app}）`);
+}
+
+// API keys (docs/api/app-access.md): the secret is returned once, on creation.
+type MockKey = {
+  key_id: string;
+  app: string;
+  name: string;
+  prefix: string;
+  created_by: string | null;
+  created_at: string;
+  last_used_at: string | null;
+};
+const keyStore = globalThis as typeof globalThis & {
+  aepMockKeys?: MockKey[];
+};
+const apiKeys = (keyStore.aepMockKeys ??= []);
+async function mockKeys(request: Request, app: string, keyId?: string) {
+  if (keyId) {
+    const index = apiKeys.findIndex((k) => k.app === app && k.key_id === keyId);
+    if (index < 0) return mockError("没有找到这个密钥", 404);
+    apiKeys.splice(index, 1);
+    return noContent();
+  }
+  if (request.method === "GET")
+    return mockJson(apiKeys.filter((k) => k.app === app).reverse());
+  const body = await readBody(request);
+  if (body instanceof Response) return body;
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name || name.length > 50)
+    return mockError("「名称」的格式、长度或范围不正确", 422);
+  if (apiKeys.filter((k) => k.app === app).length >= 20)
+    return mockError("一个应用最多 20 个密钥", 409);
+  const secret = `aep_${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "").slice(0, 11)}`;
+  const key: MockKey = {
+    key_id: `key_${randomUUID().slice(0, 8)}`,
+    app,
+    name,
+    prefix: secret.slice(0, 12),
+    created_by: "演示用户",
+    created_at: new Date().toISOString(),
+    last_used_at: null,
+  };
+  apiKeys.push(key);
+  return mockJson({ ...key, secret }, 201);
 }

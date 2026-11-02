@@ -1,5 +1,6 @@
 "use client";
 
+import { AppAccess } from "./app-access";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
@@ -825,6 +826,7 @@ export function AppDetailView({ app }: { app: string }) {
         )}
         {left && right && <ConfigDiff left={left} right={right} data={data} />}
       </section>
+      <AppAccess app={app} inputs={data.inputs} />
     </div>
   );
 }
