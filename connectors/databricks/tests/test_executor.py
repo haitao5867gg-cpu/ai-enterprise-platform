@@ -4,6 +4,7 @@ import contextlib
 import datetime
 import io
 import json
+import types
 from decimal import Decimal
 from typing import Any
 
@@ -27,6 +28,7 @@ from tests.conftest import settings
 @pytest.fixture(autouse=True)
 def no_waiting(monkeypatch):
     monkeypatch.setattr(ex, "POLL_SECONDS", 0)
+    monkeypatch.setattr(ex, "START_POLL_SECONDS", 0)
     monkeypatch.setattr(ex, "RETRY_SECONDS", 0)
 
 
@@ -186,18 +188,41 @@ async def test_a_slow_warehouse_statement_is_cancelled(monkeypatch):
 class Cluster:
     """The Clusters and Command Execution endpoints, answering with a program's output."""
 
-    def __init__(self, state: str = "RUNNING", output: str = "", error: str = "") -> None:
+    def __init__(
+        self,
+        state: str = "RUNNING",
+        output: str = "",
+        error: str = "",
+        after_start: list[str] | None = None,
+    ) -> None:
         self.state = state
         self.output = output
         self.error = error
         self.commands: list[dict[str, Any]] = []
         self.contexts = 0
+        # The states a started cluster goes through: the first right after the start, then
+        # one per look; the last one stays.
+        self.after_start = after_start or ["PENDING", "RUNNING"]
+        self.starts = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/api/2.0/clusters/get":
             assert request.url.params["cluster_id"] == "c1"
-            return httpx.Response(200, json={"cluster_id": "c1", "state": self.state})
+            state = self.state
+            if self.starts and self.after_start:
+                self.state = self.after_start.pop(0)
+                state = self.state
+            body = {"cluster_id": "c1", "state": state}
+            if state == "TERMINATED" and self.starts:
+                body["state_message"] = "配额不够"
+            return httpx.Response(200, json=body)
+        if path == "/api/2.0/clusters/start":
+            assert json.loads(request.content) == {"cluster_id": "c1"}
+            assert self.state == "TERMINATED"
+            self.starts += 1
+            self.state = self.after_start.pop(0)
+            return httpx.Response(200, json={})
         if path == "/api/1.2/contexts/create":
             self.contexts += 1
             return httpx.Response(200, json={"id": f"ctx{self.contexts}"})
@@ -245,6 +270,77 @@ async def test_a_stopped_cluster_is_not_started():
     with pytest.raises(ConnectorError, match="集群 c1 没有在运行，请先在 Databricks 上启动它"):
         await executor.query("SELECT 1")
     assert cluster.contexts == 0
+
+
+async def test_a_stopped_cluster_is_started_when_the_setting_is_on():
+    cluster = Cluster(
+        state="TERMINATED",
+        output=output([["n", "bigint"]], [[1]]),
+        after_start=["PENDING", "PENDING", "RUNNING"],
+    )
+    on = settings(
+        databricks_read_warehouse_id="",
+        databricks_read_cluster_id="c1",
+        databricks_read_start_cluster=True,
+    )
+    executor = ClusterExecutor(on, client(cluster))
+    assert await executor.query("SELECT 1 AS n") == Result([("n", "bigint")], [[1]])
+    assert cluster.starts == 1 and cluster.state == "RUNNING"
+    # Running now: the next statement does not start it again.
+    assert await executor.query("SELECT 1 AS n") == Result([("n", "bigint")], [[1]])
+    assert cluster.starts == 1
+    await executor.close()
+
+
+async def test_a_cluster_that_is_already_starting_is_waited_for():
+    cluster = Cluster(state="PENDING", output=output([["n", "bigint"]], [[1]]))
+    states = iter(["PENDING", "RUNNING"])
+    real = cluster.__call__
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/2.0/clusters/get" and cluster.state == "PENDING":
+            cluster.state = next(states)
+        return real(request)
+
+    on = settings(
+        databricks_read_warehouse_id="",
+        databricks_read_cluster_id="c1",
+        databricks_read_start_cluster=True,
+    )
+    executor = ClusterExecutor(on, client(handler))
+    assert await executor.query("SELECT 1") == Result([("n", "bigint")], [[1]])
+    assert cluster.starts == 0
+    await executor.close()
+
+
+async def test_a_cluster_that_fails_to_start_says_why():
+    cluster = Cluster(state="TERMINATED", after_start=["PENDING", "TERMINATED"])
+    on = settings(
+        databricks_read_warehouse_id="",
+        databricks_read_cluster_id="c1",
+        databricks_read_start_cluster=True,
+    )
+    executor = ClusterExecutor(on, client(cluster))
+    with pytest.raises(ConnectorError, match="集群 c1 没能启动：配额不够"):
+        await executor.query("SELECT 1")
+    assert cluster.starts == 1 and cluster.contexts == 0
+
+
+async def test_a_cluster_still_starting_at_the_timeout_says_to_retry(monkeypatch):
+    cluster = Cluster(state="TERMINATED", after_start=["PENDING"])
+    on = settings(
+        databricks_read_warehouse_id="",
+        databricks_read_cluster_id="c1",
+        databricks_read_start_cluster=True,
+        databricks_read_timeout_seconds=5,
+    )
+    executor = ClusterExecutor(on, client(cluster))
+    clock = iter(range(0, 1000, 3))
+    # Only the executor's clock: the event loop keeps the real one.
+    monkeypatch.setattr(ex, "time", types.SimpleNamespace(monotonic=lambda: next(clock)))
+    with pytest.raises(ConnectorError, match="集群 c1 正在启动（PENDING），等了 5 秒还没就绪"):
+        await executor.query("SELECT 1")
+    assert cluster.starts == 1
 
 
 async def test_a_cluster_error_gives_the_error_line_not_the_traceback():
