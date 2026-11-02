@@ -58,6 +58,10 @@ bash infra/vps/deploy.sh
 
 密钥只写进服务器上的 `.env`（权限 600），不显示、不进仓库。
 
+别的模型（比如 Claude）不用改 `.env`：部署好以后在平台的「模型」页面新增，key 粘贴在页面上，
+由模型网关加密存进它自己的库（`docs/api/models.md`）。加密用的 `LITELLM_SALT_KEY` 由脚本第一次
+运行时生成，**以后不要改**，改了已经存的 key 就解不开了，只能在页面上重新填。
+
 ### 4. 可选：Databricks、资产仓库、示例数据
 
 在服务器上编辑 `.env`（变量说明见 `.env.example` 的 Databricks 和 Assets repository 两节），

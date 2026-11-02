@@ -394,11 +394,13 @@ class RunService:
         )
 
     async def _models(
-        self, app: str, config: dict[str, Any], input: dict[str, Any]
+        self, app: str, config: dict[str, Any], input: dict[str, Any], default: str | None = None
     ) -> list[tuple[str, str]]:
         """Every model the run may call, with the title of the node that calls it: models,
-        and the embedding and rerank models of the knowledge it searches."""
+        and the embedding and rerank models of the knowledge it searches. A node that names
+        no model counts as ``default`` (the platform's default model unless given)."""
         used: list[tuple[str, str]] = []
+        fallback = default or self.default_model
 
         async def bases(kb_ids: Any, title: str, mode: Any) -> None:
             # Keyword search embeds nothing; a setting left out is vector search.
@@ -419,7 +421,7 @@ class RunService:
                 design = (found.metadata or {}).get("design") if found else None
                 title = design.get("title") or name if isinstance(design, dict) else name
                 if options[name].model:
-                    used.append((chosen.get(name) or node.model or self.default_model, title))
+                    used.append((chosen.get(name) or node.model or fallback, title))
                 await bases(
                     node.params.get("knowledge_bases"), title, node.params.get("knowledge_mode")
                 )
@@ -427,7 +429,7 @@ class RunService:
         for node in flowgraph.nodes(config):
             title = node.get("title") or node["id"]
             if node["type"] in ("llm", "classifier", "agent"):
-                used.append((node.get("model") or self.default_model, title))
+                used.append((node.get("model") or fallback, title))
             search = node if node["type"] == "knowledge" else None
             if node["type"] == "agent" and isinstance(node.get("knowledge"), dict):
                 search = node["knowledge"]

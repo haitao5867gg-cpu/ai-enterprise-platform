@@ -35,6 +35,7 @@ export default defineConfig({
         "etl-result.spec.ts",
         "run-inputs.spec.ts",
         "projects.spec.ts",
+        "models.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

@@ -1,6 +1,10 @@
 # Model aliases the platform calls. Business code only ever uses these names.
 # Provider settings come from environment variables (see .env.example); a model
 # whose key is missing still loads and only fails when it is called.
+#
+# These are read only on the model page; models added there are kept in the
+# gateway's database (docs/api/models.md). model_info carries what the page shows:
+# aep_display_name, aep_purpose (chat, embedding or rerank) and aep_provider.
 model_list:
   # No key needed. Default for local development and CI.
   - model_name: mock
@@ -8,11 +12,19 @@ model_list:
       model: openai/mock
       api_key: none
       mock_response: "这是 mock 模型的回复。"
+    model_info:
+      aep_display_name: Mock（测试用，固定回复）
+      aep_purpose: chat
+      aep_provider: mock
 
   - model_name: gpt
     litellm_params:
       model: os.environ/OPENAI_MODEL
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      aep_display_name: OpenAI GPT
+      aep_purpose: chat
+      aep_provider: openai
 
   - model_name: azure-gpt
     litellm_params:
@@ -20,22 +32,38 @@ model_list:
       api_base: os.environ/AZURE_API_BASE
       api_key: os.environ/AZURE_API_KEY
       api_version: os.environ/AZURE_API_VERSION
+    model_info:
+      aep_display_name: Azure OpenAI GPT
+      aep_purpose: chat
+      aep_provider: azure
 
   # Uses AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the environment.
   - model_name: claude-bedrock
     litellm_params:
       model: os.environ/BEDROCK_CLAUDE_MODEL
       aws_region_name: os.environ/AWS_REGION_NAME
+    model_info:
+      aep_display_name: Claude（AWS Bedrock）
+      aep_purpose: chat
+      aep_provider: bedrock
 
   - model_name: qwen
     litellm_params:
       model: os.environ/QWEN_MODEL
       api_key: os.environ/DASHSCOPE_API_KEY
+    model_info:
+      aep_display_name: 通义千问
+      aep_purpose: chat
+      aep_provider: dashscope
 
   - model_name: deepseek
     litellm_params:
       model: os.environ/DEEPSEEK_MODEL
       api_key: os.environ/DEEPSEEK_API_KEY
+    model_info:
+      aep_display_name: DeepSeek
+      aep_purpose: chat
+      aep_provider: deepseek
 
   # A company-run OpenAI-compatible gateway in front of many models (DeepSeek,
   # GLM, Qwen, ...). COMPANY_MODEL is "openai/<model id>" with the id exactly as
@@ -49,6 +77,10 @@ model_list:
       extra_body:
         thinking:
           type: disabled
+    model_info:
+      aep_display_name: 公司网关对话模型
+      aep_purpose: chat
+      aep_provider: openai_compatible
 
   # The platform asks for 1024-dimension vectors; LiteLLM passes `dimensions` on to
   # openai/ models only for OpenAI's text-embedding-3, so it is allowed here.
@@ -58,6 +90,11 @@ model_list:
       api_base: os.environ/COMPANY_API_BASE
       api_key: os.environ/COMPANY_API_KEY
       allowed_openai_params: ["dimensions"]
+    model_info:
+      aep_display_name: 公司网关向量模型
+      aep_purpose: embedding
+      aep_provider: openai_compatible
+      mode: embedding
 
   # OpenAI-compatible hosted gateways need a rerank provider (not openai/).
   # Set COMPANY_RERANK_MODEL=hosted_vllm/<gateway model id> after confirmation.
@@ -66,9 +103,19 @@ model_list:
       model: os.environ/COMPANY_RERANK_MODEL
       api_base: os.environ/COMPANY_API_BASE
       api_key: os.environ/COMPANY_API_KEY
+    model_info:
+      aep_display_name: 公司网关重排模型
+      aep_purpose: rerank
+      aep_provider: openai_compatible
+      mode: rerank
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  # Models added on the model page are kept in the gateway's database (DATABASE_URL;
+  # keys encrypted with LITELLM_SALT_KEY). The platform records each call itself
+  # (model_calls), so the gateway keeps no spend logs.
+  store_model_in_db: true
+  disable_spend_logs: true
 
 # litellm_settings is added by entrypoint.sh from langfuse.yaml when tracing is
 # on; a litellm_settings block here would be overridden by it.

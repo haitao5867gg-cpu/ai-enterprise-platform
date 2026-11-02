@@ -33,6 +33,7 @@ import {
 import { mockFlow } from "./mock-flow";
 import { MockNodeFailure, lakehouseConfig } from "./mock-data-nodes";
 import { mockToolService } from "./mock-datasources";
+import { mockModelChoices } from "./mock-models";
 import { buildMockManual } from "./mock-manual";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
 import { createMockEvalRun } from "./mock-runs";
@@ -331,6 +332,7 @@ function detail(entry: StoredApp): AppDetail {
     options: {
       models,
       default_model: "mock",
+      model_choices: mockModelChoices(),
       skills: mockSkillOptions(),
       datasources: allSources().map(({ datasource_id, name, kind }) => ({
         datasource_id,

@@ -388,7 +388,10 @@ export async function requestJson(
     const timeout = AbortSignal.timeout(
       init.body instanceof FormData
         ? 300_000
-        : path.endsWith("/test")
+        : path.endsWith("/test") ||
+            // Saving a model tests it on the gateway first (docs/api/models.md).
+            (path.startsWith("/models") &&
+              (init.method === "POST" || init.method === "PATCH"))
           ? 120_000
           : 15_000,
     );
@@ -426,7 +429,8 @@ export async function requestJson(
     if (
       response.status === 409 ||
       response.status === 422 ||
-      response.status === 502
+      response.status === 502 ||
+      (response.status === 503 && path.startsWith("/models"))
     ) {
       try {
         const value: unknown = await response.json();
@@ -458,10 +462,11 @@ export async function requestJson(
       init.method === "POST" && (path === "/apps" || path === "/apps/import");
     throw new ApiError(
       detail &&
-      ((creating && response.status === 409) ||
-        path.startsWith("/knowledge-bases") ||
-        path.startsWith("/datasources") ||
-        path.startsWith("/projects"))
+        ((creating && response.status === 409) ||
+          path.startsWith("/knowledge-bases") ||
+          path.startsWith("/datasources") ||
+          path.startsWith("/models") ||
+          path.startsWith("/projects"))
         ? detail
         : detail
           ? `${message} ${detail}`

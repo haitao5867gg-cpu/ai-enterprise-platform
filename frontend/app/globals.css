@@ -530,6 +530,110 @@
 .datasource-save-row .field-hint {
   margin: 0;
 }
+/* Model page (docs/api/models.md). */
+.mapping-table.model-table {
+  min-width: 900px;
+}
+.model-table td {
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.model-name {
+  max-width: 260px;
+}
+.model-name-stack,
+.model-usage {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+.model-name code {
+  font-size: 11px;
+  color: var(--muted);
+}
+.model-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.model-tags:empty {
+  display: none;
+}
+.datasource-tag.model-default {
+  color: var(--green);
+  background: #edf8f1;
+}
+.model-description,
+.model-id {
+  display: block;
+  font-size: 12px;
+}
+.model-key-cell {
+  font-size: 12px;
+  max-width: 160px;
+}
+.model-errors {
+  color: #b34343;
+}
+.datasource-health.model-problem {
+  white-space: normal;
+  max-width: 260px;
+  line-height: 1.6;
+}
+.model-actions {
+  white-space: nowrap;
+}
+.model-actions .text-button {
+  color: var(--purple);
+  margin-right: 12px;
+}
+.model-actions .text-button.danger-text {
+  color: #b34343;
+}
+.model-usage-row td {
+  background: #faf9fd;
+}
+.model-app-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.model-defaults h2 {
+  margin: 0 0 16px;
+}
+.model-default-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px 28px;
+}
+.model-key {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.model-key legend {
+  padding: 0;
+  margin-bottom: 8px;
+}
+.model-key-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 13px;
+}
+.asset-field .model-key-modes input[type="radio"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+}
+.model-key-modes label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .datasource-meta {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr);

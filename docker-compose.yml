@@ -230,6 +230,14 @@ services:
       COMPANY_MODEL: ${COMPANY_MODEL:-openai/deepseek-v4.1-flash-new}
       COMPANY_EMBED_MODEL: ${COMPANY_EMBED_MODEL:-openai/text-embedding-v4}
       COMPANY_RERANK_MODEL: ${COMPANY_RERANK_MODEL:-hosted_vllm/gte-rerank-v2}
+      # Models added on the model page (docs/api/models.md): kept in a database of the
+      # gateway's own on the platform's Postgres, their keys encrypted with the salt key.
+      # Never change LITELLM_SALT_KEY once models are saved.
+      DATABASE_URL: ${LITELLM_DATABASE_URL:-postgresql://aep:aep@postgres:5432/litellm}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-local-dev-salt}
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "4000:4000"
     healthcheck:

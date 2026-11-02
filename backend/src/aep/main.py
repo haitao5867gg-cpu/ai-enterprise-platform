@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from aep import __version__, llm, tracing
-from aep.api import apps, assets, datasources, flows, knowledge, projects, runs, skills
+from aep.api import apps, assets, datasources, flows, knowledge, models, projects, runs, skills
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.config import Settings, get_settings
 from aep.connector_check import ConnectorCheck
@@ -24,6 +24,7 @@ from aep.health import check_llm_gateway, check_postgres, check_redis, demo_chec
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
+from aep.models import GatewayAdmin, ModelService, PostgresCallStore
 from aep.projects import PostgresProjectStore
 from aep.runtime.catalog import AppCatalog, GatewayModels
 from aep.runtime.flow.store import PostgresFlowAppStore, PostgresSecretStore
@@ -124,6 +125,26 @@ def create_app() -> FastAPI:
             secrets=secret_store,
         )
         catalog = AppCatalog(service, sources, settings, GatewayModels(llm_client))
+        # Models on the model page, the platform's default models and every call's record
+        # (docs/api/models.md).
+        call_store = PostgresCallStore(pool)
+        gateway_admin = GatewayAdmin.from_settings(settings)
+
+        def set_default_chat(alias: str) -> None:
+            service.default_model = alias
+
+        model_service = ModelService(
+            gateway_admin,
+            call_store,
+            call_store,
+            settings,
+            llm_client,
+            usage_of=catalog.model_usage,
+            on_default_chat=set_default_chat,
+        )
+        await model_service.setup()
+        llm.set_recorder(call_store.record)
+        catalog.model_choices = model_service.choices
         if tracer.enabled:
             log.info("tracing runs to Langfuse at %s", settings.langfuse_host)
         if databricks is not None:
@@ -138,6 +159,7 @@ def create_app() -> FastAPI:
         app.state.llm_client = llm_client
         app.state.run_service = service
         app.state.catalog = catalog
+        app.state.models = model_service
         app.state.skills = skill_store
         app.state.datasources = sources
         app.state.projects = project_store
@@ -163,6 +185,8 @@ def create_app() -> FastAPI:
             await databricks.close()
         if asset_repo is not None:
             await asset_repo.close()
+        llm.set_recorder(None)
+        await gateway_admin.close()
         await pool.close()
         await llm_client.close()
 
@@ -177,6 +201,7 @@ def create_app() -> FastAPI:
     app.include_router(flows.router)
     app.include_router(skills.router)
     app.include_router(knowledge.router)
+    app.include_router(models.router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -221,11 +246,13 @@ def create_app() -> FastAPI:
     @app.post("/llm/chat")
     async def llm_chat(
         req: ChatRequest,
+        request: Request,
         client: Annotated[AsyncOpenAI, Depends(get_llm_client)],
         settings: Annotated[Settings, Depends(get_settings)],
     ) -> ChatResponse:
         """Send one chat completion through the gateway (for trying out model aliases)."""
-        model = req.model or settings.default_model
+        models = getattr(request.app.state, "models", None)
+        model = req.model or (models.defaults()["chat"] if models else settings.default_model)
         try:
             result = await llm.chat(client, [m.model_dump() for m in req.messages], model=model)
         except openai.APIStatusError as exc:
