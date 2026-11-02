@@ -805,6 +805,9 @@ export async function mockApps(
         .find((item) => item.id === from.template)
         ?.needs.includes("knowledge_base");
     const entry = createEntry(body, needsKnowledge ? blankConfig() : config);
+    const template = mockTemplates.find((item) => item.id === from.template);
+    // As the backend writes it; the asset catalog finds an app's template by it.
+    if (template) entry.versions[0].note = `从模板「${template.title}」新建`;
     if (needsKnowledge) entry.draft = draftVersion(config, body.actor);
     store.set(entry.app, entry);
     if (typeof from.app === "string") copyMockEvalSet(from.app, entry.app);
@@ -1194,4 +1197,46 @@ async function mockKeys(request: Request, app: string, keyId?: string) {
   };
   apiKeys.push(key);
   return mockJson({ ...key, secret }, 201);
+}
+
+// The asset catalog (docs/api/catalog.md): each app that is not archived, with what its
+// current version uses.
+export type MockCatalogApp = {
+  app: string;
+  kind: "code" | "flow";
+  title: string;
+  summary: string;
+  version: number;
+  updated_at: string;
+  created_by: string | null;
+  template: string | null;
+  score: number | null;
+  calls: { app: string; via: string }[];
+};
+export function mockCatalogApps(): MockCatalogApp[] {
+  return [...store.values()]
+    .filter((entry) => !entry.archived)
+    .map((entry) => {
+      const version = current(entry);
+      const first = entry.versions.find((item) => item.version === 1);
+      const config = version.config;
+      return {
+        app: entry.app,
+        kind: entry.kind,
+        title: entry.title,
+        summary: entry.summary,
+        version: entry.current,
+        updated_at: version.created_at,
+        created_by: first?.created_by ?? null,
+        template: first?.note?.match(/^从模板「(.+)」新建$/)?.[1] ?? null,
+        score: version.eval?.score ?? null,
+        calls: isFlowConfig(config)
+          ? config.graph.nodes.flatMap((node) =>
+              node.type === "app" && node.app
+                ? [{ app: node.app, via: node.title }]
+                : [],
+            )
+          : [],
+      };
+    });
 }

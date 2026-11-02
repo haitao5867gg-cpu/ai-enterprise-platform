@@ -216,6 +216,14 @@ class AppCatalog:
             "has_eval_set": await self.has_eval_set(app),
         }
 
+    @property
+    def runs(self) -> RunService:
+        return self._runs
+
+    def config_of(self, app: str, config: dict[str, Any]) -> dict[str, Any]:
+        """A stored configuration as the app reads it."""
+        return self._config(app, config)
+
     def _config(self, app: str, config: dict[str, Any]) -> dict[str, Any]:
         return config if app in self._runs.code_apps else self._runs.flow_config(app, config)
 

@@ -231,3 +231,7 @@ export async function mockSkills(
   skill.updated_at = content.created_at;
   return mockJson(await detail(skill));
 }
+
+// The asset catalog (docs/api/catalog.md).
+export const mockSkillList = () =>
+  [...store.values()].sort((a, b) => a.name.localeCompare(b.name));

@@ -605,3 +605,6 @@ export async function mockKnowledge(
     items: item.chunks.slice(offset, offset + limit),
   });
 }
+
+// The asset catalog (docs/api/catalog.md).
+export const mockKnowledgeList = () => [...store.values()].map(snapshot);

@@ -404,6 +404,8 @@ export async function requestJson(
       init.body instanceof FormData
         ? 300_000
         : path.endsWith("/test") ||
+            // Proposing an asset pushes to the assets repository (docs/api/catalog.md).
+            path.endsWith("/pull-request") ||
             // Saving a model tests it on the gateway first (docs/api/models.md).
             (path.startsWith("/models") &&
               (init.method === "POST" || init.method === "PATCH"))

@@ -40,7 +40,10 @@ async function handle(request: Request, context: Context) {
     [/^datasources$/, ["GET", "POST"]],
     [/^datasources\/(files|test)$/, ["POST"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH"]],
-    [/^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage|repos)$/, ["GET"]],
+    [
+      /^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage|repos)$/,
+      ["GET"],
+    ],
     // Sign-in, accounts and the record of changes (docs/api/auth.md).
     [/^auth\/(status|me)$/, ["GET"]],
     [/^auth\/(setup|login|logout)$/, ["POST"]],
@@ -119,6 +122,16 @@ async function handle(request: Request, context: Context) {
     [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft$/, ["PUT", "DELETE"]],
     [/^apps\/[a-zA-Z0-9_-]{1,128}\/draft\/(eval|publish)$/, ["POST"]],
     [/^apps\/[a-zA-Z0-9_-]{1,128}\/versions\/[1-9][0-9]*\/activate$/, ["POST"]],
+    // The asset catalog (docs/api/catalog.md).
+    [/^catalog$/, ["GET"]],
+    [
+      /^catalog\/(template|app|skill|knowledge|tool|eval_set)\/[a-zA-Z0-9_.-]{1,128}$/,
+      ["GET", "PUT"],
+    ],
+    [
+      /^catalog\/(template|app|skill|knowledge|tool|eval_set)\/[a-zA-Z0-9_.-]{1,128}\/pull-request$/,
+      ["POST"],
+    ],
     [/^skills$/, ["GET", "POST"]],
     [/^skills\/[a-z][a-z0-9-]{1,63}(\/versions\/[1-9][0-9]*)?$/, ["GET"]],
     [/^skills\/[a-z][a-z0-9-]{1,63}\/draft$/, ["PUT", "DELETE"]],
@@ -180,6 +193,10 @@ async function handle(request: Request, context: Context) {
       const { mockSchedules } =
         await import("../../../lib/server/mock-schedules");
       return mockSchedules(request, path);
+    }
+    if (path[0] === "catalog") {
+      const { mockCatalog } = await import("../../../lib/server/mock-catalog");
+      return mockCatalog(request, path);
     }
     if (path[0] === "skills") {
       const { mockSkills } = await import("../../../lib/server/mock-skills");

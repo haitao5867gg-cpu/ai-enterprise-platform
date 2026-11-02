@@ -126,6 +126,8 @@ AEP_ASSETS_GITHUB_TOKEN=<令牌>        # 交给 Git 连接器（AEP_GIT_TOKEN�
 
 用 Bitbucket Data Center 时给连接器配 `AEP_GIT_PROVIDER=bitbucket`、`AEP_GIT_API_URL`、`AEP_GIT_TOKEN`、`AEP_GIT_REPOS`，`AEP_ASSETS_REPO` 写成 `PROJECT/仓库`。
 
+同一个资产仓库也收「资产目录」页面（`/catalog`，见 [docs/api/catalog.md](docs/api/catalog.md)）提交的资产：编排应用的配置和评测集、Skill、知识库的清单和文本文档，各自一个分支 `aep/catalog/<类别>/<id>` 和一个 PR，再次提交更新同一个 PR。
+
 ### ETL 演示
 
 演示用的编排应用「零售数据 ETL」（`retail-etl`）由模板「数据 ETL（湖仓）」建成：探查 MySQL 示例库的 `retail` 库（一家连锁零售商一年的订单，故意埋了脏数据）→ 查知识库「零售数据口径」→ 出方案、校验、人确认 → 把用到的源表抽取到 Databricks → 查知识库「数仓开发规范」→ 写 PySpark、检查打包 → 在 dev 集群上运行并预览结果数据。两个知识库的文档在 [demo/knowledge](demo/knowledge)。节点和接口见 [docs/api/data-nodes.md](docs/api/data-nodes.md)。

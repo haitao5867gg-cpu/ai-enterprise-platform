@@ -142,6 +142,7 @@
 }
 .knowledge-dialog,
 .datasource-dialog,
+.catalog-dialog,
 .knowledge-drawer {
   color: var(--ink);
   border: 1px solid var(--line);
@@ -154,11 +155,13 @@
 }
 .knowledge-dialog::backdrop,
 .datasource-dialog::backdrop,
+.catalog-dialog::backdrop,
 .knowledge-drawer::backdrop {
   background: #24233455;
 }
 .knowledge-dialog .asset-form,
-.datasource-dialog .asset-form {
+.datasource-dialog .asset-form,
+.catalog-dialog .asset-form {
   margin-top: 20px;
 }
 .knowledge-drawer {
@@ -5714,4 +5717,70 @@ fieldset.project-form-section > legend + * {
 }
 .release-output p {
   margin: 0 0 4px;
+}
+
+/* The asset catalog (docs/api/catalog.md). */
+.catalog-toolbar {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.catalog-search {
+  flex: 1 1 200px;
+  min-width: 0;
+  max-width: 320px;
+}
+.catalog-note {
+  margin: 0;
+  padding: 0 20px 12px;
+}
+.mapping-table.catalog-table {
+  min-width: 920px;
+}
+.catalog-table td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.catalog-table td small {
+  display: block;
+}
+.catalog-name {
+  max-width: 260px;
+}
+.catalog-name a {
+  color: var(--purple);
+  font-weight: 600;
+}
+.catalog-name small {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.catalog-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.catalog-uses summary {
+  cursor: pointer;
+  color: var(--purple);
+}
+.catalog-uses ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+}
+.catalog-actions {
+  white-space: nowrap;
+}
+.catalog-actions .text-button + .text-button {
+  margin-left: 10px;
+}
+.catalog-result {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.catalog-result a {
+  color: var(--purple);
 }

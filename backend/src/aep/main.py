@@ -30,8 +30,12 @@ from aep.api import (
     schedules,
     skills,
 )
+from aep.api import (
+    catalog as catalog_api,
+)
 from aep.app_access import ApiKeys, PostgresApiKeyStore
 from aep.app_mcp import AppMcpEndpoint
+from aep.asset_catalog import AssetCatalog, PostgresAssetMetaStore
 from aep.assets import AssetRepo, PostgresAssetStore
 from aep.auth import AuthService, PostgresAuthStore, audit_middleware, authorize
 from aep.config import Settings, get_settings
@@ -202,6 +206,10 @@ def create_app() -> FastAPI:
         app.state.llm_client = llm_client
         app.state.run_service = service
         app.state.catalog = catalog
+        # Every platform asset in one list (docs/api/catalog.md).
+        asset_meta = PostgresAssetMetaStore(pool)
+        await asset_meta.setup()
+        app.state.asset_catalog = AssetCatalog(catalog, sources, asset_meta, asset_repo, settings)
         app.state.models = model_service
         app.state.skills = skill_store
         app.state.datasources = sources
@@ -270,6 +278,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(app_access.router)
     app.include_router(schedules.router)
+    app.include_router(catalog_api.router)
     # Each app as an MCP tool; it checks API keys itself.
     app.mount("/mcp/apps", AppMcpEndpoint())
     # Links back to a run (notices, the app API).
