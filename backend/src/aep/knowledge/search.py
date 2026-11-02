@@ -1,6 +1,7 @@
 """Candidate retrieval, combined scoring and optional global reranking."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -14,6 +15,19 @@ from aep.knowledge.rerank import rerank
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.store import Hit, KnowledgeStore, MissingBase
 
+log = logging.getLogger(__name__)
+
+
+async def record_hits(store: KnowledgeStore, run_id: str | None, hits: list[Hit]) -> None:
+    """Count the documents a run retrieved (docs/api/knowledge-governance.md). Recording is
+    bookkeeping: a failure is logged and never fails the retrieval."""
+    if not run_id or not hits:
+        return
+    try:
+        await store.record_hits(run_id, [(hit.kb_id, hit.document_id) for hit in hits])
+    except Exception:  # noqa: BLE001 - see docstring
+        log.warning("recording knowledge hits for run %s failed", run_id, exc_info=True)
+
 
 async def search(
     store: KnowledgeStore,
@@ -26,9 +40,13 @@ async def search(
     *,
     settings: Settings | None = None,
     check: Callable[[str], None] | None = None,
+    run_id: str | None = None,
+    include_inactive: bool = False,
 ) -> list[Hit]:
     """The best hits for ``query``. ``check`` is called with each model alias before a
-    request goes to it, and raises when the model may not be used (aep.policy)."""
+    request goes to it, and raises when the model may not be used (aep.policy). Documents
+    not in effect today are skipped unless ``include_inactive``; with ``run_id`` the hit
+    documents count as used by that run."""
     config = Retrieval.model_validate(
         retrieval.model_dump()
         if isinstance(retrieval, Retrieval)
@@ -55,10 +73,24 @@ async def search(
                     await llm.embed(client, [query], base.embedding_model)
                 )[0]
             vector = vectors[base.embedding_model]
-            candidates.extend(await store.vector_candidates(kb_id, vector, pool))
+            candidates.extend(
+                await store.vector_candidates(
+                    kb_id, vector, pool, include_inactive=include_inactive
+                )
+            )
         if words is not None:
-            candidates.extend(await store.keyword_candidates(kb_id, words, pool))
-        scored = await store.score_chunks(kb_id, list(dict.fromkeys(candidates)), vector, words)
+            candidates.extend(
+                await store.keyword_candidates(
+                    kb_id, words, pool, include_inactive=include_inactive
+                )
+            )
+        scored = await store.score_chunks(
+            kb_id,
+            list(dict.fromkeys(candidates)),
+            vector,
+            words,
+            include_inactive=include_inactive,
+        )
         for hit in scored:
             score = hit.score
             if config.mode == "hybrid":
@@ -75,4 +107,6 @@ async def search(
         kind = "rerank" if model in (settings or Settings()).rerank_models else "llm"
         hits = await rerank(client, query, hits[: config.rerank.candidates], model, kind)
         hits.sort(key=lambda hit: (-hit.score, hit.chunk_id))
-    return [hit for hit in hits if hit.score >= min_score][:top_k]
+    found = [hit for hit in hits if hit.score >= min_score][:top_k]
+    await record_hits(store, run_id, found)
+    return found

@@ -1,13 +1,18 @@
 import "server-only";
 import type {
   Chunk,
+  DocTemplate,
   Document,
+  DocumentVersion,
   Hit,
   KnowledgeBase,
   KnowledgeOptions,
+  Regression,
+  RegressionCase,
   Retrieval,
+  Validity,
 } from "../knowledge";
-import { uploadProblem } from "../knowledge";
+import { MAX_CASES, uploadProblem } from "../knowledge";
 import { retrievalProblems, retrievalValue } from "../retrieval";
 import { isRecord } from "../runs";
 import { mockError, mockJson, noContent, readBody } from "./mock-assets";
@@ -24,18 +29,53 @@ export const mockKnowledgeOptions: KnowledgeOptions = {
     ),
   ],
 };
+// Stored documents keep the governance fields; validity is worked out on each read.
+type StoredDoc = Omit<Document, "validity">;
 type StoredDocument = {
-  document: Document;
+  document: StoredDoc;
   chunks: Chunk[];
   bytes: Uint8Array;
   text: string;
   polls: number;
+  versions: DocumentVersion[];
 };
 type StoredKnowledge = {
-  base: KnowledgeBase;
+  base: Omit<KnowledgeBase, "validity_counts">;
   documents: Map<string, StoredDocument>;
+  regression?: Omit<Regression, "stale" | "kb_id">;
+  changedAt?: string;
 };
 const now = () => new Date().toISOString();
+const governed = {
+  owner: null,
+  valid_from: null,
+  valid_until: null,
+  version: 1,
+  uploaded_by: null,
+  hits_30d: 0,
+  last_hit_at: null,
+} as const;
+const firstVersion = (doc: Pick<Document, "size_bytes" | "created_at">) => [
+  {
+    version: 1,
+    size_bytes: doc.size_bytes,
+    uploaded_by: null,
+    uploaded_at: doc.created_at,
+  },
+];
+// The platform timezone's today, as the backend counts validity.
+const today = () =>
+  new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
+function validity(doc: Pick<Document, "valid_from" | "valid_until">): Validity {
+  const day = today();
+  if (doc.valid_from && doc.valid_from > day) return "pending";
+  if (doc.valid_until && doc.valid_until < day) return "expired";
+  return "active";
+}
+const view = (doc: StoredDoc): Document => ({
+  ...doc,
+  validity: validity(doc),
+});
 const globalStore = globalThis as typeof globalThis & {
   aepMockKnowledge?: Map<string, StoredKnowledge>;
 };
@@ -86,11 +126,16 @@ if (!store.size) {
             chunk_count: 61,
             created_at: now(),
             updated_at: now(),
+            ...governed,
+            owner: "售后组",
+            hits_30d: 12,
+            last_hit_at: now(),
           },
           chunks,
           text: sampleText,
           bytes: new TextEncoder().encode("%PDF-1.4\nMock policy document\n"),
           polls: 3,
+          versions: firstVersion({ size_bytes: 1024, created_at: now() }),
         },
       ],
     ]),
@@ -98,8 +143,14 @@ if (!store.size) {
 }
 function snapshot(entry: StoredKnowledge): KnowledgeBase {
   const documents = [...entry.documents.values()].map((item) => item.document);
+  const states = documents.map(validity);
   return {
     ...entry.base,
+    validity_counts: {
+      active: states.filter((state) => state === "active").length,
+      pending: states.filter((state) => state === "pending").length,
+      expired: states.filter((state) => state === "expired").length,
+    },
     document_count: documents.length,
     chunk_count: documents.reduce((sum, doc) => sum + doc.chunk_count, 0),
     status_counts: {
@@ -175,7 +226,12 @@ for (const [id, name, filenames] of [
               chunk_count: 1,
               created_at: now(),
               updated_at: now(),
+              ...governed,
             },
+            versions: firstVersion({
+              size_bytes: new TextEncoder().encode(text).length,
+              created_at: now(),
+            }),
             chunks: [
               {
                 chunk_id: `${document_id}-chunk`,
@@ -227,6 +283,7 @@ export function searchMockKnowledge(
   top_k = 5,
   min_score = 0.3,
   retrieval?: Retrieval,
+  includeInactive = false,
 ): Hit[] {
   if (!query.trim()) return [];
   const settings = retrievalValue(retrieval);
@@ -237,7 +294,11 @@ export function searchMockKnowledge(
       const entry = store.get(id);
       if (!entry) return [];
       return [...entry.documents.values()]
-        .filter((item) => item.document.status === "ready")
+        .filter(
+          (item) =>
+            item.document.status === "ready" &&
+            (includeInactive || validity(item.document) === "active"),
+        )
         .flatMap((item) =>
           item.chunks.map((chunk) => {
             const vector =
@@ -397,6 +458,7 @@ export async function mockKnowledge(
   const [, id, section, docId, action] = path;
   const method = request.method;
   if (id === "options") return mockJson(mockKnowledgeOptions);
+  if (id === "doc-templates") return mockJson(docTemplates);
   if (!id && method === "GET")
     return mockJson(
       [...store.values()]
@@ -409,7 +471,7 @@ export async function mockKnowledge(
     const invalid = validateBase(body);
     if (invalid) return invalid;
     const kb_id = crypto.randomUUID();
-    const base: KnowledgeBase = {
+    const base: StoredKnowledge["base"] = {
       kb_id,
       name: (body.name as string).trim(),
       description: (body.description as string) ?? "",
@@ -425,8 +487,9 @@ export async function mockKnowledge(
       created_at: now(),
       updated_at: now(),
     };
-    store.set(kb_id, { base, documents: new Map() });
-    return mockJson(base, 201);
+    const created: StoredKnowledge = { base, documents: new Map() };
+    store.set(kb_id, created);
+    return mockJson(snapshot(created), 201);
   }
   const entry = store.get(id);
   if (!entry) return mockError("没有这个知识库", 404);
@@ -467,7 +530,13 @@ export async function mockKnowledge(
   if (section === "search") {
     const body = await readBody(request);
     if (body instanceof Response) return body;
-    const { query, top_k = 5, min_score = 0.3, retrieval } = body;
+    const {
+      query,
+      top_k = 5,
+      min_score = 0.3,
+      retrieval,
+      include_inactive = false,
+    } = body;
     if (
       typeof query !== "string" ||
       !query.trim() ||
@@ -496,6 +565,7 @@ export async function mockKnowledge(
           top_k,
           min_score,
           retrieval as Retrieval | undefined,
+          include_inactive === true,
         ),
         duration_ms: 12,
       });
@@ -506,11 +576,14 @@ export async function mockKnowledge(
       );
     }
   }
+  if (section === "regression") return regression(request, entry, docId);
   if (!docId) {
     if (method === "GET") {
       tick(entry);
       return mockJson(
-        [...entry.documents.values()].map((item) => item.document).reverse(),
+        [...entry.documents.values()]
+          .map((item) => view(item.document))
+          .reverse(),
       );
     }
     let form: FormData;
@@ -524,15 +597,56 @@ export async function mockKnowledge(
       .filter((file): file is File => file instanceof File);
     const problem = uploadProblem(files);
     if (problem) return mockError(problem, 422);
-    if (entry.documents.size + files.length > 500)
+    const replace = form.get("replace") === "true";
+    const uploadedBy =
+      typeof form.get("uploaded_by") === "string"
+        ? (form.get("uploaded_by") as string).trim() || null
+        : null;
+    const byName = new Map(
+      [...entry.documents.values()].map((item) => [item.document.name, item]),
+    );
+    if (replace) {
+      const names = files.map((file) => file.name);
+      const twice = names.find((name, i) => names.indexOf(name) !== i);
+      if (twice)
+        return mockError(
+          `这次上传里有两个「${twice}」，替换时每个文件名只能传一个`,
+          422,
+        );
+    }
+    const fresh = files.filter((file) => !(replace && byName.has(file.name)));
+    if (entry.documents.size + fresh.length > 500)
       return mockError("一个知识库最多 500 个文档", 422);
     const result: Document[] = [];
+    entry.changedAt = now();
     for (const file of files) {
       const document_id = crypto.randomUUID();
       const kind = file.name
         .split(".")
         .at(-1)!
         .toLowerCase() as Document["kind"];
+      const old = replace ? byName.get(file.name) : undefined;
+      if (old) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        old.bytes = bytes;
+        old.text = ["md", "txt"].includes(kind)
+          ? new TextDecoder().decode(bytes)
+          : sampleText;
+        queue(old);
+        Object.assign(old.document, {
+          size_bytes: file.size,
+          version: old.document.version + 1,
+          uploaded_by: uploadedBy,
+        });
+        old.versions.unshift({
+          version: old.document.version,
+          size_bytes: file.size,
+          uploaded_by: uploadedBy,
+          uploaded_at: now(),
+        });
+        result.push(view(old.document));
+        continue;
+      }
       let name = file.name,
         suffix = 2;
       while (
@@ -545,7 +659,7 @@ export async function mockKnowledge(
       const text = ["md", "txt"].includes(kind)
         ? new TextDecoder().decode(bytes)
         : sampleText;
-      const document: Document = {
+      const document: StoredDoc = {
         document_id,
         kb_id: id,
         name,
@@ -556,6 +670,8 @@ export async function mockKnowledge(
         chunk_count: 0,
         created_at: now(),
         updated_at: now(),
+        ...governed,
+        uploaded_by: uploadedBy,
       };
       entry.documents.set(document_id, {
         document,
@@ -563,8 +679,16 @@ export async function mockKnowledge(
         bytes,
         text,
         polls: 0,
+        versions: [
+          {
+            version: 1,
+            size_bytes: file.size,
+            uploaded_by: uploadedBy,
+            uploaded_at: now(),
+          },
+        ],
       });
-      result.push(document);
+      result.push(view(document));
     }
     return mockJson(result, 202);
   }
@@ -573,13 +697,56 @@ export async function mockKnowledge(
   if (!action) {
     if (method === "DELETE") {
       entry.documents.delete(docId);
+      entry.changedAt = now();
       return noContent();
     }
-    return mockJson(item.document);
+    if (method === "PATCH") {
+      const body = await readBody(request);
+      if (body instanceof Response) return body;
+      const date = /^\d{4}-\d{2}-\d{2}$/;
+      for (const key of ["valid_from", "valid_until"] as const)
+        if (
+          key in body &&
+          body[key] !== null &&
+          (typeof body[key] !== "string" || !date.test(body[key] as string))
+        )
+          return mockError("日期要写成 YYYY-MM-DD", 422);
+      if (
+        "owner" in body &&
+        body.owner !== null &&
+        (typeof body.owner !== "string" || body.owner.trim().length > 50)
+      )
+        return mockError("负责人最多 50 个字符", 422);
+      const next = {
+        valid_from:
+          "valid_from" in body
+            ? (body.valid_from as string | null)
+            : item.document.valid_from,
+        valid_until:
+          "valid_until" in body
+            ? (body.valid_until as string | null)
+            : item.document.valid_until,
+      };
+      if (
+        next.valid_from &&
+        next.valid_until &&
+        next.valid_until < next.valid_from
+      )
+        return mockError("失效日期不能早于生效日期", 422);
+      if ("owner" in body)
+        item.document.owner = (body.owner as string | null)?.trim() || null;
+      if ("valid_from" in body || "valid_until" in body) {
+        Object.assign(item.document, next);
+        entry.changedAt = now();
+      }
+      return mockJson(view(item.document));
+    }
+    return mockJson(view(item.document));
   }
+  if (action === "versions") return mockJson(item.versions);
   if (action === "reindex") {
     queue(item);
-    return mockJson(item.document, 202);
+    return mockJson(view(item.document), 202);
   }
   if (action === "file")
     return new Response(new Uint8Array(item.bytes), {
@@ -607,4 +774,217 @@ export async function mockKnowledge(
 }
 
 // The asset catalog (docs/api/catalog.md).
-export const mockKnowledgeList = () => [...store.values()].map(snapshot);
+export const mockKnowledgeList = () =>
+  [...store.values()].map((entry) => ({
+    ...snapshot(entry),
+    regression: regressionOf(entry),
+  }));
+
+function regressionOf(entry: StoredKnowledge): Regression {
+  const stored = entry.regression ?? {
+    cases: [],
+    retrieval: { ...mockKnowledgeOptions.retrieval },
+    top_k: 5,
+    min_score: 0.3,
+    updated_by: null,
+    updated_at: null,
+    last_run: null,
+  };
+  const ran = stored.last_run?.at;
+  const stale =
+    stored.cases.length > 0 &&
+    (!ran ||
+      (stored.updated_at !== null && stored.updated_at > ran) ||
+      (entry.changedAt !== undefined && entry.changedAt > ran));
+  return { kb_id: entry.base.kb_id, ...stored, stale };
+}
+
+async function regression(
+  request: Request,
+  entry: StoredKnowledge,
+  action?: string,
+): Promise<Response> {
+  if (request.method === "GET") return mockJson(regressionOf(entry));
+  const read: unknown = await request.json().catch(() => ({}));
+  const body = isRecord(read) ? read : {};
+  const actor =
+    typeof body.actor === "string" ? body.actor.trim() || null : null;
+  if (action === "run") {
+    const current = regressionOf(entry);
+    if (!current.cases.length) return mockError("先加检索用例再运行回归", 409);
+    const results = current.cases.map((item) => {
+      const top = [
+        ...new Set(
+          searchMockKnowledge(
+            [entry.base.kb_id],
+            item.query,
+            current.top_k,
+            current.min_score,
+            current.retrieval,
+          ).map((hit) => hit.document_name),
+        ),
+      ];
+      const missing = item.expected.filter((name) => !top.includes(name));
+      return {
+        id: item.id,
+        passed: !missing.length,
+        found: item.expected.filter((name) => top.includes(name)),
+        missing,
+        top,
+        error: null,
+      };
+    });
+    const passed = results.filter((result) => result.passed).length;
+    entry.regression = {
+      ...current,
+      last_run: {
+        at: now(),
+        by: actor,
+        passed,
+        total: results.length,
+        score: passed / results.length,
+        results,
+      },
+    };
+    return mockJson(regressionOf(entry));
+  }
+  const cases = Array.isArray(body.cases) ? body.cases : null;
+  if (!cases || cases.length > MAX_CASES)
+    return mockError(`最多 ${MAX_CASES} 条用例`, 422);
+  const names = new Set(
+    [...entry.documents.values()].map((item) => item.document.name),
+  );
+  const seen = new Set<string>();
+  const clean: RegressionCase[] = [];
+  for (const raw of cases) {
+    if (!isRecord(raw)) return mockError("用例格式不对", 422);
+    const caseId = typeof raw.id === "string" ? raw.id : "";
+    const query = typeof raw.query === "string" ? raw.query.trim() : "";
+    const expected = Array.isArray(raw.expected)
+      ? raw.expected.filter((name): name is string => typeof name === "string")
+      : [];
+    if (!/^[a-z0-9_-]{1,40}$/.test(caseId))
+      return mockError("用例编号是 1–40 位小写字母、数字、_ 或 -", 422);
+    if (seen.has(caseId)) return mockError(`用例编号「${caseId}」重复了`, 422);
+    seen.add(caseId);
+    if (!query || query.length > 500)
+      return mockError("问题 1–500 个字符", 422);
+    if (!expected.length || expected.length > 5)
+      return mockError("每条用例要选 1–5 个应找到的文档", 422);
+    const missing = expected.find((name) => !names.has(name));
+    if (missing) return mockError(`知识库里没有文档「${missing}」`, 422);
+    clean.push({ id: caseId, query, expected: [...new Set(expected)] });
+  }
+  const topK = typeof body.top_k === "number" ? body.top_k : 5;
+  const minScore = typeof body.min_score === "number" ? body.min_score : 0.3;
+  if (!Number.isInteger(topK) || topK < 1 || topK > 20)
+    return mockError("top_k 为 1–20", 422);
+  if (minScore < 0 || minScore > 1) return mockError("min_score 为 0–1", 422);
+  const retrieval = retrievalValue(body.retrieval as Retrieval | undefined);
+  const problems = Object.values(
+    retrievalProblems(retrieval, topK, mockKnowledgeOptions.rerank_models),
+  );
+  if (problems.length) return mockError(problems.join("；"), 422);
+  entry.regression = {
+    cases: clean,
+    retrieval,
+    top_k: topK,
+    min_score: minScore,
+    updated_by: actor,
+    updated_at: now(),
+    last_run: entry.regression?.last_run ?? null,
+  };
+  return mockJson(regressionOf(entry));
+}
+
+// The same templates as the backend's aep.knowledge.governance.DOC_TEMPLATES.
+const docTemplates: DocTemplate[] = [
+  {
+    id: "metric",
+    title: "指标口径",
+    filename: "指标口径-{名称}.md",
+    body: [
+      "# {名称}",
+      "",
+      "## 定义",
+      "一句话说明这个指标衡量什么。",
+      "",
+      "## 计算公式",
+      "例如：{名称} = 分子 / 分母。写清分子、分母各自的取数逻辑。",
+      "",
+      "## 统计粒度",
+      "按天 / 周 / 月；按门店 / 区域 / 产品线……",
+      "",
+      "## 时间口径",
+      "以下单时间 / 支付时间 / 发货时间为准；时区；是否含当天。",
+      "",
+      "## 包含和排除",
+      "- 包含：",
+      "- 排除：测试订单、内部订单、已取消订单……",
+      "",
+      "## 数据来源",
+      "表名（catalog.schema.table）和关键字段。",
+      "",
+      "## 负责人",
+      "业务负责人：",
+      "数据负责人：",
+      "",
+      "## 生效日期",
+      "从 YYYY-MM-DD 起按本口径统计。",
+      "",
+    ].join("\n"),
+  },
+  {
+    id: "table",
+    title: "表说明",
+    filename: "表说明-{名称}.md",
+    body: [
+      "# {名称}",
+      "",
+      "## 用途",
+      "这张表回答什么问题，谁在用。",
+      "",
+      "## 粒度",
+      "一行代表什么（例如：一个订单的一个商品）。",
+      "",
+      "## 主键",
+      "字段名；是否全局唯一。",
+      "",
+      "## 字段说明",
+      "| 字段 | 类型 | 含义 | 取值或示例 |",
+      "| --- | --- | --- | --- |",
+      "|  |  |  |  |",
+      "",
+      "## 更新频率",
+      "每天几点更新；全量还是增量；延迟多久。",
+      "",
+      "## 上游",
+      "来源系统或上游表；生成这张表的作业。",
+      "",
+    ].join("\n"),
+  },
+  {
+    id: "rule",
+    title: "业务规则",
+    filename: "业务规则-{名称}.md",
+    body: [
+      "# {名称}",
+      "",
+      "## 规则",
+      "用一两句话写清规则本身。",
+      "",
+      "## 适用范围",
+      "适用于哪些业务、地区、客户或产品。",
+      "",
+      "## 例外",
+      "哪些情况不适用，怎么处理。",
+      "",
+      "## 依据",
+      "制度文件、会议纪要或审批单号。",
+      "",
+      "## 生效日期",
+      "从 YYYY-MM-DD 起执行。",
+      "",
+    ].join("\n"),
+  },
+];

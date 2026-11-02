@@ -110,6 +110,8 @@ def test_route_rules():
     assert required("GET", "/catalog") == "builder"
     assert required("POST", "/catalog/{kind}/{asset_id}/pull-request") == "builder"
     assert required("POST", "/knowledge-bases/{kb}/search") == "builder"
+    assert required("PUT", "/knowledge-bases/{kb}/regression") == "builder"
+    assert required("GET", "/knowledge-bases/{kb}/regression") == "user"
     assert required("GET", "/models") == "builder"
     assert required("POST", "/models") == "admin"
     assert required("PUT", "/models/defaults") == "admin"

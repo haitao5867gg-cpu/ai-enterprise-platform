@@ -18,9 +18,12 @@ export type KnowledgeBase = {
   document_count: number;
   chunk_count: number;
   status_counts: Record<DocumentStatus, number>;
+  validity_counts: Record<Validity, number>;
   created_at: string;
   updated_at: string;
 };
+// docs/api/knowledge-governance.md
+export type Validity = "active" | "pending" | "expired";
 export type Document = {
   document_id: string;
   kb_id: string;
@@ -32,7 +35,58 @@ export type Document = {
   chunk_count: number;
   created_at: string;
   updated_at: string;
+  owner: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
+  validity: Validity;
+  version: number;
+  uploaded_by: string | null;
+  hits_30d: number;
+  last_hit_at: string | null;
 };
+export type DocumentVersion = {
+  version: number;
+  size_bytes: number;
+  uploaded_by: string | null;
+  uploaded_at: string;
+};
+export type DocumentChanges = Partial<
+  Pick<Document, "owner" | "valid_from" | "valid_until">
+>;
+export type DocTemplate = {
+  id: string;
+  title: string;
+  filename: string;
+  body: string;
+};
+export type RegressionCase = { id: string; query: string; expected: string[] };
+export type RegressionResult = {
+  id: string;
+  passed: boolean;
+  found: string[];
+  missing: string[];
+  top: string[];
+  error: string | null;
+};
+export type Regression = {
+  kb_id: string;
+  cases: RegressionCase[];
+  retrieval: Retrieval;
+  top_k: number;
+  min_score: number;
+  updated_by: string | null;
+  updated_at: string | null;
+  last_run: {
+    at: string;
+    by: string | null;
+    passed: number;
+    total: number;
+    score: number | null;
+    results: RegressionResult[];
+  } | null;
+  stale: boolean;
+};
+export const MAX_CASES = 50;
 export type Chunk = {
   chunk_id: string;
   document_id: string;
@@ -102,9 +156,15 @@ export const deleteKnowledgeBase = (kb: string) =>
   requestJson(base(kb), json("DELETE"));
 export const listDocuments = (kb: string, signal?: AbortSignal) =>
   requestJson(`${base(kb)}/documents`, { signal }) as Promise<Document[]>;
-export const uploadDocuments = (kb: string, files: File[]) => {
+export const uploadDocuments = (
+  kb: string,
+  files: File[],
+  options: { replace?: boolean; uploadedBy?: string } = {},
+) => {
   const body = new FormData();
   files.forEach((file) => body.append("files", file));
+  if (options.replace) body.append("replace", "true");
+  if (options.uploadedBy) body.append("uploaded_by", options.uploadedBy);
   return requestJson(`${base(kb)}/documents`, {
     method: "POST",
     body,
@@ -112,6 +172,34 @@ export const uploadDocuments = (kb: string, files: File[]) => {
 };
 export const getDocument = (kb: string, id: string, signal?: AbortSignal) =>
   requestJson(doc(kb, id), { signal }) as Promise<Document>;
+export const updateDocument = (
+  kb: string,
+  id: string,
+  changes: DocumentChanges,
+) => requestJson(doc(kb, id), json("PATCH", changes)) as Promise<Document>;
+export const listDocumentVersions = (kb: string, id: string) =>
+  requestJson(`${doc(kb, id)}/versions`) as Promise<DocumentVersion[]>;
+export const listDocTemplates = (signal?: AbortSignal) =>
+  requestJson("/knowledge-bases/doc-templates", { signal }) as Promise<
+    DocTemplate[]
+  >;
+export const getRegression = (kb: string, signal?: AbortSignal) =>
+  requestJson(`${base(kb)}/regression`, { signal }) as Promise<Regression>;
+export const saveRegression = (
+  kb: string,
+  input: Pick<Regression, "cases" | "retrieval" | "top_k" | "min_score"> & {
+    actor?: string;
+  },
+) =>
+  requestJson(
+    `${base(kb)}/regression`,
+    json("PUT", input),
+  ) as Promise<Regression>;
+export const runRegression = (kb: string, actor?: string) =>
+  requestJson(
+    `${base(kb)}/regression/run`,
+    json("POST", actor ? { actor } : {}),
+  ) as Promise<Regression>;
 export const deleteDocument = (kb: string, id: string) =>
   requestJson(doc(kb, id), json("DELETE"));
 export const documentFileUrl = (kb: string, id: string) =>
@@ -138,6 +226,7 @@ export const searchKnowledgeBase = (
     top_k?: number;
     min_score?: number;
     retrieval?: Retrieval;
+    include_inactive?: boolean;
   },
 ) =>
   requestJson(`${base(kb)}/search`, json("POST", input)) as Promise<{
@@ -160,4 +249,20 @@ export function uploadProblem(files: Pick<File, "name" | "size">[]): string {
     if (file.size > 20 * 1024 * 1024) return `${file.name}：每个文件最多 20 MB`;
   }
   return "";
+}
+
+export const validityLabels: Record<Validity, string> = {
+  active: "有效",
+  pending: "未生效",
+  expired: "已失效",
+};
+// "长期有效", "2026-01-01 起", "到 2026-12-31" or "2026-01-01 至 2026-12-31".
+export function validityRange(
+  doc: Pick<Document, "valid_from" | "valid_until">,
+): string {
+  if (doc.valid_from && doc.valid_until)
+    return `${doc.valid_from} 至 ${doc.valid_until}`;
+  if (doc.valid_from) return `${doc.valid_from} 起`;
+  if (doc.valid_until) return `到 ${doc.valid_until}`;
+  return "长期有效";
 }

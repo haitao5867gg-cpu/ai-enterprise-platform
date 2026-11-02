@@ -305,7 +305,7 @@ async def test_proposing_assets_to_the_repository(tmp_path):
         files = c.git.files(kb["branch"])
         assert files[f"knowledge/{c.kb}/docs/policy.md"].startswith("# 退货")
         readme = files[f"knowledge/{c.kb}/README.md"]
-        assert "| scan.pdf | pdf | error | 只列在清单里 |" in readme
+        assert "| scan.pdf | pdf | error | 只列在清单里 | v1 |  | 长期有效 |" in readme
 
         evals = (await c.api.post("/catalog/eval_set/lookup/pull-request")).json()
         assert list(c.git.files(evals["branch"])).count("evals/lookup/eval-set.yaml") == 1

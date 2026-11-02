@@ -332,6 +332,7 @@ async def test_agent_selects_bases_by_name_and_uses_configured_retrieval(p, monk
         retrieval,
         settings=p.settings,
         check=ANY,
+        run_id=ANY,
     )
 
 

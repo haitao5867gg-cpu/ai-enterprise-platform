@@ -76,15 +76,15 @@ async function handle(request: Request, context: Context) {
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/feedback$/, ["PUT", "DELETE"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/rerun-from$/, ["POST"]],
     [/^knowledge-bases$/, ["GET", "POST"]],
-    [/^knowledge-bases\/options$/, ["GET"]],
+    [/^knowledge-bases\/(options|doc-templates)$/, ["GET"]],
     [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],
     [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents$/, ["GET", "POST"]],
     [
       /^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents\/[a-zA-Z0-9_-]{1,128}$/,
-      ["GET", "DELETE"],
+      ["GET", "PATCH", "DELETE"],
     ],
     [
-      /^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents\/[a-zA-Z0-9_-]{1,128}\/(file|chunks)$/,
+      /^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/documents\/[a-zA-Z0-9_-]{1,128}\/(file|chunks|versions)$/,
       ["GET"],
     ],
     [
@@ -92,6 +92,8 @@ async function handle(request: Request, context: Context) {
       ["POST"],
     ],
     [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/(reindex|search)$/, ["POST"]],
+    [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/regression$/, ["GET", "PUT"]],
+    [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}\/regression\/run$/, ["POST"]],
     [/^(node-types|app-templates)$/, ["GET"]],
     [/^apps$/, ["GET", "POST"]],
     [/^apps\/import$/, ["POST"]],

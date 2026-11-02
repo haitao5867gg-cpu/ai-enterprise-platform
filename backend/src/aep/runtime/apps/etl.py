@@ -487,6 +487,7 @@ def build(ctx: AppContext) -> StateGraph:
                         "rerank": None,
                     },
                     check=model_check(config, "plan"),
+                    run_id=run_id,
                 )
                 references = [IndexedHit(**asdict(hit), index=i) for i, hit in enumerate(hits, 1)]
             except InputError:

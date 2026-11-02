@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 import openai
@@ -33,8 +33,8 @@ from aep.datasources import (
 from aep.knowledge.citations import IndexedHit, Source, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
-from aep.knowledge.search import search
-from aep.knowledge.store import Chunk, Hit, KnowledgeStore
+from aep.knowledge.search import record_hits, search
+from aep.knowledge.store import Chunk, Hit, KnowledgeStore, today_in
 from aep.policy import DataPolicy
 from aep.projects import project_value
 from aep.runtime import human
@@ -1472,13 +1472,14 @@ def _index_knowledge_hits(
 
 
 async def _whole(
-    store: KnowledgeStore, kb_ids: list[str], budget: int
+    store: KnowledgeStore, kb_ids: list[str], budget: int, today: date
 ) -> tuple[list[Hit], dict[str, str]]:
-    """Every chunk of every document in the bases, oldest document first and chunks in order,
-    and the text the context shows for each: a chunk's overlap with the one before it (the
-    chunker repeats the last characters of a chunk at the start of the next) is shown once.
-    Raises when a document is not indexed yet, or when the text is over ``budget`` characters
-    (cutting it would drop part of what the node promises to give whole)."""
+    """Every chunk of every document in effect ``today`` in the bases, oldest document first
+    and chunks in order, and the text the context shows for each: a chunk's overlap with the
+    one before it (the chunker repeats the last characters of a chunk at the start of the
+    next) is shown once. Raises when a document is not indexed yet, or when the text is over
+    ``budget`` characters (cutting it would drop part of what the node promises to give
+    whole)."""
     found: list[Hit] = []
     shown: dict[str, str] = {}
     size = 0
@@ -1487,7 +1488,8 @@ async def _whole(
         if base is None:
             raise ValueError(f"没有知识库 {kb_id}")
         documents = sorted(
-            await store.documents(kb_id), key=lambda d: (d.created_at, d.document_id)
+            (d for d in await store.documents(kb_id) if d.validity(today) == "active"),
+            key=lambda d: (d.created_at, d.document_id),
         )
         if waiting := [d for d in documents if d.status != "ready"]:
             listed = "、".join(f"{d.name}（{_DOCUMENT_STATES[d.status]}）" for d in waiting[:5])
@@ -1546,10 +1548,14 @@ async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime
             if rt.knowledge is None:
                 raise ValueError("平台没有配置知识库")
             whole, shown = await _whole(
-                rt.knowledge, node["knowledge_bases"], node.get("max_chars", DEFAULT_FULL_CHARS)
+                rt.knowledge,
+                node["knowledge_bases"],
+                node.get("max_chars", DEFAULT_FULL_CHARS),
+                today_in(rt.settings.schedule_timezone),
             )
         except Exception as exc:  # noqa: BLE001 - failures use the node's on_error
             raise NodeFailure("knowledge_error", f"知识库整篇读取失败：{exc}") from exc
+        await record_hits(rt.knowledge, str(state.get("run_id") or ""), whole)
         citations = dict(state.get("citations") or {})
         hits, sources = _index_knowledge_hits(whole, citations, node)
         text = context([replace(hit, text=shown[hit.chunk_id]) for hit in hits])
@@ -1574,6 +1580,7 @@ async def run_knowledge(node: dict[str, Any], state: dict[str, Any], rt: Runtime
             node.get("retrieval"),
             settings=rt.settings,
             check=rt.model_check(node, state),
+            run_id=str(state.get("run_id") or "") or None,
         )
     except NodeFailure:
         raise
@@ -1862,6 +1869,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                     knowledge.get("retrieval"),
                     settings=rt.settings,
                     check=rt.model_check(node, state),
+                    run_id=run_id or None,
                 )
                 indexed, latest = _index_knowledge_hits(kb_hits, citations, node)
                 hits.update((hit.index, hit) for hit in indexed)
