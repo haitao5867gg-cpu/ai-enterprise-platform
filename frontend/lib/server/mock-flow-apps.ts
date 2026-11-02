@@ -33,6 +33,7 @@ import {
 } from "../flow-edit";
 import { dataNodeIssues } from "../data-nodes";
 import {
+  MockNodeFailure,
   dataDefaults,
   dataDescriptions,
   lakehouseConfig,
@@ -604,6 +605,21 @@ const defaults: FlowNode[] = [
     input: {},
     outputs: [],
     timeout_seconds: 600,
+  },
+  {
+    id: "git_pr",
+    type: "git_pr",
+    title: "提交 PR",
+    datasource: "",
+    repo: "",
+    base: "",
+    directory: "",
+    files: "",
+    replace_directory: false,
+    branch: "",
+    pr_title: "",
+    body: "",
+    message: "",
   },
   blankConfig().graph.nodes[2],
 ];
@@ -1210,6 +1226,36 @@ export function simulateNode(
   if (node.type === "template") outputs = { text: render(node.template, pool) };
   if (node.type === "tool")
     outputs = { result: { mock: true, tool: node.tool, args: rendered.args } };
+  // docs/api/git.md: the mock opens PR #1 of the repository, with the files given.
+  if (node.type === "git_pr") {
+    const files = rendered.files;
+    if (
+      !files ||
+      typeof files !== "object" ||
+      Array.isArray(files) ||
+      !Object.keys(files).length
+    )
+      throw new MockNodeFailure(
+        "input_error",
+        "files 要引用一个 {路径: 文本} 对象",
+      );
+    const repo = String(rendered.repo);
+    const directory = String(rendered.directory ?? "").replace(
+      /^\/+|\/+$/g,
+      "",
+    );
+    outputs = {
+      number: 1,
+      url: `https://github.com/${repo}/pull/1`,
+      branch: String(rendered.branch || `aep/runs/mock/${node.id}`),
+      commit: "0".repeat(40),
+      created: true,
+      changed: Object.keys(files)
+        .map((path) => (directory ? `${directory}/${path}` : path))
+        .sort(),
+      summary: `已在 ${repo} 开 PR #1：https://github.com/${repo}/pull/1`,
+    };
+  }
   if (node.type === "code")
     outputs = Object.fromEntries(
       node.outputs.map((field) => [

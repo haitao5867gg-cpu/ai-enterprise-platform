@@ -40,7 +40,7 @@ async function handle(request: Request, context: Context) {
     [/^datasources$/, ["GET", "POST"]],
     [/^datasources\/(files|test)$/, ["POST"]],
     [/^datasources\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH"]],
-    [/^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage)$/, ["GET"]],
+    [/^datasources\/[a-zA-Z0-9_-]{1,128}\/(tools|health|usage|repos)$/, ["GET"]],
     // Sign-in, accounts and the record of changes (docs/api/auth.md).
     [/^auth\/(status|me)$/, ["GET"]],
     [/^auth\/(setup|login|logout)$/, ["POST"]],

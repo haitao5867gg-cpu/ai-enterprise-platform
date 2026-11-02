@@ -8,7 +8,8 @@ export type DatasourceKind =
   | "sqlserver"
   | "file"
   | "databricks"
-  | "mcp";
+  | "mcp"
+  | "git";
 export type Datasource = DataSource & {
   connector_url: string;
   created_at: string;
@@ -112,6 +113,7 @@ export const kindLabels: Record<string, string> = {
   file: "上传文件",
   databricks: "Databricks",
   mcp: "工具服务",
+  git: "代码仓库",
 };
 export const kindLabel = (kind: string) => kindLabels[kind] ?? kind;
 // Tool services (`mcp`) only offer tools: tool and agent nodes may use them, ETL may not.
@@ -120,7 +122,19 @@ export const isToolService = (source: { kind: string }) =>
 // What the code app etl can read: databases and uploaded files. Tables already on
 // Databricks are read where they are, by flow apps (etl-lakehouse).
 export const isEtlAppSource = (source: { kind: string }) =>
-  !isToolService(source) && source.kind !== "databricks";
+  !isToolService(source) && !isCodeRepo(source) && source.kind !== "databricks";
+// Code repositories (`git`, docs/api/git.md) are used only by the 提交 PR node.
+export const isCodeRepo = (source: { kind: string }) => source.kind === "git";
+// docs/api/git.md: GET /datasources/{id}/repos.
+export type CodeRepos = {
+  provider: string;
+  branch_prefix: string;
+  repos: { repo: string; default_branch: string; url: string }[];
+};
+export const listRepos = (id: string, signal?: AbortSignal) =>
+  requestJson(`/datasources/${encodeURIComponent(id)}/repos`, {
+    signal,
+  }) as Promise<CodeRepos>;
 export const healthLabels: Record<ConnectionProblem, string> = {
   timeout: "超时",
   refused: "连接被拒绝",
@@ -158,7 +172,7 @@ export const toolDescription = (
   tool: Pick<ConnectorTool, "name" | "description">,
   kind: string,
 ) =>
-  isToolService({ kind })
+  isToolService({ kind }) || isCodeRepo({ kind })
     ? tool.description
     : (kind === "file" && fileToolDescriptions[tool.name]) ||
       etlToolDescriptions[tool.name] ||

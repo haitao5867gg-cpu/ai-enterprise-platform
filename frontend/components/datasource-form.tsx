@@ -74,12 +74,14 @@ const kindOptions: { value: DatasourceKind; label: string }[] = [
   { value: "file", label: "上传文件（CSV、XLSX）" },
   { value: "databricks", label: "Databricks（已有的表）" },
   { value: "mcp", label: "工具服务" },
+  { value: "git", label: "代码仓库（GitHub、Bitbucket）" },
 ];
 const kindHints: Record<string, string> = {
   file: "上传 CSV 或 XLSX 文件，平台自动生成数据源，不用填地址。",
   databricks:
     "Databricks 上已有的表，经只读连接器读取，不复制数据；表名写成 catalog.schema.table。在编排应用里使用（自然语言 ETL 工作流只接数据库和上传文件）。连接器要提供 6 个读数据的工具，测试连接时会检查。",
   mcp: "工具服务只提供工具，比如查工单、查 CRM，不能用于 ETL；在编排应用的「调用工具」和「智能体」节点里使用。",
+  git: "代码仓库经 Git 连接器接入（GitHub 或 Bitbucket Data Center），令牌配在连接器上。只用在编排应用的「提交 PR」节点里：平台在自己的 aep/ 分支上提交并开 PR，合不合并由人决定。连接器要提供 6 个工具，测试连接时会检查。",
 };
 const DATABASE_HINT =
   "数据源给 ETL 和「数据工程」类节点读数据。连接器要提供 6 个读数据的工具，测试连接时会检查。";
@@ -317,9 +319,11 @@ export function DatasourceForm(props: Props) {
               placeholder={
                 isToolService({ kind })
                   ? "http://connector-tickets:8010/mcp"
-                  : kind === "databricks"
-                    ? "http://connector-databricks:8005/mcp"
-                    : "http://connector-postgres:8001/mcp"
+                  : kind === "git"
+                    ? "http://connector-git:8006/mcp"
+                    : kind === "databricks"
+                      ? "http://connector-databricks:8005/mcp"
+                      : "http://connector-postgres:8001/mcp"
               }
               aria-invalid={Boolean(urlError)}
               aria-describedby={[

@@ -87,6 +87,9 @@ services:
   connector-databricks:
     <<: *restart
 
+  connector-git:
+    <<: *restart
+
   connector-sandbox:
     <<: *restart
     mem_limit: 768m

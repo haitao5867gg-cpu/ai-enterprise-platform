@@ -78,11 +78,11 @@ def find_demo_source[S](
 ) -> S | None:
     """The demo's source among registered ones, ``fields`` giving each one's name, kind
     and connector address: the one named DEMO_DATASOURCE, else one on the demo's
-    connector (renamed on the page). Never a tool service."""
+    connector (renamed on the page). Never a tool service or a code repository."""
     candidates: list[tuple[S, str, str]] = []
     for source in sources:
         name, kind, at = fields(source)
-        if kind != "mcp":
+        if kind not in ("mcp", "git"):
             candidates.append((source, name, at))
     for source, name, _ in candidates:
         if name == DEMO_DATASOURCE:

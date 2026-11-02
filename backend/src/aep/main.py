@@ -121,8 +121,8 @@ def create_app() -> FastAPI:
         await secret_store.setup()
         project_store = PostgresProjectStore(pool)
         await project_store.setup()
-        asset_repo = AssetRepo.from_settings(settings)
         tools = McpTools(settings.tool_timeout_seconds)
+        asset_repo = AssetRepo.from_settings(settings, tools)
         tracer = tracing.Tracer.from_settings(settings)
         databricks = DevTarget.from_settings(settings)
         service = RunService(

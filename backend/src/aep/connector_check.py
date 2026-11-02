@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from aep.config import Settings
 from aep.connector_urls import TEXT as ADDRESS_TEXT
 from aep.connector_urls import Rejected, check_url, mask_url
-from aep.datasources import ETL_TOOLS, SOURCE_KINDS, DataSource
+from aep.datasources import ETL_TOOLS, GIT_KIND, GIT_TOOLS, SOURCE_KINDS, DataSource
 from aep.tools.mcp import ConnectionProblem, ConnectorUnavailable, McpTools, ToolError, ToolInfo
 
 log = logging.getLogger(__name__)
@@ -40,6 +40,11 @@ PROBLEM_TEXT = {
         "如果它只提供别的工具，请把类型选成「工具服务」。"
     ),
     "no_tools": "连接器没有提供任何工具，工具服务至少要有一个工具。",
+    "missing_git_tools": (
+        "缺少代码仓库需要的工具：{tools}。代码仓库连接器要提供 "
+        + "、".join(GIT_TOOLS)
+        + " 这 6 个工具。"
+    ),
 }
 TOOLS_FAILED = "连接器列工具时报错，请让管理员查看连接器的日志。"
 
@@ -118,11 +123,13 @@ class ConnectorCheck:
         latency = round((time.perf_counter() - started) * 1000)
         names = {t.name for t in listed}
         problems = []
-        missing = [t for t in ETL_TOOLS if t not in names] if kind in SOURCE_KINDS else []
+        wanted = ETL_TOOLS if kind in SOURCE_KINDS else GIT_TOOLS if kind == GIT_KIND else ()
+        missing = [t for t in wanted if t not in names]
         if missing:
-            text = PROBLEM_TEXT["missing_tools"].format(tools="、".join(missing))
+            said = "missing_git_tools" if kind == GIT_KIND else "missing_tools"
+            text = PROBLEM_TEXT[said].format(tools="、".join(missing))
             problems.append(Problem("missing_tools", text))
-        if kind not in SOURCE_KINDS and not listed:
+        if not wanted and not listed:
             problems.append(Problem("no_tools", PROBLEM_TEXT["no_tools"]))
         return TestResult(not problems, latency, listed, missing, problems, normalised)
 

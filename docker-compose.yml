@@ -141,6 +141,30 @@ services:
       timeout: 3s
       retries: 20
 
+  # A code repository on GitHub or Bitbucket Data Center (docs/api/git.md): reads files
+  # and proposes changes as pull requests from aep/ branches. Not registered by default:
+  # once configured, register it on the data sources page as kind git with
+  # http://connector-git:8006/mcp. Without its own settings it falls back to the assets
+  # repository's (AEP_ASSETS_REPO, AEP_ASSETS_GITHUB_TOKEN).
+  connector-git:
+    build: ./connectors/git
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AEP_GIT_TOKEN: ${AEP_GIT_TOKEN:-${AEP_ASSETS_GITHUB_TOKEN:-}}
+      AEP_GIT_REPOS: ${AEP_GIT_REPOS:-${AEP_ASSETS_REPO:-}}
+      AEP_GIT_MCP_HOST: 0.0.0.0
+      AEP_GIT_MCP_PORT: 8006
+    ports:
+      - "127.0.0.1:8006:8006"
+    # /healthz does not reach the Git host; /healthz?probe=1 reads each repository.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # Runs code-node Python. Alone on the internal "sandbox" network: no internet, no
   # database, no API. The API reaches it through sandbox-relay, the only container on
   # both networks. See connectors/sandbox/README.md.
@@ -261,6 +285,8 @@ services:
       AEP_KNOWLEDGE_DIR: /data/knowledge
       AEP_FILES_CONNECTOR_URL: ${AEP_FILES_CONNECTOR_URL:-http://connector-files:8003}
       AEP_SANDBOX_URL: ${AEP_SANDBOX_URL:-http://sandbox-relay:8004/mcp}
+      # The assets repository's pull requests go through the Git connector (docs/api/git.md).
+      AEP_ASSETS_GIT_URL: ${AEP_ASSETS_GIT_URL:-http://connector-git:8006/mcp}
       # Sample sources, registered through the existing startup mechanism.
       AEP_DEFAULT_DATASOURCES: >-
         [{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"},

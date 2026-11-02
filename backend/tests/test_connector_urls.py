@@ -47,6 +47,7 @@ def test_rules_parse():
         "connector-mysql:8002",
         "connector-files:8003",
         "connector-databricks:8005",
+        "connector-git:8006",
     ]
 
 

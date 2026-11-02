@@ -115,14 +115,16 @@ AEP_DATABRICKS_PROD_SCHEMA=<prod schema>
 
 平台在资产索引里记下每个版本（bundle 名、版本、PR、commit、来源 run、状态）。版本号在开 PR 之前就预留好：并发的 run 拿到不同版本，同一步骤重跑（比如进程重启后恢复）沿用原来的版本、分支和 PR；预留了但 PR 没开成的版本状态是 `pending`。`GET /assets?name=<bundle 名>` 可以按名称查。不配就跳过，run 结果的 `asset` 里写明原因；评测（`input.release = false`）不提交。
 
-资产仓库要先有一个初始提交（新建时勾选「Add a README」）。令牌用 fine-grained token，只授权这一个仓库，给 Contents 和 Pull requests 读写：
+PR 经平台的 Git 连接器（[connectors/git](connectors/git)，支持 GitHub 和 Bitbucket Data Center，见 [docs/api/git.md](docs/api/git.md)）开出来，令牌只配在连接器上。资产仓库要先有一个初始提交（新建时勾选「Add a README」）。GitHub 令牌用 fine-grained token，只授权这一个仓库，给 Contents 和 Pull requests 读写。本地编排里连接器没设自己的 `AEP_GIT_TOKEN`、`AEP_GIT_REPOS` 时沿用下面两项，平台默认经 `http://connector-git:8006/mcp` 调它：
 
 ```bash
 AEP_ASSETS_REPO=<owner>/<仓库名>
-AEP_ASSETS_GITHUB_TOKEN=<令牌>
+AEP_ASSETS_GITHUB_TOKEN=<令牌>        # 交给 Git 连接器（AEP_GIT_TOKEN），平台本身不用
 # AEP_ASSETS_BASE_BRANCH=main
 # AEP_WEB_URL=http://localhost:3000   # PR 里 run 链接的地址
 ```
+
+用 Bitbucket Data Center 时给连接器配 `AEP_GIT_PROVIDER=bitbucket`、`AEP_GIT_API_URL`、`AEP_GIT_TOKEN`、`AEP_GIT_REPOS`，`AEP_ASSETS_REPO` 写成 `PROJECT/仓库`。
 
 ### ETL 演示
 

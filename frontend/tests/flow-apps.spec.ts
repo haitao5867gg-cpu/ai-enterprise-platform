@@ -512,10 +512,10 @@ test("mock validates graph locations, draft snapshots, exports/imports, secrets 
   request,
 }) => {
   const types = await (await request.get("/api/node-types")).json();
-  expect(types).toHaveLength(19);
+  expect(types).toHaveLength(20);
   expect(
     types.filter((item: { category: string }) => item.category !== "data"),
-  ).toHaveLength(12);
+  ).toHaveLength(13);
   expect(
     types.filter((item: { category: string }) => item.category === "data"),
   ).toHaveLength(7);

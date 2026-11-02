@@ -16,7 +16,7 @@ from aep.runtime.flow import refs
 FORMAT = "aep-app/1"
 MAX_BYTES = 1024 * 1024
 # Node types with a ``datasource`` setting (agents name theirs per tool).
-DATASOURCE_NODES = ("tool", "etl_profile", "databricks_ingest")
+DATASOURCE_NODES = ("tool", "etl_profile", "databricks_ingest", "data_check", "git_pr")
 
 
 class BadFile(ValueError):

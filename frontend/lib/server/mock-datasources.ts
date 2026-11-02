@@ -60,6 +60,14 @@ const store = (globalStore.aepMockDatasources ??= new Map(
       description: "客服工单：查询和查看工单",
       created_at: CREATED,
     },
+    {
+      datasource_id: "assets-repo",
+      name: "资产仓库",
+      kind: "git",
+      connector_url: "http://git.connector.test:8006/mcp",
+      description: "GitHub 上的数据管道仓库",
+      created_at: CREATED,
+    },
   ].map((source): [string, Datasource] => [source.datasource_id, source]),
 ));
 // Per data source and address, 60 seconds, failures too.
@@ -152,6 +160,33 @@ const etlTools: ConnectorTool[] = [
 ];
 const ETL_TOOLS = etlTools.map((tool) => tool.name);
 // Read tools only; get_customer does not declare itself read-only.
+// connectors/git (docs/api/git.md).
+const GIT_TOOLS = [
+  "list_repos",
+  "list_files",
+  "read_file",
+  "open_pull_request",
+  "get_pull_request",
+  "comment_pull_request",
+];
+const gitTools: ConnectorTool[] = GIT_TOOLS.map((name) => ({
+  name,
+  description: name,
+  input_schema: { type: "object", properties: {} },
+  read_only: !["open_pull_request", "comment_pull_request"].includes(name),
+}));
+// The repositories of the mock code repository, as list_repos gives them.
+export const mockRepos = {
+  provider: "github",
+  branch_prefix: "aep/",
+  repos: [
+    {
+      repo: "acme/data-pipelines",
+      default_branch: "main",
+      url: "https://github.com/acme/data-pipelines",
+    },
+  ],
+};
 const ticketTools: ConnectorTool[] = [
   {
     name: "search_tickets",
@@ -212,7 +247,15 @@ const problem = (code: string, message = PROBLEMS[code]): Problem => ({
   code,
   message,
 });
-const KINDS = ["postgres", "mysql", "sqlserver", "file", "databricks", "mcp"];
+const KINDS = [
+  "postgres",
+  "mysql",
+  "sqlserver",
+  "file",
+  "databricks",
+  "mcp",
+  "git",
+];
 const LABELS: Record<string, string> = {
   name: "名称",
   kind: "类型",
@@ -243,6 +286,7 @@ const ALLOWED = [
   "connector-postgres:8001",
   "connector-mysql:8002",
   "connector-files:8003",
+  "connector-git:8006",
 ];
 
 function decoded(text: string) {
@@ -352,6 +396,8 @@ function probe(
       ),
     };
   if (host === "tools.connector.test") return { tools: ticketTools };
+  if (host === "git.connector.test" || host === "connector-git")
+    return { tools: gitTools };
   if (host === "empty.connector.test") return { tools: [] };
   return { tools: etlTools };
 }
@@ -373,13 +419,15 @@ export function mockConnectorTest(
   const found = probe(checked.url);
   if ("reason" in found) return failed([problem(found.reason)], checked.url);
   const names = found.tools.map((tool) => tool.name);
-  const missing =
-    kind === "mcp" ? [] : ETL_TOOLS.filter((name) => !names.includes(name));
+  const wanted = kind === "mcp" ? [] : kind === "git" ? GIT_TOOLS : ETL_TOOLS;
+  const missing = wanted.filter((name) => !names.includes(name));
   const problems = missing.length
     ? [
         problem(
           "missing_tools",
-          `缺少 ETL 需要的工具：${missing.join("、")}。数据源要提供 list_schemas、list_tables、describe_table、table_stats、sample_rows、read_rows 这 6 个工具；如果它只提供别的工具，请把类型选成「工具服务」。`,
+          kind === "git"
+            ? `缺少代码仓库需要的工具：${missing.join("、")}。代码仓库连接器要提供 ${GIT_TOOLS.join("、")} 这 6 个工具。`
+            : `缺少 ETL 需要的工具：${missing.join("、")}。数据源要提供 list_schemas、list_tables、describe_table、table_stats、sample_rows、read_rows 这 6 个工具；如果它只提供别的工具，请把类型选成「工具服务」。`,
         ),
       ]
     : kind === "mcp" && !names.length
@@ -579,6 +627,14 @@ export async function mockDatasources(request: Request, path: string[]) {
     // Loaded here: mock-apps reaches this module through mock-flow-apps.
     const { mockDatasourceUsage } = await import("./mock-apps");
     return mockJson({ apps: mockDatasourceUsage(source.datasource_id) });
+  }
+  if (path[2] === "repos") {
+    if (source.kind !== "git")
+      return mockError(`「${source.name}」不是代码仓库`, 409);
+    const found = probe(source.connector_url);
+    return "reason" in found
+      ? mockError(PROBLEMS[found.reason], 502)
+      : mockJson(mockRepos);
   }
   if (path[2] === "tools") {
     // Listing the tools is a check too: the page's status follows it.
