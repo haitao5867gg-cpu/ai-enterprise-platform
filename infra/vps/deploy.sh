@@ -72,6 +72,7 @@ if [ "${1:-}" = "--password" ] || [ ! -s "$AUTH" ]; then
   umask 077
   printf 'basic_auth {\n\t%s %s\n}\n' "${user:-aep}" "$hash" > "$AUTH"
   unset pass
+  auth_changed=1
 fi
 
 echo "== 构建镜像（逐个构建，避免 4G 内存不够）"
@@ -81,6 +82,10 @@ done
 
 echo "== 启动"
 "${DC[@]}" up -d --remove-orphans --wait --wait-timeout 900
+# 口令文件是挂载进去的，改了不会让 compose 重建 Caddy，要让运行中的 Caddy 重新读配置。
+if [ "${auth_changed:-}" = 1 ]; then
+  "${DC[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+fi
 docker image prune -f >/dev/null
 
 echo
