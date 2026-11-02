@@ -156,10 +156,12 @@ def test_template_follows_the_contract():
         ("standards", "knowledge", "查开发规范"),
         ("plan", "llm", "出方案"),
         ("check_plan", "etl_plan_check", "校验方案"),
+        ("plan_stuck", "human", "方案校验没通过"),
         ("review", "human", "确认方案"),
         ("ingest", "databricks_ingest", "抽取到湖仓"),
         ("codegen", "llm", "写代码"),
         ("check_code", "etl_code_check", "检查并打包"),
+        ("code_stuck", "human", "代码检查没通过"),
         ("dev_run", "databricks_dev_run", "开发环境试算"),
         ("data_review", "human", "审核试算结果"),
         ("end", "end", "交付"),
@@ -207,8 +209,10 @@ def test_template_follows_the_contract():
         9,
     )
     # The two people's steps are the contract's, word for word.
-    for human in contract_objects("两个人工节点："):
+    for human in contract_objects("两个人工节点：") + contract_objects("两个交给人的节点"):
         assert {k: v for k, v in nodes[human["id"]].items() if k != "note"} == human
+    # The checks hand a reply that keeps failing to a person instead of failing the run.
+    assert nodes["check_plan"]["on_stuck"] == nodes["check_code"]["on_stuck"] == "branch"
     outcomes = {i: n.get("outcome") for i, n in nodes.items() if n["type"] == "end"}
     assert outcomes == {"end": "delivered", "stopped": "stopped"}
     outputs = {
@@ -222,7 +226,10 @@ def test_template_follows_the_contract():
         "confirmed": ["{{review.record}}"], "reviewed": ["{{data_review.record}}"],
     }  # fmt: skip
     assert outputs["stopped"] == {
-        "reason": ["{{data_review.comment}}", "{{data_review.feedback}}"],
+        "reason": [
+            "{{data_review.comment}}", "{{data_review.feedback}}",
+            "{{code_stuck.comment}}", "{{plan_stuck.comment}}",
+        ],
         "brief": ["{{check_plan.brief}}"], "plan": ["{{check_plan.plan}}"],
         "report": ["{{dev_run.report}}"], "confirmed": ["{{review.record}}"],
         "reviewed": ["{{data_review.record}}"],
@@ -233,9 +240,13 @@ def test_template_follows_the_contract():
         ("glossary", None, "standards"), ("standards", None, "plan"),
         ("plan", None, "check_plan"),
         ("check_plan", "ok", "review"), ("check_plan", "retry", "plan"),
+        ("check_plan", "stuck", "plan_stuck"),
+        ("plan_stuck", "rewrite", "plan"), ("plan_stuck", "stop", "stopped"),
         ("review", "approve", "ingest"), ("review", "revise", "plan"),
         ("ingest", None, "codegen"), ("codegen", None, "check_code"),
         ("check_code", "ok", "dev_run"), ("check_code", "retry", "codegen"),
+        ("check_code", "stuck", "code_stuck"),
+        ("code_stuck", "rewrite", "codegen"), ("code_stuck", "stop", "stopped"),
         ("dev_run", "passed", "data_review"), ("dev_run", "failed", "data_review"),
         ("dev_run", "retry", "codegen"),
         ("data_review", "approve", "end"), ("data_review", "fix_code", "codegen"),

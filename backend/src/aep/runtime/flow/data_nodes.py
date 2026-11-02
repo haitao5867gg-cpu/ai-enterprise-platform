@@ -210,17 +210,55 @@ def _last(state: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
     return (state.get("vars") or {}).get(node["id"]) or {}
 
 
+# The branch a check node takes, with ``on_stuck: branch``, when the model's replies
+# failed ``max_attempts`` times in a row: a person decides what to do.
+STUCK = "stuck"
+STUCK_SETTINGS = ("fail", "branch")
+
+
 def _failures(
     state: dict[str, Any], node: dict[str, Any], ok: bool, what: str, problems: list[str]
 ) -> int:
-    """Failures in a row, counting this one; too many fails the node."""
+    """Failures in a row, counting this one; too many fails the node, unless it hands the
+    reply to a person then (``on_stuck: branch``, see ``_stuck``)."""
     count = 0 if ok else _mine(state, node).get("failures", 0) + 1
-    limit = node.get("max_attempts", 3)
-    if count >= limit:
+    if _stuck(node, count) is None:
         raise NodeFailure(
             "output_format", f"{what}连续 {count} 次没有通过检查：" + "；".join(problems)
         )
     return count
+
+
+def _stuck(node: dict[str, Any], failures: int) -> bool | None:
+    """Whether ``failures`` in a row are as many as the node allows: True when it then
+    takes branch ``stuck``, None when it fails instead, False while it may rewrite."""
+    if failures < node.get("max_attempts", 3):
+        return False
+    return True if node.get("on_stuck", "fail") == "branch" else None
+
+
+def _check_stuck(node: dict[str, Any], p: Problems) -> None:
+    if node.get("on_stuck", "fail") not in STUCK_SETTINGS:
+        p.add(("on_stuck",), "连续不过之后 on_stuck 只能是 fail（报错停下）或 branch（交给人）")
+
+
+def _check_branches(node: dict[str, Any]) -> list[str]:
+    """A check node's branches: ``stuck`` too when it hands a stuck reply to a person."""
+    return ["ok", "retry", *([STUCK] if node.get("on_stuck") == "branch" else [])]
+
+
+def _stuck_text(what: str, failures: int, problems: list[str], reply: str) -> str:
+    """For the person a stuck check hands over to: why, and the reply that failed."""
+    lines = [
+        f"模型连续 {failures} 次没写出能通过平台检查的{what}。最后一次的问题：",
+        *(f"- {p}" for p in problems),
+        "",
+        f"可以写意见让模型按意见重写{what}（意见和这些问题一起交给它，重写的次数重新算），"
+        "或者终止这次运行。",
+    ]
+    if reply.strip():
+        lines += ["", f"最后一版{what}（没有通过检查）：", "", "```", reply.strip()[:20000], "```"]
+    return "\n".join(lines)
 
 
 def _rewrite_said(problems: str, not_json: bool, failures: int, node: dict[str, Any]) -> str:
@@ -331,6 +369,7 @@ async def check_plan_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
                 p.add(("hits", i), "每项必须恰好是一个变量，如 {{glossary.hits}}")
     _text(node, "language", p, "代码语言", max_length=200)
     _int(node, "max_attempts", p, "连续不过的次数上限", 1, 5)
+    _check_stuck(node, p)
     version = node.get("format")
     if version is not None and (
         not isinstance(version, int) or isinstance(version, bool) or version not in (1, 2, 3)
@@ -610,7 +649,9 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         problems = [f"回复不是要求的 JSON：{exc}"]
         not_json = True
     failures = _failures(state, node, plan is not None, "方案", problems)
-    private: dict[str, Any] = {"failures": failures}
+    stuck = plan is None and _stuck(node, failures)
+    # After a person looked, the model has its rewrites again.
+    private: dict[str, Any] = {"failures": 0 if stuck else failures}
     if v2:
         private["answered"] = memory
     if plan is None:
@@ -618,6 +659,9 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             f"- {p}" for p in problems
         )
         said = _rewrite_said(f"方案有 {len(problems)} 处没通过校验", not_json, failures, node)
+        if stuck:
+            text = _stuck_text("方案", failures, problems, refs.render(node["reply"], get))
+            said = f"方案连续 {failures} 次没通过校验，交给人决定：按意见重写，还是终止"
         outputs = {
             "ok": False,
             "plan": raw,
@@ -628,7 +672,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         } | _no_plan()
         return Outcome(
             outputs,
-            "retry",
+            STUCK if stuck else "retry",
             messages=[{"role": "assistant", "content": said}],
             private=private,
         )
@@ -791,6 +835,7 @@ async def check_code_check(node: dict[str, Any], p: Problems, env: CheckEnv) -> 
     _text(node, "source_name", p, "数据源名称", max_length=200)
     _text(node, "name", p, "bundle 名", max_length=200)
     _int(node, "max_attempts", p, "连续不过的次数上限", 1, 5)
+    _check_stuck(node, p)
 
 
 async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
@@ -834,9 +879,13 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             if built.settings:
                 bundle["settings"] = built.settings
     failures = _failures(state, node, bundle is not None, "代码", problems)
+    stuck = bundle is None and _stuck(node, failures)
     if bundle is None:
         summary = "代码没有通过检查，带着问题让模型重写：\n" + "\n".join(f"- {p}" for p in problems)
         said = _rewrite_said(f"代码有 {len(problems)} 处没通过检查", not_json, failures, node)
+        if stuck:
+            summary = _stuck_text("代码", failures, problems, refs.render(node["reply"], get))
+            said = f"代码连续 {failures} 次没通过检查，交给人决定：按意见重写，还是终止"
     else:
         summary = f"已生成 Databricks bundle {bundle['name']}：" + "、".join(
             sorted(bundle["files"])
@@ -852,9 +901,9 @@ async def run_code_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     }
     return Outcome(
         outputs,
-        "ok" if bundle is not None else "retry",
+        "ok" if bundle is not None else (STUCK if stuck else "retry"),
         messages=[{"role": "assistant", "content": said}],
-        private={"failures": failures},
+        private={"failures": 0 if stuck else failures},
     )
 
 
@@ -1206,7 +1255,7 @@ TYPES: dict[str, NodeType] = {
             "code",
             check_plan_check,
             run_plan_check,
-            _fixed("ok", "retry"),
+            _check_branches,
             _fixed(
                 "ok",
                 "plan",
@@ -1246,9 +1295,16 @@ TYPES: dict[str, NodeType] = {
                     "方案建议的数据检查，可以整段给数据检查节点的 include（第 3 版方案）",
                 ),
             ),
-            defaults={"reply": "", "profile": "", "hits": [], "language": "", "max_attempts": 3},
+            defaults={
+                "reply": "",
+                "profile": "",
+                "hits": [],
+                "language": "",
+                "max_attempts": 3,
+                "on_stuck": "fail",
+            },
             error_handling=True,
-            branch_labels=lambda node: {"ok": "通过", "retry": "重写"},
+            branch_labels=lambda node: {"ok": "通过", "retry": "重写", STUCK: "交给人"},
         ),
         NodeType(
             "databricks_ingest",
@@ -1277,7 +1333,7 @@ TYPES: dict[str, NodeType] = {
             "code",
             check_code_check,
             run_code_check,
-            _fixed("ok", "retry"),
+            _check_branches,
             _fixed("ok", "code", "problems", "bundle", "files", "summary"),
             outputs=(
                 ("ok", "是否通过"),
@@ -1293,9 +1349,10 @@ TYPES: dict[str, NodeType] = {
                 "source_name": "",
                 "name": "",
                 "max_attempts": 3,
+                "on_stuck": "fail",
             },
             error_handling=True,
-            branch_labels=lambda node: {"ok": "通过", "retry": "重写"},
+            branch_labels=lambda node: {"ok": "通过", "retry": "重写", STUCK: "交给人"},
         ),
         NodeType(
             "databricks_dev_run",

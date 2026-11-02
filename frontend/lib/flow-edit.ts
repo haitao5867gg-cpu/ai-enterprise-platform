@@ -243,7 +243,11 @@ export function branchesOf(node: FlowNode): string[] {
           : node.type === "end"
             ? []
             : node.type === "etl_plan_check" || node.type === "etl_code_check"
-              ? ["ok", "retry"]
+              ? [
+                  "ok",
+                  "retry",
+                  ...(node.on_stuck === "branch" ? ["stuck"] : []),
+                ]
               : node.type === "databricks_dev_run"
                 ? ["passed", "retry", "failed"]
                 : node.type === "data_check"
@@ -268,6 +272,7 @@ export function branchLabel(
     if (branch === "retry")
       return node.type === "databricks_dev_run" ? "带着报错重写" : "重写";
     if (branch === "failed") return "失败";
+    if (branch === "stuck") return "交给人";
   }
   if (node?.type === "data_check")
     return branch === "passed"

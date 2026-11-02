@@ -64,12 +64,14 @@
  "hits": ["{{glossary.hits}}"],       // 0–5 个整段引用，知识检索节点（或 agent）的 hits；用来把 [n] 换成依据
  "language": "{{start.language}}",    // 可选；值为 pyspark 或 sql 时覆盖方案里的 language
  "max_attempts": 3,                   // 1–5
+ "on_stuck": "fail",                  // 可选，验收后新增：连续 max_attempts 次不过时 fail 节点失败（不写时），branch 走 stuck 分支交给人
  "format": 2,                         // 可选，第二批新增：1 第 1 版方案（不写时），2 第 2 版方案；第三批加 3 第 3 版方案
  "answered": "{{review.record}}"}     // 可选，第二批新增，只用于 format 2、3：人已经答过的题，整段引用人工节点的 record
 ```
 
 - 执行：解析 `reply`，用 `aep.etl.plan.validate_plan` 校验，`source_tables` 是 `profile` 的表名，`known` 是 `known_values(profile)`，`references` 是 `hits` 合起来（按 `index` 去重）。`trust_assumptions`：这个节点上一次是 `retry` 时为 true，否则为 false（同代码应用：第一次让模型先看一眼真实取值）。`format` 为 2 时另有一套检查和整理，见下面的“方案第 2 版”。
 - 解析失败或校验不过走 `retry`；**连续** `max_attempts` 次不过时节点失败，`error_type` 为 `output_format`，`error_message` 是最后一次的问题。走过一次 `ok` 后连续次数清零（比如人驳回后重写）。
+- `on_stuck`（验收后新增）：`fail`（不写时，同上）或 `branch`。`branch` 时节点多一个分支 `stuck`（连线标签“交给人”），连续 `max_attempts` 次不过时不失败，走 `stuck`：产出和不通过时一样，只是 `message` 换成给人看的一段话（“模型连续 3 次没写出能通过平台检查的方案。最后一次的问题：……”，接着说明可以写意见让模型重写或终止，最后附上没通过的那一版回答，最多 2 万字），连续次数清零，所以人写了意见后模型又有 `max_attempts` 次机会。保存时 `on_stuck` 只能是这两个值（“连续不过之后 on_stuck 只能是 fail（报错停下）或 branch（交给人）”），是 `branch` 时 `stuck` 要有连线（同别的分支）。以前一次运行常因为格式上的小问题连续不过、整条终止，前面的人工确认全部作废；交给人后人可以指出怎么改，或者自己决定终止。
 - `format` 只能是 1、2 或 3（“方案版本 format 只能是 1、2 或 3”）；`answered` 必须恰好是一个引用，只有 `format` 为 2 或 3 时能写（“只有方案版本 format 为 2 或 3 时才能写已答的题”）。不合格时保存报错，`loc` 指到这个设置。以前的配置没有这两个键，照第 1 版运行；下表里新加的产出，只有标了“两版都有”的有值，其余按第 1 版的写法为空。
 
 产出：
@@ -262,7 +264,8 @@
  "plan": "{{check_plan.plan}}",        // 整段引用，校验通过的方案
  "source_name": "{{profile.source_name}}",
  "name": "{{start.name}}",             // 可选，bundle 名；为空或不合法时用第一张目标表的名字，规则同代码应用
- "max_attempts": 3}                    // 1–5，连续不过的次数上限，规则同 etl_plan_check
+ "max_attempts": 3,                    // 1–5，连续不过的次数上限，规则同 etl_plan_check
+ "on_stuck": "fail"}                   // 可选，验收后新增：同 etl_plan_check；stuck 时给人看的那段话放在 summary
 ```
 
 - 执行：`codegen.check_code`；通过后 `codegen.render`（compute 和 job 模式按平台配置，同代码应用的 `build`）再 `codegen.check_bundle`。
@@ -566,11 +569,13 @@ Databricks dev 运行的报错（为空时忽略）：{{dev_run.errors}}
 | `glossary` | knowledge | 查业务口径 | 同第 1 版 |
 | `standards` | knowledge | 查开发规范 | 同第 1 版 |
 | `plan` | llm | 出方案 | Skill `etl-plan-brief` 版本 1（内置；`make demo` 改成最新发布的版本），`system` 为 `aep.etl.plan.OUTPUT_FORMAT_V2`；提示词见下；`max_visits` 10、出错重试 1 次、`quiet: true` 同第 1 版 |
-| `check_plan` | etl_plan_check | 校验方案 | 同第 1 版，另加 `format: 2`、`answered: {{review.record}}`（`record` 只有最近一次的答案，以前各轮的由校验方案节点自己记着） |
+| `check_plan` | etl_plan_check | 校验方案 | 同第 1 版，另加 `format: 2`、`answered: {{review.record}}`（`record` 只有最近一次的答案，以前各轮的由校验方案节点自己记着）、`on_stuck: "branch"`（验收后新增） |
+| `plan_stuck` | human | 方案校验没通过 | 验收后新增，见下 |
 | `review` | human | 确认方案 | 见下 |
 | `ingest` | databricks_ingest | 抽取到湖仓 | 同第 1 版，另加 `reuse: true`，`max_visits` 6 |
 | `codegen` | llm | 写代码 | 同第 1 版，提示词见下 |
-| `check_code` | etl_code_check | 检查并打包 | 同第 1 版 |
+| `check_code` | etl_code_check | 检查并打包 | 同第 1 版，另加 `on_stuck: "branch"`（验收后新增） |
+| `code_stuck` | human | 代码检查没通过 | 验收后新增，见下 |
 | `dev_run` | databricks_dev_run | 开发环境试算 | `bundle: {{check_code.bundle}}`，`plan: {{check_plan.plan}}`，`max_runs` 3，`preview_rows` 20，`max_visits` 9，出错重试 2 次 |
 | `data_review` | human | 审核试算结果 | 见下 |
 | `end` | end | 交付 | `outcome: "delivered"`，输出见下 |
@@ -607,26 +612,48 @@ Databricks dev 运行的报错（为空时忽略）：{{dev_run.errors}}
  "max_visits": 4}
 ```
 
+两个交给人的节点（验收后新增，第 3 版模板同样有）：校验方案或检查并打包连续 3 次不过时，不再整条运行报错终止，而是把最后一版和问题交给人。人写意见让模型重写（意见和平台的问题一起交给模型，重写次数重新算），或者终止。
+
+```jsonc
+{"id": "plan_stuck", "type": "human", "title": "方案校验没通过", "mode": "approval",
+ "prompt": "模型连续几次没写出能通过平台检查的方案。请看问题和最后一版方案：写明怎么改，让模型按意见重写；或者终止这次运行并写明原因。",
+ "show": "{{check_plan.message}}",
+ "data": {"problems": "{{check_plan.problems}}", "plan": "{{check_plan.plan}}"},
+ "options": [{"key": "rewrite", "label": "按意见重写"}, {"key": "stop", "label": "终止"}],
+ "comment_required": ["rewrite", "stop"],
+ "max_visits": 3}
+
+{"id": "code_stuck", "type": "human", "title": "代码检查没通过", "mode": "approval",
+ "prompt": "模型连续几次没写出能通过平台检查的代码。请看问题和最后一版代码：写明怎么改，让模型按意见重写；或者终止这次运行并写明原因。",
+ "show": "{{check_code.summary}}",
+ "data": {"problems": "{{check_code.problems}}", "code": "{{check_code.code}}"},
+ "options": [{"key": "rewrite", "label": "按意见重写"}, {"key": "stop", "label": "终止"}],
+ "comment_required": ["rewrite", "stop"],
+ "max_visits": 3}
+```
+
 两个结束节点的输出：
 
 | 结束节点 | 输出 |
 | --- | --- |
 | `end`（交付） | `report` ← `{{dev_run.report}}`，`plan` ← `{{check_plan.plan}}`，`ingested` ← `{{ingest.summary}}`，`brief` ← `{{check_plan.brief}}`，`answer` ← `{{dev_run.answer}}`，`code` ← `{{check_code.bundle}}`，`quality` ← `{{dev_run.quality}}`，`dev_url` ← `{{dev_run.url}}`，`confirmed` ← `{{review.record}}`，`reviewed` ← `{{data_review.record}}` |
-| `stopped`（终止） | `reason` ← `["{{data_review.comment}}", "{{data_review.feedback}}"]`（只挂了意见、没写总体意见时取 `feedback`），`brief`、`plan`、`report`、`confirmed`、`reviewed` 同上；没有 `answer` 和 `code`：没通过审核的数字和代码不作为结果交付（代码仍可以用 `files.zip` 下载） |
+| `stopped`（终止） | `reason` ← `["{{data_review.comment}}", "{{data_review.feedback}}", "{{code_stuck.comment}}", "{{plan_stuck.comment}}"]`（只挂了意见、没写总体意见时取 `feedback`；后两项是验收后新增的交给人的节点选终止时写的原因），`brief`、`plan`、`report`、`confirmed`、`reviewed` 同上；没有 `answer` 和 `code`：没通过审核的数字和代码不作为结果交付（代码仍可以用 `files.zip` 下载） |
 
 连线：
 
 ```text
 start → profile → glossary → standards → plan → check_plan
-check_plan   ok → review            | retry → plan
+check_plan   ok → review            | retry → plan         | stuck → plan_stuck
+plan_stuck   rewrite → plan         | stop → stopped
 review       approve → ingest       | revise → plan
-ingest → codegen → check_code       check_code ok → dev_run | retry → codegen
+ingest → codegen → check_code       check_code ok → dev_run | retry → codegen | stuck → code_stuck
+code_stuck   rewrite → codegen      | stop → stopped
 dev_run      passed → data_review   | failed → data_review | retry → codegen
 data_review  approve → end          | fix_code → codegen   | fix_plan → plan | stop → stopped
 ```
 
-- 次数上限：`review` 5 次（最多改 4 轮方案）；`data_review` 4 次（最多退回 3 次）；`ingest` 6 次（每次确认方案后经过一次）；`dev_run` 一次运行总共最多 9 次（每轮最多 3 次）：前几轮用得多时，后面的轮可能一次都跑不了，运行失败；`plan`、`check_plan`、`codegen`、`check_code` 照旧 10 次（`max_visits` 的上限）。到上限时运行失败，不能重试（见 flow-apps.md 的公共字段）。
-- 循环里的引用（第一次跑时为空）：出方案的提示词读 `{{review.feedback}}`、`{{data_review.feedback}}`；写代码的提示词读 `{{data_review.feedback}}`；`check_plan.answered` 读 `{{review.record}}`（只有最近一次的答案，以前读到的由校验方案节点自己记着）；`review.data` 读 `{{data_review.record}}` 和它自己的 `{{review.record}}`。
+- 次数上限：`plan_stuck`、`code_stuck` 各 3 次；`review` 5 次（最多改 4 轮方案）；`data_review` 4 次（最多退回 3 次）；`ingest` 6 次（每次确认方案后经过一次）；`dev_run` 一次运行总共最多 9 次（每轮最多 3 次）：前几轮用得多时，后面的轮可能一次都跑不了，运行失败；`plan`、`check_plan`、`codegen`、`check_code` 照旧 10 次（`max_visits` 的上限）。到上限时运行失败，不能重试（见 flow-apps.md 的公共字段）。
+- 循环里的引用（第一次跑时为空）：出方案的提示词读 `{{plan_stuck.feedback}}`、`{{review.feedback}}`、`{{data_review.feedback}}`；写代码的提示词读 `{{code_stuck.feedback}}`、`{{data_review.feedback}}`；`check_plan.answered` 读 `{{review.record}}`（只有最近一次的答案，以前读到的由校验方案节点自己记着）；`review.data` 读 `{{data_review.record}}` 和它自己的 `{{review.record}}`。
 - 意见怎么传：两个人工节点选“确认方案，开始做”或“通过”时 `feedback` 清空，所以旧意见不会被反复发给模型。选“按我的意见修改方案”或“改方案”时，`plan` 带着意见重写方案，回到“确认方案”再确认一次；选“改代码”时 `codegen` 带着意见改代码，重新检查、试算，再回到“审核试算结果”；选“终止”时运行停在 `stopped`，`reason` 是意见。
 - 选“改方案”后再次确认，要的表上次都抽取过时 `ingest` 不再复制数据（见 databricks_ingest）。`dev_run` 每进来一轮都从第 1 次数起。
 
@@ -649,9 +676,10 @@ data_review  approve → end          | fix_code → codegen   | fix_plan → pl
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}
+校验连续没通过、交给人时人的意见（为空时忽略）：{{plan_stuck.feedback}}
 确认方案时的意见（为空时忽略）：{{review.feedback}}
 审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
-意见开头写着第几轮、哪一步、什么决定。两段意见都有时，确认方案时的意见是最新的，两者冲突时以它为准；审核试算结果时的意见上一版方案已经按它改过。只处理最新一轮、和方案有关的意见；上一版方案里已经按它改过的，不要重复处理。有上一版方案时，在它的基础上按问题和意见修改，输出完整方案。
+意见开头写着第几轮、哪一步、什么决定。校验连续没通过时人的意见是针对上一版方案和这些问题写的，按它和问题一起改，只改格式和写法，不要为了通过校验改口径。两段意见都有时，确认方案时的意见是最新的，两者冲突时以它为准；审核试算结果时的意见上一版方案已经按它改过。只处理最新一轮、和方案有关的意见；上一版方案里已经按它改过的，不要重复处理。有上一版方案时，在它的基础上按问题和意见修改，输出完整方案。
 ```
 
 `codegen` 第 2 版的提示词：
@@ -668,6 +696,7 @@ data_review  approve → end          | fix_code → codegen   | fix_plan → pl
 
 上一版代码（第一次写时为空，忽略）：{{check_code.code}}
 静态检查发现的问题（为空时忽略）：{{check_code.problems}}
+检查连续没通过、交给人时人的意见（为空时忽略）：{{code_stuck.feedback}}
 Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
 意见开头写着第几轮、哪一步、什么决定。只处理和代码有关的意见；上一版代码里已经按它改过的，不要重复处理。有上一版代码时，按问题、报错和意见修改，输出全部目标表的完整代码。

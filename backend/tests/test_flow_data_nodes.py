@@ -3,6 +3,7 @@ connector and the fake Databricks workspace, a lakehouse ETL flow from request t
 dev run, the relaxed loop rule and node notes."""
 
 import asyncio
+import copy
 import json
 import re
 from pathlib import Path
@@ -20,13 +21,16 @@ from aep.etl.plan import EtlPlan
 from aep.knowledge.store import MemoryKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
 from aep.main import create_app
+from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import AppCatalog
-from aep.runtime.flow import data_nodes, files, nodes
+from aep.runtime.flow import builtin, data_nodes, files, nodes
 from aep.runtime.flow import graph as flowgraph
-from aep.runtime.flow.nodes import TYPES, NodeFailure, Runtime
+from aep.runtime.flow.check import check_config
+from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Runtime
 from aep.runtime.registry import AppContext, default_apps
 from aep.runtime.service import RunService
 from aep.runtime.store import MemoryRunStore
+from aep.skills import MemorySkillStore
 from aep.tools.mcp import McpTools
 from tests import fake_connector, fake_databricks
 from tests.conftest import SETTINGS, FakeGateway
@@ -223,6 +227,64 @@ async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
     # A pass (say before a person sends the plan back) starts the count again.
     passed = await run(check_node(), attempt(reply(plan()), second.private), rt)
     assert passed.branch == "ok" and passed.private == {"failures": 0}
+
+    # With on_stuck: branch the third failure goes to a person instead, with the last
+    # reply and its problems, and the model gets its rewrites again after that.
+    stuck = await run(check_node(on_stuck="branch"), attempt(reply(wrong), second.private), rt)
+    assert stuck.branch == "stuck"
+    assert stuck.private == {"failures": 0}
+    assert stuck.outputs["ok"] is False
+    assert stuck.outputs["problems"] == second.outputs["problems"]
+    message = stuck.outputs["message"]
+    assert message.startswith("模型连续 3 次没写出能通过平台检查的方案。最后一次的问题：\n")
+    assert "- order_facts 引用了不存在的源表 'sales.missing'" in message
+    assert "可以写意见让模型按意见重写方案" in message
+    assert "最后一版方案（没有通过检查）：" in message and '"sales.missing"' in message
+    assert stuck.messages[0]["content"] == (
+        "方案连续 3 次没通过校验，交给人决定：按意见重写，还是终止"
+    )
+    again = await run(check_node(on_stuck="branch"), attempt("不是 JSON", stuck.private), rt)
+    assert again.branch == "retry" and again.private == {"failures": 1}
+
+
+async def test_check_nodes_hand_over_only_with_a_branch_for_it():
+    assert TYPES["etl_plan_check"].branches(check_node()) == ["ok", "retry"]
+    assert TYPES["etl_plan_check"].branches(check_node(on_stuck="branch")) == [
+        "ok",
+        "retry",
+        "stuck",
+    ]
+    assert TYPES["etl_code_check"].branches(code_node(on_stuck="branch"))[-1] == "stuck"
+    # The templates hand over, and their configuration holds; a wrong setting and a stuck
+    # branch without its edge do not.
+    env = CheckEnv(models=None, skills=MemorySkillStore(), strict=False)
+
+    def template(name: str = "etl-lakehouse-project") -> dict:
+        config = copy.deepcopy(builtin.TEMPLATES[name].config)
+        for node in config["graph"]["nodes"]:
+            if node["type"] == "knowledge":
+                node["knowledge_bases"] = ["kb_1"]
+        return config
+
+    await check_config(template("etl-lakehouse"), env)
+    await check_config(template(), env)
+    config = template()
+    by_id = {n["id"]: n for n in config["graph"]["nodes"]}
+    by_id["check_plan"]["on_stuck"] = "sometimes"
+    with pytest.raises(ConfigError) as failed:
+        await check_config(config, env)
+    assert (
+        ["config", "graph", "nodes", "check_plan", "on_stuck"],
+        "连续不过之后 on_stuck 只能是 fail（报错停下）或 branch（交给人）",
+    ) in failed.value.problems
+    config = template()
+    config["graph"]["edges"] = [
+        e
+        for e in config["graph"]["edges"]
+        if not (e["from"] == "check_code" and e.get("branch") == "stuck")
+    ]
+    with pytest.raises(ConfigError, match="分支「交给人」没有连到下一个节点"):
+        await check_config(config, env)
 
 
 async def test_plan_check_takes_assumptions_at_their_word_only_after_one_retry():
@@ -941,6 +1003,18 @@ async def test_code_check_sends_problems_back():
     assert second.messages[0]["content"] == "模型没按要求的 JSON 格式回答，让模型重写（第 3/3 次）"
     with pytest.raises(NodeFailure, match="代码连续 3 次没有通过检查"):
         await run(code_node(), code_state("{}", previous=second.outputs | second.private), rt)
+    # Handed to a person instead: what to show is in summary.
+    stuck = await run(
+        code_node(on_stuck="branch"),
+        code_state(reply({"targets": bad}), previous=second.outputs | second.private),
+        rt,
+    )
+    assert stuck.branch == "stuck" and stuck.private == {"failures": 0}
+    assert stuck.outputs["summary"].startswith("模型连续 3 次没写出能通过平台检查的代码。")
+    assert "spark.sql" in stuck.outputs["summary"]
+    assert stuck.messages[0]["content"] == (
+        "代码连续 3 次没通过检查，交给人决定：按意见重写，还是终止"
+    )
 
 
 async def test_code_check_needs_a_checked_plan():
@@ -1621,7 +1695,9 @@ async def test_node_types_list_the_data_group():
         "hits": [],
         "language": "",
         "max_attempts": 3,
+        "on_stuck": "fail",
     }
+    assert types["etl_code_check"]["defaults"]["on_stuck"] == "fail"
     assert types["databricks_dev_run"]["defaults"] == {
         "bundle": "",
         "max_runs": 3,

@@ -198,6 +198,8 @@ export type EtlPlanCheckNode = NodeBase &
     hits: string[];
     language?: string;
     max_attempts: number;
+    // After max_attempts failures in a row: fail the node, or take branch "stuck".
+    on_stuck?: "fail" | "branch";
   };
 export type DatabricksIngestNode = NodeBase &
   Fallible & {
@@ -214,6 +216,7 @@ export type EtlCodeCheckNode = NodeBase &
     source_name: string;
     name?: string;
     max_attempts: number;
+    on_stuck?: "fail" | "branch";
   };
 export type DatabricksDevRunNode = NodeBase &
   Fallible & {

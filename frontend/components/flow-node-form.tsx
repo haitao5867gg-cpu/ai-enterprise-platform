@@ -1201,7 +1201,11 @@ function DataCheckFields({
     if (!value.trim()) delete next[key];
     else if (key === "keys" && !value.includes("{{"))
       next.keys = value.split(/[,，、\s]+/).filter(Boolean);
-    else if (key === "tolerance" && !value.includes("{{") && Number.isFinite(number))
+    else if (
+      key === "tolerance" &&
+      !value.includes("{{") &&
+      Number.isFinite(number)
+    )
       next.tolerance = number;
     else next[key] = value;
     const rest = { ...node };
@@ -1431,6 +1435,11 @@ export function NodeSettings({
             issues={at("max_attempts")}
             onChange={(max_attempts) => change({ ...node, max_attempts })}
           />
+          <StuckField
+            value={node.on_stuck}
+            issues={at("on_stuck")}
+            onChange={(on_stuck) => change({ ...node, on_stuck })}
+          />
         </>
       );
     case "etl_code_check":
@@ -1460,6 +1469,11 @@ export function NodeSettings({
             max={5}
             issues={at("max_attempts")}
             onChange={(max_attempts) => change({ ...node, max_attempts })}
+          />
+          <StuckField
+            value={node.on_stuck}
+            issues={at("on_stuck")}
+            onChange={(on_stuck) => change({ ...node, on_stuck })}
           />
         </>
       );
@@ -2002,4 +2016,30 @@ export function NodeSettings({
         />
       );
   }
+}
+
+// What a check node does after its rewrites run out (docs/api/data-nodes.md, on_stuck):
+// stop the run with an error, or take branch 交给人, usually to a human node.
+function StuckField({
+  value,
+  issues,
+  onChange,
+}: {
+  value: "fail" | "branch" | undefined;
+  issues: string[];
+  onChange: (value: "fail" | "branch") => void;
+}) {
+  return (
+    <SelectField
+      label="连续不过之后"
+      value={value ?? "fail"}
+      issues={issues}
+      help="交给人时多一个分支「交给人」，一般连到人工节点：按意见重写，或终止。"
+      onChange={(next) => onChange(next === "branch" ? "branch" : "fail")}
+      choices={[
+        { value: "fail", label: "报错停下" },
+        { value: "branch", label: "交给人" },
+      ]}
+    />
+  );
 }
