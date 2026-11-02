@@ -17,9 +17,10 @@ services:
       - "443:443"
       - "443:443/udp"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # deploy.sh 生成，含口令的 bcrypt 散列，不进仓库。
-      - ./auth.caddy:/etc/caddy/auth.caddy:ro
+      - ./infra/vps/Caddyfile:/etc/caddy/Caddyfile:ro
+      # 多个 -f 时相对路径按第一个文件（仓库根目录）解析。auth.caddy 由 deploy.sh 生成，
+      # 含口令的 bcrypt 散列，不进仓库。
+      - ./infra/vps/auth.caddy:/etc/caddy/auth.caddy:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

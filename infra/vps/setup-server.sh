@@ -62,14 +62,16 @@ grep -qE '^Include /etc/ssh/sshd_config.d/' /etc/ssh/sshd_config \
   || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 sshd -t
 # 生效前先核对（sshd -T 读的是配置文件）：公钥登录没打开就撤回，不关密码，免得锁在外面。
-if ! sshd -T -C user=root,host=x,addr=127.0.0.1 | grep -qi '^pubkeyauthentication yes'; then
+# 先存下再 grep：pipefail 下 grep -q 提前退出会让 sshd 收到 SIGPIPE，整条管道算失败。
+effective=$(sshd -T -C user=root,host=x,addr=127.0.0.1)
+if ! grep -qi '^pubkeyauthentication yes' <<<"$effective"; then
   rm -f /etc/ssh/sshd_config.d/10-aep.conf
   echo "✗ 有别的配置关掉了公钥登录，已撤回改动、保留密码登录。把下面的输出贴出来："
   grep -rn -Ei "match|pubkey|authenticationmethods|include" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ || true
   exit 1
 fi
 systemctl reload ssh
-sshd -T | grep -qi '^passwordauthentication no' || echo "! 密码登录没有关掉，请检查 /etc/ssh/sshd_config"
+grep -qi '^passwordauthentication no' <<<"$(sshd -T)" || echo "! 密码登录没有关掉，请检查 /etc/ssh/sshd_config"
 
 echo "== 防火墙：22、80、443"
 ufw default deny incoming
