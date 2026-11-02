@@ -18,6 +18,7 @@ import copy
 import logging
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,10 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+# Stands for "the platform's default model" while working out which models apps use.
+DEFAULT_MARK = "\x00default"
+
+
 class GatewayModels:
     """The model aliases the LiteLLM gateway offers, asked at most once a minute."""
 
@@ -119,6 +124,8 @@ class AppCatalog:
         self._datasources = datasources
         self._settings = settings
         self._models = models
+        # The model page's dropdown entries (aep.models.ModelService.choices), when wired.
+        self.model_choices: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
         self._evals: dict[str, asyncio.Task] = {}
         self._starting: dict[str, asyncio.Lock] = {}
 
@@ -267,6 +274,7 @@ class AppCatalog:
                 "options": {
                     "models": models if models is not None else [default],
                     "default_model": default,
+                    "model_choices": await self.model_choices() if self.model_choices else [],
                     "rerank_models": rerank_options(
                         self._settings, models if models is not None else [default]
                     ),
@@ -376,6 +384,51 @@ class AppCatalog:
             for datasource_id, via in uses.items():
                 use = {"app": flow.app, "title": flow.title, "version": number, "via": via}
                 found.setdefault(datasource_id, []).append(use)
+        for uses_of_one in found.values():
+            uses_of_one.sort(key=lambda use: use["app"])
+        return found
+
+    async def model_usage(self) -> dict[str, list[dict[str, Any]]]:
+        """Per model alias, the apps whose current version calls it, as ``{"app", "title",
+        "version", "nodes", "via"}`` sorted by app (docs/api/models.md, "使用情况"): ``via``
+        is ``default`` when every node that calls it names no model. Like
+        ``datasource_usage``, drafts, older versions and archived apps do not count; an app
+        whose configuration cannot be read is left out."""
+        default = self._runs.default_model
+        titles = await self._runs.app_titles()
+        found: dict[str, list[dict[str, Any]]] = {}
+        for app in await self._runs.app_names():
+            try:
+                await self._runs.ensure_versions(app)
+                number = await self._runs.versions.current(app)
+                current = await self._runs.versions.version(app, number)
+                if current is None:
+                    continue
+                used = await self._runs._models(
+                    app, self._config(app, current.config), {}, default=DEFAULT_MARK
+                )
+            except Exception:  # noqa: BLE001 - one broken app must not hide the others
+                log.warning("could not read the models of app %s", app, exc_info=True)
+                continue
+            per_alias: dict[str, dict[str, Any]] = {}
+            for model, title in used:
+                alias = default if model == DEFAULT_MARK else model
+                use = per_alias.setdefault(
+                    alias,
+                    {
+                        "app": app,
+                        "title": titles.get(app, app),
+                        "version": number,
+                        "nodes": [],
+                        "via": "default",
+                    },
+                )
+                if title not in use["nodes"]:
+                    use["nodes"].append(title)
+                if model != DEFAULT_MARK:
+                    use["via"] = "literal"
+            for alias, use in per_alias.items():
+                found.setdefault(alias, []).append(use)
         for uses_of_one in found.values():
             uses_of_one.sort(key=lambda use: use["app"])
         return found

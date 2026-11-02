@@ -167,8 +167,19 @@ async def _document(store: KnowledgeStore, kb: str, doc: str) -> Document:
     return document
 
 
-def _model(model: str, settings: Settings) -> None:
-    if model not in settings.embedding_models:
+async def _embedding_models(request: Request, settings: Settings) -> list[str]:
+    """The configured embedding models and those added on the model page."""
+    models = getattr(request.app.state, "models", None)
+    return await models.embedding_aliases() if models else list(settings.embedding_models)
+
+
+def _default_embedding(request: Request, settings: Settings) -> str:
+    models = getattr(request.app.state, "models", None)
+    return models.defaults()["embedding"] if models else settings.default_embedding_model
+
+
+async def _model(model: str, settings: Settings, request: Request) -> None:
+    if model not in await _embedding_models(request, settings):
         raise HTTPException(422, f"没有可用的向量模型别名「{model}」")
 
 
@@ -177,10 +188,10 @@ def _wake(request: Request) -> None:
 
 
 @router.get("/options")
-async def options(settings: Config, catalog: Catalog) -> dict[str, Any]:
+async def options(settings: Config, catalog: Catalog, request: Request) -> dict[str, Any]:
     return {
-        "embedding_models": settings.embedding_models,
-        "default_embedding_model": settings.default_embedding_model,
+        "embedding_models": await _embedding_models(request, settings),
+        "default_embedding_model": _default_embedding(request, settings),
         "chunking": Chunking().model_dump(),
         "retrieval": defaults(),
         "rerank_models": await catalog.rerank_models(),
@@ -193,13 +204,15 @@ async def list_bases(store: Store) -> list[BaseOut]:
 
 
 @router.post("", status_code=201)
-async def create_base(body: CreateBase, store: Store, settings: Config) -> BaseOut:
+async def create_base(
+    body: CreateBase, store: Store, settings: Config, request: Request
+) -> BaseOut:
     model = (
         body.embedding_model
         if body.embedding_model is not None
-        else settings.default_embedding_model
+        else _default_embedding(request, settings)
     )
-    _model(model, settings)
+    await _model(model, settings, request)
     try:
         base = await store.create(
             body.name, body.description, model, body.chunking.size, body.chunking.overlap
@@ -215,11 +228,13 @@ async def get_base(kb: str, store: Store) -> BaseOut:
 
 
 @router.patch("/{kb}")
-async def update_base(kb: str, body: UpdateBase, store: Store, settings: Config) -> BaseOut:
+async def update_base(
+    kb: str, body: UpdateBase, store: Store, settings: Config, request: Request
+) -> BaseOut:
     await _base(store, kb)
     changes = body.model_dump(exclude_unset=True)
     if "embedding_model" in changes:
-        _model(changes["embedding_model"], settings)
+        await _model(changes["embedding_model"], settings, request)
     if "chunking" in changes:
         changes.pop("chunking")
         chunking = body.chunking.model_dump()

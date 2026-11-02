@@ -41,6 +41,12 @@ if [ ! -f .env ]; then
 fi
 chmod 600 .env
 
+# Encrypts the model keys saved on the model page (docs/api/models.md). Generated once;
+# changing it later makes the saved keys unreadable.
+if [ -z "$(get_env LITELLM_SALT_KEY)" ]; then
+  set_env LITELLM_SALT_KEY "sk-$(openssl rand -hex 24)"
+fi
+
 if [ -z "$(get_env AEP_DOMAIN)" ]; then
   ip=$(curl -fsS -4 https://api.ipify.org || true)
   default=${ip:+${ip//./-}.sslip.io}
