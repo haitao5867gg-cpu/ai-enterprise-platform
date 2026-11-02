@@ -314,8 +314,34 @@ function shownValue(value: unknown): string {
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
+// A known difference as people read it: its note, or the values it matches.
+function namedKnown(item: Record<string, unknown>): string {
+  const note = text(item.note);
+  if (note) return note;
+  const match = isRecord(item.match) ? item.match : {};
+  return Object.entries(match)
+    .map(([column, value]) => {
+      const shown =
+        value === null || value === undefined
+          ? "空值"
+          : typeof value === "object"
+            ? JSON.stringify(value)
+            : String(value);
+      return `${column} = ${shown}`;
+    })
+    .join("、");
+}
+
 // What a check checks, in one sentence (aep.etl.checks.describe without the Markdown).
 export function describeCheck(check: Record<string, unknown>): string {
+  const known = records(check.known);
+  const said = describeCheckOnly(check);
+  return known.length
+    ? `${said}；已知差异 ${known.length} 处（${known.map(namedKnown).join("；")}）不算不通过`
+    : said;
+}
+
+function describeCheckOnly(check: Record<string, unknown>): string {
   const under = (where: unknown) =>
     typeof where === "string" && where ? `（条件 ${where}）` : "";
   const groups = texts(check.group_by);

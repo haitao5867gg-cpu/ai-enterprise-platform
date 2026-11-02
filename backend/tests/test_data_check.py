@@ -372,6 +372,150 @@ async def test_golden_compares_row_by_row():
     assert "| 少 | D4 | 2026-11 | — / 1 | — / 1 |" in report
 
 
+# Known differences (jadeflow acceptance I-4): matched apart, the rest still fails.
+
+
+async def test_golden_compares_known_differences_apart():
+    rt, lake, _, calls = await env()
+    b2 = {"match": {"sku": "B2", "month": "2026-11"}, "note": "B2 数量按新口径"}
+    base = check("old", "golden", table="ibf_table2", expected="old.jade.table2",
+                 keys=["sku", "month"], tolerance=0.0001)  # fmt: skip
+    out = await run(node(checks=[base | {"known": [b2]}]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    # C3 and D4 are no known difference: the check fails on them alone.
+    assert found["status"] == "failed"
+    assert found["message"] == (
+        "和老系统的结果对不上：少 1 行、多 1 行、0 行不一致；另有 1 行是已知差异（B2 数量按新口径）"
+    )
+    assert [r["kind"] for r in found["rows"]] == ["extra", "missing"]
+    assert found["known"] == {"count": 1, "seen": ["B2 数量按新口径"], "absent": []}
+    known = "(`sku` <=> 'B2' AND `month` <=> '2026-11')"
+    assert [(c[1]["where"], c[1]["expected_where"]) for c in calls] == [
+        (f"NOT ({known})", f"NOT ({known})"),
+        (known, known),
+    ]
+
+    # Every difference known: it passes and says so; a known one not seen is said too.
+    rest = [{"match": {"sku": "C3", "month": "2026-11"}}, {"match": {"sku": "D4"}}]
+    gone = {"match": {"sku": "Z9"}, "note": "Z9 已下市"}
+    out = await run(node(checks=[base | {"known": [b2, *rest, gone]}]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert found["status"] == "passed"
+    assert found["message"] == (
+        "和老系统的结果除已知差异外逐行一致（按 sku、month 对齐，比较了 qty、amount）；"
+        "另有 3 行是已知差异（B2 数量按新口径；sku = C3、month = 2026-11；sku = D4）；"
+        "已知差异「Z9 已下市」这次没有出现"
+    )
+    assert out.outputs["ok"] is True
+    assert out.outputs["summary"] == "1 项检查：1 项通过（其中 1 项只有已知差异）"
+
+
+async def test_other_checks_tell_known_rows_and_groups_apart():
+    rt, lake, _, calls = await env()
+    returned = {"match": {"sku": "C3"}, "note": "C3 是退货"}
+    # rows: the known row is counted apart and not sampled as a problem.
+    negative = check("neg", "rows", table="ibf_table2", where="qty < 0", known=[returned])
+    out = await run(node(checks=[negative]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert (found["status"], found["actual"]) == ("passed", 0)
+    assert found["message"] == (
+        "已知差异以外没有满足 qty < 0 的行；另有 1 行是已知差异（C3 是退货）"
+    )
+    assert [c[1]["where"] for c in calls] == [
+        "qty < 0",
+        "(qty < 0) AND (NOT ((`sku` <=> 'C3')))",
+        "(qty < 0) AND ((`sku` <=> 'C3'))",
+    ]
+    calls.clear()
+    positive = check(
+        "pos", "rows", table="ibf_table2", where="qty > 0", known=[{"match": {"sku": "A1"}}]
+    )
+    out = await run(node(checks=[positive]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert (found["status"], found["actual"]) == ("failed", 1)
+    assert [r["sku"] for r in found["rows"]] == ["B2"]
+    assert found["message"] == "有 1 行满足 qty > 0；另有 1 行是已知差异（sku = A1）"
+    # Nothing failed: the known ones not seen are said, with no more calls.
+    calls.clear()
+    out = await run(node(checks=[negative | {"where": "qty > 100"}]), state(lake), rt)
+    assert out.outputs["results"][0]["message"] == (
+        "没有满足 qty > 100 的行；已知差异「C3 是退货」这次没有出现"
+    )
+    assert len(calls) == 1
+
+    # Grouped aggregate and reconcile: the groups are matched as read.
+    november = {"match": {"month": "2026-11"}, "note": "11 月只到一半"}
+    low = check("low", "aggregate", table="ibf_table2", expr="sum(qty)", op="ge", value=5,
+                group_by=["month"], known=[november])  # fmt: skip
+    out = await run(node(checks=[low]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert found["status"] == "passed"
+    assert found["message"] == (
+        "按 month 分 2 组，除已知差异外每组都满足 ≥ 5；另有 1 组是已知差异（11 月只到一半）"
+    )
+    reconciled = check(
+        "vol",
+        "reconcile",
+        left={"table": "ibf_table2", "expr": "sum(qty)"},
+        right={"table": "old.jade.table2", "expr": "sum(qty)"},
+        group_by=["month"],
+        known=[november],
+    )
+    out = await run(node(checks=[reconciled]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert (found["status"], found["known"]["count"]) == ("passed", 1)
+    assert found["message"].startswith("按 month 分 2 组，除已知差异外每组都一致；")
+
+    # unique: the known key's group is counted apart.
+    repeated = check("one", "unique", table="ibf_table2", columns=["month"], known=[november])
+    out = await run(node(checks=[repeated]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert (found["status"], found["actual"]) == ("passed", 0)
+    assert found["message"] == (
+        "按 month 除已知差异外没有重复；另有 1 组是已知差异（11 月只到一半）"
+    )
+
+
+def test_what_known_differences_may_say():
+    def said(kind: str, **fields: Any) -> list[tuple[Any, str]]:
+        return checks.problems(check("k", kind, **fields))
+
+    rows = {"table": "t", "where": "qty < 0"}
+    keyed = {"table": "t", "expected": "o", "keys": ["sku"]}
+    note = {"match": {"sku": "C3", "qty": -1.5}, "note": "退货"}
+    assert said("rows", **rows, known=[note]) == []
+    shape = '{"match": {"列": 值}, "note": "说明"}'
+    assert said("rows", **rows, known=[]) == [
+        (("known",), f"known（已知差异）要写成列表，每项是 {shape}")
+    ]
+    ungrouped = {"table": "t", "expr": "sum(qty)", "op": "ge", "value": 0}
+    assert said("aggregate", **ungrouped, known=[{"match": {"sku": "C3"}}]) == [
+        (
+            ("known",),
+            "只有按组比的聚合值和对账、键不重复、和老系统对比、不该有的行能写 known（已知差异）",
+        )
+    ]
+    assert said("golden", **keyed, known=[{"match": {"month": "x"}}]) == [
+        (("known", 0, "match", "month"), "列 month 要是keys里的列：sku")
+    ]
+    bad = [
+        "C3",
+        {"match": {}},
+        {"match": {"sku": ["C3"]}, "why": "x"},
+        {"match": {"sku": "C3"}, "note": "长" * 201},
+    ]
+    assert said("golden", **keyed, known=bad) == [
+        (("known", 0), f"每项已知差异要写成 {shape}"),
+        (("known", 1, "match"), "match 要写成 {列: 值}，至少一列"),
+        (("known", 2, "why"), "已知差异没有 why 这一项，只有 match 和 note"),
+        (("known", 2, "match", "sku"), "值只能是文字、数字、true、false 或 null"),
+        (("known", 3, "note"), "note 要是 200 个字符以内的文字"),
+    ]
+    assert len(said("rows", **rows, known=[{"match": {"sku": "x"}}] * 21)) == 1
+    described = checks.describe(check("k", "rows", **rows, known=[{"match": {"sku": "C3"}}]))
+    assert described.endswith("；已知差异 1 处（sku = C3）不算不通过")
+
+
 async def test_golden_stops_at_repeated_keys(monkeypatch: pytest.MonkeyPatch):
     rt, lake, _, _ = await env()
     on_month = check(

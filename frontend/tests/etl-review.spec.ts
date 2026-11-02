@@ -384,6 +384,10 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
     "ads_sales_city_member_m 的 sum(sales_amount)和 dwd_sales_order_line 的 sum(line_amount)一致（容差 0.1%）",
   );
   await expect(proposed).toContainText("不该有的行 · 警告");
+  // A known difference is part of what the check says.
+  await expect(proposed).toContainText(
+    "ads_sales_city_member_m 里没有满足 sales_amount < 0 的行；已知差异 1 处（退货中心的冲红单按负数记）不算不通过",
+  );
   // An error check says what it means: failed, the result cannot be approved as it is.
   await expect(proposed).toContainText(
     "键不重复 · 错误：不通过时结果不能直接通过",

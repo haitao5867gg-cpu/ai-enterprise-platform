@@ -188,42 +188,104 @@ DATABRICKS_TABLES = {
         "rows": [{"sku": "A1"}, {"sku": "B2"}],
     },
 }
-_ATOM = re.compile(r"^`?(\w+)`?\s*(=|!=|<>|<=|>=|<|>)\s*(?:'([^']*)'|(-?\d+(?:\.\d+)?))$")
 _AGGREGATE = re.compile(r"^(sum|min|max|count)\((\*|`?\w+`?)\)$", re.IGNORECASE)
 
 
+_TOKEN = re.compile(
+    r"\s*(\(|\)|<=>|!=|<>|<=|>=|=|<|>|'(?:[^'\\]|\\.)*'|`[^`]*`|-?\d+(?:\.\d+)?|\w+)"
+)
+_OPS = ("<=>", "=", "!=", "<>", "<=", ">=", "<", ">")
+
+
+def _atom(row: dict, column: str, op: str, literal: str) -> bool:
+    """One comparison ``column op literal``; a null meets nothing but ``<=> NULL``."""
+    value = row.get(column)
+    if literal.upper() == "NULL":
+        return op == "<=>" and value is None
+    if literal.startswith("'"):
+        wanted: object = literal[1:-1].replace("\\'", "'").replace("\\\\", "\\")
+    elif literal.lower() in ("true", "false"):
+        wanted = literal.lower() == "true"
+    else:
+        wanted = float(literal)
+    if value is None:
+        return False
+    if isinstance(wanted, float) and isinstance(value, str):
+        return False
+    if isinstance(wanted, str):
+        value = str(value)
+    if op in ("<=>", "="):
+        return value == wanted
+    return {
+        "!=": value != wanted,
+        "<>": value != wanted,
+        "<": value < wanted,
+        "<=": value <= wanted,
+        ">": value > wanted,
+        ">=": value >= wanted,
+    }[op]
+
+
 def _keep(row: dict, where: str | None) -> bool:
-    """Whether ``row`` meets ``where`` (the shapes the fake understands, see above)."""
+    """Whether ``row`` meets ``where``: comparisons of a column with a literal (or
+    ``<=> NULL``), joined with AND, OR and NOT and grouped in parentheses."""
     if where is None:
         return True
-    for part in re.split(r"\s+AND\s+", where.strip()):
-        atom = part.strip()
-        while atom.startswith("(") and atom.endswith(")"):
-            atom = atom[1:-1].strip()
-        match = _ATOM.match(atom)
-        if match is None:
-            raise ToolError(f"读取条件写法不对：这个假连接器不认 {atom}")
-        column, op, text, number = match.groups()
-        value = row.get(column)
-        wanted = text if text is not None else float(number)
-        if value is None:
-            return False
-        if text is None and isinstance(value, str):
-            return False
-        if text is not None:
-            value = str(value)
-        ok = {
-            "=": value == wanted,
-            "!=": value != wanted,
-            "<>": value != wanted,
-            "<": value < wanted,
-            "<=": value <= wanted,
-            ">": value > wanted,
-            ">=": value >= wanted,
-        }[op]
-        if not ok:
-            return False
-    return True
+    tokens: list[str] = []
+    at = 0
+    text = where.strip()
+    while at < len(text):
+        match = _TOKEN.match(text, at)
+        if match is None or not match.group(1):
+            raise ToolError(f"读取条件写法不对：这个假连接器不认 {text[at:]}")
+        tokens.append(match.group(1))
+        at = match.end()
+        while at < len(text) and text[at].isspace():
+            at += 1
+    pos = 0
+
+    def peek() -> str:
+        return tokens[pos] if pos < len(tokens) else ""
+
+    def take() -> str:
+        nonlocal pos
+        pos += 1
+        return tokens[pos - 1]
+
+    def either() -> bool:
+        found = both()
+        while peek().upper() == "OR":
+            take()
+            found = both() or found
+        return found
+
+    def both() -> bool:
+        found = negated()
+        while peek().upper() == "AND":
+            take()
+            found = negated() and found
+        return found
+
+    def negated() -> bool:
+        if peek().upper() == "NOT":
+            take()
+            return not negated()
+        if peek() == "(":
+            take()
+            found = either()
+            if take() != ")":
+                raise ToolError(f"读取条件写法不对：这个假连接器不认 {where}")
+            return found
+        column = take().strip("`")
+        op = take()
+        if op not in _OPS:
+            raise ToolError(f"读取条件写法不对：这个假连接器不认 {where}")
+        return _atom(row, column, op, take())
+
+    found = either()
+    if pos != len(tokens):
+        raise ToolError(f"读取条件写法不对：这个假连接器不认 {where}")
+    return found
 
 
 def _same(a: object, b: object, tolerance: float) -> bool:
