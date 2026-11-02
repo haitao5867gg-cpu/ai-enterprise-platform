@@ -21,6 +21,7 @@ export const BRANCHED_ERROR_TYPES = [
   "databricks_ingest",
   "etl_code_check",
   "databricks_dev_run",
+  "databricks_release",
   "data_check",
 ];
 export const UNTESTABLE_TYPES = [
@@ -29,6 +30,7 @@ export const UNTESTABLE_TYPES = [
   "end",
   "databricks_ingest",
   "databricks_dev_run",
+  "databricks_release",
   "data_check",
 ];
 
@@ -49,6 +51,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   databricks_ingest: "抽取到湖仓",
   etl_code_check: "检查并打包",
   databricks_dev_run: "dev 运行",
+  databricks_release: "上线到 prod",
   data_check: "数据检查",
 };
 
@@ -61,6 +64,7 @@ export function nodeKind(type: FlowNode["type"]): NodeKind {
       "etl_profile",
       "databricks_ingest",
       "databricks_dev_run",
+      "databricks_release",
       "data_check",
     ].includes(type)
   )
@@ -164,6 +168,19 @@ export function ownOutputs(node: FlowNode): string[] {
         "errors",
         "report",
       ];
+    case "databricks_release":
+      return [
+        "status",
+        "ok",
+        "release",
+        "url",
+        "job_id",
+        "schedule",
+        "schedule_text",
+        "errors",
+        "summary",
+        "report",
+      ];
     case "data_check":
       return ["ok", "results", "summary", "report"];
     case "end":
@@ -263,7 +280,9 @@ export function branchesOf(node: FlowNode): string[] {
                 ? ["passed", "retry", "failed"]
                 : node.type === "data_check"
                   ? ["passed", "failed"]
-                  : [""];
+                  : node.type === "databricks_release"
+                    ? ["deployed", "failed"]
+                    : [""];
   return "on_error" in node && node.on_error?.then === "branch"
     ? [...list, "error"]
     : list;
@@ -285,6 +304,12 @@ export function branchLabel(
     if (branch === "failed") return "失败";
     if (branch === "stuck") return "交给人";
   }
+  if (node?.type === "databricks_release")
+    return branch === "deployed"
+      ? "已上线"
+      : branch === "failed"
+        ? "失败"
+        : branch;
   if (node?.type === "data_check")
     return branch === "passed"
       ? "通过"

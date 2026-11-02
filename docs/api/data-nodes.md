@@ -1059,6 +1059,88 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 
 上线顺序（每步一个 PR，前面的不依赖后面的）：数据外发策略 → 项目和运行绑定（含 `{{param.*}}`、`{{project.*}}` 和项目页面）→ Databricks 只读连接器和探查、抽取 → 读源表和参数、写到项目环境、写表方式 → `data_check` → 方案第 3 版 → 模板第 3 版和两个新 Skill。之后用 Table 2 Forecast 的模拟数据试点。
 
+## 第五批：上线到 prod（`databricks_release`）
+
+以前只有代码应用 `etl` 能把审核过的代码上线到 prod（`DevTarget.release`，见 `aep.databricks`）。第五批把它做成平台的节点类型，任何编排应用都能在审批后上线；两个 ETL 模板在“审核试算结果”后面加上“上线审批”和“上线到 prod”。按时刷新由 Databricks 上的 Job 自己按 Quartz cron 跑，平台不参与；平台按时发起整次运行另见 [schedules.md](schedules.md)。
+
+### databricks_release 上线到 prod（新节点）
+
+`category: "data"`、`error_handling: true`，流程视图的 `kind` 为 `tool`。会写 Databricks，不能单独试跑（同 `databricks_dev_run`）。
+
+```jsonc
+{"bundle": "{{check_code.bundle}}",        // 整段引用，必填；同 databricks_dev_run
+ "schedule": "{{release_review.values}}",  // 可选：Quartz cron，见下；空时用 AEP_DATABRICKS_PROD_SCHEDULE
+ "environment": "prod"}                    // 可选：绑定项目的运行上线到项目的哪个环境；默认 "prod"
+```
+
+- `bundle`：同 `databricks_dev_run`，必须恰好是一个引用，取到的不是检查并打包节点的 bundle 时 `input_error`。
+- `schedule`：Quartz cron 文字（Databricks Job 的写法：秒 分 时 日 月 周 [年]，如每天 2 点 `0 0 2 * * ?`），可以含引用；恰好是一个引用、取到对象时取它的 `schedule` 键（给确认模式人工节点的 `values` 用：题的 key 叫 `schedule`）。取到空值时用平台的 `AEP_DATABRICKS_PROD_SCHEDULE`。写成不含引用的文字时保存检查写法：6 或 7 段，每段只有数字、字母和 `* ? / , - # L W`，不合格报错“定时要写成 Quartz cron，如每天 2 点：0 0 2 * * ?”；运行时取到的值不合格时 `input_error`，文字同上。时区用 `AEP_DATABRICKS_PROD_TIMEZONE`。
+- `environment`：写法同项目环境的 key，最长 32 个字符；不绑定项目的运行不看它。
+
+执行：
+
+- 不绑定项目：同代码应用 `etl` 的上线，`DevTarget.release(bundle, schedule)`，写到 `AEP_DATABRICKS_PROD_CATALOG`.`AEP_DATABRICKS_PROD_SCHEMA`，集群用 `AEP_DATABRICKS_PROD_CLUSTER_ID`（空时用 `AEP_DATABRICKS_CLUSTER_ID`）。
+- 绑定项目：上线到项目里 key 为 `environment` 的环境，写到它的 catalog 和 schema，集群用它的 `cluster_id`（空时同上）；不看 `AEP_DATABRICKS_PROD_CATALOG`、`_SCHEMA`。Job 的项目变量（`project`、`table_prefix`、`adopted`、`params`）取这次运行的快照，所以 prod 上每次刷新都用这次运行的参数值；`run_id` 是 Job 运行自己的 id。目标表名和试算一样要以项目的表名前缀开头。下面这些情况不部署，走 `failed` 分支，`errors` 写明原因（让人改了项目再试，或者先不上线；不让整次运行失败）：
+  - 运行方式是 `pipeline`：“绑定项目的运行请用 job 方式上线（AEP_DATABRICKS_DEPLOY）”。
+  - 项目没有这个环境：“项目「…」没有环境 prod”。
+  - 这个环境就是这次运行试算用的环境：“上线的环境 dev 就是这次试算的环境，请选别的环境”。
+  - 目标表不以前缀开头：同 `databricks_dev_run`。
+  - 以前的运行快照里没有项目的全部环境：“这次运行绑定项目时还没有记下项目的全部环境，请重新发起运行”。为此，运行快照（projects.md）新增 `environments`：项目当时的全部环境，原样照抄；`environment` 照旧是选中的那个。
+- 绑定项目的 Job 名是“`<bundle 名>`（`<项目 id>`/`<环境 key>`）”，标签另加 `aep_project`、`aep_environment`，文件放在 `.bundle/<bundle 名>/<环境 key>/releases/…`：同一个项目的不同环境、不同项目的同名 bundle 各是各的 Job。不绑定项目时 Job 名、标签和文件位置都同代码应用 `etl`。
+- 同一个 Job 再上线是更新它（换文件、换定时），不新建；上线失败时正在跑的 Job 不变（同 `etl`）。
+- 没配置 Databricks 工作区时以 `databricks_error` 失败。工作区配了但上不了线（`cluster` 运行方式；不绑定项目时没配 prod 目标）不算出错，走 `failed` 分支，`errors` 写明原因，让人决定先不上线还是找管理员。部署时 Databricks 接口报错也走 `failed`。
+
+产出：
+
+| 字段 | 内容 |
+| --- | --- |
+| `status` | `deployed` 或 `failed` |
+| `ok` | `status` 是不是 `deployed` |
+| `release` | `Release.as_dict()`：`mode`、`catalog`、`schema`、`schedule`、`timezone`、`steps`、`errors`、`job_id`、`pipeline_id`、`cluster_id`、`url`；另加 `environment`（绑定项目时是环境 key，否则 `"prod"`）、`job_name` |
+| `url` | Databricks 上这个 Job（或管道）的链接，没有时为 null |
+| `job_id` | Job 的 id，没有时为 null |
+| `schedule` | 用的 Quartz cron |
+| `schedule_text` | 定时的中文说法：常见写法（每天、每小时、每周几、每月几号的几点几分）写成“每天 02:00（Asia/Shanghai）”这样，其他写成“按 Quartz cron 0 15 10 ? * 6L（Asia/Shanghai）” |
+| `errors` | 失败时的原因，一条一行；成功时为 `""` |
+| `summary` | 一句话，如“已上线到 prod：Job 100，每天 02:00（Asia/Shanghai）刷新 `icsd-ace-prod`.sales_mart” |
+| `report` | Markdown 报告：成功或失败、环境、写到哪个 catalog 和 schema、集群、定时、Job 链接、每一步的结果、失败原因 |
+
+分支：`deployed`（已上线）、`failed`（失败）。运行过程里的那句话是 `summary`。
+
+### 两个 ETL 模板加上线
+
+`etl-lakehouse` 和 `etl-lakehouse-project` 都在“审核试算结果”和“交付”之间加两个节点。已经从模板建好的应用不变（包括 jadeflow 试点的 T2 应用），新建的应用才有。
+
+```jsonc
+{"id": "release_review", "type": "human", "title": "上线审批", "mode": "approval",
+ "prompt": "试算结果已审核通过。上线后，prod 环境按选的时间自动刷新结果表；先不上线就只交付开发环境的结果。",
+ "show": "{{check_code.summary}}\n\n{{release.report}}",
+ "fields": [{"key": "schedule", "label": "上线后什么时候自动刷新？", "type": "select",
+             "choices": [{"value": "0 0 2 * * ?", "label": "每天 02:00"},
+                         {"value": "0 0 * * * ?", "label": "每小时整点"},
+                         {"value": "0 0 2 ? * MON", "label": "每周一 02:00"},
+                         {"value": "0 0 2 1 * ?", "label": "每月 1 日 02:00"}],
+             "suggested": "0 0 2 * * ?"}],
+ "options": [{"key": "release", "label": "上线到 prod"}, {"key": "skip", "label": "先不上线，交付"}],
+ "max_visits": 3}
+
+{"id": "release", "type": "databricks_release", "title": "上线到 prod",
+ "bundle": "{{check_code.bundle}}", "schedule": "{{release_review.values}}", "environment": "prod"}
+```
+
+- 第一次到上线审批时 `release.report` 还是空的，`show` 只有检查并打包的一句话。
+- 连线：“审核试算结果”的 `approve` 改到 `release_review`；`release_review` 的 `release` 到 `release`，`skip` 到 `end`；`release` 的 `deployed` 到 `end`，`failed` 回到 `release_review`（`show` 里能看到失败原因，再试或先不上线）。
+- 上线审批是确认模式的人工节点，要审批者处理（auth.md）。
+- 交付的结果加 `release`（`{{release.summary}}`，没上线时为空）和 `release_url`（`{{release.url}}`）；交付节点的说明改成“……选了上线时代码已部署到 prod，按选的时间自动刷新；没选时数据还在开发环境。”
+- 应用说明书、画布和运行页的流程视图照常显示这两个节点。
+- 两个模板的说明末尾“审核通过后交付。”改成“审核通过后可以上线到 prod 定时刷新。”。
+
+### 前端
+
+- 编辑页：节点库“数据工程”里加“上线到 prod”，表单有 bundle（变量选择）、定时（文字，可插入变量）、上线环境（文字，默认 prod，说明“只对绑定项目的运行有用”）。保存检查同后端。
+- 运行页：节点详情里上线成功时显示 Job 链接和定时的中文说法；失败时显示原因。
+- mock：`databricks_release` 按设置模拟成功（Job 100，写到 `demo_prod`.retail_mart）；bundle 名里含 `fail` 时模拟失败（没配 prod 目标）。mock 里的演示应用 `retail-etl-v2` 是以前录好的流程，不加这两个节点。
+
 ## 测试
 
 - 后端：5 种节点各自的单元测试（假连接器、假 `DevTarget`、`FakeGateway`）；模板 `etl-lakehouse` 用假模型从头跑到 `end`（含一次方案驳回、一次代码检查不过、一次可修的 dev 报错）；循环规则；说明书接口（编排应用和 `etl`）；`read_rows` 分页和权限（三个连接器）；`aep.demo` 用假 API 测幂等。
@@ -1081,3 +1163,8 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - 模板第 3 版用假模型、假 Databricks 和假的 Databricks 连接器跑通：绑定项目、探查引用表（带读取筛选）、在项目环境试算、检查读环境里的结果表并和老系统对比后交付；检查不通过时不能选“通过”，挂在检查上的意见带给模型；试算失败时不做检查。
 - 不连真实 Databricks 和真实模型；`DevTarget.ingest`、`preview` 用假 HTTP 测请求内容。
 - 前端：类型检查通过；说明书面板和新节点表单有 Playwright 用例（沿用现有的 mock 方式）。第二批另加：确认方案页（每题必答、改了答案后主按钮变化、意见挂在条目上）、审核试算结果页（试算失败时没有“通过”）、结果页（答案卡、合计显示“—”、终止的运行、以前的运行的回退、用户自己建的应用输出叫 `code` 或 `brief` 时照以前显示）；mock 里另加第 2 版的运行（等确认方案、等审核、已交付、已终止），第 1 版的演示运行留作“以前的运行”的样例。
+- 第五批另加：
+  - `databricks_release`：不绑定项目时上线到平台的 prod 目标、定时取设置或人工节点的 `values`、空时用平台默认；Quartz cron 的保存检查和运行时检查；`schedule_text` 的几种写法；没配工作区时 `databricks_error`、上不了线和接口报错走 `failed`；绑定项目时上线到项目环境（catalog、schema、集群、项目变量、Job 名和标签），pipeline 方式、没有这个环境、就是试算环境、前缀不对、旧快照各自走 `failed` 并写明原因；同一个 Job 再上线是更新。
+  - 运行快照多了 `environments`。
+  - 两个模板用假模型和假 Databricks 跑通：审核通过后上线审批选“上线到 prod”交付、选“先不上线”交付、上线失败回到上线审批。
+  - 前端：上线节点的表单和保存检查、运行页的 Job 链接（Playwright，mock）。

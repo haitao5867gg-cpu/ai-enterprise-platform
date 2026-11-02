@@ -13,6 +13,7 @@ import pytest
 
 from aep.api import runs
 from aep.runtime.flow import builtin
+from tests import fake_databricks
 from tests.test_etl import PYSPARK_BODY, plan, reply
 from tests.test_flow_data_nodes import (
     PASSED,
@@ -108,6 +109,8 @@ class Template(Lakehouse):
 
 
 SUGGESTED = {"q1": "all", "q2": "unknown"}
+# The release approval: not now.
+SKIP = {"schedule": "0 0 2 * * ?"}
 
 
 @pytest.fixture
@@ -217,13 +220,24 @@ async def test_confirmed_twice_then_delivered(make):
     assert "## dev 运行通过" in pending["details"]["show"]
 
     view = await lake.submit(run_id, "approve")
+    assert view["step"]["node"] == "release_review", view["error"]
+    pending = view["pending"]
+    assert pending["options"] == ["release", "skip"]
+    [question] = pending["fields"]
+    assert (question["key"], question["suggested"]) == ("schedule", "0 0 2 * * ?")
+    assert pending["details"]["show"].startswith("已生成 Databricks bundle")
+    view = await lake.submit(run_id, "skip", values=SKIP)
     assert view["status"] == "done", view["error"]
     assert view["outcome"] == "delivered"
+    assert lake.ws.jobs and all(
+        j["tags"].get("aep_target") != "prod" for j in lake.ws.jobs.values()
+    )
     result = view["result"]
     assert set(result) == {
         "report", "plan", "ingested", "brief", "answer", "code",
-        "quality", "dev_url", "confirmed", "reviewed",
+        "quality", "dev_url", "confirmed", "reviewed", "release", "release_url",
     }  # fmt: skip
+    assert (result["release"], result["release_url"]) == (None, None)
     assert result["answer"] == answer and result["dev_url"] == data["url"]
     assert sorted(result["code"]["files"]) == data["files"]
     assert zipped(await lake.api.get(f"/runs/{run_id}/files.zip")) == data["files"]
@@ -234,6 +248,7 @@ async def test_confirmed_twice_then_delivered(make):
         "选了「确认方案，开始做」",
         "选了「通过」",
     ]
+    assert view["messages"][-1]["node"] == "release_review"
     listed = (await lake.api.get("/runs")).json()
     assert [r["outcome"] for r in listed if r["run_id"] == run_id] == ["delivered"]
 
@@ -259,11 +274,49 @@ async def test_code_sent_back_after_the_dev_run_counts_its_runs_again(make):
     assert len(lake.ws.commands) == 3
 
     view = await lake.submit(run_id, "approve")
+    view = await lake.submit(run_id, "skip", values=SKIP)
     assert view["status"] == "done" and view["outcome"] == "delivered"
     assert view["result"]["reviewed"]["round"] == 2
     # Only the code was written again: one plan, one confirmation, one extraction.
     assert [steps(view).count(n) for n in ("check_plan", "review", "ingest")] == [1, 1, 1]
     assert len(lake.gateway.requests) == 4
+
+
+async def test_released_to_prod_after_the_approval_says_why_it_could_not_be(make):
+    lake = await make([v2_plan(), GOOD_CODE], [PASSED], [INGESTED, PREVIEW])
+    run_id, _ = await lake.start()
+    await lake.submit(run_id, "approve", values=SUGGESTED)
+    view = await lake.submit(run_id, "approve")
+    assert view["step"]["node"] == "release_review", view["error"]
+
+    # No prod target yet: nothing is deployed, the approval comes back with the reason.
+    view = await lake.submit(run_id, "release", values={"schedule": "0 0 * * * ?"})
+    assert view["step"]["node"] == "release_review", view["error"]
+    show = view["pending"]["details"]["show"]
+    assert "## 上线失败" in show and "AEP_DATABRICKS_PROD_CATALOG" in show
+    said = [m["content"] for m in view["messages"] if m["node"] == "release"]
+    assert said == ["上线到 prod 失败：没有配置 prod 目标（AEP_DATABRICKS_PROD_CATALOG、"
+                    "AEP_DATABRICKS_PROD_SCHEMA）"]  # fmt: skip
+    assert view["pending"]["fields"][0]["key"] == "schedule"
+
+    prod = {"databricks_prod_catalog": "icsd-ace-prod", "databricks_prod_schema": "sales_mart"}
+    target = lake.service._ctx.databricks
+    target._settings = target._settings.model_copy(update=prod)
+    view = await lake.submit(run_id, "release", values={"schedule": "0 0 * * * ?"})
+    assert view["status"] == "done", view["error"]
+    result = view["result"]
+    assert result["release"] == (
+        "已上线到 prod：Job 101，每小时整点（Asia/Shanghai）刷新 `icsd-ace-prod`.sales_mart"
+    )
+    assert result["release_url"] == f"{fake_databricks.HOST}/#job/101"
+    job = lake.ws.jobs[101]
+    assert (job["name"], job["tags"]) == (
+        "order_facts",
+        {"aep_bundle": "order_facts", "aep_target": "prod"},
+    )
+    assert job["schedule"]["quartz_cron_expression"] == "0 0 * * * ?"
+    # The job runs on its schedule; nothing ran at release time.
+    assert len(lake.ws.job_runs) == 1
 
 
 @pytest.mark.parametrize("reuse", [True, None])
@@ -308,6 +361,7 @@ async def test_plan_sent_back_after_the_dev_run_is_confirmed_again(make, reuse):
         assert len(sent_spec(lake.ws.commands[2]["command"], "ingest")["tables"]) == 2
         assert len(lake.ws.commands) == 4
     view = await lake.submit(run_id, "approve")
+    view = await lake.submit(run_id, "skip", values=SKIP)
     assert view["outcome"] == "delivered"
     assert view["result"]["confirmed"]["round"] == 2
 

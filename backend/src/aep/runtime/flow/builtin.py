@@ -645,11 +645,52 @@ def _etl_lakehouse() -> dict[str, Any]:
             "max_visits": 4,
         },
         {
+            "id": "release_review",
+            "type": "human",
+            "title": "上线审批",
+            "note": "人工审批点：试算结果审核通过后，决定要不要把代码上线到 prod，"
+            "以及上线后多久自动刷新一次。上线失败时回到这里，看了原因再试，或者先不上线。",
+            "mode": "approval",
+            "prompt": "试算结果已审核通过。上线后，prod 环境按选的时间自动刷新结果表；"
+            "先不上线就只交付开发环境的结果。",
+            "show": "{{check_code.summary}}\n\n{{release.report}}",
+            "fields": [
+                {
+                    "key": "schedule",
+                    "label": "上线后什么时候自动刷新？",
+                    "type": "select",
+                    "choices": [
+                        {"value": "0 0 2 * * ?", "label": "每天 02:00"},
+                        {"value": "0 0 * * * ?", "label": "每小时整点"},
+                        {"value": "0 0 2 ? * MON", "label": "每周一 02:00"},
+                        {"value": "0 0 2 1 * ?", "label": "每月 1 日 02:00"},
+                    ],
+                    "suggested": "0 0 2 * * ?",
+                }
+            ],
+            "options": [
+                {"key": "release", "label": "上线到 prod"},
+                {"key": "skip", "label": "先不上线，交付"},
+            ],
+            "max_visits": 3,
+        },
+        {
+            "id": "release",
+            "type": "databricks_release",
+            "title": "上线到 prod",
+            "note": "把审核过的 bundle 部署成 prod 上的 Job（绑定项目时是项目的 prod 环境），"
+            "按上线审批选的时间由 Databricks 自动刷新；不会马上运行。",
+            "bundle": "{{check_code.bundle}}",
+            "schedule": "{{release_review.values}}",
+            "environment": "prod",
+        },
+        {
             "id": "end",
             "type": "end",
             "title": "交付",
             "note": "交付审核通过的结果：答案、业务说明、方案、代码、运行报告和质量小结，"
-            "以及确认方案和审核试算结果的记录。数据还在开发环境，没有上线。",
+            "以及确认方案和审核试算结果的记录。选了上线时代码已部署到 prod，按选的时间自动刷新；"
+            "没选时数据还在开发环境。",
             "outcome": "delivered",
             "outputs": [
                 {"key": "report", "from": ["{{dev_run.report}}"]},
@@ -662,6 +703,8 @@ def _etl_lakehouse() -> dict[str, Any]:
                 {"key": "dev_url", "from": ["{{dev_run.url}}"]},
                 {"key": "confirmed", "from": ["{{review.record}}"]},
                 {"key": "reviewed", "from": ["{{data_review.record}}"]},
+                {"key": "release", "from": ["{{release.summary}}"]},
+                {"key": "release_url", "from": ["{{release.url}}"]},
             ],
         },
         {
@@ -712,7 +755,11 @@ def _etl_lakehouse() -> dict[str, Any]:
         ("dev_run", "passed", "data_review"),
         ("dev_run", "failed", "data_review"),
         ("dev_run", "retry", "codegen"),
-        ("data_review", "approve", "end"),
+        ("data_review", "approve", "release_review"),
+        ("release_review", "release", "release"),
+        ("release_review", "skip", "end"),
+        ("release", "deployed", "end"),
+        ("release", "failed", "release_review"),
         ("data_review", "fix_code", "codegen"),
         ("data_review", "fix_plan", "plan"),
         ("data_review", "stop", "stopped"),
@@ -915,7 +962,8 @@ TEMPLATES = {
             "etl-lakehouse",
             "数据 ETL（湖仓）",
             "探查数据源、按口径知识库出方案，确认方案后抽取到 Databricks，"
-            "按开发规范写 PySpark 代码，在开发环境试算并算出答案，审核通过后交付。",
+            "按开发规范写 PySpark 代码，在开发环境试算并算出答案，"
+            "审核通过后可以上线到 prod 定时刷新。",
             _etl_lakehouse(),
             needs=("datasource", "knowledge_base"),
         ),
@@ -923,7 +971,8 @@ TEMPLATES = {
             "etl-lakehouse-project",
             "数据 ETL（湖仓，绑定项目）",
             "在数据项目里做 ETL：探查项目的引用表，按口径和开发规范出方案并写明写表方式，"
-            "确认后写代码，在项目的开发环境试算，核对数据（可以和老系统逐行对比），审核通过后交付。",
+            "确认后写代码，在项目的开发环境试算，核对数据（可以和老系统逐行对比），"
+            "审核通过后可以上线到 prod 定时刷新。",
             _etl_lakehouse_project(),
             needs=("datasource", "knowledge_base"),
         ),

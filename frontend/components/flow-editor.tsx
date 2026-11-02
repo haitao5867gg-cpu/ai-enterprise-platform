@@ -95,6 +95,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
     "on_stuck",
   ],
   databricks_dev_run: ["bundle", "max_runs", "preview_rows"],
+  databricks_release: ["bundle", "schedule", "environment"],
   data_check: ["datasource", "checks", "include", "golden", "only_if"],
 };
 

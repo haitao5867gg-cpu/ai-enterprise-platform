@@ -43,7 +43,7 @@ import tempfile
 import time
 import uuid
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -1073,10 +1073,24 @@ class DevTarget:
 
     # --- release to prod ----------------------------------------------------
 
-    async def release(self, bundle: Bundle, schedule: str | None = None) -> Release:
-        """Deploys an approved bundle to the prod target, to run on ``schedule``."""
+    async def release(
+        self,
+        bundle: Bundle,
+        schedule: str | None = None,
+        placement: Placement | None = None,
+        environment: str = PROD,
+    ) -> Release:
+        """Deploys an approved bundle to the prod target, to run on ``schedule``.
+
+        A run bound to a project releases to the project's ``environment`` instead: its
+        ``placement`` (catalog, schema, cluster and the project's variables), as a job of
+        its own (``release_job_name``); only in job mode."""
         values = self._values(PROD, schedule)
         mode = self._settings.databricks_deploy_mode
+        if placement is not None:
+            values |= {"catalog": placement.catalog, "schema": placement.schema}
+            values["cluster_id"] = placement.cluster_id or values["cluster_id"]
+            placement = replace(placement, cluster_id=values["cluster_id"])
         release = Release(
             "failed",
             "job" if mode == "job" else "pipeline",
@@ -1085,12 +1099,21 @@ class DevTarget:
             values["schedule"],
             values["timezone"],
         )
-        blocker = self._settings.databricks_release_blocker
+        s = self._settings
+        if placement is None:
+            blocker = s.databricks_release_blocker
+        elif not (s.databricks_host and s.databricks_token):
+            blocker = "没有配置 Databricks 工作区"
+        elif mode != "job":
+            # The project's environment says where, which only a job can be told.
+            blocker = "绑定项目的运行只能用 job 方式上线（AEP_DATABRICKS_DEPLOY）"
+        else:
+            blocker = None
         if blocker:
             release.errors = [blocker]
             return release
         if mode == "job":
-            await self._release_job(bundle, release, values)
+            await self._release_job(bundle, release, values, placement, environment)
             return release
         with tempfile.TemporaryDirectory(prefix="aep-bundle-") as scratch:
             root = Path(scratch) / bundle.name
@@ -1103,7 +1126,14 @@ class DevTarget:
             await self._release_pipeline(root, self._env(home), bundle.name, release)
         return release
 
-    async def _release_job(self, bundle: Bundle, release: Release, values: dict[str, str]) -> None:
+    async def _release_job(
+        self,
+        bundle: Bundle,
+        release: Release,
+        values: dict[str, str],
+        placement: Placement | None = None,
+        environment: str = PROD,
+    ) -> None:
         release.cluster_id = values["cluster_id"] or None
         if not release.cluster_id:
             release.errors = ["Job 上线需要集群（AEP_DATABRICKS_PROD_CLUSTER_ID 或 _CLUSTER_ID）"]
@@ -1120,11 +1150,16 @@ class DevTarget:
             # Each release gets its own folder and the job switches to it only once
             # every file is there: a failed release leaves the running job as it was.
             stamp = f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
-            root = f"/Users/{user}/.bundle/{bundle.name}/{PROD}/releases/{stamp}/files"
+            folder = environment if placement is not None else PROD
+            root = f"/Users/{user}/.bundle/{bundle.name}/{folder}/releases/{stamp}/files"
             settings = self._job_settings(
-                config, bundle.name, short_name, root, PROD, release.schedule
+                config, bundle.name, short_name, root, PROD, release.schedule, placement
             )
             tags = {"aep_bundle": bundle.name, "aep_target": PROD}
+            if placement is not None:
+                tags |= {"aep_project": placement.values["project"], "aep_environment": environment}
+                settings["name"] = release_job_name(bundle.name, placement, environment)
+                settings["tags"] = {**settings.get("tags", {}), **tags}
             existing = await self._owned_job(settings["name"], tags)
             await self._upload(root, bundle.files)
             release.job_id = await self._put_job(settings, existing)
@@ -1162,6 +1197,14 @@ class DevTarget:
             release.errors = ["部署后找不到管道的 id"]
             return
         release.status = "deployed"
+
+
+def release_job_name(name: str, placement: Placement | None, environment: str = PROD) -> str:
+    """The name of the job a release deploys: the bundle's, and for a run bound to a project
+    the project and environment too, so that each environment has a job of its own."""
+    if placement is None:
+        return name
+    return f"{name}（{placement.values['project']}/{environment}）"
 
 
 def _reads_catalog(bundle: Bundle) -> bool:

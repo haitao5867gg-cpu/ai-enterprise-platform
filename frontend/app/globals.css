@@ -5662,3 +5662,18 @@ fieldset.project-form-section > legend + * {
 .run-compare {
   overflow-x: auto;
 }
+/* What a release node did (run page, node details). */
+.release-output {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.release-output.failed {
+  border-left-color: #b5533c;
+}
+.release-output p {
+  margin: 0 0 4px;
+}

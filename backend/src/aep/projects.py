@@ -528,6 +528,8 @@ def snapshot(project: Project, environment: str | None, given: Any) -> dict[str,
         "description": body["description"],
         "table_prefix": body["table_prefix"],
         "environment": envs[key],
+        # All of them, for a release to another environment (databricks_release).
+        "environments": body["environments"],
         "references": body["references"],
         "adopted": body["adopted"],
         "params": body["params"],

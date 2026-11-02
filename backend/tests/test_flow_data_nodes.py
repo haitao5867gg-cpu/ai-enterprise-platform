@@ -1701,9 +1701,15 @@ async def test_node_types_list_the_data_group():
         "databricks_ingest",
         "etl_code_check",
         "databricks_dev_run",
+        "databricks_release",
         "data_check",
     ]
     assert all(types[k]["error_handling"] for k in data)
+    assert types["databricks_release"]["defaults"] == {
+        "bundle": "",
+        "schedule": "",
+        "environment": "prod",
+    }
     plan_check = types["etl_plan_check"]
     added = ["references", "summary", "brief", "questions", "answer", "uncited", "cleaned"]
     added += ["result_table", "result_keys", "checks", "dropped"]
