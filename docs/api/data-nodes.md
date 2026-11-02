@@ -94,8 +94,9 @@
 | `result_table` | 第 3 版（第三批）：结果表的表名，见“方案第 3 版”；第 1、2 版为 `""` |
 | `result_keys` | 第 3 版：结果表的 `primary_key`；第 1、2 版为 `[]` |
 | `checks` | 第 3 版：方案建议的数据检查；第 1、2 版为 `[]` |
+| `dropped` | 三版都有（第二轮验收 I-15 后新增）：方案被平台退回过、这次通过时，退回的那几版里有、通过的这一版没有了的检查（按 `id` 或 `label` 认，项目的验收检查不算，它们照样会跑）和列（这张表还在、列没了；整张表改了名不算），一条一句，如 `检查「k1 子查询检查」`、`t2p_table2 的列 platform_original`；没有时为 `[]`。不为空时 `message` 开头多一段“注意：方案被平台校验退回后，这一版去掉了…请对照需求确认还要不要”。退回的版本里有什么由节点自己记着（`private.rejected`），通过一次就清空 |
 
-不通过时新加的这些字段都为空：`references`、`questions`、`uncited`、`cleaned`、`result_keys`、`checks` 为 `[]`，`brief`、`answer` 为 null，`summary`、`result_table` 为 `""`。
+不通过时新加的这些字段都为空：`references`、`questions`、`uncited`、`cleaned`、`result_keys`、`checks`、`dropped` 为 `[]`，`brief`、`answer` 为 null，`summary`、`result_table` 为 `""`。
 
 分支：`ok`（通过）、`retry`（重写）。
 
@@ -595,6 +596,7 @@ Databricks dev 运行的报错（为空时忽略）：{{dev_run.errors}}
  "show": "{{check_plan.message}}",
  "data": {"brief": "{{check_plan.brief}}", "plan": "{{check_plan.plan}}", "answer": "{{check_plan.answer}}",
           "uncited": "{{check_plan.uncited}}", "cleaned": "{{check_plan.cleaned}}",
+          "dropped": "{{check_plan.dropped}}",
           "returned": "{{data_review.record}}", "previous": "{{review.record}}"},
  "fields": "{{check_plan.questions}}",
  "changed_branch": "revise",
@@ -677,7 +679,7 @@ data_review  approve → end          | fix_code → codegen   | fix_plan → pl
 数仓开发规范（参考资料）：
 {{standards.context}}
 
-需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式按开发规范。在 brief、rules、questions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要编号。资料和需求冲突时以需求为准，并写进 rules。需求没说清、要人拍板的地方写成 questions，方案按建议的选项写。
+需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式按开发规范。在 brief、rules、questions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要编号。资料和需求不一致时不要自己选：需求明确说这次要改掉资料里的做法的，按需求写，写进 rules 并说明和资料哪里不同；否则写成 questions，列出资料的写法和需求的说法，方案先按资料写。需求没说清、要人拍板的地方写成 questions，方案按建议的选项写。需求里要的东西（一条检查、一列、一种算法）平台不支持、校验不通过时，不要悄悄删掉或换掉：写成 questions，说明需求要的是什么、平台能怎么做、建议怎么替代，方案按建议的替代做法写。
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}
@@ -731,6 +733,7 @@ Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 | `plan` | 校验方案的 `plan` | “技术方案”：每张目标表的列（中文名、Spark 表达式用等宽字体、说明）、主键、加载方式、质量规则；`rules` 是“已按口径处理”，按依据分组、默认收起；`references` 是“依据的资料”，只列方案引用了的 |
 | `answer` | 校验方案的 `answer` | “最后给你的答案”：`text`，以及“结果表长这样”：答案用的那张表的列，维度列给 `brief` 里的例子，指标列写“运行后得出”；为 null 时不显示这块 |
 | `cleaned` | 校验方案的 `cleaned` | 平台自动整理过的地方，默认收起 |
+| `dropped` | 校验方案的 `dropped` | 不为空时顶部写“方案被平台校验退回后，这一版去掉了一些内容”，列出每一条，请人对照需求确认（第二轮验收 I-15 后新增；以前模型被退回后悄悄删掉需求里要的检查，人看不出来） |
 | `returned` | 审核试算结果的 `record` | 它的 `decision` 是 `fix_plan`，而且它的 `at` 比 `previous.at` 晚（或者 `previous` 为 null）时，顶部写“审核要求改方案，请再确认一次”，列出它的意见 |
 | `previous` | 这个节点上一次的 `record` | 只用来和 `returned` 比先后；第一次为 null |
 
@@ -905,12 +908,15 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - `summary` 末尾加“；项目在环境里已有的表：t2p_table2_lane”（没有时“没有”）。
 - **校验方案（`etl_plan_check`，只在 `format: 3`）**：新设置 `existing`（可选，整段引用，如 `{{profile.existing}}`；`format` 不是 3 时保存报错“只有方案版本 format 为 3 时才能写已有的表”，不是整段引用时“已有的表必须恰好是一个变量，如 {{profile.existing}}”）。运行时引用的值是 null 或没设 `existing` 时不做下面这些（平台不知道哪些表已经存在）；值不是表的列表时节点以 `output_format` 失败“已有的表要引用探查数据节点的 existing”。目标表名和某张已有的表同名（不分大小写）时：
   - 写表方式是 `replace_where`、`append`、`merge`：表里的列（不分大小写）都要在方案的 `columns` 里，少了让模型重写：“t2p_table2_lane 已经存在，表里的列 loaded_at_utc 不在方案的 columns 里：按条件替换会保留表里其他的行，要写出表里已有的全部列，新加的列写在想放的位置；要去掉列或重建表，请用 overwrite”。方案里有、表里没有的列由平台按方案的列顺序写进 `load.add_columns`：`[{"name": "platform_original", "after": "platform"}]`（`after` 是方案里它前面的那一列，排在第一时为 null；连着加几列时后一列跟在前一列后面）。
+  - 列的类型（第二轮验收 I-14 后新增）：第 3 版方案的列多一个可选的 `type`（Spark SQL 类型，如 `STRING`、`BIGINT`、`DECIMAL(18,2)`、`DATE`、`ARRAY<STRING>`）。平台按 Spark 的写法统一（`dataType.simpleString()`：小写、去空格，`INTEGER` 写成 `int`、`LONG` 写成 `bigint`、`VARCHAR(10)` 写成 `string`、`DECIMAL` 写成 `decimal(10,0)`），不是类型时让模型重写：“t2p_table2_lane 的列 x 的 type number 不是 Spark SQL 类型（如 STRING、INT、BIGINT、DOUBLE、DECIMAL(18,2)、DATE、TIMESTAMP、ARRAY<STRING>）”。没写 `type` 的列 dump 里没有这个键，所以以前的方案读出来不变。给已有的表新加的列必须写类型，没写时让模型重写：“t2p_table2_lane 已经存在，要新加列 platform_original：请在 columns 里写它的 type（…），确认方案时人要看到加的是什么类型的列”。表里已有的列可以不写；写了就要和表里的一样（统一写法后比），不一样时“…的列 x 在表里是 STRING，方案写的是 BIGINT：已有的列不改类型，type 照表里的写或者不写”。`add_columns` 每项带上 `type`：`[{"name": "platform_original", "after": "platform", "type": "string"}]`。
   - `overwrite`：不加列，表按方案重建。
   - `load.add_columns` 只由平台写：模型写了的先去掉，不提示。第 1、2 版方案和不同名的表为 `[]`。`Load.stored` 在 `add_columns` 不为空时带上它，随 `settings.loads` 进 bundle，Job 的 notebook 传给集群程序。
-  - `message` 里每张目标表在写表方式下面多一行“表结构”：“表还不存在，按方案新建”“表已经存在（22 列），结构不变”“表已经存在（22 列），确认方案后加 1 列：`platform_original`（放在 `platform` 后面）”“表已经存在（22 列），整表覆盖会删掉现有的全部行，按方案重建表结构”；不知道已有的表时没有这一行。确认方案页的技术方案在主键下面列出“加列”，列映射里新加的列标“新加”；接口看 `pending.details.data.plan.targets[].load.add_columns`。
+  - `message` 里每张目标表在写表方式下面多一行“表结构”：“表还不存在，按方案新建”“表已经存在（22 列），结构不变”“表已经存在（22 列），确认方案后加 1 列：`platform_original` STRING，可为空（放在 `platform` 后面）”（Delta 给已有的表加的列都可以为空）“表已经存在（22 列），整表覆盖会删掉现有的全部行，按方案重建表结构”；不知道已有的表时没有这一行。确认方案页的技术方案在主键下面列出“加列”（带类型和“可为空”），列映射里写了类型的列在列名后面显示类型，新加的列标“新加”；接口看 `pending.details.data.plan.targets[].load.add_columns`。
 - **集群程序写表**：绑定项目、表已经存在、写表方式是 `replace_where`、`append`、`merge` 时，写之前先比对结果和表的列（不分大小写）：
   - 结果少了表里的列：不写，写入错误“t2p_table2_lane: 结果里没有表里已有的列 loaded_at_utc，没有写”。
+  - 结果里的列和表里同名的列不是一类值（数字、文本、日期、时间、布尔、二进制，数组等复杂类型按完整类型比；数字的宽度不同、时间带不带时区不算）：不写，“…: 列的类型和表里的不一致（qty 在表里是 STRING，结果里是 INT），没有写”。数字宽度不同这类交给 Delta，失败时报错原样带回。
   - 结果多了 `add_columns` 里没有的列：不写，“…: 结果比表多了列 x，确认的方案里没有要加这些列，没有写”。
+  - `add_columns` 里带 `type` 的列，结果里的类型（统一写法后）要和确认的一样，不一样时不加列也不写：“…: 确认的方案里新加的列 qty 是 BIGINT，结果里是 INT，没有加列，也没有写：代码要让这一列是 BIGINT（需要时用 cast）”。以前确认、没有 `type` 的方案照旧用结果里的类型。写代码的提示也说了：方案里写了 type 的列，结果里就要是这个类型。
   - `add_columns` 里的列（结果里有、表里还没有的）按方案的顺序逐列 `ALTER TABLE … ADD COLUMNS (<列> <结果里的类型> AFTER <列>)`（`after` 为 null 时 `FIRST`）；`after` 那一列表里没有时不写，“…: 方案要把列 x 加在 y 后面，表里没有列 y，没有写”。表里已经有的（以前的运行加过）跳过，所以同一个方案重跑不会再加。替换条件、合并键这些写前检查先做，都通过了才加列。
   - 加完列再写，不再用 `mergeSchema`。加了列之后写入失败时，写入错误后面加“（列 x 已经加到表里，数据没有写）”。
   - 结果的 `write` 多 `columns_added`：`[{"name": "platform_original", "type": "string", "after": "platform"}]`，没加列时没有这一项。
@@ -1052,7 +1058,7 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - 写表：绑定项目时结果写到环境的 catalog 和 schema、用环境的集群；前缀不对时 `input_error`；归属的三种情况（不存在、有项目标记或登记在 `adopted`、别的项目或没有标记）；写完的表属性；四种写表方式各自的 Spark 调用、`merge` 键重复、`tables[].write`（假的 `DESCRIBE HISTORY`）；第 1、2 版方案的 `full`、`incremental` 结果不变。
   - `data_check`：`only_if` 不成立时不调连接器、走 `failed`；五种检查各自调的连接器工具和参数（表名换成三段式、筛选和 `where` 用 AND 连起来、`${param.*}` 换成字面值）、通过和不通过、`tolerance` 和 `relative`、`group_by` 对不上的组、golden 的 missing/extra/different、节点 `golden` 加检查（`expected` 为空时不加、`keys` 为空时 error、已有 id golden 时不加）、键重复时 failed 或 error、`rows` 查出行、不是 Databricks 数据源时 `input_error`、单条出错不影响其他条、`skipped`、`severity` 和 `ok`、表名解析和筛选、id 重复时 `input_error`。
   - 方案第 3 版：写表方式的检查、前缀、`checks` 的检查和产出、没绑定项目时用 `${param.*}` 让模型重写；第 2 版的产出不变；检查 id 和项目验收检查重复、SQL 方案读带筛选的引用表都让模型重写（试点后新增）。
-  - 表结构变化（验收后新增）：探查列出环境里前缀开头的表（只读结构）、没有时为 `[]`、列表失败和不是 Databricks 时为 null；方案里加的列和位置（第一列、连着加几列）、模型写的 `add_columns` 被去掉、少了已有的列让模型重写、`overwrite` 不加列、`message` 的“表结构”一行、`existing` 的保存检查；集群程序只加确认的列（位置、大小写、已经有的跳过）、少列和多列不写、`after` 不在表里不写、加列后写入失败的提示、不再 `mergeSchema`，没绑定项目时照旧；`write_text` 写出加了的列。
+  - 表结构变化（验收后新增）：探查列出环境里前缀开头的表（只读结构）、没有时为 `[]`、列表失败和不是 Databricks 时为 null；方案里加的列和位置（第一列、连着加几列）、模型写的 `add_columns` 被去掉、少了已有的列让模型重写、`overwrite` 不加列、`message` 的“表结构”一行、`existing` 的保存检查；集群程序只加确认的列（位置、大小写、已经有的跳过）、少列和多列不写、`after` 不在表里不写、加列后写入失败的提示、不再 `mergeSchema`，没绑定项目时照旧；`write_text` 写出加了的列。列的类型（I-14）：类型的统一写法和不是类型的写法、新加的列没写类型和已有的列改类型让模型重写、`add_columns` 带类型、“表结构”一行带类型；集群程序里新加的列类型和确认的不一样不加列不写、已有的列不是一类值不写、数字宽度不同照写。
   - `data_check` 的节点 `golden` 带 `tolerance`、`severity`（试点后新增）：传给连接器的容差、结果的级别、只警告时节点照样通过、保存时的取值检查。
   - 模板第 3 版用假模型、假 Databricks 和假的 Databricks 连接器跑通：绑定项目、探查引用表（带读取筛选）、在项目环境试算、检查读环境里的结果表并和老系统对比后交付；检查不通过时不能选“通过”，挂在检查上的意见带给模型；试算失败时不做检查。
 - 不连真实 Databricks 和真实模型；`DevTarget.ingest`、`preview` 用假 HTTP 测请求内容。

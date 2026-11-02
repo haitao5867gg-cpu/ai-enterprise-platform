@@ -316,8 +316,11 @@ PLAN_PROMPT = """需求：{{start.request}}
 
 需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式\
 按开发规范。在 brief、rules、questions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容\
-不要编号。资料和需求冲突时以需求为准，并写进 rules。需求没说清、要人拍板的地方写成 questions，\
-方案按建议的选项写。
+不要编号。资料和需求不一致时不要自己选：需求明确说这次要改掉资料里的做法的，按需求写，写进 rules \
+并说明和资料哪里不同；否则写成 questions，列出资料的写法和需求的说法，方案先按资料写。\
+需求没说清、要人拍板的地方写成 questions，方案按建议的选项写。\
+需求里要的东西（一条检查、一列、一种算法）平台不支持、校验不通过时，不要悄悄删掉或换掉：\
+写成 questions，说明需求要的是什么、平台能怎么做、建议怎么替代，方案按建议的替代做法写。
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}
@@ -526,6 +529,7 @@ def _etl_lakehouse() -> dict[str, Any]:
                 "answer": "{{check_plan.answer}}",
                 "uncited": "{{check_plan.uncited}}",
                 "cleaned": "{{check_plan.cleaned}}",
+                "dropped": "{{check_plan.dropped}}",
                 "returned": "{{data_review.record}}",
                 "previous": "{{review.record}}",
             },

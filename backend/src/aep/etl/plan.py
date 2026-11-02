@@ -19,9 +19,18 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
-from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_serializer,
+)
 
-from aep.cluster_harness import PARAM
+from aep.cluster_harness import PARAM, spark_type
 from aep.etl import answer, checks
 from aep.etl.answer import AnswerDesign
 from aep.knowledge.citations import IndexedHit
@@ -34,10 +43,26 @@ RESERVED = {"source", "spark", "dp", "f", "window", "source_catalog", "param", "
 Language = Literal["pyspark", "sql"]
 
 
-class TargetColumn(BaseModel):
+class _TypeIfGiven(BaseModel):
+    """A model whose ``type`` is left out of its dump when it has none, so plans written
+    before columns had types read and dump as they did."""
+
+    @model_serializer(mode="wrap")
+    def _without_blank_type(self, handler: SerializerFunctionWrapHandler) -> Any:
+        found = handler(self)
+        if isinstance(found, dict) and found.get("type") is None:
+            found.pop("type", None)
+        return found
+
+
+class TargetColumn(_TypeIfGiven):
     name: str
     source: str = Field(description="Spark SQL expression over the source columns")
     description: str = ""
+    # Version 3: the column's Spark SQL type, as ``spark_type`` writes it once checked;
+    # required for a column the plan adds to an existing table (docs/api/data-nodes.md,
+    # "表结构变化").
+    type: str | None = None
 
 
 class QualityRule(BaseModel):
@@ -54,11 +79,13 @@ PLAN_MODES = ("full", "incremental")
 WRITE_MODES = ("overwrite", "replace_where", "append", "merge")
 
 
-class AddColumn(BaseModel):
-    """A column an existing table gets: ``after`` the column it goes after, None first."""
+class AddColumn(_TypeIfGiven):
+    """A column an existing table gets: ``after`` the column it goes after, None first,
+    and its ``type`` as the plan says (Spark writes it, ``spark_type``)."""
 
     name: str
     after: str | None = None
+    type: str | None = None
 
 
 class Load(BaseModel):
@@ -1827,6 +1854,11 @@ def _schema_problems(plan: EtlPlanV2, existing: Sequence[Mapping[str, Any]]) -> 
             continue
         have = existing_columns(table)
         lower = {c.lower() for c in have}
+        kinds = {
+            str(c.get("name")).lower(): spark_type(c.get("data_type"))
+            for c in table.get("columns") or []
+            if isinstance(c, Mapping)
+        }
         planned = {c.name.lower() for c in target.columns}
         missing = [c for c in have if c.lower() not in planned]
         if missing:
@@ -1837,9 +1869,45 @@ def _schema_problems(plan: EtlPlanV2, existing: Sequence[Mapping[str, Any]]) -> 
             )
         after: str | None = None
         for column in target.columns:
-            if column.name.lower() not in lower:
-                target.load.add_columns.append(AddColumn(name=column.name, after=after))
+            low = column.name.lower()
+            if low not in lower:
+                if column.type is None:
+                    problems.append(
+                        f"{target.name} 已经存在，要新加列 {column.name}：请在 columns 里写它的 "
+                        "type（Spark SQL 类型，如 STRING、BIGINT、DECIMAL(18,2)、DATE），"
+                        "确认方案时人要看到加的是什么类型的列"
+                    )
+                target.load.add_columns.append(
+                    AddColumn(name=column.name, after=after, type=column.type)
+                )
+            elif column.type is not None and kinds.get(low) and kinds[low] != column.type:
+                problems.append(
+                    f"{target.name} 的列 {column.name} 在表里是 {str(kinds[low]).upper()}，"
+                    f"方案写的是 {column.type.upper()}：已有的列不改类型，type 照表里的写或者不写"
+                )
             after = column.name
+    return problems
+
+
+def _type_problems(plan: EtlPlanV2) -> list[str]:
+    """Writes each column's ``type`` the way Spark does, and says which are no type."""
+    problems = []
+    for target in plan.targets:
+        for column in target.columns:
+            if column.type is None:
+                continue
+            if not column.type.strip():
+                column.type = None
+                continue
+            kind = spark_type(column.type)
+            if kind is None:
+                problems.append(
+                    f"{target.name} 的列 {column.name} 的 type {column.type} 不是 Spark SQL 类型"
+                    "（如 STRING、INT、BIGINT、DOUBLE、DECIMAL(18,2)、DATE、TIMESTAMP、"
+                    "ARRAY<STRING>）"
+                )
+            else:
+                column.type = kind
     return problems
 
 
@@ -1849,7 +1917,7 @@ def _version_three_checks(
     project: Mapping[str, Any] | None,
     existing: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    problems: list[str] = []
+    problems: list[str] = _type_problems(plan)
     for target in plan.targets:
         problems += _load_problems(target, project)
     if project is not None:
@@ -1883,7 +1951,8 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
       "sources": ["源表名，照探查结果里的写", "也可以引用前面的目标表名"],
       "logic": "关联、过滤、聚合、清洗的做法",
       "columns": [{"name": "列名", "label": "给人看的列名，如“销售额（元）”",
-                   "source": "Spark SQL 表达式", "description": ""}],
+                   "source": "Spark SQL 表达式", "description": "",
+                   "type": "Spark SQL 类型，如 STRING、BIGINT、DECIMAL(18,2)、DATE"}],
       "primary_key": ["列名"],
       "load": {"mode": "overwrite、replace_where、append 或 merge",
                "where": "replace_where 时替换哪些行（Spark SQL 条件），其他写法为 null",
@@ -1909,6 +1978,8 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
 不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。
 load.mode：overwrite 整表覆盖；replace_where 只替换满足 where 的行（如一个月、一个版本）；
 append 追加；merge 按键合并（有的更新，没有的插入）。
+列的 type 可以不写；给已有的表新加的列必须写，确认方案时人看到的就是它，代码产出的类型不一样时
+平台不加列也不写表。已有的列照表里的类型写或者不写。
 checks 是建议在开发环境试算后做的数据检查，最多 10 条，没有就给空数组；
 表名只能是上面的目标表名和 sources 里的源表。severity：warn 不通过时只提醒；error 不通过时结果
 不能直接通过，只给确定了结果一错就不能交付的检查用；info 只列出来给人看。各种检查的其余字段：

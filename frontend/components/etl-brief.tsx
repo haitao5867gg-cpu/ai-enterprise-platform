@@ -306,6 +306,13 @@ export function TechPlanView({
                       <span key={column.name}>
                         {i > 0 && "；"}
                         <code>{column.name}</code>
+                        {column.type && (
+                          <>
+                            {" "}
+                            <code>{column.type.toUpperCase()}</code>
+                          </>
+                        )}
+                        ，可为空
                         {column.after ? (
                           <>
                             （放在 <code>{column.after}</code> 后面）
@@ -338,6 +345,11 @@ export function TechPlanView({
                       <td>{column.label || "—"}</td>
                       <td className="column-name">
                         <code>{column.name}</code>
+                        {column.type && (
+                          <span className="column-type">
+                            {column.type.toUpperCase()}
+                          </span>
+                        )}
                         {target.load.add_columns.some(
                           (added) => added.name === column.name,
                         ) && <span className="column-added">新加</span>}

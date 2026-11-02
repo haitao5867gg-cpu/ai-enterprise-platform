@@ -376,13 +376,16 @@ class Field:
         self.dataType = type("T", (), {"simpleString": lambda _: kind})()  # noqa: N815
 
 
+FRAME_TYPES = {"sku": "string", "qty": "int", "note": "string"}
+
+
 class Frame:
     def __init__(self, spark: "Spark", outside: int = 0, repeated: int = 0) -> None:
         self.spark = spark
         self.outside = outside
         self.repeated = repeated
-        self.schema = type("S", (), {"fields": [Field("sku", "string"), Field("qty", "int"),
-                                                Field("note", "string")]})()  # fmt: skip
+        fields = [Field(name, kind) for name, kind in FRAME_TYPES.items()]
+        self.schema = type("S", (), {"fields": fields})()
 
     @property
     def write(self) -> Writer:
@@ -425,7 +428,12 @@ class Spark:
         class read:  # noqa: N801
             @staticmethod
             def table(name: str) -> Any:
-                return type("R", (), {"columns": spark.tables[name]["columns"]})()
+                # A table's columns have the result's types unless the test gives others.
+                found = spark.tables[name]
+                kinds = FRAME_TYPES | found.get("types", {})
+                fields = [Field(c, kinds.get(c.lower(), "string")) for c in found["columns"]]
+                schema = type("S", (), {"fields": fields})()
+                return type("R", (), {"columns": found["columns"], "schema": schema})()
 
         self.catalog = catalog
         self.read = read
@@ -710,6 +718,73 @@ def test_an_existing_tables_columns_change_only_as_the_plan_confirmed():
     spec = {"write": {"catalog": "c", "schema": "s"}, "loads": {"t": {"mode": "append"}}}
     cluster_harness._store(spark, Frame(spark), "t", spec)
     assert ("save", "`c`.`s`.`t`", "append", {"mergeSchema": "true"}) in spark.log
+
+
+@pytest.mark.parametrize(
+    ("written", "spark"),
+    [
+        ("STRING", "string"),
+        ("Integer", "int"),
+        ("long", "bigint"),
+        ("DECIMAL", "decimal(10,0)"),
+        ("decimal(18, 2)", "decimal(18,2)"),
+        ("NUMERIC(5)", "decimal(5,0)"),
+        ("VARCHAR(10)", "string"),
+        ("ARRAY< INT >", "array<int>"),
+        ("map<string,bigint>", "map<string,bigint>"),
+        ("struct<a:int,b:array<string>>", "struct<a:int,b:array<string>>"),
+        ("timestamp_ntz", "timestamp_ntz"),
+    ],
+)
+def test_a_type_is_written_the_way_spark_writes_it(written: str, spark: str):
+    assert cluster_harness.spark_type(written) == spark
+
+
+@pytest.mark.parametrize(
+    "written",
+    ["", "  ", "text column", "foo", "decimal(40,2)", "decimal(5,6)", "array<foo>",
+     "decimal(18,2", "char", "map<string>", None, 3],
+)  # fmt: skip
+def test_anything_else_is_no_type(written: Any):
+    assert cluster_harness.spark_type(written) is None
+
+
+def test_columns_keep_their_kind_and_an_added_column_the_confirmed_type():
+    where = "update_month = ${param.update_month}"
+
+    def refused(columns: list[str], types: dict[str, str] | None = None, **load: Any) -> str:
+        spark = Spark({STORED: {"props": MINE, "columns": columns, "types": types or {}}})
+        with pytest.raises(cluster_harness._Refused) as failed:
+            store(spark, mode="replace_where", where=where, keys=[], **load)
+        assert not [e for e in spark.log if e[0] == "save" or "ADD COLUMNS" in str(e)]
+        return str(failed.value)
+
+    # The result's qty is an int: as text, or a list, it is not the table's column.
+    assert refused(SAME, {"qty": "string", "note": "array<string>"}) == (
+        "ibf_table2: 列的类型和表里的不一致（qty 在表里是 STRING，结果里是 INT；"
+        "note 在表里是 ARRAY<STRING>，结果里是 STRING），没有写"
+    )
+    # Another width of number is left to Delta.
+    spark = Spark({STORED: {"props": MINE, "columns": SAME, "types": {"qty": "bigint"}}})
+    store(spark, mode="replace_where", where=where, keys=[])
+    assert [e for e in spark.log if e[0] == "save"]
+
+    # An added column must come out as the plan confirmed it: nothing is added otherwise.
+    confirmed = [{"name": "qty", "after": "sku", "type": "bigint"}]
+    assert refused(["sku", "note"], add_columns=confirmed) == (
+        "ibf_table2: 确认的方案里新加的列 qty 是 BIGINT，结果里是 INT，没有加列，也没有写："
+        "代码要让这一列是 BIGINT（需要时用 cast）"
+    )
+    spark = Spark({STORED: {"props": MINE, "columns": ["sku", "note"]}})
+    found = store(
+        spark,
+        mode="replace_where",
+        where=where,
+        keys=[],
+        add_columns=[{"name": "qty", "after": "sku", "type": "INTEGER"}],
+    )
+    assert sqls(spark)[1] == f"ALTER TABLE {STORED} ADD COLUMNS (`qty` int AFTER `sku`)"
+    assert found["columns_added"] == [{"name": "qty", "type": "int", "after": "sku"}]
 
 
 def test_the_history_is_optional():

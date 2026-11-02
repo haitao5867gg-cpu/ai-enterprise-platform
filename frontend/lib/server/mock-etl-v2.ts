@@ -66,6 +66,7 @@ const reviewNode: HumanNode = {
     answer: "{{check_plan.answer}}",
     uncited: "{{check_plan.uncited}}",
     cleaned: "{{check_plan.cleaned}}",
+    dropped: "{{check_plan.dropped}}",
     returned: "{{data_review.record}}",
     previous: "{{review.record}}",
   },
@@ -858,6 +859,15 @@ function planFor(state: EtlV2State) {
     targets: v3
       ? targets.map((target, i) => ({
           ...target,
+          // The column the table gets has the type the person confirms with the plan.
+          columns:
+            i === targets.length - 1
+              ? target.columns.map((column) =>
+                  column.name === "avg_order_value"
+                    ? { ...column, type: "decimal(18,2)" }
+                    : column,
+                )
+              : target.columns,
           load:
             i === targets.length - 1
               ? {
@@ -865,7 +875,11 @@ function planFor(state: EtlV2State) {
                   where: "stat_month = ${param.update_month}",
                   keys: [],
                   add_columns: [
-                    { name: "avg_order_value", after: "customer_count" },
+                    {
+                      name: "avg_order_value",
+                      after: "customer_count",
+                      type: "decimal(18,2)",
+                    },
                   ],
                 }
               : { mode: "overwrite", keys: [], add_columns: [] },
@@ -1016,6 +1030,9 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
         answer: design,
         uncited,
         cleaned: ["去掉了 2 条规则开头的英文前缀“advance:”"],
+        // Template v3: a check the model dropped after the platform sent the plan back.
+        dropped:
+          state.checks !== "none" ? ["检查「和上月环比不超过 30%」"] : [],
         returned: state.reviewed,
         previous: state.confirmed,
       },

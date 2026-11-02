@@ -211,7 +211,14 @@ async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
     wrong["targets"][0]["sources"] = ["sales.missing", "sales.orders"]
     wrong["targets"][0]["primary_key"] = ["nope"]
     second = await run(check_node(), attempt(reply(wrong), first.private), rt)
-    assert second.private == {"failures": 2}
+    assert second.private["failures"] == 2
+    # What the versions sent back held is remembered once each.
+    texts = [item["text"] for item in second.private["rejected"]]
+    assert texts == [
+        "order_facts 的列 order_id",
+        "order_facts 的列 city",
+        "order_facts 的列 quantity",
+    ]
     assert second.outputs["plan"]["targets"][0]["sources"][0] == "sales.missing"
     assert second.outputs["problems"].splitlines() == [
         "order_facts 引用了不存在的源表 'sales.missing'",
@@ -232,7 +239,7 @@ async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
     # reply and its problems, and the model gets its rewrites again after that.
     stuck = await run(check_node(on_stuck="branch"), attempt(reply(wrong), second.private), rt)
     assert stuck.branch == "stuck"
-    assert stuck.private == {"failures": 0}
+    assert stuck.private["failures"] == 0
     assert stuck.outputs["ok"] is False
     assert stuck.outputs["problems"] == second.outputs["problems"]
     message = stuck.outputs["message"]
@@ -245,7 +252,7 @@ async def test_plan_check_sends_problems_back_and_gives_up_after_max_attempts():
         "方案连续 3 次没通过校验，交给人决定：按意见重写，还是终止"
     )
     again = await run(check_node(on_stuck="branch"), attempt("不是 JSON", stuck.private), rt)
-    assert again.branch == "retry" and again.private == {"failures": 1}
+    assert again.branch == "retry" and again.private["failures"] == 1
 
 
 async def test_check_nodes_hand_over_only_with_a_branch_for_it():
@@ -560,12 +567,16 @@ async def test_plan_check_format_2_sends_problems_back_with_empty_new_outputs():
     ]
     assert {k: out.outputs[k] for k in NEW_OUTPUTS} == EMPTY
     assert out.messages[0]["content"] == "方案有 2 处没通过校验，让模型重写（第 2/3 次）"
-    # The answers people gave are kept through a rewrite.
-    assert out.private == {
-        "failures": 1,
-        "answered": {
-            "统计哪段时间": {"label": "统计哪段时间？", "value_label": "全部", "actor": "韩梅梅"}
-        },
+    # The answers people gave are kept through a rewrite, and what the version sent back
+    # held (its columns here), to say what the plan that passes has lost.
+    assert out.private["failures"] == 1
+    assert out.private["answered"] == {
+        "统计哪段时间": {"label": "统计哪段时间？", "value_label": "全部", "actor": "韩梅梅"}
+    }
+    assert out.private["rejected"][0] == {
+        "table": "order_facts",
+        "column": "order_id",
+        "text": "order_facts 的列 order_id",
     }
 
 
@@ -1695,7 +1706,7 @@ async def test_node_types_list_the_data_group():
     assert all(types[k]["error_handling"] for k in data)
     plan_check = types["etl_plan_check"]
     added = ["references", "summary", "brief", "questions", "answer", "uncited", "cleaned"]
-    added += ["result_table", "result_keys", "checks"]
+    added += ["result_table", "result_keys", "checks", "dropped"]
     keys = ["ok", "plan", "problems", "message", "sources", "targets", *added]
     assert [o["key"] for o in plan_check["outputs"]] == keys
     assert TYPES["etl_plan_check"].produces({}) == keys

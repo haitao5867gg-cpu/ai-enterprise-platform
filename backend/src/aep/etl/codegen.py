@@ -46,7 +46,8 @@ JOB_HARNESS = "src/aep_harness.py"
 # The platform's part of the codegen node's prompt: the JSON it parses and the rules
 # ``check_code`` enforces. How to write good code is the ``etl-codegen`` skill.
 OUTPUT_FORMAT = """只输出一个 JSON 对象：{"targets": {"目标表名": "代码"}}，\
-每张目标表都要有，不要输出其他文字。
+每张目标表都要有，不要输出其他文字。方案里写了 type 的列，结果里这一列就要是这个类型\
+（需要时用 cast，如 F.col("x").cast("string") 或 CAST(x AS STRING)）。
 
 language 是 pyspark 时，代码是一个 Python 函数体（不含 def 那一行），最后 return 一个 DataFrame：
 - 读源表只能用 source("schema.table")；读本管道里的其他目标表用 spark.read.table("目标表名")。

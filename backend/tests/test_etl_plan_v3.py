@@ -398,39 +398,76 @@ def check_existing(raw: dict, existing: list[dict] | None) -> tuple[EtlPlanV3, l
     )
 
 
+# The types of the columns v3_plan adds to CITY_DAILY, as the model writes them.
+ADDED_TYPES = {"quantity_sum": "BIGINT", "avg_quantity": "decimal(10, 2)"}
+
+
+def typed(raw: dict, types: dict[str, str | None] = ADDED_TYPES, target: int = 1) -> dict:
+    for column in raw["targets"][target]["columns"]:
+        if column["name"] in types:
+            column["type"] = types[column["name"]]
+    return raw
+
+
 def test_columns_added_to_an_existing_table_are_worked_out_by_the_platform():
-    raw = v3_plan()
+    raw = typed(v3_plan())
     # What the model writes there is the platform's to set.
     raw["targets"][1]["load"]["add_columns"] = [{"name": "nonsense", "after": None}]
     plan, _ = check_existing(raw, [CITY_DAILY])
     load = plan.targets[1].load
-    assert [c.model_dump() for c in load.add_columns] == [
-        {"name": "quantity_sum", "after": "order_count"},
-        {"name": "avg_quantity", "after": "quantity_sum"},
+    added = [
+        {"name": "quantity_sum", "after": "order_count", "type": "bigint"},
+        {"name": "avg_quantity", "after": "quantity_sum", "type": "decimal(10,2)"},
     ]
-    assert load.stored(plan.targets[1].primary_key)["add_columns"] == [
-        {"name": "quantity_sum", "after": "order_count"},
-        {"name": "avg_quantity", "after": "quantity_sum"},
-    ]
+    assert [c.model_dump() for c in load.add_columns] == added
+    assert load.stored(plan.targets[1].primary_key)["add_columns"] == added
+    # Types are written the way Spark writes them; a column without one dumps as before.
+    columns = plan.targets[1].columns
+    assert [c.type for c in columns] == [None, None, None, "bigint", "decimal(10,2)"]
+    assert "type" not in columns[0].model_dump()
     # order_facts is not in the environment yet: nothing to add, nothing stored.
     assert plan.targets[0].load.add_columns == []
     assert "add_columns" not in plan.targets[0].load.stored(["order_id"])
 
     # A new first column goes first.
-    raw = v3_plan()
+    raw = typed(v3_plan())
     columns = raw["targets"][1]["columns"]
     columns.insert(0, columns.pop(3))  # quantity_sum
     plan, _ = check_existing(raw, [CITY_DAILY])
     assert [c.model_dump() for c in plan.targets[1].load.add_columns] == [
-        {"name": "quantity_sum", "after": None},
-        {"name": "avg_quantity", "after": "order_count"},
+        {"name": "quantity_sum", "after": None, "type": "bigint"},
+        {"name": "avg_quantity", "after": "order_count", "type": "decimal(10,2)"},
     ]
 
-    # Overwriting rebuilds the table; existing tables unknown: nothing is added either.
+    # Overwriting rebuilds the table; existing tables unknown: nothing is added either,
+    # and no type is needed.
     raw = v3_plan()
     raw["targets"][1]["load"] = {"mode": "overwrite"}
     assert check_existing(raw, [CITY_DAILY])[0].targets[1].load.add_columns == []
     assert check_existing(v3_plan(), None)[0].targets[1].load.add_columns == []
+
+
+def test_a_column_added_to_an_existing_table_has_a_type_people_confirm():
+    def problems(raw: dict) -> list[str]:
+        with pytest.raises(PlanError) as failed:
+            check_existing(raw, [CITY_DAILY])
+        return failed.value.problems
+
+    assert problems(typed(v3_plan(), {"quantity_sum": None, "avg_quantity": " "})) == [
+        f"city_daily 已经存在，要新加列 {name}：请在 columns 里写它的 type（Spark SQL 类型，"
+        "如 STRING、BIGINT、DECIMAL(18,2)、DATE），确认方案时人要看到加的是什么类型的列"
+        for name in ("quantity_sum", "avg_quantity")
+    ]
+    assert problems(typed(v3_plan(), ADDED_TYPES | {"quantity_sum": "number"})) == [
+        "city_daily 的列 quantity_sum 的 type number 不是 Spark SQL 类型（如 STRING、INT、"
+        "BIGINT、DOUBLE、DECIMAL(18,2)、DATE、TIMESTAMP、ARRAY<STRING>）"
+    ]
+    # A column the table has keeps its type: the plan may say it, never change it.
+    assert problems(typed(v3_plan(), ADDED_TYPES | {"order_count": "BIGINT"})) == [
+        "city_daily 的列 order_count 在表里是 STRING，方案写的是 BIGINT："
+        "已有的列不改类型，type 照表里的写或者不写"
+    ]
+    check_existing(typed(v3_plan(), ADDED_TYPES | {"order_count": "VARCHAR(20)"}), [CITY_DAILY])
 
 
 def test_a_write_that_keeps_the_rows_keeps_every_column():
@@ -438,7 +475,7 @@ def test_a_write_that_keeps_the_rows_keeps_every_column():
     wide["columns"].insert(2, {"name": "Region", "data_type": "string"})
     wide["columns"].append({"name": "loaded_at", "data_type": "timestamp"})
     for mode in ({"mode": "append"}, {"mode": "merge"}):
-        raw = v3_plan()
+        raw = typed(v3_plan())
         raw["targets"][1]["load"] = mode
         with pytest.raises(PlanError) as failed:
             check_existing(raw, [wide])
@@ -468,20 +505,20 @@ async def test_the_node_says_what_writing_does_to_each_table():
         return st
 
     node = check_node(format=3, existing="{{profile.existing}}")
-    raw = brief_reply()
+    raw = typed(brief_reply(), {"quantity_sum": "bigint", "avg_quantity": "double"})
     raw["targets"][0]["load"] = {"mode": "overwrite"}
     raw["targets"][1]["load"] = {"mode": "merge"}
     out = await run(node, with_existing(raw, [totals]), rt)
     assert out.branch == "ok", out.outputs["problems"]
     assert out.outputs["plan"]["targets"][1]["load"]["add_columns"] == [
-        {"name": "quantity_sum", "after": "order_count"},
-        {"name": "avg_quantity", "after": "quantity_sum"},
+        {"name": "quantity_sum", "after": "order_count", "type": "bigint"},
+        {"name": "avg_quantity", "after": "quantity_sum", "type": "double"},
     ]
     message = out.outputs["message"]
     assert "- 表结构：表还不存在，按方案新建" in message  # order_facts
     assert (
-        "- 表结构：表已经存在（2 列），确认方案后加 2 列：`quantity_sum`（放在 `order_count` "
-        "后面）；`avg_quantity`（放在 `quantity_sum` 后面）"
+        "- 表结构：表已经存在（2 列），确认方案后加 2 列：`quantity_sum` BIGINT，可为空（放在 "
+        "`order_count` 后面）；`avg_quantity` DOUBLE，可为空（放在 `quantity_sum` 后面）"
     ) in message
 
     # The same columns: nothing changes. Overwriting says it drops the rows.
@@ -499,3 +536,56 @@ async def test_the_node_says_what_writing_does_to_each_table():
     # Something else there is the app's mistake.
     with pytest.raises(NodeFailure, match="已有的表要引用探查数据节点的 existing"):
         await run(node, with_existing(raw, "city_totals"), rt)
+
+
+async def test_what_a_plan_lost_after_it_was_sent_back_is_said():
+    rt, ds = await node_env()
+    tables = await profiled(rt, ds)
+    node = check_node(format=3)
+    project = PROJECT | {"checks": [{"id": "c8_fixed", "kind": "rows"}]}
+    asked = {
+        "id": "k1",
+        "label": "子查询检查",
+        "kind": "rows",
+        "table": "city_totals",
+        "where": "city NOT IN (SELECT city FROM order_facts)",
+    }
+
+    def written(**changes: Any) -> dict:
+        raw = brief_reply(**changes)
+        for target in raw["targets"]:
+            target["load"] = {"mode": "overwrite"}
+        return raw
+
+    def attempt(raw: dict, before: Any = None) -> dict:
+        st = v2_state(tables, raw) | {"project": project}
+        st["branch"] = {"check_plan": "retry"} if before is not None else {}
+        st["private"] = {"check_plan": before} if before is not None else {}
+        return st
+
+    # Sent back: a subquery the platform does not take, a project check's id.
+    first = await run(node, attempt(written(checks=[asked, {"id": "c8_fixed"}])), rt)
+    assert first.branch == "retry"
+    held = first.private["rejected"]
+    assert {"check": ["k1", "子查询检查"], "text": "检查「子查询检查」"} in held
+
+    # The model drops the check and a column instead of saying so: the person is told.
+    passing = written(checks=[])
+    passing["brief"]["metrics"].pop()  # avg_quantity
+    passing["targets"][1]["columns"].pop()
+    out = await run(node, attempt(passing, first.private), rt)
+    assert out.branch == "ok", out.outputs["problems"]
+    assert out.outputs["dropped"] == ["检查「子查询检查」", "city_totals 的列 avg_quantity"]
+    assert out.outputs["message"].startswith(
+        "> 注意：方案被平台校验退回后，这一版去掉了检查「子查询检查」、city_totals 的列 "
+        "avg_quantity。请对照需求确认还要不要"
+    )
+    assert "rejected" not in out.private
+
+    # Kept under another id, or said nothing about: nothing to say.
+    renamed = written(checks=[asked | {"id": "k2", "where": "city IS NULL"}])
+    out = await run(node, attempt(renamed, first.private), rt)
+    assert out.branch == "ok" and out.outputs["dropped"] == []
+    assert not out.outputs["message"].startswith("> 注意")
+    out = await run(node, attempt(written(checks=[])), rt)
+    assert out.outputs["dropped"] == []
