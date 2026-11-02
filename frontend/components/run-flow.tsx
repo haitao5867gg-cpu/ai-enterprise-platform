@@ -219,10 +219,19 @@ function NodeDetail({
                       <>
                         {(node.type === "databricks_dev_run" ||
                           node.id === "dev_run") && (
-                          <TablePreviews output={step.output} />
+                          <TablePreviews
+                            output={nodeOutput(step.output, node.id)}
+                          />
                         )}
                         {node.type === "databricks_release" && (
-                          <ReleaseOutput output={step.output} />
+                          <ReleaseOutput
+                            output={nodeOutput(step.output, node.id)}
+                          />
+                        )}
+                        {node.type === "app" && (
+                          <AppCallOutput
+                            output={nodeOutput(step.output, node.id)}
+                          />
                         )}
                         <JsonBlock value={step.output} />
                       </>
@@ -254,6 +263,27 @@ function totalUsage(steps: FlowStep[]) {
       ? costs.reduce((n, u) => n + (u.cost_usd ?? 0), 0)
       : null,
   };
+}
+
+// A flow app's step writes its outputs under vars.<node id> (with what else it changed
+// in the run's state); the code app's steps and the mock write them as they are.
+function nodeOutput(output: unknown, node: string): unknown {
+  if (isRecord(output) && isRecord(output.vars) && isRecord(output.vars[node]))
+    return output.vars[node];
+  return output;
+}
+
+// The run an app node started (docs/api/flow-apps.md, "app 调用应用").
+function AppCallOutput({ output }: { output: unknown }) {
+  if (!isRecord(output) || typeof output.run_id !== "string") return null;
+  return (
+    <div className="release-output passed" role="group" aria-label="调用的运行">
+      <p>被调用的运行已完成。</p>
+      <Link href={`/runs/${encodeURIComponent(output.run_id)}`}>
+        查看被调用的运行
+      </Link>
+    </div>
+  );
 }
 
 // What a release did (docs/api/data-nodes.md, "databricks_release"): the job and its

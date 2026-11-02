@@ -506,6 +506,22 @@ function validateConfig(app: string, config: unknown): ValidationIssue[] {
           ],
           msg: "没有这个知识库，请重新选择",
         });
+      // Like the backend (docs/api/flow-apps.md, "app 调用应用"), in short.
+      if (node.type === "app") {
+        const called = store.get(node.app);
+        const msg = !node.app
+          ? "要选择被调用的应用"
+          : !called || called.archived
+            ? `没有应用 ${node.app}`
+            : called.kind !== "flow"
+              ? `只能调用编排应用，「${called.title}」是代码应用`
+              : null;
+        if (msg)
+          issues.push({
+            loc: ["body", "config", "graph", "nodes", node.id, "app"],
+            msg,
+          });
+      }
     }
     if (issues.length) return issues;
     return missingReferences(config as FlowConfig)
@@ -879,6 +895,8 @@ export async function mockApps(
       ].includes(node.type)
     )
       return mockError("该类型不支持单节点试跑", 400);
+    if (node.type === "app")
+      return mockError("调用应用节点会真的发起一次运行，不能单独试跑", 422);
     if (["start", "human", "end"].includes(node.type))
       return invalid([
         {

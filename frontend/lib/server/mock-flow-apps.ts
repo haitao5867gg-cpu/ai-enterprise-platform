@@ -596,6 +596,15 @@ const defaults: FlowNode[] = [
     outputs: [{ key: "text", type: "string" }],
     timeout_seconds: 10,
   },
+  {
+    id: "app",
+    type: "app",
+    title: "调用应用",
+    app: "",
+    input: {},
+    outputs: [],
+    timeout_seconds: 600,
+  },
   blankConfig().graph.nodes[2],
 ];
 export const mockNodeTypes: NodeType[] = defaults.map((node) => {

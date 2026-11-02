@@ -90,11 +90,14 @@ export type RunSummary = {
   // What started it when no person did (docs/api/schedules.md); null otherwise.
   trigger?: RunTrigger | null;
 };
-export type RunTrigger = {
-  kind: "schedule";
-  schedule_id: string;
-  title: string;
-};
+export type RunTrigger =
+  | { kind: "schedule"; schedule_id: string; title: string }
+  // Started by an app node of another run (docs/api/flow-apps.md, "app 调用应用").
+  | { kind: "app"; run_id: string; node: string; title: string };
+export const triggerText = (trigger: RunTrigger) =>
+  trigger.kind === "app"
+    ? `由「${trigger.title}」调用`
+    : `定时：${trigger.title}`;
 export type RunProject = {
   project_id: string;
   name: string;

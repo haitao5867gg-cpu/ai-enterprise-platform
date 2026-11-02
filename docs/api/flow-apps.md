@@ -53,7 +53,7 @@
 }
 ```
 
-节点出错并且 `then` 是 `default` 或 `branch` 时，这个节点除了产出（`default` 时是默认值，`branch` 时为空），还有 `error_type` 和 `error_message` 两个变量，后面的节点可以引用。`error_type` 取值：`timeout`、`model_error`（网关或模型报错）、`output_format`（JSON 输出不合格式）、`tool_error`、`knowledge_error`（知识库不存在或检索失败）、`code_error`、`sandbox_unavailable`、`step_limit`（Agent 达到步数上限）、`databricks_error`、`input_error`（运行输入或节点设置有问题，比如表名写错、超过行数上限、没选数据源；再试结果一样，所以不按 `retry` 重试，运行页也不提供重试）。
+节点出错并且 `then` 是 `default` 或 `branch` 时，这个节点除了产出（`default` 时是默认值，`branch` 时为空），还有 `error_type` 和 `error_message` 两个变量，后面的节点可以引用。`error_type` 取值：`timeout`、`model_error`（网关或模型报错）、`output_format`（JSON 输出不合格式）、`tool_error`、`knowledge_error`（知识库不存在或检索失败）、`code_error`、`sandbox_unavailable`、`step_limit`（Agent 达到步数上限）、`databricks_error`、`app_error`（调用的应用失败了，见 app 节点）、`input_error`（运行输入或节点设置有问题，比如表名写错、超过行数上限、没选数据源；再试结果一样，所以不按 `retry` 重试，运行页也不提供重试）。
 
 整个运行失败时，运行详情的 `failed.error_type` 除了上面这些，还可能是 `max_visits`（某个节点跑满了 `max_visits`）或 `max_steps`（总步数到了上限，见“保存草稿时的检查”最后一句）。这两种和 `input_error` 一样不能重试：再从同一步接着跑，马上又会到上限。运行页只给“复制并重新发起”，并用业务语言说明原因，比如“在「确认方案」这一步，流程在同一步来回的次数到了上限”：只用 `failed.title`，上限是几次不在接口里。见 `backend/src/aep/api/runs.py`。
 
@@ -72,7 +72,7 @@
 
 **knowledge 知识检索**的设置、产出和引用编号规则见 [knowledge.md](knowledge.md#编排应用知识检索节点)。
 
-**数据工程节点** `etl_profile`、`etl_plan_check`、`databricks_ingest`、`etl_code_check`、`databricks_dev_run` 见 [data-nodes.md](data-nodes.md)。
+**数据工程节点** `etl_profile`、`etl_plan_check`、`databricks_ingest`、`etl_code_check`、`databricks_dev_run`、`databricks_release`、`data_check` 见 [data-nodes.md](data-nodes.md)。
 
 **start 开始**：恰好一个。
 
@@ -269,6 +269,32 @@
 - 保存时检查语法和顶层的 `def main`。
 - 返回值里的 numpy、pandas 值会转成 JSON（DataFrame 按行转成列表），NaN 和无穷大变成 null。
 - 出错时的 `error_type`：超时为 `timeout`；代码报错、返回值不是 dict、缺字段或类型不对为 `code_error`（报错信息附代码输出的最后几行）；连不上沙箱为 `sandbox_unavailable`。
+
+**app 调用应用**（平台缺失功能第 5 批）：把另一个已发布的编排应用当成一步来用，比如几个应用共用的“查订单”“出报表”做成一个应用，别的应用调用它，不用各自复制节点。参考 Dify 的“工作流作为工具”、Coze 的“工作流节点”。
+
+```jsonc
+{"app": "order-lookup",                         // 被调用的编排应用标识
+ "input": {"question": "{{start.question}}"},   // 按它开始节点的输入填；值可以是字面值或引用，不能引用密钥
+ "outputs": ["reply"],                          // 要取出的结果字段：它结束节点 outputs 的 key，0–20 个
+ "timeout_seconds": 600}                        // 10–3600
+```
+
+产出：`outputs` 里的每个字段，加上 `result`（被调用运行的整个 `result`）和 `run_id`（被调用运行的 id）。无分支，可以设 `on_error`。
+
+运行时：
+
+- 发起被调用应用的一次运行，规则同 POST /runs：用它当时的生效版本，按它的开始节点检查输入，按它自己的数据外发策略。提出人沿用本运行的提出人。本节点等这次运行结束，结束后把它 `result` 里 `outputs` 列出的字段取出来；它的生效版本里没有某个字段时，这个字段为 null。
+- 被调用的运行记录 `trigger` 为 `{"kind": "app", "run_id": "<本运行 id>", "node": "<本节点 id>", "title": "<本运行的应用标题>"}`（别的种类见 schedules.md）；运行页显示“由「应用标题」调用”，链接回本运行。本运行的消息里写“调用「被调用应用标题」：……”，并链接到被调用的运行。
+- 项目：被调用的应用用项目时，沿用本运行绑定的项目、环境和参数值；本运行没有绑定项目而它必须绑定时失败（`input_error`）。
+- 被调用的运行停下来等人（走到人工节点）时，本节点取消它并失败（`input_error`，“应用「…」要人工处理，不能被调用；人工确认请放在调用它的应用里”）。第一版不支持跨运行的人工确认。
+- 被调用的运行失败或被取消时，本节点失败，`error_type` 为 `app_error`（新增，算可重试的临时失败），说明里带被调用运行的失败原因；超过 `timeout_seconds` 时取消它，`error_type` 为 `timeout`。
+- 嵌套最多 3 层（A 调 B，B 调 C）；调用链上已经有这个应用时失败（`input_error`，“应用「…」已经在调用链上，不能再调用它”），避免互相调用转圈。
+- 平台重启时本运行恢复到这个节点，先找本节点发起、还没结束的那次运行接着等，不重复发起。
+- 单节点试跑不支持（会真的发起一次运行）。
+
+保存时检查：`app` 是已登记的编排应用（不能是代码应用）；`input` 的键是它生效版本开始节点的输入，必填且没有默认值的输入要给；`outputs` 是它生效版本结束节点 outputs 的 key；`timeout_seconds` 在 10–3600。被调用的应用后来发了新版本，以运行时的检查为准。
+
+编辑页：选应用（只列编排应用），然后按它开始节点的输入逐个填值（可以插变量），勾要取出的结果字段。运行页：这一步的结果显示被调用运行的状态和链接。mock：被调用的应用不真跑，`result` 里每个要取的字段为“（模拟）字段名”。
 
 **end 结束**：至少一个，没有出边。
 

@@ -42,6 +42,7 @@ import {
   allSources,
   flowView,
   humanPending,
+  render,
   simulateNode,
   type VariablePool,
 } from "./mock-flow-apps";
@@ -249,6 +250,8 @@ function nodeSaid(
     (node.type === "llm" && node.output.kind === "text" && !node.quiet)
   )
     return typeof outputs.text === "string" ? outputs.text : null;
+  if (node.type === "app" && typeof outputs.run_id === "string")
+    return `调用「${mockAppTitle(node.app) ?? node.app}」：运行 ${outputs.run_id.slice(0, 8)} 已完成。`;
   return dataNodeSaid(node, outputs, branch);
 }
 // What a person decided at a human step, in one sentence.
@@ -532,7 +535,9 @@ function advanceFlow(entry: StoredRun): Run {
       const result =
         node.type === "start"
           ? { outputs: flow.input, branch: null }
-          : simulateNode(node, flow.pool);
+          : node.type === "app"
+            ? callApp(entry, node)
+            : simulateNode(node, flow.pool);
       if (node.type === "knowledge" || node.type === "agent") {
         const sources = (run.sources ??= []);
         const hits = (result.outputs.hits as Reference[]).map((hit) => {
@@ -594,6 +599,73 @@ function advanceFlow(entry: StoredRun): Run {
     }
   }
   return run;
+}
+
+// docs/api/flow-apps.md ("app 调用应用"): a run of the called app is started, marked
+// with the caller, and run to its end at once; one that waits for a person is cancelled.
+function callApp(
+  entry: StoredRun,
+  node: Extract<FlowNode, { type: "app" }>,
+): { outputs: Record<string, unknown>; branch: null } {
+  const { run, flow } = entry;
+  const chain = [run.app];
+  for (
+    let up = run.trigger;
+    up?.kind === "app" && chain.length <= 4;
+    up = store.get(up.run_id)?.run.trigger
+  )
+    chain.push(store.get(up.run_id)?.run.app ?? "");
+  const title = mockAppTitle(node.app) ?? node.app;
+  if (chain.includes(node.app))
+    throw new MockNodeFailure(
+      "input_error",
+      `应用「${title}」已经在调用链上，不能再调用它`,
+    );
+  if (chain.length >= 3)
+    throw new MockNodeFailure("input_error", "应用最多嵌套调用 3 层");
+  const made = create(
+    {
+      app: node.app,
+      input: render(node.input, flow!.pool, true),
+      requester: run.created_by,
+    },
+    undefined,
+    {
+      kind: "app",
+      run_id: run.run_id,
+      node: node.id,
+      title: run.app_title ?? run.app,
+    },
+  );
+  if (made.status !== 201)
+    throw new MockNodeFailure("input_error", `调用「${node.app}」没有发起`);
+  const child = [...store.values()].at(-1)!;
+  for (let i = 0; i < 20 && child.run.status === "running"; i++) {
+    child.readyAt = 0;
+    refresh(child);
+  }
+  if (child.run.status === "waiting") {
+    setStatus(child.run, "cancelled");
+    child.run.pending = null;
+    throw new MockNodeFailure(
+      "input_error",
+      `应用「${title}」要人工处理，不能被调用；人工确认请放在调用它的应用里`,
+    );
+  }
+  if (child.run.status !== "done")
+    throw new MockNodeFailure(
+      "app_error",
+      `调用「${title}」没有完成：${child.run.error ?? child.run.status}`,
+    );
+  const result = isRecord(child.run.result) ? child.run.result : {};
+  return {
+    outputs: {
+      ...Object.fromEntries(node.outputs.map((key) => [key, result[key]])),
+      result,
+      run_id: child.run.run_id,
+    },
+    branch: null,
+  };
 }
 
 // Like the backend: the code a run has to download is the result's files, the result's

@@ -7,7 +7,9 @@ import { ChecksField } from "./checks-field";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import type {
   AgentNode,
+  AppCallNode,
   AppDetail,
+  AppSummary,
   ClassifierNode,
   Condition,
   ConditionNode,
@@ -21,7 +23,7 @@ import type {
   ToolNode,
   ValueType,
 } from "../lib/apps";
-import { chatModelChoices } from "../lib/apps";
+import { chatModelChoices, getApp, isFlowConfig, listApps } from "../lib/apps";
 import {
   cachedTools,
   isToolService,
@@ -1308,6 +1310,141 @@ function DataCheckFields({
   );
 }
 
+// The app an app node calls, its inputs and the fields its end nodes give
+// (docs/api/flow-apps.md, "app 调用应用").
+function AppCallFields({
+  node,
+  variables,
+  issues,
+  change,
+}: {
+  node: AppCallNode;
+  variables: Variable[];
+  issues: Issues;
+  change: Change;
+}) {
+  const at = (path: string) => issuesUnder(issues, path);
+  const [apps, setApps] = useState<AppSummary[] | null>(null);
+  const [called, setCalled] = useState<AppDetail | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    listApps(controller.signal)
+      .then((value) => setApps(value.filter((item) => item.kind === "flow")))
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(errorMessage(err));
+      });
+    return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    if (!node.app) return;
+    const controller = new AbortController();
+    getApp(node.app, controller.signal)
+      .then(setCalled)
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(errorMessage(err));
+      });
+    return () => controller.abort();
+  }, [node.app]);
+  const shown = called && called.app === node.app ? called : null;
+  const inputs = shown?.inputs ?? [];
+  const results = (() => {
+    const config = shown?.current.config;
+    if (!config || !isFlowConfig(config)) return [];
+    const keys: string[] = [];
+    for (const item of config.graph.nodes)
+      if (item.type === "end")
+        for (const output of item.outputs)
+          if (!keys.includes(output.key)) keys.push(output.key);
+    return keys;
+  })();
+  return (
+    <>
+      <SelectField
+        label="调用哪个应用"
+        value={node.app}
+        choices={[
+          { value: "", label: apps === null ? "正在加载应用…" : "请选择应用" },
+          ...(apps ?? []).map((item) => ({
+            value: item.app,
+            label: `${item.title}（${item.app}）`,
+          })),
+          ...(node.app && apps && !apps.some((item) => item.app === node.app)
+            ? [{ value: node.app, label: node.app }]
+            : []),
+        ]}
+        issues={at("app")}
+        help="只能调用编排应用，用它当时的生效版本；它不能有人工确认的步骤。"
+        onChange={(app) => change({ ...node, app, input: {}, outputs: [] })}
+      />
+      {error && <p className="field-error">{error}</p>}
+      {inputs.map((field) => (
+        <RefField
+          key={field.key}
+          label={`输入：${field.label}${field.required ? "（必填）" : ""}`}
+          value={
+            typeof node.input[field.key] === "string"
+              ? (node.input[field.key] as string)
+              : node.input[field.key] === undefined
+                ? ""
+                : JSON.stringify(node.input[field.key])
+          }
+          variables={variables}
+          issues={at(`input.${field.key}`)}
+          onChange={(value) => {
+            const input = { ...node.input };
+            if (value === "") delete input[field.key];
+            else input[field.key] = value;
+            change({ ...node, input });
+          }}
+        />
+      ))}
+      {shown && (
+        <fieldset className="list-editor">
+          <legend>取出的结果字段</legend>
+          {results.length ? (
+            results.map((key) => (
+              <CheckField
+                key={key}
+                label={key}
+                checked={node.outputs.includes(key)}
+                onChange={(checked) =>
+                  change({
+                    ...node,
+                    outputs: checked
+                      ? [...node.outputs, key]
+                      : node.outputs.filter((item) => item !== key),
+                  })
+                }
+              />
+            ))
+          ) : (
+            <p className="muted">这个应用的结束节点没有结果字段。</p>
+          )}
+          <small className="muted">
+            勾上的字段可以在后面用 {"{{"}
+            {node.id}.字段{"}}"} 引用；整个结果是 {"{{"}
+            {node.id}.result{"}}"}。
+          </small>
+          <FieldIssues
+            id={`${node.id}-outputs-issues`}
+            messages={at("outputs")}
+          />
+        </fieldset>
+      )}
+      <NumberField
+        label="最长等待（秒）"
+        value={node.timeout_seconds ?? 600}
+        min={10}
+        max={3600}
+        issues={at("timeout_seconds")}
+        help="超过这个时间还没结束，就取消它，这一步按超时失败。"
+        onChange={(timeout_seconds) => change({ ...node, timeout_seconds })}
+      />
+    </>
+  );
+}
+
 export function NodeSettings({
   node,
   config,
@@ -1506,6 +1643,15 @@ export function NodeSettings({
             onChange={(preview_rows) => change({ ...node, preview_rows })}
           />
         </>
+      );
+    case "app":
+      return (
+        <AppCallFields
+          node={node}
+          variables={variables}
+          issues={issues}
+          change={change}
+        />
       );
     case "databricks_release":
       return (

@@ -104,6 +104,10 @@ class RunStore(Protocol):
         ...
 
     async def set_step(self, run_id: str, node: str, title: str) -> None: ...
+    async def called_by(self, run_id: str, node: str) -> RunRecord | None:
+        """The newest unfinished run that node ``node`` of run ``run_id`` started (an app
+        node; its ``trigger`` says so), or None."""
+        ...
 
 
 class MemoryRunStore:
@@ -147,6 +151,17 @@ class MemoryRunStore:
 
     async def get(self, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
+
+    async def called_by(self, run_id: str, node: str) -> RunRecord | None:
+        found = [
+            r
+            for r in self._runs.values()
+            if r.status in ("running", "waiting")
+            and (r.trigger or {}).get("kind") == "app"
+            and r.trigger.get("run_id") == run_id  # type: ignore[union-attr]
+            and r.trigger.get("node") == node  # type: ignore[union-attr]
+        ]
+        return max(found, key=lambda r: r.created_at) if found else None
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         runs = sorted(self._runs.values(), key=lambda r: r.created_at, reverse=True)
@@ -289,6 +304,17 @@ class PostgresRunStore:
             return None
         async with self._pool.connection() as conn:
             cur = await conn.execute(f"SELECT {COLUMNS} FROM runs WHERE run_id = %s", (key,))
+            row = await cur.fetchone()
+            return _record(row) if row else None
+
+    async def called_by(self, run_id: str, node: str) -> RunRecord | None:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {COLUMNS} FROM runs WHERE status IN ('running', 'waiting')"
+                " AND trigger->>'kind' = 'app' AND trigger->>'run_id' = %s"
+                " AND trigger->>'node' = %s ORDER BY created_at DESC LIMIT 1",
+                (run_id, node),
+            )
             row = await cur.fetchone()
             return _record(row) if row else None
 

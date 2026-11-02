@@ -23,6 +23,7 @@ export const BRANCHED_ERROR_TYPES = [
   "databricks_dev_run",
   "databricks_release",
   "data_check",
+  "app",
 ];
 export const UNTESTABLE_TYPES = [
   "start",
@@ -32,6 +33,7 @@ export const UNTESTABLE_TYPES = [
   "databricks_dev_run",
   "databricks_release",
   "data_check",
+  "app",
 ];
 
 export const typeLabels: Record<FlowNode["type"], string> = {
@@ -53,6 +55,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   databricks_dev_run: "dev 运行",
   databricks_release: "上线到 prod",
   data_check: "数据检查",
+  app: "调用应用",
 };
 
 export function nodeKind(type: FlowNode["type"]): NodeKind {
@@ -66,6 +69,7 @@ export function nodeKind(type: FlowNode["type"]): NodeKind {
       "databricks_dev_run",
       "databricks_release",
       "data_check",
+      "app",
     ].includes(type)
   )
     return "tool";
@@ -183,6 +187,12 @@ export function ownOutputs(node: FlowNode): string[] {
       ];
     case "data_check":
       return ["ok", "results", "summary", "report"];
+    case "app":
+      return [
+        ...node.outputs.filter((key) => key !== "result" && key !== "run_id"),
+        "result",
+        "run_id",
+      ];
     case "end":
       return [];
   }
