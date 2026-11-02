@@ -411,7 +411,20 @@ export async function requestJson(
     throw new ApiError("暂时无法连接服务，请检查连接后重试。");
   }
   if (!response.ok) {
+    // Signed out or the session ended (docs/api/auth.md): back to the sign-in page.
+    if (
+      response.status === 401 &&
+      !path.startsWith("/auth/") &&
+      typeof window !== "undefined" &&
+      window.location.pathname !== "/login"
+    )
+      window.location.replace(
+        `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`,
+      );
     const messages: Record<number, string> = {
+      401: "请先登录。",
+      403: "没有权限做这件事。",
+      429: "尝试太频繁，请稍后再试。",
       404: /^\/runs\/[^/]+\/rerun$/.test(path)
         ? "原运行或它用的应用、版本已经不在了，请新建运行。"
         : path.startsWith("/runs")
@@ -427,6 +440,9 @@ export async function requestJson(
     let detail = "";
     let issues: ValidationIssue[] = [];
     if (
+      response.status === 401 ||
+      response.status === 403 ||
+      response.status === 429 ||
       response.status === 409 ||
       response.status === 422 ||
       response.status === 502 ||
@@ -466,6 +482,11 @@ export async function requestJson(
           path.startsWith("/knowledge-bases") ||
           path.startsWith("/datasources") ||
           path.startsWith("/models") ||
+          path.startsWith("/auth/") ||
+          path.startsWith("/users") ||
+          response.status === 401 ||
+          response.status === 403 ||
+          response.status === 429 ||
           path.startsWith("/projects"))
         ? detail
         : detail

@@ -40,8 +40,13 @@ import {
   type PickedProject,
 } from "./project-picker";
 import { savedActor, saveActor } from "../lib/actor";
+import { useSignedIn } from "./session";
 
-const NO_PROJECT: PickedProject = { project: null, environment: "", values: {} };
+const NO_PROJECT: PickedProject = {
+  project: null,
+  environment: "",
+  values: {},
+};
 
 export function NewRun({ from }: { from?: string } = {}) {
   const router = useRouter();
@@ -76,6 +81,7 @@ export function NewRun({ from }: { from?: string } = {}) {
   const sourceInput = useRef<Record<string, unknown> | null>(null);
   const sourceFields = useRef<Input[] | null>(null);
   const requester = useRef<HTMLInputElement>(null);
+  const me = useSignedIn();
   const busy = useRef(false);
   // Filled in after mounting: the server has no storage.
   useEffect(() => {
@@ -390,7 +396,8 @@ export function NewRun({ from }: { from?: string } = {}) {
               <span>项目</span>
               <p className="field-hint" role="status">
                 沿用原运行的项目「{source.project.name}」、环境「
-                {source.project.environment_label}」和参数值；项目的其他设置按现在的。
+                {source.project.environment_label}
+                」和参数值；项目的其他设置按现在的。
               </p>
             </div>
           )}
@@ -577,23 +584,29 @@ export function NewRun({ from }: { from?: string } = {}) {
               </select>
             </div>
           )}
-          <div className="form-section">
-            <label htmlFor="requester">
-              你的名字<span className="muted">（选填）</span>
-            </label>
-            <input
-              id="requester"
-              className="requester-input"
-              autoComplete="name"
-              maxLength={100}
-              ref={requester}
-              disabled={submitting}
-              aria-describedby="requester-hint"
-            />
-            <p className="field-hint" id="requester-hint">
-              会显示在运行记录里，方便大家知道这个需求是谁提的。
+          {me ? (
+            <p className="field-hint">
+              以「{me.display_name}」的身份发起，运行记录里会写这个名字。
             </p>
-          </div>
+          ) : (
+            <div className="form-section">
+              <label htmlFor="requester">
+                你的名字<span className="muted">（选填）</span>
+              </label>
+              <input
+                id="requester"
+                className="requester-input"
+                autoComplete="name"
+                maxLength={100}
+                ref={requester}
+                disabled={submitting}
+                aria-describedby="requester-hint"
+              />
+              <p className="field-hint" id="requester-hint">
+                会显示在运行记录里，方便大家知道这个需求是谁提的。
+              </p>
+            </div>
+          )}
           {error && <ErrorNotice message={error} />}
           <div className="form-actions">
             <span>运行过程与结果将自动记录</span>

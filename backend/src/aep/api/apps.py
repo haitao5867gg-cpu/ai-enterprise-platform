@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, 
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
+from aep.auth import who
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import (
     AppCatalog,
@@ -114,7 +115,7 @@ async def list_apps(catalog: Catalog) -> list[dict[str, Any]]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_app(body: CreateApp, catalog: Catalog) -> dict[str, Any]:
+async def create_app(body: CreateApp, catalog: Catalog, request: Request) -> dict[str, Any]:
     if not body.title.strip():
         raise HTTPException(422, "名称不能为空")
     try:
@@ -123,7 +124,7 @@ async def create_app(body: CreateApp, catalog: Catalog) -> dict[str, Any]:
             body.title.strip(),
             body.summary.strip(),
             body.source.model_dump(exclude_none=True),
-            body.actor,
+            who(request, body.actor),
         )
     except AppExists as exc:
         raise HTTPException(409, f"已经有应用 {body.app}") from exc
@@ -135,10 +136,10 @@ async def create_app(body: CreateApp, catalog: Catalog) -> dict[str, Any]:
 
 
 @router.post("/import", status_code=status.HTTP_201_CREATED)
-async def import_app(body: ImportApp, catalog: Catalog) -> dict[str, Any]:
+async def import_app(body: ImportApp, catalog: Catalog, request: Request) -> dict[str, Any]:
     try:
         problems = await catalog.import_app(
-            body.app, body.title, body.summary, body.yaml, body.actor
+            body.app, body.title, body.summary, body.yaml, who(request, body.actor)
         )
     except AppExists as exc:
         raise HTTPException(409, f"已经有应用 {body.app}") from exc
@@ -208,9 +209,11 @@ async def list_versions(app: str, catalog: Catalog) -> list[dict[str, Any]]:
 
 
 @router.put("/{app}/draft")
-async def save_draft(app: str, body: SaveDraft, catalog: Catalog) -> dict[str, Any]:
+async def save_draft(
+    app: str, body: SaveDraft, catalog: Catalog, request: Request
+) -> dict[str, Any]:
     try:
-        await catalog.save_draft(app, body.config, body.actor)
+        await catalog.save_draft(app, body.config, who(request, body.actor))
     except AppNotFound as exc:
         raise _not_found(app) from exc
     except ConfigError as exc:
@@ -219,9 +222,11 @@ async def save_draft(app: str, body: SaveDraft, catalog: Catalog) -> dict[str, A
 
 
 @router.post("/{app}/draft/import")
-async def import_draft(app: str, body: ImportDraft, catalog: Catalog) -> dict[str, Any]:
+async def import_draft(
+    app: str, body: ImportDraft, catalog: Catalog, request: Request
+) -> dict[str, Any]:
     try:
-        problems = await catalog.import_draft(app, body.yaml, body.actor)
+        problems = await catalog.import_draft(app, body.yaml, who(request, body.actor))
     except AppNotFound as exc:
         raise _not_found(app) from exc
     except NotAFlowApp as exc:
@@ -318,11 +323,11 @@ async def start_eval(app: str, catalog: Catalog) -> dict[str, Any]:
 
 
 @router.post("/{app}/draft/publish")
-async def publish(app: str, body: Publish, catalog: Catalog) -> dict[str, Any]:
+async def publish(app: str, body: Publish, catalog: Catalog, request: Request) -> dict[str, Any]:
     if not body.note.strip():
         raise HTTPException(422, "发布说明不能为空")
     try:
-        await catalog.publish(app, body.note.strip(), body.actor)
+        await catalog.publish(app, body.note.strip(), who(request, body.actor))
     except AppNotFound as exc:
         raise _not_found(app) from exc
     except NotPublishable as exc:

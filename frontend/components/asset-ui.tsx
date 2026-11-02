@@ -2,6 +2,7 @@
 
 import { useEffect, type ReactNode } from "react";
 import { saveActor } from "../lib/actor";
+import { useSignedIn } from "./session";
 
 export function AssetHeading({
   eyebrow,
@@ -44,6 +45,13 @@ export function ActorField({
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
+  const me = useSignedIn();
+  if (me)
+    return (
+      <p className="field-hint">
+        以「{me.display_name}」的身份保存，记录里会写这个名字。
+      </p>
+    );
   return (
     <label className="asset-field">
       你的名字<span className="muted">和运行页共用，浏览器会记住</span>
@@ -73,12 +81,17 @@ export function useUnsavedWarning(dirty: boolean) {
     // stop the click before Next.js sees it (capture phase, on the document).
     function guard(event: MouseEvent) {
       if (event.defaultPrevented || event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+        return;
       const link = (event.target as Element | null)?.closest?.("a[href]");
-      if (!(link instanceof HTMLAnchorElement) || link.target === "_blank") return;
+      if (!(link instanceof HTMLAnchorElement) || link.target === "_blank")
+        return;
       const url = new URL(link.href, window.location.href);
       if (url.origin !== window.location.origin) return;
-      if (url.pathname === window.location.pathname && url.search === window.location.search) {
+      if (
+        url.pathname === window.location.pathname &&
+        url.search === window.location.search
+      ) {
         return;
       }
       if (!window.confirm(UNSAVED_MESSAGE)) {
