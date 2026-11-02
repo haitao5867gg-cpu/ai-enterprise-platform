@@ -16,6 +16,8 @@ from aep_databricks.config import Settings
 from aep_databricks.sql import ConnectorError
 
 POLL_SECONDS = 1.0
+# A cluster takes minutes to start: look at its state this often meanwhile.
+START_POLL_SECONDS = 10.0
 # Connections to a workspace can drop mid-request (seen through egress proxies, several
 # times in a row): a request that did not get through is sent again this many times in
 # all, waiting RETRY_SECONDS, then twice that, and so on. Every statement only reads.
@@ -239,22 +241,54 @@ def parse_output(text: str) -> Result:
 
 class ClusterExecutor:
     """Statements on an existing cluster, in one Python context reused across calls.
-    The connector never starts the cluster."""
+    The connector starts a stopped cluster only when AEP_DATABRICKS_READ_START_CLUSTER is on."""
 
     def __init__(
         self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None
     ) -> None:
         self._rest = _Rest(settings, transport)
         self._cluster = settings.databricks_read_cluster_id
+        self._start = settings.databricks_read_start_cluster
         self._context: str | None = None
         self._lock = asyncio.Lock()
+        # One caller starts the cluster; the others wait for it with that caller.
+        self._starting = asyncio.Lock()
 
-    async def _running(self) -> None:
-        cluster = await self._rest.request(
+    async def _state(self) -> dict[str, Any]:
+        return await self._rest.request(
             "GET", "/api/2.0/clusters/get", params={"cluster_id": self._cluster}
         )
-        if cluster.get("state") != "RUNNING":
+
+    async def _running(self) -> None:
+        if (await self._state()).get("state") == "RUNNING":
+            return
+        if not self._start:
             raise ConnectorError(f"集群 {self._cluster} 没有在运行，请先在 Databricks 上启动它")
+        async with self._starting:
+            await self._start_and_wait(time.monotonic() + self._rest.timeout)
+
+    async def _start_and_wait(self, deadline: float) -> None:
+        started = False
+        while True:
+            cluster = await self._state()
+            state = cluster.get("state")
+            if state == "RUNNING":
+                return
+            if state == "TERMINATED" and not started:
+                await self._rest.request(
+                    "POST", "/api/2.0/clusters/start", json={"cluster_id": self._cluster}
+                )
+                started = True
+            elif state in ("TERMINATED", "ERROR", "UNKNOWN", None):
+                reason = _error(cluster.get("state_message")) or state
+                raise ConnectorError(f"集群 {self._cluster} 没能启动：{reason}")
+            if time.monotonic() > deadline:
+                # The cluster keeps starting; a later call finds it running.
+                raise ConnectorError(
+                    f"集群 {self._cluster} 正在启动（{state}），等了 {self._rest.timeout} 秒"
+                    "还没就绪，请过几分钟重试"
+                )
+            await asyncio.sleep(START_POLL_SECONDS)
 
     async def _context_id(self, deadline: float) -> str:
         async with self._lock:

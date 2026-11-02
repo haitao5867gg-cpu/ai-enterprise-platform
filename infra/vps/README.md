@@ -64,6 +64,13 @@ bash infra/vps/deploy.sh
 例如 `AEP_DATABRICKS_HOST`、`AEP_DATABRICKS_TOKEN`、`AEP_DATABRICKS_CLUSTER_ID`、
 `AEP_DATABRICKS_CATALOG`、`AEP_DATABRICKS_SCHEMA`，保存后再运行一次 `bash infra/vps/deploy.sh`。
 
+要读 Databricks 上已有的表（数据源类型 `databricks`，连接器地址 `http://connector-databricks:8005/mcp`），
+还要写 `AEP_DATABRICKS_READ_CATALOGS`（允许读的 catalog，JSON 列表，比如 `["icsd-ace-dev"]`）。
+连接器默认借用上面的地址、令牌和集群。没人值守时集群闲置一段时间会自动停掉，可以设
+`AEP_DATABRICKS_READ_START_CLUSTER=true` 让连接器替你启动它，同时设
+`AEP_DATABRICKS_READ_TIMEOUT_SECONDS=600` 和 `AEP_DATABRICKS_TOOL_SECONDS=620`，
+因为启动要几分钟（见 `docs/api/datasources.md` 的“Databricks 数据源”）。
+
 演示数据（MySQL 示例库 retail、两个演示知识库和应用 retail-etl）在服务器上装好 uv 后用
 `make demo` 导入，它走本机的 8000 端口，不经过访问口令：
 

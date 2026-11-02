@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Where statements run: a SQL warehouse when set, else an existing, running cluster.
     databricks_read_warehouse_id: str = ""
     databricks_read_cluster_id: str = ""
+    # Start the cluster when it is stopped and wait for it (within the timeout below), instead
+    # of refusing. Off by default: starting a cluster costs money and takes minutes.
+    databricks_read_start_cluster: bool = False
     # The catalogs the tools may read (JSON list). Empty: every tool refuses.
     databricks_read_catalogs: list[str] = []
     databricks_read_timeout_seconds: int = Field(default=150, ge=5, le=3600)
