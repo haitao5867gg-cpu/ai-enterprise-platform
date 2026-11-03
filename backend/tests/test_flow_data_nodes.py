@@ -1925,7 +1925,8 @@ async def test_dev_run_counts_its_runs_by_round(tmp_path):
     node = dev_node(plan="{{check_plan.plan}}")
 
     first = await run(node, planned_state(), rt)
-    assert (first.branch, first.private) == ("retry", {"attempts": 1})
+    assert (first.branch, first.private["attempts"]) == ("retry", 1)
+    assert first.private["errors_key"] == data_nodes.errors_key(error["errors"])
     assert first.outputs["ok"] is False and first.outputs["quality"] is None
     # Back from rewriting the code: the same round.
     second = await run(node, planned_state(visits=1, attempts=1), rt)
@@ -1937,6 +1938,46 @@ async def test_dev_run_counts_its_runs_by_round(tmp_path):
     assert third.messages[0]["content"] == (
         "dev 运行失败（1 条报错），让模型改代码（第 2/3 次运行）"
     )
+    # The report counts all the run's dev runs too (jadeflow retest S-15).
+    assert "- 第 3 次试跑（这一轮的第 1 次）" in third.outputs["report"]
+    assert "- 第 1 次运行" in first.outputs["report"]
+
+
+async def test_dev_run_hands_the_same_error_twice_to_a_person(tmp_path):
+    """jadeflow retest I-18: the model rewrote the code with the error and the next run
+    failed the same way; it goes to the review, not round again."""
+    ws = fake_databricks.FakeWorkspace(tmp_path)
+    said = "order_facts: TypeError: '<' not supported between instances of 'str' and 'int'"
+    ws.job_outputs = [
+        {"errors": [said + " (expr cw_07#1201)"]},
+        {"errors": [said + " (expr cw_07#1388)"]},
+        {"errors": ["order_facts: AnalysisException: 列不存在"]},
+    ]
+    rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
+    node = dev_node(plan="{{check_plan.plan}}")
+
+    first = await run(node, planned_state(), rt)
+    assert first.branch == "retry"
+    st = planned_state(visits=1)
+    st["private"] = {"dev_run": first.private}
+    again = await run(node, st, rt)
+    assert again.branch == "failed" and again.private == {"attempts": 0}
+    assert again.messages[0]["content"] == (
+        "dev 运行失败（1 条报错），和上一次的报错一样，不再自动重写，交给人"
+    )
+    assert data_nodes.REPEATED_SAID in again.outputs["report"]
+    # Another error is worth one more rewrite.
+    other = await run(node, st, rt)
+    assert other.branch == "retry" and other.outputs["run"]["attempt"] == 2
+    assert data_nodes.REPEATED_SAID not in other.outputs["report"]
+
+
+def test_errors_key_ignores_what_varies_between_runs():
+    key = data_nodes.errors_key
+    assert key([]) is None
+    assert key(["t: E: x#12  at 1234567"]) == key(["t: E:  x#99 at 7654321"])
+    assert key(["t: E: a", "t: E: b"]) == key(["t: E: b", "t: E: a"])
+    assert key(["t: E: line 3"]) != key(["t: E: line 4"])
 
 
 def answered_plan(**design) -> dict:

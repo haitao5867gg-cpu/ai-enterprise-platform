@@ -402,6 +402,9 @@ export type CheckResult = {
   status: string;
   message: string;
   rows: Record<string, unknown>[];
+  // The columns the example rows are read by, shown first: a difference's kind, key and
+  // differing columns; a rows check's lookup key and the columns its condition names.
+  focus: string[];
 };
 export type DataChecks = { results: CheckResult[]; summary: string };
 
@@ -421,6 +424,7 @@ export function readDataChecks(
       status: text(item.status),
       message: text(item.message),
       rows: records(item.rows),
+      focus: texts(item.focus),
     })),
     summary,
   };
@@ -461,14 +465,30 @@ export function checkRow(
   for (const column of new Set([...Object.keys(mine), ...Object.keys(old)])) {
     out[column] =
       kind === "missing"
-        ? `— / ${shownValue(old[column])}`
+        ? `— / ${cellValue(old[column])}`
         : kind === "extra"
-          ? `${shownValue(mine[column])} / —`
+          ? `${cellValue(mine[column])} / —`
           : differs.has(column)
-            ? `${shownValue(mine[column])} / ${shownValue(old[column])}`
-            : shownValue(mine[column]);
+            ? `${cellValue(mine[column])} / ${cellValue(old[column])}`
+            : cellValue(mine[column]);
   }
   return out;
+}
+
+// A value in an example row: numbers as they are, without thousands separators (a year
+// is 2026, not 2,026).
+function cellValue(value: unknown): string {
+  return typeof value === "number" ? String(value) : shownValue(value);
+}
+
+// The columns of a check's example rows: the ones it is read by first, then the rest.
+export function checkColumns(
+  rows: Record<string, unknown>[],
+  focus: string[],
+): string[] {
+  const all = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  const first = focus.filter((column) => all.includes(column));
+  return [...first, ...all.filter((column) => !first.includes(column))];
 }
 
 function readColumns(value: unknown): AnswerColumn[] {

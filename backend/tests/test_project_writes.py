@@ -77,6 +77,15 @@ class Table:
         self.filters.append(condition)
         return self
 
+    def selectExpr(self, *exprs: str) -> "Table":  # noqa: N802 (pyspark's name)
+        self.selected = list(exprs)
+        return self
+
+    def first(self) -> dict[str, int]:
+        if "broken" in self.name:
+            raise RuntimeError("count_if is not a function")
+        return {"total": 5, "kept": 4}
+
 
 def preamble(pipeline: str, conf: dict[str, str]) -> dict[str, Any]:
     """The platform's part of a pipeline file, run with a stand-in for spark."""
@@ -112,11 +121,24 @@ def test_sources_by_two_or_three_parts_with_the_projects_filters():
 
     forecast = ns["source"](FORECAST)
     assert (forecast.name, forecast.filters) == ("`prev`.`sales`.`Forecast`", ["Type = 'Vol.'"])
+    # What the filter left out is counted once, for the run report (jadeflow retest S-16).
+    assert forecast.selected == [
+        "count(1) AS total",
+        "count_if(coalesce((Type = 'Vol.'), false)) AS kept",
+    ]
+    assert ns["FILTERED"] == {FORECAST: 1}
+    ns["source"](FORECAST)
+    assert len(ns["read"]) == 2 and not hasattr(ns["read"][1], "selected")
     sku = ns["source"]("prev.sales.sku")
     assert (sku.name, sku.filters) == ("`prev`.`sales`.`sku`", [])
     assert ns["source"]("sales.orders").name == "`lake`.`sales`.`orders`"
     assert ns["param"]("update_month") == "2026-09" and ns["param"]("scale") == 1.5
     assert ns["param"]("missing") is None
+
+    # A count that fails leaves the filter in place and says nothing.
+    broken = codegen.render_pyspark(confirmed, {"ibf_table2": BODY}, {"x.broken": "a = 1"})
+    ns = preamble(broken, {"source_catalog": "lake"})
+    assert ns["source"]("x.broken").filters == ["a = 1"] and ns["FILTERED"] == {"x.broken": None}
 
     # Without a project: no filters, no parameters.
     bare = codegen.render_pyspark(confirmed, {"ibf_table2": BODY})
@@ -176,7 +198,10 @@ SKU = 'return source("prev.sales.sku")'
             'return source("prev.sales.sku").where(F.col("m") == update_month)',
             "用了没有定义的名字 update_month（能 import 的只有",
         ),
-        (f"x = re.sub('a', 'b', 'c')\n{SKU}", "用了没有定义的名字 re"),
+        (
+            f"x = re.sub('a', 'b', 'c')\n{SKU}",
+            "用了 re 但没有 import，在函数体里用之前要先写 import re",
+        ),
         (f"WARNINGS.append('x')\n{SKU}", "不要直接用 WARNINGS，告警用 warn()"),
         (f"warn = print\n{SKU}", "不要重新定义平台提供的 warn"),
     ],
@@ -956,7 +981,11 @@ async def test_a_bound_run_on_the_cluster_gets_the_parameters(tmp_path):
 async def test_what_the_code_warns_goes_into_the_dev_run(tmp_path):
     workspace = fake_databricks.FakeWorkspace(tmp_path)
     workspace.cluster_outputs = [
-        {"tables": PASSED["tables"][:1], "warnings": ["Table 1 没有 FY26_06_M 的数据"]}
+        {
+            "tables": PASSED["tables"][:1],
+            "warnings": ["Table 1 没有 FY26_06_M 的数据"],
+            "filtered": {"prev.sales.Forecast": 1234, "prev.sales.sku": None},
+        }
     ]
     target = workspace.target(databricks_cluster_id="9999-other", databricks_deploy="cluster",
                               databricks_source_catalog="")  # fmt: skip
@@ -965,6 +994,9 @@ async def test_what_the_code_warns_goes_into_the_dev_run(tmp_path):
 
     assert dev.status == "passed", dev.errors
     assert "代码告警：Table 1 没有 FY26_06_M 的数据" in dev.warnings
+    # What the project's read filters left out (jadeflow retest S-16); not counted: nothing.
+    filtered = [w for w in dev.warnings if w.startswith("读取筛选")]
+    assert filtered == ["读取筛选：prev.sales.Forecast 按项目给它配置的筛选排除了 1,234 行"]
 
 
 def runtime(workspace: fake_databricks.FakeWorkspace, **settings: Any) -> Runtime:

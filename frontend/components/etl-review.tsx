@@ -29,6 +29,7 @@ import {
   readDataChecks,
   returnedForPlan,
   checkKinds,
+  checkColumns,
   checkRow,
   checkSeverities,
   checkStatuses,
@@ -422,9 +423,7 @@ function ChecksSection({ checks }: { checks: DataChecks }) {
           {checks.results.map((check) => {
             const bad = check.status === "failed" || check.status === "error";
             const rows = bad ? check.rows.map(checkRow) : [];
-            const columns = [
-              ...new Set(rows.flatMap((row) => Object.keys(row))),
-            ];
+            const columns = checkColumns(rows, check.focus);
             return (
               <li key={check.id}>
                 <div>

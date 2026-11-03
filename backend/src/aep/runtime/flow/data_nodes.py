@@ -12,6 +12,7 @@ in between are ordinary ``llm`` nodes. They reuse what the code app ``etl`` does
 and branches are documented in docs/api/data-nodes.md.
 """
 
+import hashlib
 import json
 import re
 from dataclasses import fields
@@ -1223,16 +1224,25 @@ def dev_report(
     tables: list[dict[str, Any]],
     errors: list[str],
     found: dict[str, Any] | None = None,
+    total: int | None = None,
+    repeated: bool = False,
 ) -> str:
-    """The dev run as a person reads it (Markdown); ``found`` is the answer, if any."""
+    """The dev run as a person reads it (Markdown); ``found`` is the answer, if any.
+    ``attempt`` counts the runs of this round, ``total`` all of the run's dev runs;
+    ``repeated``: the errors are the previous run's, so the code goes to a person."""
     head = {
         "passed": "## dev 运行通过",
         "retry": "## dev 运行失败，带着报错回去重写代码",
         "failed": "## dev 运行失败",
     }[branch]
     lines = [head, ""]
+    if repeated:
+        lines += [REPEATED_SAID, ""]
     lines.append("- 运行方式：" + HOW[dev.mode].format(cluster=dev.cluster_id))
-    lines.append(f"- 第 {attempt} 次运行")
+    if total and total != attempt:
+        lines.append(f"- 第 {total} 次试跑（这一轮的第 {attempt} 次）")
+    else:
+        lines.append(f"- 第 {attempt} 次运行")
     if dev.url:
         lines.append(f"- Databricks 上的这次运行：[打开]({dev.url})")
     if tables:
@@ -1373,6 +1383,7 @@ def dev_said(
     tables: list[dict[str, Any]],
     errors: list[str],
     max_runs: int,
+    repeated: bool = False,
 ) -> str:
     """The dev run in one sentence, for the run's messages (the report has the rest)."""
     if branch == "passed":
@@ -1389,7 +1400,31 @@ def dev_said(
     head = f"dev 运行失败（{len(errors)} 条报错）" if errors else "dev 运行失败"
     if branch == "retry":
         return f"{head}，让模型改代码（第 {attempt + 1}/{max_runs} 次运行）"
+    if repeated:
+        return f"{head}，和上一次的报错一样，不再自动重写，交给人"
     return f"{head}，不再重试"
+
+
+# jadeflow retest I-18: the model rewrote the code with an error and the next run failed
+# the same way; going round again rarely helps, a person's word does.
+REPEATED_SAID = (
+    "> 报错和上一次试跑一样：模型带着这个报错改过一次代码，没有改对，不再自动重写。"
+    "请选「改代码」写明怎么改，或者「改方案」「终止」。"
+)
+# What varies between two runs of the same failing code: ids, Spark's expression ids
+# (``cw_07#123``), long numbers and spacing.
+_RUN_SPECIFIC = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|#\d+|\b\d{5,}\b|0x[0-9a-f]+",
+    re.IGNORECASE,
+)
+
+
+def errors_key(errors: list[str]) -> str | None:
+    """What two dev runs' errors have to share to be the same failure (None: no errors)."""
+    if not errors:
+        return None
+    said = sorted({" ".join(_RUN_SPECIFIC.sub("#", e).split()) for e in errors})
+    return hashlib.sha256("\n".join(said).encode()).hexdigest()[:16]
 
 
 def _placement(
@@ -1448,7 +1483,8 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     # is the same round; ``passed`` and ``failed`` end it. Runs from before rounds were
     # kept count every visit.
     mine = _mine(state, node)
-    attempt = mine.get("attempts", (state.get("visits") or {}).get(node["id"], 0)) + 1
+    before = (state.get("visits") or {}).get(node["id"], 0)
+    attempt = mine.get("attempts", before) + 1
     try:
         dev = await databricks.run(
             codegen.Bundle(bundle["name"], bundle["files"], settings),
@@ -1462,10 +1498,15 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     if warning:
         dev.warnings.append(warning)
     passed = dev.status == "passed"
+    # Cut without leaving a quoted value open, so the policy still finds it (aep.policy).
+    errors = [] if passed else [policy.clip(e, ERROR_CHARS) for e in dev.errors[:MAX_ERRORS]]
+    key = errors_key(errors)
+    repeated = False
     if passed:
         branch = "passed"
     elif dev.fixable and attempt < node.get("max_runs", 3):
-        branch = "retry"
+        repeated = key is not None and key == mine.get("errors_key")
+        branch = "failed" if repeated else "retry"
     else:
         branch = "failed"
     where = (dev.catalog, dev.schema) if dev.catalog and dev.schema else None
@@ -1480,8 +1521,6 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         | ({"write": t.write} if t.write is not None else {})
         for t in dev.tables
     ]
-    # Cut without leaving a quoted value open, so the policy still finds it (aep.policy).
-    errors = [] if passed else [policy.clip(e, ERROR_CHARS) for e in dev.errors[:MAX_ERRORS]]
     quality = dev_quality(tables, plan)
     found = None
     if passed and plan and card:
@@ -1495,7 +1534,7 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
             url=dev.url,
             names=answer_names(plan),
         )
-    report = dev_report(dev, attempt, branch, tables, errors, found)
+    report = dev_report(dev, attempt, branch, tables, errors, found, before + 1, repeated)
     run = {k: v for k, v in dev.as_dict().items() if k != "preview"} | {"attempt": attempt}
     outputs = {
         "status": dev.status,
@@ -1509,12 +1548,12 @@ async def run_dev_run(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         "errors": "\n".join(errors),
         "report": report,
     }
-    said = dev_said(dev, attempt, branch, tables, errors, node.get("max_runs", 3))
+    said = dev_said(dev, attempt, branch, tables, errors, node.get("max_runs", 3), repeated)
     return Outcome(
         outputs,
         branch,
         messages=[{"role": "assistant", "content": said}],
-        private={"attempts": attempt if branch == "retry" else 0},
+        private={"attempts": attempt, "errors_key": key} if branch == "retry" else {"attempts": 0},
         data=["preview", "answer", "report"],
         # The run's details keep the errors too.
         quoted=["errors", "run"],

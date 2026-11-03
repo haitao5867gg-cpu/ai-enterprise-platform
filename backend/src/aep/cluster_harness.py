@@ -637,6 +637,12 @@ def main(spark: Any, spec: dict[str, Any]) -> dict[str, Any]:
     warned = namespace.get("WARNINGS")
     if isinstance(warned, list) and warned:
         outcome["warnings"] = [str(w)[:WARNING_CHARS] for w in warned[:WARNINGS_MAX]]
+    # How many rows the project's read filters left out (the pipeline file's FILTERED).
+    filtered = namespace.get("FILTERED")
+    if isinstance(filtered, dict) and filtered:
+        outcome["filtered"] = {
+            str(k)[:200]: v for k, v in list(filtered.items())[:WARNINGS_MAX] if type(v) is int
+        }
     if spec.get("preview"):
         outcome["preview"] = _preview(done, spec["preview"], spec.get("order"))
     if spec.get("answer") and not errors and not write_errors:

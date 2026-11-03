@@ -339,8 +339,14 @@ CODEGEN_PROMPT = """已确认的方案：
 源表：
 {{profile.description}}
 
+公司数据口径（参考资料）：
+{{glossary.context}}
+
 开发规范（参考资料）：
 {{standards.context}}
+
+代码按已确认的方案写；方案里的口径、判断的先后顺序和边界情况没写全时，按口径资料里的定义写，\
+不要自己发挥。
 
 上一版代码（第一次写时为空，忽略）：{{check_code.code}}
 静态检查发现的问题（为空时忽略）：{{check_code.problems}}

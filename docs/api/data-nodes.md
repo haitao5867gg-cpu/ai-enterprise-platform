@@ -325,7 +325,7 @@
 
 `quality`：`rules` 是 `tables[].expectations` 的条数之和（没跑到质量规则的表不算）；`dropped` 是 `tables[].dropped` 之和；`failed_rules` 是其中有不通过的行、而处理方式是 `warn` 或 `fail` 的规则条数（处理方式按规则名对方案里这张表的质量规则；`drop` 规则不通过的行已经算在 `dropped` 里；运行通过时 `fail` 规则不会有不通过的行，运行失败时它照样算进来，免得报错说质量规则要求整次更新失败、小结却写“全部通过”）。没设 `plan`、或者方案里找不到同名的规则时不知道处理方式，有不通过的行的都算进 `failed_rules`。`text` 的写法：“5 条质量规则全部通过”“5 条质量规则里 1 条有不通过的行”，丢弃了行时接“，丢弃 12 行”；没有质量规则时为“没有质量规则”。
 
-分支：`passed`（通过）、`retry`（失败且 `fixable`，且这是这一轮第 `max_runs` 次以前）、`failed`（其他失败）。显示文字：通过、带着报错重写、失败。第二批起按轮计数（见上）；以前写的“运行次数在这次运行里累计，不随回到写代码清零”不再成立。模板第 1 版里 `passed`、`failed` 都直接到结束，一次运行只有一轮，结果和以前一样。
+分支：`passed`（通过）、`retry`（失败且 `fixable`，且这是这一轮第 `max_runs` 次以前，而且报错和这一轮上一次不一样）、`failed`（其他失败）。jadeflow 复测 I-18：模型带着报错改了一次代码，下一次试跑报的还是同一个错（比较时忽略 id、Spark 的表达式编号 `#123`、5 位以上的数字和空白）时不再自动重写，走 `failed` 交给人，`message` 是“dev 运行失败（N 条报错），和上一次的报错一样，不再自动重写，交给人”，报告开头说明请选「改代码」写明怎么改。报告里的次数写“第 N 次运行”；这一轮之前已经试跑过时写“第 M 次试跑（这一轮的第 N 次）”，M 是这次运行里所有的试跑（S-15）。显示文字：通过、带着报错重写、失败。第二批起按轮计数（见上）；以前写的“运行次数在这次运行里累计，不随回到写代码清零”不再成立。模板第 1 版里 `passed`、`failed` 都直接到结束，一次运行只有一轮，结果和以前一样。
 
 #### 答案怎么算
 
@@ -699,8 +699,13 @@ data_review  approve → end          | fix_code → codegen   | fix_plan → pl
 源表：
 {{profile.description}}
 
+公司数据口径（参考资料）：
+{{glossary.context}}
+
 开发规范（参考资料）：
 {{standards.context}}
+
+代码按已确认的方案写；方案里的口径、判断的先后顺序和边界情况没写全时，按口径资料里的定义写，不要自己发挥。
 
 上一版代码（第一次写时为空，忽略）：{{check_code.code}}
 静态检查发现的问题（为空时忽略）：{{check_code.problems}}
@@ -860,6 +865,7 @@ def warn(message: str) -> None:
 - 函数体能 import 的（试点后新增，原来一律“不要写 import”）：标准库 `re`、`math`、`datetime`、`decimal`、`calendar`（`import re`、`import datetime as dt`、`from decimal import Decimal` 都行），以及 `pyspark.sql` 的 `types`、`functions`、`window`（`from pyspark.sql import types as T`、`from pyspark.sql.functions import col`；`import pyspark.sql.types` 要带 `as`）。别的模块、相对导入、`import *` 检查不过：“不能 import os，能 import 的只有 re、math、datetime、decimal、calendar 和 pyspark.sql 的 types、functions、window”。import 出来的名字不能是平台提供的名字，只有 `from pyspark.sql import functions as F`、`from pyspark.sql import Window` 这种和平台同一个东西的除外。
 - 没有定义的名字：函数体读了一个名字，而它既不是函数体里赋值、import、定义或参数里出现过的，也不是 Python 内置名字或平台提供的名字时，检查不过：“ibf_table2: 用了没有定义的名字 re（能 import 的只有 …；告警用 warn()）”。只查有没有，不查先后。以前这种代码要到 dev 运行时才报 NameError，白跑一次集群。
 - `warn("说明")`：数据有问题但不该停下时用（比如某个月没有数据、分摊比例加起来不是 1），每条进 dev 运行的 `warnings`，写成“代码告警：说明”，最多 20 条，每条最多 500 字；运行照常通过（`cluster`、`job` 模式；`pipeline` 模式只打印在管道日志里）。该停下的问题照旧 `raise ValueError("说明")`，dev 运行失败并带回这句话。`WARNINGS` 由平台读取，代码不能直接用（“不要直接用 WARNINGS，告警用 warn()”）。
+- 读取筛选排除的行数（jadeflow 复测 S-16）：`source()` 第一次读一张带读取筛选的表时，平台顺便数一遍筛选排除了多少行（`count_if(coalesce((筛选), false))`，筛选为空值的行也算排除），记在管道文件的 `FILTERED` 里；`cluster`、`job` 模式下 dev 运行的 `warnings` 多一条“读取筛选：prev.sales.forecast 按项目给它配置的筛选排除了 1 行”。数不出来（比如筛选写法不支持）时不记，筛选照常生效。`FILTERED` 和 `_left_out` 是平台的，代码不能用。
 - `warn_rows(df, "说明", limit=10)`（验收后新增）：要在告警里列出有问题的行（比如没分摊上的组合）时用。代码不许 `collect`，列行的事由平台的这个函数做：`df` 为空时什么都不记；否则数一遍行数，取前 `limit` 行（1–100），记一条 `warn("说明：共 n 行：列=值, 列=值；……（只列出前 k 行）")`，同样受上面每条 500 字的限制。代码不能重新定义它。代码用了禁止的写法时，问题里写上能用什么代替：`.collect`、`.toPandas` 写“要在告警里列出几行用 warn_rows(df, "说明")，数据留在集群上算”，`.sql` 写“用 DataFrame 写，读源表用 source()”，写表的 `.write`、`.saveAsTable`、`.insertInto` 写“不要写表：return 结果 DataFrame，平台按方案的写表方式写”。
 - SQL 方案：源表照旧换成 `${source_catalog}` 加两段名，三段名原样；条件里的 `${param.<key>}` 换成值的 SQL 字面值（同下面写表方式的规则）。读带筛选的引用表时检查不过：“表 … 有读取筛选，SQL 代码暂不支持，请改用 PySpark”。
 
@@ -1008,7 +1014,7 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - `unique`：重复的组数和 0；`rows`：重复的组数和行数（`rows` 检查）和 0。
   - `golden`：`actual` 是 `{"missing": 3, "extra": 0, "different": 12, "duplicates": {"table": 0, "expected": 0}}`（有重复键时前三项为 null），`expected` 是老系统结果表的三段式名。
   
-  `message` 一句话；`rows` 最多 20 行例子（对不上的组、重复的键、不一致的行、查出的行），通过的检查和没有例子时为 `[]`。执行出错的检查 `status` 为 `error`，`message` 是报错第一行（连接器自己的报错，去掉 MCP 加在前面的工具名）。
+  `message` 一句话；`rows` 最多 20 行例子（对不上的组、重复的键、不一致的行、查出的行），通过的检查和没有例子时为 `[]`。有例子时可能多一个 `focus`（jadeflow 复测 S-15）：读这些例子先看的列，显示在其他列前面：`golden` 是“差异”、对齐的键和不一致的列（按检查 `columns` 的顺序），`rows` 是 `lookup.on` 的键和条件里用到的列（只列例子里有的，写法同例子）；没有时不带这个键。`report` 里的例子表先列这些列，再补别的列到 10 列，超出时写“共 n 列，只显示 m 列：先列对齐的键、不一致的列和检查条件用到的列。”；例子里的数字不加千分位（年份 2026 不写成 2,026）。执行出错的检查 `status` 为 `error`，`message` 是报错第一行（连接器自己的报错，去掉 MCP 加在前面的工具名）。
 - **`only_if`**：到这一步时取值，不是 true 就不调连接器：`ok` 为 false，`results` 为 `[]`，`summary` 为“前一步没有通过，没有做数据检查”，`report` 同 `summary`，走 `failed`。这样试算失败的路径也能经过这个节点，后面的节点可以放心引用它的产出（保存检查要求引用的节点一定跑过）。
 - **节点什么时候失败**：`datasource` 不是 Databricks 数据源时 `input_error`（“数据检查要用 Databricks 数据源”）；连不上连接器时 `tool_error`（同 `tool` 节点，超时为 `timeout`）；单条检查出错只记在这条上。合在一起的检查不合格、id 重复或用了 `golden` 时 `input_error`，说是哪条（“检查 dup（columns）：列要写 1–20 个列名”）；`include` 的引用取值为 null 时当作空列表，是别的值时 `input_error`（“include 第 1 项（{{check_plan.checks}}）的值不是检查的列表”）。
 - **保存时**：`checks` 每条按上面的规则检查，报错的 `loc` 指到字段（`[..., "checks", 2, "where"]`）；字段的值里有引用（`{{…}}`）时这个字段到运行时取值后再查。`include` 每项、`only_if` 必须恰好是一个引用；`golden` 只有 `expected`、`table`、`keys`、`tolerance`、`severity` 五项，`keys` 是列名列表或一个引用，`tolerance` 是不小于 0 的数或一个引用，`severity` 是 `error`、`warn`、`info` 或一个引用。写死的数据源不是 Databricks 类型时报“数据检查要用 Databricks 数据源”，是的话要有 `aggregate`、`duplicates`、`compare`、`sample_rows` 四个工具（连接器连得上时查）。
