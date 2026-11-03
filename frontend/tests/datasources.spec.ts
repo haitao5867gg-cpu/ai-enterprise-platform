@@ -66,7 +66,9 @@ test("列表分两组，逐行检查连通状态并统计工具和应用", async
   await expect(
     page.getByRole("heading", { name: "数据源与工具", level: 1 }),
   ).toBeVisible();
-  await expect(page.getByText("连接器是数据团队部署的小服务")).toBeVisible();
+  await expect(
+    page.getByText("数据和工具都经连接器（MCP 服务）接入"),
+  ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "数据源", exact: true, level: 2 }),
   ).toBeVisible();
@@ -248,9 +250,9 @@ test("登记 Databricks 数据源：编排应用能选，ETL 应用不列出", a
   await expect(
     picker.getByRole("option", { name: "MySQL 示例库 · MySQL" }),
   ).toBeAttached();
-  await expect(picker.getByRole("option", { name: new RegExp(name) })).toHaveCount(
-    0,
-  );
+  await expect(
+    picker.getByRole("option", { name: new RegExp(name) }),
+  ).toHaveCount(0);
   // A flow app's data source input lists it with the other data sources.
   await page.getByLabel("应用", { exact: true }).selectOption("retail-etl");
   await expect(

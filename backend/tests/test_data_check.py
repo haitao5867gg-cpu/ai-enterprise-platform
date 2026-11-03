@@ -149,9 +149,11 @@ async def test_aggregate_reads_the_result_table_in_the_project_environment():
     # Within the tolerance; the run parameter became a quoted literal.
     assert (ranged["status"], ranged["expected"]) == ("passed", [0, 9.5])
     assert ranged["message"] == "实际 10，要求 在 0 和 9.5 之间（容差 0.5），满足"
-    assert calls[0] == ("aggregate", {"table": "dev.etl.ibf_table2", "expr": "sum(qty)",
-                                      "where": None, "group_by": None, "limit": 20})  # fmt: skip
-    assert calls[2][1]["where"] == "month = '2026-10'"
+    # Checks run side by side, so the calls come in any order.
+    assert ("aggregate", {"table": "dev.etl.ibf_table2", "expr": "sum(qty)",
+                          "where": None, "group_by": None, "limit": 20}) in calls  # fmt: skip
+    (ranged_call,) = [args for _, args in calls if args.get("expr") == "max(qty)"]
+    assert ranged_call["where"] == "month = '2026-10'"
     assert out.outputs["ok"] is False and out.branch == "failed"
     assert out.outputs["summary"] == "3 项检查：2 项通过，1 项不通过"
     assert out.data == ["results", "report"]
@@ -248,10 +250,10 @@ async def test_unique_reports_repeated_keys():
     )
     assert month["rows"] == [{"month": "2026-11", "count": 2}]
     assert (sku["status"], sku["message"]) == ("passed", "按 sku、month 没有重复")
-    assert calls[0] == (
+    assert (
         "duplicates",
         {"table": "dev.etl.ibf_table2", "columns": ["month"], "where": None, "limit": 20},
-    )
+    ) in calls
 
 
 async def test_grouped_checks_line_up_the_groups():
@@ -280,7 +282,9 @@ async def test_grouped_checks_line_up_the_groups():
     assert found["status"] == "failed" and found["actual"] == 1
     assert found["rows"] == [{"month": "2026-11", "left": 3, "right": 6}]
     assert found["message"] == "按 month 分 2 组，1 组对不上"
-    assert calls[0][1]["limit"] == 10000 and calls[0][1]["group_by"] == ["month"]
+    (sides,) = [args for _, args in calls if args.get("table") == "dev.etl.ibf_table2"
+                and args.get("expr") == "sum(qty)"]  # fmt: skip
+    assert sides["limit"] == 10000 and sides["group_by"] == ["month"]
     assert pos["rows"] == [{"month": "2026-11", "value": -1}]
     assert pos["message"] == "按 month 分 2 组，1 组不满足 > 0"
 

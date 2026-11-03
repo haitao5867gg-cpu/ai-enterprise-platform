@@ -95,6 +95,17 @@ export function RunList() {
             .find((item) => item.key === filter)
             ?.statuses.includes(run.status),
         );
+  const counts: Record<Filter, number> = {
+    all: runs.length,
+    running: 0,
+    waiting: 0,
+    done: 0,
+    stopped: 0,
+  };
+  for (const run of runs) {
+    const key = filters.find((item) => item.statuses.includes(run.status))?.key;
+    if (key) counts[key] += 1;
+  }
   const newButton = (
     <Link className="button primary" href="/runs/new">
       <Icon name="plus" />
@@ -104,44 +115,15 @@ export function RunList() {
   return (
     <>
       <div className="page-heading">
-        <div>
-          <h1>{t("运行记录")}</h1>
-          <p>{t("从需求到结果，每一步都可追踪。")}</p>
-        </div>
-        {newButton}
+        <h1>{t("运行记录")}</h1>
       </div>
-      <section className="stats-grid" aria-label={t("运行概览")}>
-        {[
-          { label: "全部运行", count: runs.length, icon: "runs" as const },
-          {
-            label: "等待确认",
-            count: runs.filter((r) => r.status === "waiting").length,
-            icon: "alert" as const,
-          },
-          {
-            label: "已完成",
-            count: runs.filter((r) => r.status === "done").length,
-            icon: "check" as const,
-          },
-        ].map((stat) => (
-          <div className="stat-card" key={stat.label}>
-            <div>
-              <span>{t(stat.label)}</span>
-              <strong>
-                {loading || error
-                  ? "—"
-                  : stat.count.toString().padStart(2, "0")}
-              </strong>
-            </div>
-            <span className="stat-icon">
-              <Icon name={stat.icon} size={21} />
-            </span>
-          </div>
-        ))}
-      </section>
       <section className="panel runs-panel" aria-label={t("运行列表")}>
         <div className="panel-toolbar">
-          <div className="filter-tabs" role="group" aria-label={t("筛选运行状态")}>
+          <div
+            className="filter-tabs"
+            role="group"
+            aria-label={t("筛选运行状态")}
+          >
             {[{ key: "all" as const, label: "全部" }, ...filters].map(
               (item) => (
                 <button
@@ -151,6 +133,15 @@ export function RunList() {
                   onClick={() => setFilter(item.key)}
                 >
                   {t(item.label)}
+                  {!loading && !error && (
+                    // The name stays the filter's; the count is for the eye.
+                    <span
+                      className={`filter-count${item.key === "waiting" && counts.waiting ? " attention" : ""}`}
+                      aria-hidden
+                    >
+                      {counts[item.key]}
+                    </span>
+                  )}
                 </button>
               ),
             )}
@@ -296,21 +287,12 @@ export function RunList() {
             </table>
           </div>
         )}
-        <div className="table-footer">
-          <span>
-            {error
-              ? t("加载失败")
-              : loading
-                ? t("正在同步")
-                : t("共 {n} 条运行", { n: visible.length })}
-          </span>
-          <span>{t("运行过程与结果集中管理")}</span>
-        </div>
+        {!loading && !error && visible.length > 0 && (
+          <div className="table-footer">
+            <span>{t("共 {n} 条运行", { n: visible.length })}</span>
+          </div>
+        )}
       </section>
-      <div className="list-note">
-        <Icon name="spark" size={16} />
-        {t("需要你确认的运行会暂停等待，确认后继续执行。")}
-      </div>
     </>
   );
 }
