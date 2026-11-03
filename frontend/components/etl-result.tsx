@@ -194,7 +194,6 @@ export function EtlResultView({
                 </div>
               )}
             </dl>
-            <SourceList title={t("全部检索结果")} />
             <details className="developer-view" open>
               <summary>{t("原始结果")}</summary>
               <pre className="result-json">
@@ -204,6 +203,8 @@ export function EtlResultView({
           </div>
         )}
       </div>
+      {/* Mounted whatever the tab: the report and the run's conversation cite them. */}
+      <SourceList title={t("全部检索结果")} />
     </section>
   );
 }
