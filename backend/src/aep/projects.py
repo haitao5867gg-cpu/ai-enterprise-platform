@@ -128,11 +128,15 @@ def param_problem(param: dict[str, Any], value: Any) -> str | None:
     """Why ``value`` does not fit the parameter, or None. A text parameter's ``pattern``
     must match the whole value."""
     label, kind = param["label"], param["type"]
-    if kind == "text" and not (isinstance(value, str) and 1 <= len(value) <= 500):
-        return f"参数「{label}」要写 1–500 个字"
+    if kind == "text" and not (isinstance(value, str) and value.strip() and 1 <= len(value) <= 500):
+        return f"参数「{label}」要写 1–500 个字，不能只有空格"
     pattern = param.get("pattern")
     if kind == "text" and pattern and _pattern(pattern).fullmatch(value) is None:
-        return f"参数「{label}」要符合格式 {pattern}"
+        # People read the parameter's description, not the regular expression (jadeflow
+        # retest S-19).
+        if described := (param.get("description") or "").strip():
+            return f"参数「{label}」的格式不对：{described}"
+        return f"参数「{label}」的格式不对，要整段符合正则表达式 {pattern}"
     if kind == "number" and (isinstance(value, bool) or not isinstance(value, int | float)):
         return f"参数「{label}」要是数字"
     if kind == "boolean" and not isinstance(value, bool):
@@ -512,6 +516,10 @@ def snapshot(project: Project, environment: str | None, given: Any) -> dict[str,
     values: dict[str, Any] = {}
     for p in body["params"]:
         value = given.get(p["key"])
+        # Text is taken without the spaces around it; spaces only is not filled in (jadeflow
+        # retest S-19: a run_id of spaces started a run).
+        if p["type"] == "text" and isinstance(value, str):
+            value = value.strip() or None
         if value is None:
             value = p.get("default")
         if value is None:

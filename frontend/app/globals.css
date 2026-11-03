@@ -5956,3 +5956,8 @@ fieldset.project-form-section > legend + * {
 .ops-empty {
   margin: 0;
 }
+
+.brief-table .metric-columns {
+  display: block;
+  font-size: 0.85em;
+}

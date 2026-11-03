@@ -9,7 +9,15 @@ import pytest
 
 from aep.config import get_settings
 from aep.main import app
-from aep.projects import filter_problem, param_problem, pattern_problem
+from aep.projects import (
+    BindError,
+    MemoryProjectStore,
+    ProjectBody,
+    filter_problem,
+    param_problem,
+    pattern_problem,
+    snapshot,
+)
 from tests.conftest import SETTINGS
 from tests.test_flow_tools import Platform
 
@@ -83,7 +91,12 @@ def test_parameter_values_follow_their_type():
     assert param_problem({"label": "开关", "type": "boolean"}, "true") == (
         "参数「开关」要是 true 或 false"
     )
-    assert param_problem({"label": "字", "type": "text"}, "") == "参数「字」要写 1–500 个字"
+    assert param_problem({"label": "字", "type": "text"}, "") == (
+        "参数「字」要写 1–500 个字，不能只有空格"
+    )
+    assert param_problem({"label": "字", "type": "text"}, "   ") == (
+        "参数「字」要写 1–500 个字，不能只有空格"
+    )
     choice = {"label": "版本", "type": "select", "choices": [{"value": "a"}, {"value": "b"}]}
     assert param_problem(choice, "c") == "参数「版本」要是这些之一：a、b"
 
@@ -93,7 +106,12 @@ def test_a_text_parameter_may_have_a_format():
     assert param_problem(version, "FY26_06_M") is None
     # The whole value must match.
     for value in ("FY26_06_MX", "xFY26_06_M", "FY26-06"):
-        assert param_problem(version, value) == r"参数「版本」要符合格式 FY\d{2}_\d{2}_M"
+        assert param_problem(version, value) == (
+            r"参数「版本」的格式不对，要整段符合正则表达式 FY\d{2}_\d{2}_M"
+        )
+    # With a description, people read that instead of the expression (jadeflow retest S-19).
+    described = version | {"description": "月度版本 FY{yy}_{MM}_M"}
+    assert param_problem(described, "FY26") == "参数「版本」的格式不对：月度版本 FY{yy}_{MM}_M"
     assert param_problem({"label": "字", "type": "text"}, "x") is None  # Saved before formats.
     assert pattern_problem("(a") == "不是有效的正则表达式（missing ): (a）"
     assert pattern_problem(r"(a)\1") == r"不是有效的正则表达式（invalid escape sequence: \1）"
@@ -190,7 +208,7 @@ async def test_project_crud():
                     }
                 ]
             },
-            "默认值不对：参数「版本」要符合格式 FY\\d{2}",
+            "默认值不对：参数「版本」的格式不对，要整段符合正则表达式 FY\\d{2}",
         ),
         ({"policy": {"samples": "some"}}, "「数据外发策略的样本级别」的取值不对"),
     ],
@@ -490,6 +508,16 @@ async def test_required_parameters_and_parameters_the_app_uses():
         run = (await p.api.get(f"/runs/{resp.json()['run_id']}")).json()
         assert run["project"] is None
         assert p.gateway.requests[-1]["body"]["messages"][-1]["content"] == "[]"
+
+
+async def test_text_parameters_are_taken_without_spaces_around_them():
+    """jadeflow retest S-19: a run_id of spaces only started a run."""
+    store = MemoryProjectStore()
+    batch = {"key": "run_id", "label": "运行批次", "type": "text", "required": True}
+    saved = await store.create(ProjectBody.model_validate(project(params=[batch])).body())
+    with pytest.raises(BindError, match="请填写参数「运行批次」"):
+        snapshot(saved, None, {"run_id": "   "})
+    assert snapshot(saved, None, {"run_id": " RUN_7 "})["values"] == {"run_id": "RUN_7"}
 
 
 async def test_a_project_policy_applies_to_its_runs():

@@ -10,6 +10,8 @@ export type BriefMetric = {
   unit: string | null;
   definition: string;
   column: string | null;
+  // A metric over several result columns (the 12 month columns); [] for one.
+  columns: string[];
 };
 export type BriefDimension = {
   id: string;
@@ -183,6 +185,7 @@ export function readBrief(value: unknown): Brief | null {
       unit: textOrNull(metric.unit),
       definition: text(metric.definition),
       column: textOrNull(metric.column),
+      columns: texts(metric.columns),
     })),
     dimensions: records(value.dimensions).map((dimension) => ({
       id: text(dimension.id),
@@ -473,6 +476,28 @@ export function checkRow(
             : cellValue(mine[column]);
   }
   return out;
+}
+
+// A metric's result columns in short: "cw_01–cw_12（12 列）" for a numbered run of
+// columns, else the names.
+export function metricColumns(metric: BriefMetric): string {
+  const columns = metric.columns.length
+    ? metric.columns
+    : metric.column
+      ? [metric.column]
+      : [];
+  if (columns.length < 3) return columns.join("、");
+  const parts = columns.map((column) => /^(.*?)(\d+)$/.exec(column));
+  const run = parts.every(
+    (part, i) =>
+      part !== null &&
+      part[1] === parts[0]?.[1] &&
+      Number(part[2]) === Number(parts[0]?.[2]) + i,
+  );
+  const listed = run
+    ? `${columns[0]}–${columns[columns.length - 1]}`
+    : columns.join("、");
+  return `${listed}（${columns.length} 列）`;
 }
 
 // A value in an example row: numbers as they are, without thousands separators (a year

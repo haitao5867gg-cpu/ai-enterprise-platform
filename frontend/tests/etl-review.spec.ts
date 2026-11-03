@@ -62,6 +62,13 @@ test("plan review: the brief, questions on the page, notes on items turn the dec
       .getByRole("row")
       .filter({ hasText: "不含运费" }),
   ).not.toContainText("没找到口径文档");
+  // Each metric says which result column holds it.
+  await expect(
+    review
+      .getByRole("table", { name: "指标" })
+      .getByRole("row")
+      .filter({ hasText: "不含运费" }),
+  ).toContainText("结果列 sales_amount");
   // [n] in the brief point to the material the plan relies on.
   await expect(
     review.getByRole("link", { name: "引用来源 2" }).first(),

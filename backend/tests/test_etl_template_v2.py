@@ -269,8 +269,9 @@ async def test_code_sent_back_after_the_dev_run_counts_its_runs_again(make):
     assert "【第 1 轮 · 审核试算结果 · 改代码】意见：数量列改成整数" in lake.prompt()
     pending = view["pending"]
     assert view["step"]["node"] == "data_review" and pending["details"]["round"] == 2
-    # A new round of the dev run, counted from 1; the tables were not copied again.
-    assert "- 第 1 次运行" in pending["details"]["show"]
+    # A new round of the dev run, counted from 1, and the run's third in all (S-15); the
+    # tables were not copied again.
+    assert "- 第 3 次试跑（这一轮的第 1 次）" in pending["details"]["show"]
     assert len(lake.ws.commands) == 3
 
     view = await lake.submit(run_id, "approve")

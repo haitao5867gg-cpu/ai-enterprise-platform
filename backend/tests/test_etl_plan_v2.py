@@ -937,6 +937,24 @@ def test_brief_columns_must_be_result_columns():
     ]
 
 
+def test_a_metric_may_span_several_result_columns():
+    """jadeflow retest S-17: a metric over the 12 month columns could only name one."""
+    raw = brief_plan()
+    raw["brief"]["metrics"][1]["columns"] = ["quantity_sum", "avg_quantity"]
+    plan, cleaned = check(raw)
+    assert plan.brief is not None
+    dumped = plan.model_dump()["brief"]["metrics"]
+    assert dumped[1]["columns"] == ["quantity_sum", "avg_quantity"]
+    assert "columns" not in dumped[0]  # left out when there are none
+    for columns, problem in [
+        (["quantity_sum"], "brief.metrics[1].columns 要列出 2–60 列"),
+        (["quantity_sum", "quantity"], "brief.metrics[1].columns 里的 quantity 不是结果表"),
+        (["quantity_sum", "quantity_sum"], "brief.metrics[1].columns 里的 quantity_sum 写了两次"),
+    ]:
+        raw["brief"]["metrics"][1]["columns"] = columns
+        assert any(problem in p for p in problems(raw)), (columns, problems(raw))
+
+
 def test_question_rules_go_back():
     raw = brief_plan()
     raw["questions"] = [

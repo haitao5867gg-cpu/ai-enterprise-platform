@@ -2,6 +2,7 @@
 Databricks connector: which tools each kind of check calls and with what, how results
 are judged, the node's golden comparison, only_if, and its settings."""
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -193,8 +194,8 @@ async def test_table_names_resolve_by_their_parts(monkeypatch: pytest.MonkeyPatc
     ]
     # Unbound: bare names are in the platform's catalog and schema.
     out = await run(node(checks=found), state(lake, project=None), rt)
-    tables = [args["table"] for name, args in calls if name == "aggregate"]
-    assert tables == ["lake.shop.orders", "old.jade.table2", "main.dev.ibf_table2"]
+    tables = {args["table"] for name, args in calls if name == "aggregate"}  # side by side
+    assert tables == {"lake.shop.orders", "old.jade.table2", "main.dev.ibf_table2"}
     statuses = [r["status"] for r in out.outputs["results"]]
     assert statuses == ["failed", "passed", "error"]
     assert out.outputs["results"][2]["message"].startswith("表 main.dev.ibf_table2 不存在")
@@ -979,6 +980,28 @@ async def test_the_datasource_must_be_databricks_and_reachable():
         await run(n, state(down.datasource_id), rt)
     assert failed.value.type == "tool_error"
     assert failed.value.message.startswith("连不上数据源「断开的湖」")
+
+
+async def test_checks_run_side_by_side_and_keep_their_order(monkeypatch):
+    """jadeflow retest S-18: 48 checks one after another took 4 minutes."""
+    rt, lake, _, _ = await env()
+    running = most = 0
+
+    async def slow(check, scope, call, expected=None):
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        await asyncio.sleep(0.01 * (10 - int(check["id"][1:])))  # later ones finish first
+        running -= 1
+        return checks.result(check, "passed", check["id"])
+
+    monkeypatch.setattr(checks, "run", slow)
+    n = node(checks=[check(f"c{i}", "rows", table="ibf_table2", where="qty < 0") for i in range(9)])
+    out = await run(n, state(lake), rt)
+    assert [r["message"] for r in out.outputs["results"]] == [f"c{i}" for i in range(9)]
+    from aep.runtime.flow.data_check import CONCURRENT_CHECKS  # after the node types load
+
+    assert most == CONCURRENT_CHECKS
 
 
 def test_the_report_lists_each_check_and_the_examples():

@@ -7,7 +7,9 @@ system) are described and judged in ``aep.etl.checks``; settings, outputs and br
 are documented in docs/api/data-nodes.md, "data_check 数据检查".
 """
 
+import asyncio
 import math
+from collections.abc import Coroutine
 from typing import Any
 
 from aep.datasources import tool_seconds
@@ -30,6 +32,9 @@ MAX_INCLUDE = 5
 GOLDEN_KEYS = {"expected", "table", "keys", "tolerance", "severity"}
 NOT_DATABRICKS = "数据检查要用 Databricks 数据源"
 SKIPPED = "前一步没有通过，没有做数据检查"
+# Checks that run at once (jadeflow retest S-18: 48 one after another took 4 minutes); the
+# Databricks connector runs as many side by side (AEP_DATABRICKS_READ_CONTEXTS).
+CONCURRENT_CHECKS = 4
 
 
 # Checking settings
@@ -225,7 +230,13 @@ async def run_data_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             raise NodeFailure(kind, f"连不上数据源「{source.name}」：{exc}") from exc
 
     default = expected if isinstance(expected, str) and expected else None
-    results = [await checks.run(check, where, call, default) for check in found]
+    slots = asyncio.Semaphore(CONCURRENT_CHECKS)
+
+    async def one(check: dict[str, Any]) -> dict[str, Any]:
+        async with slots:
+            return await checks.run(check, where, call, default)
+
+    results = await _all([one(check) for check in found])
     if expected not in (None, ""):
         check, problem = checks.golden_check(
             _text(refs.resolve(golden.get("table"), get)),
@@ -271,3 +282,14 @@ TYPES: dict[str, NodeType] = {
         branch_labels=lambda node: {"passed": "通过", "failed": "不通过"},
     )
 }
+
+
+async def _all(runs: list[Coroutine[Any, Any, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """The results in the checks' order; the first failure (a connector out of reach)
+    stops the others and is raised as it is."""
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(run) for run in runs]
+    except ExceptionGroup as failed:
+        raise failed.exceptions[0] from None
+    return [task.result() for task in tasks]

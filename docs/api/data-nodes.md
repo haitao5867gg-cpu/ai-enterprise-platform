@@ -138,7 +138,7 @@
 
 字段规则：
 - **必填和可选**：`brief`、`rules`、`questions`、`answer` 都可以不写（`brief`、`answer` 不写时由平台生成，见下）。写了的按 `OUTPUT_FORMAT_V2` 的结构检查：`brief` 的 `goal`，指标和维度的 `name`、`definition`，筛选和规则的 `text`，`time_range` 不为 null 时它的 `text`，题的 `text`，`answer` 的 `target` 和 `measures` 都必填；文字要是文字，列表要是列表（题的 `options` 没写或少于 2 个时改成规则，见下）；`brief` 的 `metrics`、`dimensions`、`filters` 不写为 `[]`。指标的 `unit`、`column`，维度的 `column`、`examples`，`time_range` 的 `column`，题的 `why`、`affects` 可选。id 没写或写法不对不算结构问题，由平台改（见下）。没写 `column` 的指标和维度不进平台生成的答案设计，也不拿来给列补 `label`。
-- **结果表**：`answer.target`；没有 `answer` 时是 `targets` 里最后一张。`answer` 不是对象、或者 `answer.target` 不是某张目标表时（这本身会让模型重写，见下），其余用到结果表的整理和检查都按 `targets` 里最后一张算。`brief` 里指标、维度和时间范围的 `column` 都要是结果表的列。
+- **结果表**：`answer.target`；没有 `answer` 时是 `targets` 里最后一张。`answer` 不是对象、或者 `answer.target` 不是某张目标表时（这本身会让模型重写，见下），其余用到结果表的整理和检查都按 `targets` 里最后一张算。`brief` 里指标、维度和时间范围的 `column` 都要是结果表的列。指标可以另写 `columns`（jadeflow 复测 S-17）：一个指标落在结果表的多列上（如按月的 12 列）时列出这些列，2–60 列、都是结果表的列、不能重复（“brief.metrics[0].columns 里的 cw_13 不是结果表 x 的列”“…要列出 2–60 列；只有一列时写在 column 里，columns 写 null”）；没有时不写或写 null，方案里不带这个键。答案设计照旧只看 `column`。确认页指标名称下写“结果列 cw_01–cw_12（12 列）”。
 - **id**：指标、维度、筛选、规则和题的 `id` 写法同节点 id，在这几类之间也不能重复。
 - **rules**：`basis` 是依据：`knowledge`（口径资料）、`request`（需求）、`data`（数据里看到的）、`assumption`（假设，不写时）、`confirmed`（人已经确认过）。旧的 `assumptions` 每条并入 `rules`，`basis` 为 `assumption`；输出的 `plan.assumptions` 总是 `[]`。
 - **questions**：要人拍板的地方，最多 5 题；`text` 最多 50 个字符（解释写在 `why` 里，最多 500 个字符）；2–6 个选项，`value` 是 1–64 个字符的文字、不重复，`label` 1–50 个字符；`suggested` 是方案现在的做法，必须是某个选项的 `value`；`affects` 是受影响的指标、维度、筛选或规则的 id，最多 20 个。
@@ -169,7 +169,7 @@
 - 同一个列表里去掉重复的条目（去掉空格和标点后一样就算重复），重复的题留第一个。
 - 规则的 `basis` 不是上面那五个词之一时按 `assumption` 处理。
 - 模型没写 `brief` 时由平台生成（在补 `label` 之前）：`goal` 取 `summary`；结果表的主键列当维度、其余列当指标，按列的顺序编号 `d1`、`d2`……和 `m1`、`m2`……（跳过已经被别的 id 用了的编号），`column` 是列名，`name` 取模型写的列 `label`（没写时用列名），`definition` 取列的 `description`，`unit` 为 null；`grain` 写成“每个{主键各列的名称，用 × 连接}一行”，名称同样取列的 `label` 或列名；没有筛选和时间范围。平台生成的 `brief` 不查“业务文字里有代码”：列的说明里常有 `sum(...)` 这类写法，不该为了一份模型没写的说明让它重写。
-- 列没有 `label` 时补上：`brief` 里对应指标的“名称（单位）”或维度的名称（只看写了 `column` 的），都没有时用列名。
+- 列没有 `label` 时补上：`brief` 里对应指标的“名称（单位）”或维度的名称（只看写了 `column` 的），都没有时用列名。写了 `columns` 的指标，这些列补成“名称（单位） · 列名”，免得 12 列看起来一样。
 - 写法不合格的 id 按类别改成还没被任何 id 用过的最小编号（`m1`、`d1`、`f1`、`r1`、`q1` 这样），`affects` 里的旧 id 跟着改成新的；改完以后，`affects` 里不存在的 id 去掉。
 - 题的选项 `value` 和 `suggested` 是数字或 true、false 时转成文字（`2026` → `"2026"`）；`why` 超过 500 个字符时截断；`affects` 去掉重复的，超过 20 个时只留前 20 个。
 - 选项少于 2 个的题改成规则，`text` 写成“{题目}——按「{选项名称}」处理”（没有选项时只写题目），`basis` 为 `assumption`。第 6 题起的题（按 `answered` 处理之后）同样改成规则，按建议的选项写；`suggested` 没写或不在选项里时只写题目（这些题不再经过对题的检查）。题改成规则时，规则的 `id` 同样取还没被任何 id 用过的最小 `r` 编号。
@@ -680,7 +680,7 @@ data_review  approve → end          | fix_code → codegen   | fix_plan → pl
 数仓开发规范（参考资料）：
 {{standards.context}}
 
-需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式按开发规范。在 brief、rules、questions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要编号。资料和需求不一致时不要自己选：需求明确说这次要改掉资料里的做法的，按需求写，写进 rules 并说明和资料哪里不同；否则写成 questions，列出资料的写法和需求的说法，方案先按资料写。需求没说清、要人拍板的地方写成 questions，方案按建议的选项写。需求里要的东西（一条检查、一列、一种算法）平台不支持、校验不通过时，不要悄悄删掉或换掉：写成 questions，说明需求要的是什么、平台能怎么做、建议怎么替代，方案按建议的替代做法写。
+需求里的指标和口径资料有关时按口径定义；目标表的分层和命名、主键、字段类型、质量规则和加载方式按开发规范。在 brief、rules、questions、目标表和字段说明里用 [n] 标注依据；没有资料依据的内容不要编号。资料和需求不一致时不要自己选：需求明确说这次要改掉资料里的做法的，按需求写，写进 rules 并说明和资料哪里不同；否则写成 questions，列出资料的写法和需求的说法，方案先按资料写。资料里写明还没定、暂不实现或要另行确认的事，即使需求明确要做，也写成 questions，选项至少有“按需求做”和“按资料，先不做”，方案先按资料写。需求没说清、要人拍板的地方写成 questions，方案按建议的选项写。需求里要的东西（一条检查、一列、一种算法）平台不支持、校验不通过时，不要悄悄删掉或换掉：写成 questions，说明需求要的是什么、平台能怎么做、建议怎么替代，方案按建议的替代做法写。
 
 上一版方案（第一次出方案时为空，忽略）：{{check_plan.plan}}
 平台校验发现的问题（为空时忽略）：{{check_plan.problems}}
@@ -1015,6 +1015,7 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - `golden`：`actual` 是 `{"missing": 3, "extra": 0, "different": 12, "duplicates": {"table": 0, "expected": 0}}`（有重复键时前三项为 null），`expected` 是老系统结果表的三段式名。
   
   `message` 一句话；`rows` 最多 20 行例子（对不上的组、重复的键、不一致的行、查出的行），通过的检查和没有例子时为 `[]`。有例子时可能多一个 `focus`（jadeflow 复测 S-15）：读这些例子先看的列，显示在其他列前面：`golden` 是“差异”、对齐的键和不一致的列（按检查 `columns` 的顺序），`rows` 是 `lookup.on` 的键和条件里用到的列（只列例子里有的，写法同例子）；没有时不带这个键。`report` 里的例子表先列这些列，再补别的列到 10 列，超出时写“共 n 列，只显示 m 列：先列对齐的键、不一致的列和检查条件用到的列。”；例子里的数字不加千分位（年份 2026 不写成 2,026）。执行出错的检查 `status` 为 `error`，`message` 是报错第一行（连接器自己的报错，去掉 MCP 加在前面的工具名）。
+- **并发**（jadeflow 复测 S-18）：检查一次最多 4 条同时跑（Databricks 只读连接器在集群上同样开 4 个执行环境，见 datasources.md），`results` 仍按检查的顺序；连不上连接器时其余的检查停下，节点照旧 `tool_error`。
 - **`only_if`**：到这一步时取值，不是 true 就不调连接器：`ok` 为 false，`results` 为 `[]`，`summary` 为“前一步没有通过，没有做数据检查”，`report` 同 `summary`，走 `failed`。这样试算失败的路径也能经过这个节点，后面的节点可以放心引用它的产出（保存检查要求引用的节点一定跑过）。
 - **节点什么时候失败**：`datasource` 不是 Databricks 数据源时 `input_error`（“数据检查要用 Databricks 数据源”）；连不上连接器时 `tool_error`（同 `tool` 节点，超时为 `timeout`）；单条检查出错只记在这条上。合在一起的检查不合格、id 重复或用了 `golden` 时 `input_error`，说是哪条（“检查 dup（columns）：列要写 1–20 个列名”）；`include` 的引用取值为 null 时当作空列表，是别的值时 `input_error`（“include 第 1 项（{{check_plan.checks}}）的值不是检查的列表”）。
 - **保存时**：`checks` 每条按上面的规则检查，报错的 `loc` 指到字段（`[..., "checks", 2, "where"]`）；字段的值里有引用（`{{…}}`）时这个字段到运行时取值后再查。`include` 每项、`only_if` 必须恰好是一个引用；`golden` 只有 `expected`、`table`、`keys`、`tolerance`、`severity` 五项，`keys` 是列名列表或一个引用，`tolerance` 是不小于 0 的数或一个引用，`severity` 是 `error`、`warn`、`info` 或一个引用。写死的数据源不是 Databricks 类型时报“数据检查要用 Databricks 数据源”，是的话要有 `aggregate`、`duplicates`、`compare`、`sample_rows` 四个工具（连接器连得上时查）。
