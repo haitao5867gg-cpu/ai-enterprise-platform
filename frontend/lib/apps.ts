@@ -187,6 +187,12 @@ export type HumanNode = NodeBase & {
         // The questions: a list, or one reference such as {{check_plan.questions}}.
         fields?: unknown;
         changed_branch?: string | null;
+        // What to compare with what the step showed last time (docs/api/flow-apps.md,
+        // changes): items of lists matched by a key.
+        changes?: {
+          of: string;
+          lists: { path: string; key: string; label?: string; name?: string }[];
+        } | null;
       }
     | { mode: "form"; fields: FormField[] }
   );

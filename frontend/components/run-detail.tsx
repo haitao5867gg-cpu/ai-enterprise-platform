@@ -65,6 +65,7 @@ import {
 } from "./etl-review";
 import { NoteList, NotesScope, type Note } from "./review-notes";
 import { EtlResultView } from "./etl-result";
+import { readChanges, StepChanges } from "./step-changes";
 import { isV2Result, readAnswer } from "../lib/etl-v2";
 
 // What a person typed is shown as typed; replies are Markdown with [n]
@@ -487,6 +488,8 @@ export function RunDetail({
   const devReview =
     view === "etl_dev_review" ? readDevReview(humanDetails?.data) : null;
   const viewShown = Boolean(planReview || devReview);
+  const stepChanges =
+    run?.status === "waiting" ? readChanges(humanDetails?.changes) : [];
   const round =
     typeof humanDetails?.round === "number" ? humanDetails.round : null;
   // Questions only for some options are not counted: they are asked with those.
@@ -685,6 +688,7 @@ export function RunDetail({
         run && (
           <div className="detail-grid">
             <div className="run-main">
+              <StepChanges changes={stepChanges} />
               {planReview && (
                 <NotesScope
                   notes={notes}

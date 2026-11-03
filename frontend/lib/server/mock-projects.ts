@@ -11,6 +11,7 @@ import {
   patternRegExp,
   conventionStageLabels,
   scheduledUses,
+  type CheckSeverity,
   type Convention,
   type Environment,
   type Param,
@@ -159,6 +160,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     "params",
     "checks",
     "conventions",
+    "model_check_max_severity",
     "policy",
   ];
   const extra = Object.keys(body).find((key) => !allowed.includes(key));
@@ -338,6 +340,9 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     return "「约定」的格式、长度或范围不正确";
   const conventionsTwice = repeated(conventions.map((item) => item.key as string)).sort();
   if (conventionsTwice.length) return `约定 ${conventionsTwice.join("、")} 重复`;
+  const cap = body.model_check_max_severity ?? "error";
+  if (!["error", "warn", "info"].includes(cap as string))
+    return "「模型建议的检查最高级别」只能是 error、warn 或 info";
   const missing = ((models as string[] | null) ?? []).filter(
     (model) => !mockModels.includes(model) && !LOCAL_MODELS.includes(model),
   );
@@ -360,6 +365,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
         applies_to: (item.applies_to as Convention["applies_to"] | undefined) ?? "both",
       }),
     ),
+    model_check_max_severity: cap as CheckSeverity,
     policy: { samples, models: models as string[] | null },
   };
 }
@@ -527,6 +533,9 @@ export function projectValues(bound: ProjectSnapshot | null): Record<string, unk
               `- **${item.title}**（${conventionStageLabels[item.applies_to]}）${item.text ? `：${item.text}` : ""}`,
           ),
         ].join("\n")
+      : "",
+    project.model_check_max_severity && project.model_check_max_severity !== "error"
+      ? `方案里建议的数据检查最高只能是 ${project.model_check_max_severity}（项目规定），写得更高的按 ${project.model_check_max_severity} 运行。`
       : "",
   ]
     .filter(Boolean)

@@ -17,6 +17,8 @@ from aep.etl.plan import (
     validate_plan_v2,
     validate_plan_v3,
 )
+from aep.runtime.flow.data_nodes import _check_fields, _check_signature
+from aep.runtime.flow.diff import field_changes as _field_changes
 from aep.runtime.flow.nodes import NodeFailure
 from tests.test_etl_plan_v2 import HIT, KNOWN, SEEN, SOURCES, brief_plan
 from tests.test_flow_data_nodes import (
@@ -109,6 +111,44 @@ def test_a_good_version_three_plan():
     del raw["checks"]
     plan, _ = check3(raw, None)
     assert plan.checks == [] and plan.targets[1].load.keys == ["stat_day", "city"]
+
+
+def test_a_model_check_blocks_only_with_a_reason_and_within_the_projects_cap():
+    # jadeflow 4th retest I-10: an error-level model check without a reason is a warning.
+    blocking = {**KEYS, "severity": "error"}
+    plan, cleaned = check3(v3_plan(TOTAL, blocking))
+    assert [c["severity"] for c in plan.checks] == ["warn", "warn"]
+    assert cleaned == [
+        "检查「每天每个城市一行」没写为什么一不通过就不能交付（why），从错误降成警告"
+    ]
+    reasoned = {**blocking, "why": "重复的键会让下游按城市汇总时翻倍"}
+    plan, cleaned = check3(v3_plan(TOTAL, reasoned))
+    assert plan.checks[1] == reasoned and cleaned == []
+    # A project may cap what the model's checks run at; its own checks keep theirs.
+    plan, cleaned = check3(v3_plan(TOTAL, reasoned), PROJECT | {"model_check_max_severity": "warn"})
+    assert plan.checks[1]["severity"] == "warn"
+    assert cleaned == ["项目规定模型建议的检查最高是警告级，检查「每天每个城市一行」从错误降成警告"]
+    plan, _ = check3(v3_plan(KEYS), PROJECT | {"model_check_max_severity": "info"})
+    assert plan.checks[0]["severity"] == "info"
+    # The reason is part of a check, not of what it checks.
+    assert _check_signature(reasoned) == _check_signature(blocking)
+    assert problems3(v3_plan({**KEYS, "why": 3}))[0].endswith("why 要是 500 个字符以内的文字")
+
+
+def test_what_a_check_checks_leaves_out_what_the_platform_tidies():
+    # jadeflow 4th retest I-15: a table name in full, a default written out, case, spaces.
+    written = {**RECONCILE, "tolerance": 0, "relative": False}
+    tidied = {
+        **RECONCILE,
+        "left": {"table": "`main`.sales.ORDER_FACTS", "expr": "COUNT(*)"},
+    }
+    assert _check_fields(written) == _check_fields(tidied) == _check_fields(RECONCILE)
+    changed = {**RECONCILE, "tolerance": 0.005}
+    assert _field_changes(_check_fields(RECONCILE), _check_fields(changed)) == (
+        "tolerance（无 → 0.005）"
+    )
+    long = {**RECONCILE, "right": {"table": "sales.orders", "expr": "sum(amount)"}}
+    assert _field_changes(_check_fields(RECONCILE), _check_fields(long)) == "right"
 
 
 def test_version_three_load_modes_are_checked():
@@ -613,13 +653,16 @@ async def test_what_a_plan_lost_after_it_was_sent_back_is_said():
     passing["targets"][1]["columns"].pop()
     out = await run(node, attempt(passing, first.private), rt)
     assert out.branch == "ok", out.outputs["problems"]
+    # One short line each (jadeflow 4th retest I-15): what a check checked in a few words.
+    short = "table city_totals，where city NOT IN (SELECT city FROM order…"
     assert out.outputs["dropped"] == [
-        f"去掉了检查「子查询检查」（{said}）",
+        f"去掉了检查「子查询检查」（{short}）",
         "去掉了 city_totals 的列 avg_quantity",
     ]
     assert out.outputs["message"].startswith(
-        "> 注意：方案被平台校验退回后，这一版和退回的那版不一样：去掉了检查「子查询检查」"
-        f"（{said}）；去掉了 city_totals 的列 avg_quantity。请对照需求确认还要不要"
+        "> 注意：方案被平台校验退回后，这一版和退回的那版不一样：\n>\n"
+        f"> - 去掉了检查「子查询检查」（{short}）\n"
+        "> - 去掉了 city_totals 的列 avg_quantity\n>\n> 请对照需求确认还要不要"
     )
     assert "rejected" not in out.private
 
@@ -633,18 +676,21 @@ async def test_what_a_plan_lost_after_it_was_sent_back_is_said():
     # Kept by its label but checking something else: before and after.
     out = await run(node, attempt(written(checks=[asked | {"id": "k2", "where": "city IS NULL"}]),
                                   first.private), rt)  # fmt: skip
-    assert out.outputs["dropped"] == [
-        f"检查「子查询检查」改了写法：原来是“{said}”，现在是“city_totals 里没有满足 "
-        "city IS NULL 的行”，请确认是不是一个意思"
-    ]
+    assert out.outputs["dropped"] == ["检查「子查询检查」改了 where，请确认是不是一个意思"]
+    # Only tidied (case, spaces): not a change.
+    tidied = asked | {"id": "k2", "table": "City_Totals", "where": "city  IS NULL"}
+    before = await run(node, attempt(written(checks=[good, {"id": "c8_fixed"}])), rt)
+    out = await run(node, attempt(written(checks=[tidied]), before.private), rt)
+    assert out.branch == "ok", out.outputs["problems"]
+    assert out.outputs["dropped"] == []
     # Dropped, and another check added: is it a replacement?
     other = {"id": "k3", "label": "城市在订单里", "kind": "rows", "table": "city_totals",
              "where": "city = ''"}  # fmt: skip
     out = await run(node, attempt(written(checks=[other]), first.private), rt)
     assert out.outputs["dropped"] == [
-        f"去掉了检查「子查询检查」（{said}）",
+        f"去掉了检查「子查询检查」（{short}）",
         "新加了检查「城市在订单里」（city_totals 里没有满足 city = '' 的行）："
-        "请确认它是不是替代去掉的那条、够不够",
+        "是不是替代去掉的那条、够不够",
     ]
     out = await run(node, attempt(written(checks=[])), rt)
     assert out.outputs["dropped"] == []

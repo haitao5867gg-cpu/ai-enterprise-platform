@@ -107,6 +107,14 @@ export const conventionStageLabels: Record<ConventionStage, string> = {
   code: "写代码时",
   both: "写方案和写代码时",
 };
+// The highest severity a check the model proposes in a plan runs at (docs/api/projects.md,
+// model_check_max_severity); the project's own checks keep theirs.
+export type CheckSeverity = "error" | "warn" | "info";
+export const modelCheckCapLabels: Record<CheckSeverity, string> = {
+  error: "可以是错误（不通过就不能交付）",
+  warn: "最高是警告",
+  info: "最高是提示",
+};
 // The project's own setting; null parts follow the platform default.
 export type ProjectPolicy = {
   samples: SampleLevel | null;
@@ -125,6 +133,9 @@ export type ProjectInput = {
   checks: Record<string, unknown>[];
   // Projects saved before conventions have none (read as []).
   conventions?: Convention[];
+  // The highest severity a check the model proposes in a plan runs at; projects saved
+  // before it have "error".
+  model_check_max_severity?: CheckSeverity;
   policy: ProjectPolicy;
 };
 export type Project = ProjectInput & { created_at: string; updated_at: string };
@@ -325,6 +336,7 @@ export function emptyProject(): ProjectInput {
     params: [],
     checks: [],
     conventions: [],
+    model_check_max_severity: "error",
     policy: { samples: null, models: null },
   };
 }
@@ -345,6 +357,7 @@ export function projectInput(project: Project): ProjectInput {
     })),
     checks: (project.checks ?? []).map((check) => ({ ...check })),
     conventions: (project.conventions ?? []).map((item) => ({ ...item })),
+    model_check_max_severity: project.model_check_max_severity ?? "error",
     policy: {
       samples: project.policy.samples ?? null,
       models: project.policy.models ? [...project.policy.models] : null,

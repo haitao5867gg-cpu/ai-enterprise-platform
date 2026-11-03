@@ -9,6 +9,7 @@ import {
   emptyProject,
   getProject,
   getProjectOptions,
+  modelCheckCapLabels,
   paramText,
   paramTypeLabels,
   scheduledText,
@@ -217,6 +218,11 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
         ) : (
           <p className="muted">没有。绑定这个项目的运行只跑方案建议的检查。</p>
         )}
+        <p className="field-hint">
+          方案里模型建议的检查：
+          {modelCheckCapLabels[project.model_check_max_severity ?? "error"]}
+          ，写得更高的按这个级别运行。
+        </p>
       </section>
       <section className="panel asset-section" aria-labelledby="project-conventions">
         <h2 id="project-conventions">约定</h2>

@@ -662,3 +662,83 @@ async def review_output(p: Platform, run: dict) -> dict:
     steps = (await p.api.get(f"/runs/{run['run_id']}/flow")).json()["steps"]
     done = [s for s in steps if s["node"] == "review" and s["output"]]
     return done[-1]["output"]["vars"]["review"]
+
+
+async def test_what_changed_since_the_last_round_and_what_was_not_asked_for():
+    # jadeflow 4th retest I-3: after a comment the model also changed what nobody asked.
+    changes = {
+        "of": "{{ask.brief}}",
+        "lists": [{"path": "metrics", "key": "id", "label": "name", "name": "指标"}],
+    }
+    second = {
+        "metrics": [{"id": "m4", "name": "客单价", "unit": "元"}, {"id": "m6", "name": "件数"}],
+        "dimensions": BRIEF["dimensions"],
+    }
+    async with Platform([reply(), reply(brief=second), reply(brief=second)]) as p:
+        await p.new_app("plan", reviewed(changes=changes))
+        run = await p.run("plan", {"question": "按城市统计客单价"})
+        # Nothing to compare with the first time.
+        assert run["pending"]["details"]["changes"] == []
+        answered = {"q1": "all", "q2": True}
+        run = await p.resume(
+            run,
+            decision="revise",
+            values=answered,
+            notes=[{"item": "metric:m4", "text": "客单价要带单位"}],
+            comment="单位写清楚",
+            seen=run["pending"]["details"]["seen"],
+        )
+        assert run["pending"]["details"]["changes"] == [
+            {
+                "list": "指标",
+                "kind": "changed",
+                "key": "m4",
+                "label": "客单价",
+                "fields": "unit（无 → 元）",
+                "mentioned": True,
+            },
+            {
+                "list": "指标",
+                "kind": "added",
+                "key": "m6",
+                "label": "件数",
+                "fields": "",
+                "mentioned": False,
+            },
+            {
+                "list": "指标",
+                "kind": "removed",
+                "key": "m5",
+                "label": "m5",
+                "fields": "",
+                "mentioned": False,
+            },
+        ]
+        # Shown again unchanged: nothing changed.
+        run = await p.resume(run, decision="revise", values=answered, comment="再看一遍", seen=None)
+        assert run["pending"]["details"]["changes"] == []
+
+
+async def test_the_changes_setting_is_checked():
+    bad = {
+        "of": "{{ask.brief}} 和别的",
+        "lists": [
+            {"path": "Metrics", "key": "id"},
+            {"path": "dims", "key": "1d", "label": "名字", "name": ""},
+            {"path": "dims", "key": "id"},
+        ],
+        "extra": 1,
+    }
+    found = await problems(reviewed(changes=bad))
+    at = ("config", "graph", "nodes", "review", "changes")
+    assert found == {
+        (*at, "of"): "要比较的内容 of 必须恰好是一个变量，如 {{check_plan.plan}}",
+        (*at, "lists", 0, "path"): "path 是列表在内容里的位置，如 checks、brief.metrics",
+        (*at, "lists", 1, "key"): "key 是条目里的字段名，如 id、label",
+        (*at, "lists", 1, "label"): "label 是条目里的字段名，如 id、label",
+        (*at, "lists", 1, "name"): "name 是给人看的名字，1–20 个字符",
+        (*at, "lists", 2, "path"): "列表 dims 重复",
+        (*at, "extra"): "changes 没有 extra 这一项",
+    }
+    found = await problems(reviewed(changes={"of": "{{ask.brief}}", "lists": []}))
+    assert found == {(*at, "lists"): "要比较的列表 lists 要有 1–10 个"}

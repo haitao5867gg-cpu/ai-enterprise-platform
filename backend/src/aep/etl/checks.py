@@ -56,7 +56,10 @@ _COLUMN = re.compile(r"^[^`\x00-\x1f]{1,255}$")
 # What the MCP client and server put before a tool's own error message.
 TOOL_PREFIX = re.compile(r"^\s*(?:\w+: )?(?:Error executing tool \w+: )?")
 
-COMMON = {"id", "label", "kind", "severity", "known"}
+COMMON = {"id", "label", "kind", "severity", "known", "why"}
+# Why a check has its severity, above all why an error must block (jadeflow 4th retest
+# I-10: a model check at error level without a reason blocked right results).
+MAX_WHY = 500
 FIELDS = {
     "aggregate": {"table", "expr", "where", "group_by", "op", "value", "max", "tolerance"},
     "reconcile": {"left", "right", "group_by", "tolerance", "relative"},
@@ -102,6 +105,9 @@ def problems(check: Any) -> list[tuple[Loc, str]]:
         return found
     if check.get("severity", "error") not in SEVERITIES:
         add(("severity",), "severity 只能是 " + "、".join(SEVERITIES))
+    why = check.get("why")
+    if why is not None and (not isinstance(why, str) or len(why) > MAX_WHY):
+        add(("why",), f"why 要是 {MAX_WHY} 个字符以内的文字")
     for key in check:
         if key not in COMMON | FIELDS[kind]:
             add((key,), f"{kind} 检查没有 {key} 这一项")

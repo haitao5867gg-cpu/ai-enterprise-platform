@@ -943,6 +943,17 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         node["max_visits"] = 20
     found["review"]["show"] = "{{review_plan.report}}\n\n{{check_plan.message}}"
     found["review"]["data"]["review"] = "{{review_plan.findings}}"
+    # What the rewrite changed since the person last saw the plan, and what they did not
+    # ask for (jadeflow 4th retest I-3).
+    found["review"]["changes"] = {
+        "of": "{{check_plan.plan}}",
+        "lists": [
+            {"path": "checks", "key": "id", "label": "label", "name": "检查"},
+            {"path": "targets", "key": "name", "label": "name", "name": "目标表"},
+            {"path": "brief.metrics", "key": "name", "label": "name", "name": "指标"},
+            {"path": "rules", "key": "text", "label": "text", "name": "规则"},
+        ],
+    }
     found["dev_run"]["note"] = (
         "把 bundle 部署成已有集群上的 Job，在项目的开发环境运行：结果写到环境的 catalog 和 schema，"
         "只写项目自己的表，按方案的写表方式写。能修的报错带回去重写代码，每轮最多运行 3 次。"

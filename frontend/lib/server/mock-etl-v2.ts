@@ -910,12 +910,39 @@ function fingerprint(pending: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(pending)).digest("hex")}`;
 }
 
+// What the rewritten plan changed since the person last saw it (the review step's
+// `changes`): held against their remarks only when they sent it back from this step.
+function planChanges(state: EtlV2State): Record_[] {
+  if (state.rounds.review === 1) return [];
+  const revised = state.confirmed?.decision === "revise";
+  const mentioned = (yes: boolean) => (revised ? yes : null);
+  return [
+    {
+      list: "目标表",
+      kind: "changed",
+      key: "ads_sales_city_member_m",
+      label: "ads_sales_city_member_m",
+      fields: "columns",
+      mentioned: mentioned(true),
+    },
+    {
+      list: "规则",
+      kind: "added",
+      key: "退款订单整单去掉",
+      label: "退款订单整单去掉",
+      fields: "",
+      mentioned: mentioned(false),
+    },
+  ];
+}
+
 function waitAt(
   node: HumanNode,
   data: Record_,
   round: number,
   fields: Question[],
   options: string[],
+  changes?: Record_[],
 ): Pending {
   const approval = node.mode === "approval" ? node : null;
   const shown = (approval?.options ?? []).filter((option) =>
@@ -940,6 +967,7 @@ function waitAt(
       view: node.view,
       data,
       dropped_fields: [],
+      ...(changes ? { changes } : {}),
     },
   };
   return {
@@ -1056,6 +1084,7 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
       state.rounds.review,
       fieldsOf(plan),
       ["approve", "revise"],
+      planChanges(state),
     );
     run.step = { node: "review", title: "确认方案" };
     step(steps, "review", null, run.pending);

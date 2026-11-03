@@ -323,6 +323,9 @@ class ProjectBody(_Model):
     # The project's acceptance checks: Check of the data_check node.
     checks: list[Any] = Field(default_factory=list, max_length=MAX_CHECKS)
     conventions: list[Convention] = Field(default_factory=list, max_length=MAX_CONVENTIONS)
+    # The highest severity a check the model proposes in a plan runs at (jadeflow 4th
+    # retest I-10); the project's own checks keep theirs.
+    model_check_max_severity: Literal["error", "warn", "info"] = "error"
     policy: Policy = Field(default_factory=Policy)
 
     @model_validator(mode="after")
@@ -615,6 +618,7 @@ def snapshot(project: Project, environment: str | None, given: Any) -> dict[str,
         "values": values,
         "checks": body.get("checks") or [],
         "conventions": body.get("conventions") or [],
+        "model_check_max_severity": body.get("model_check_max_severity") or "error",
         "policy": body["policy"],
     }
 
@@ -768,6 +772,12 @@ def brief(project: dict[str, Any]) -> str:
         lines += [
             "",
             "方案里建议的数据检查不要重复这些，id 也不能和它们相同。",
+        ]
+    cap = project.get("model_check_max_severity") or "error"
+    if cap != "error":
+        lines += [
+            "",
+            f"方案里建议的数据检查最高只能是 {cap}（项目规定），写得更高的按 {cap} 运行。",
         ]
     if project.get("conventions"):
         lines += ["", "### 约定（必须遵守，平台会按它们审查）", ""]
