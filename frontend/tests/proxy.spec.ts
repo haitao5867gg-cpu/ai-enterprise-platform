@@ -33,6 +33,16 @@ test("production ignores mock flag and forwards health and configured API base p
   expect(response.status()).toBe(200);
   expect(await response.json()).toEqual({ source: "contract-fixture" });
   expect(response.headers()["cache-control"]).toBe("no-store");
+  // The API answers in the language picked on the page, not the browser's.
+  const language = async (headers: Record<string, string>) =>
+    (await (await request.get("/api/runs/language", { headers })).json())
+      .accept_language;
+  expect(await language({})).toBe("zh-CN");
+  expect(await language({ Cookie: "aep_locale=en" })).toBe("en");
+  expect(
+    await language({ Cookie: "aep_locale=en", "Accept-Language": "fr" }),
+  ).toBe("en");
+  expect(await language({ "Accept-Language": "en" })).toBe("zh-CN");
   const flow = await request.get("/api/runs/fixture/flow");
   expect(await flow.json()).toEqual({ source: "contract-fixture-flow" });
   const health = await request.get("/api/readyz");
