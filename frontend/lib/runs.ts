@@ -28,7 +28,19 @@ export type Question = FormField & {
   suggested?: unknown;
   why?: string | null;
   affects?: string[] | null;
+  // Answered only with these options (flow-apps.md, only_for); absent: with every one.
+  only_for?: string[] | null;
 };
+// The questions that go with a decision: those for every option and those for it.
+export function questionsFor(
+  questions: Question[],
+  decision: string,
+): Question[] {
+  return questions.filter(
+    (question) =>
+      !question.only_for?.length || question.only_for.includes(decision),
+  );
+}
 export type Pending = {
   kind: "approval" | "form";
   prompt: string;

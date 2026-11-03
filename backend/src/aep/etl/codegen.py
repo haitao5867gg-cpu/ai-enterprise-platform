@@ -324,6 +324,7 @@ PROJECT_VARIABLES = {
     "table_prefix": "Prefix every table the job writes starts with",
     "adopted": "Existing tables the project adopted (JSON list of names)",
     "params": "Run parameter values (JSON object)",
+    "param_rules": "How a released job works out run parameters at each run (JSON object)",
 }
 
 
@@ -335,6 +336,8 @@ def project_values(project: dict[str, Any]) -> dict[str, str]:
         "table_prefix": project["table_prefix"],
         "adopted": json.dumps(project["adopted"], ensure_ascii=False),
         "params": json.dumps(project["values"], ensure_ascii=False),
+        # Only a release sets rules (aep.projects.scheduled_values).
+        "param_rules": "{}",
     }
 
 

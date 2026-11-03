@@ -214,6 +214,7 @@
 确认模式的题 `fields`：
 - 写成列表时 0–20 题，每题的写法同填写模式的字段（没有 `datasource` 类型），题目（`label`）最多 200 个字符。另可写 `suggested`（建议的答案，必须是这题能填的值）、`why`（为什么问，最多 500 个字符）、`affects`（影响到哪些条目，最多 20 个字符串，每个最多 64 个字符）。`suggested`、`why`、`affects` 的值为 null 时当作没写，保存时和运行时都不算不合格。
 - 每题都必答：`required` 不用写，一律当作 true；不能写 `default`，保存时报错“题不能有默认值，每题都要人来答”。
+- `only_for`（jadeflow 复测后新增）：只在选这些选项时才要答的题，写 1–5 个选项的 key，如上线审批的“什么时候自动刷新”写 `["release"]`，选“先不上线”时不用答。不写或 null 时每个选项都要答（以前的行为）。不是列表、个数不对、有不是文字的项报“only_for 要列出 1–5 个选项的标识”；写了不是这一步的选项报“only_for 里的 skip2 不是这一步的选项”。引用来的题在运行时按同样的规则检查，不合格的丢掉、记进 `dropped_fields`。暂停时，`only_for` 只保留这次显示的选项（`requires` 不成立的去掉），一个都不剩的题不问。
 - 也可以整段引用别的节点产出的题目列表，如 `"{{check_plan.questions}}"`。保存时只检查引用本身；到这一步暂停时取值，按上面的规则逐题检查：`default` 去掉、`required` 改成 true，其他不合格的题丢掉，超过 20 题的从第 21 题起丢掉。丢掉的题列在 `pending.details.dropped_fields`，页面上标出来。取到 null 或空文字时这一步不带题；取到别的不是列表的值，也当作不带题，并在 `dropped_fields` 里记一条。
 - 写成列表的题在运行时也按整段引用的规则逐题检查，丢掉不合格的，记进 `dropped_fields`：以前确认模式的保存检查从来不看 `fields`，导入的文件可能给已经发布的版本留下从没检查过的题。
 
@@ -543,7 +544,7 @@ requires:                 # 方便导入时核对
 
 - `options`、`option_labels`、`comment_required` 只列显示的选项：`requires` 不成立的选项三处都去掉。
 - `changed_branch`：节点设的值；没设时为 null，以前的运行也是 null。
-- `fields`：确认模式运行时取到至少一题时才有，每题 `required` 都是 true，有 `suggested`、`why`、`affects` 时原样带上，没有 `default`；取到 0 题时 `pending` 不带 `fields`。本文说确认模式“带题”“不带题”，都是看 `pending` 里有没有 `fields`。
+- `fields`：确认模式运行时取到至少一题时才有，每题 `required` 都是 true，有 `suggested`、`why`、`affects`、`only_for` 时原样带上，没有 `default`；取到 0 题时 `pending` 不带 `fields`。本文说确认模式“带题”“不带题”，都是看 `pending` 里有没有 `fields`。
 - 只要节点设了 `view` 或 `data`，或者是确认模式设了 `fields`（不管运行时取到几题、取到的是不是列表），`details` 就有 `view`、`data`、`round`、`seen`、`dropped_fields` 这五项；其他节点的 `details` 仍然只有 `type`、`node`、`show`。填写模式的 `fields` 是表单本身，不算扩展设置：只有 `fields` 的填写模式节点 `details` 不变。
   - “设了”指配置里有这个键、而且值不是 null：`data: {}`、`fields: []` 算设了；`view: null`、`data: null`、`fields: null`、`changed_branch: null` 和没写一样。
   - `round`：这个节点在这次运行里第几次等人处理，从 1 开始。
@@ -567,7 +568,7 @@ requires:                 # 方便导入时核对
 1. 运行不在等人处理：409（同以前）。
 2. 带了 `seen`，`pending` 里也有 `details.seen`，两者不一样：409，`detail` 为“内容已经更新，请刷新后再处理”。没带 `seen`，或者 `pending` 里没有，不比。
 3. `decision` 不在 `pending.options` 里（包括因为 `requires` 没显示的选项）：422，`detail` 为“这一步现在不能选「approve」”。
-4. `values`：填写模式缺必填字段或类型不对；带题的确认模式每题都要答（没有默认值），答案要合这题的类型和选项。422，`loc` 为 `["body", "values", "q1"]`。`values` 里多出来的键不管。
+4. `values`：填写模式缺必填字段或类型不对；带题的确认模式每题都要答（没有默认值），答案要合这题的类型和选项。422，`loc` 为 `["body", "values", "q1"]`。`values` 里多出来的键不管。题写了 `only_for`、提交的选项不在里面时，这题不用答，答了也不要（不进 `values`、`changed` 和 `record.answers`）；下面第 6 步按提交的选项算。
 5. `notes`：最多 50 条；`text` 1–500 个字符，不能只有空格；`item` 的写法见下。422，`loc` 为 `["body", "notes", 0, "item"]` 或 `["body", "notes", 0, "text"]`；超过 50 条，或者填写模式带了非空的 `notes`（null 和 `[]` 当作没带），`loc` 为 `["body", "notes"]`。
 6. 算 `changed`（有没有哪题的答案和它的 `suggested` 不一样），再看要不要改成 `changed_branch`：提交的选项不在 `comment_required` 里、也不是 `changed_branch`，而且改了建议答案、写了意见（只有空格不算）或挂了意见，就按 `changed_branch` 处理。比如带着一句意见点“确认方案，开始做”，按“按我的意见修改方案”处理。这一步在服务端做，不只靠页面。
 7. 最后的选项在 `comment_required` 里时，要写了意见、挂了意见或改了建议答案，三者有一个，否则 422，`detail` 为“这个决定需要写明意见”。

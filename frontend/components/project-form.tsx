@@ -8,10 +8,14 @@ import {
   TABLE,
   THREE_PART,
   createProject,
+  dateFormatProblem,
   filterProblem,
+  monthsText,
   paramProblem,
   paramTypeLabels,
   replaceProject,
+  scheduledUseLabels,
+  scheduledUses,
   type Choice,
   type Environment,
   type Param,
@@ -21,6 +25,7 @@ import {
   type ProjectInput,
   type ProjectOptions,
   type Reference,
+  type Scheduled,
 } from "../lib/projects";
 import { ApiError, errorMessage, type SampleLevel } from "../lib/runs";
 import { useUnsavedWarning } from "./asset-ui";
@@ -44,7 +49,11 @@ function add(issues: Issues, where: string, message: string) {
   (issues[where] ??= []).push(message);
 }
 function twice(values: string[]) {
-  return [...new Set(values.filter((value, i) => value && values.indexOf(value) !== i))];
+  return [
+    ...new Set(
+      values.filter((value, i) => value && values.indexOf(value) !== i),
+    ),
+  ];
 }
 const lines = (text: string) =>
   text
@@ -54,7 +63,8 @@ const lines = (text: string) =>
 
 // What the form would send (strings trimmed, empty optional fields as null).
 function payload(input: ProjectInput, adopted: string): ProjectInput {
-  const orNull = (value: string | null) => (value?.trim() ? value.trim() : null);
+  const orNull = (value: string | null) =>
+    value?.trim() ? value.trim() : null;
   return {
     project_id: input.project_id.trim(),
     name: input.name.trim(),
@@ -89,6 +99,7 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
           : null,
       pattern: param.type === "text" && param.pattern ? param.pattern : null,
       description: param.description,
+      scheduled: scheduledBody(param),
     })),
     checks: input.checks,
     policy: {
@@ -98,15 +109,38 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
   };
 }
 
+// How scheduled runs fill a parameter in, with only what its way of filling in uses.
+function scheduledBody(param: Param): Scheduled | null {
+  const rule = param.scheduled;
+  if (!rule || !scheduledUses(param.type).includes(rule.use)) return null;
+  if (rule.use !== "date")
+    return { use: rule.use, format: null, months: 0, day: null };
+  return {
+    use: "date",
+    format: param.type === "text" ? (rule.format ?? "").trim() || null : null,
+    months: rule.months,
+    day: param.type === "month" ? null : rule.day,
+  };
+}
+
 // The same rules the backend applies, so most mistakes show before saving.
 function check(body: ProjectInput): Issues {
   const issues: Issues = {};
   if (!PROJECT_ID.test(body.project_id))
-    add(issues, "project_id", "2–40 个字符：小写字母开头，只用小写字母、数字和 -");
-  else if (body.project_id === "new") add(issues, "project_id", "项目标识不能是 new");
+    add(
+      issues,
+      "project_id",
+      "2–40 个字符：小写字母开头，只用小写字母、数字和 -",
+    );
+  else if (body.project_id === "new")
+    add(issues, "project_id", "项目标识不能是 new");
   if (!body.name) add(issues, "name", "请填写名称");
   if (!PREFIX.test(body.table_prefix))
-    add(issues, "table_prefix", "2–30 个字符：小写字母开头，只用小写字母、数字和下划线");
+    add(
+      issues,
+      "table_prefix",
+      "2–30 个字符：小写字母开头，只用小写字母、数字和下划线",
+    );
   const envKeys = twice(body.environments.map((env) => env.key));
   body.environments.forEach((env, i) => {
     const at = `env.${i}`;
@@ -120,30 +154,48 @@ function check(body: ProjectInput): Issues {
   body.references.forEach((ref, i) => {
     const at = `ref.${i}`;
     if (!THREE_PART.test(ref.name))
-      add(issues, at, "表名要写成 catalog.schema.table 三段，每段不含空白和反引号");
-    else if (refNames.includes(ref.name)) add(issues, at, `引用表 ${ref.name} 重复`);
+      add(
+        issues,
+        at,
+        "表名要写成 catalog.schema.table 三段，每段不含空白和反引号",
+      );
+    else if (refNames.includes(ref.name))
+      add(issues, at, `引用表 ${ref.name} 重复`);
     const problem = ref.filter && filterProblem(ref.filter);
     if (problem) add(issues, at, problem);
   });
   const adoptedTwice = twice(body.adopted);
   for (const table of body.adopted) {
     if (!TABLE.test(table))
-      add(issues, "adopted", `表名 ${table} 只能用小写字母、数字和下划线，不含 catalog、schema`);
+      add(
+        issues,
+        "adopted",
+        `表名 ${table} 只能用小写字母、数字和下划线，不含 catalog、schema`,
+      );
     else if (body.table_prefix && !table.startsWith(body.table_prefix))
       add(issues, "adopted", `${table} 要以表名前缀 ${body.table_prefix} 开头`);
   }
-  if (adoptedTwice.length) add(issues, "adopted", `${adoptedTwice.join("、")} 重复`);
+  if (adoptedTwice.length)
+    add(issues, "adopted", `${adoptedTwice.join("、")} 重复`);
   if (body.checks.length > 50) add(issues, "checks", "最多 50 条验收检查");
-  const checkIds = body.checks.map((item) => (typeof item.id === "string" ? item.id : ""));
+  const checkIds = body.checks.map((item) =>
+    typeof item.id === "string" ? item.id : "",
+  );
   if (checkIds.includes("golden"))
-    add(issues, "checks", "验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比");
+    add(
+      issues,
+      "checks",
+      "验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比",
+    );
   const checksTwice = twice(checkIds);
-  if (checksTwice.length) add(issues, "checks", `验收检查 id ${checksTwice.join("、")} 重复`);
+  if (checksTwice.length)
+    add(issues, "checks", `验收检查 id ${checksTwice.join("、")} 重复`);
   const paramKeys = twice(body.params.map((param) => param.key));
   body.params.forEach((param, i) => {
     const at = `param.${i}`;
     if (!KEY.test(param.key)) add(issues, at, `标识要${KEY_RULE}`);
-    else if (paramKeys.includes(param.key)) add(issues, at, `参数 ${param.key} 重复`);
+    else if (paramKeys.includes(param.key))
+      add(issues, at, `参数 ${param.key} 重复`);
     if (!param.label) add(issues, at, "请填写显示名");
     if (param.type === "select") {
       const values = (param.choices ?? []).map((choice) => choice.value);
@@ -155,8 +207,105 @@ function check(body: ProjectInput): Issues {
       const problem = paramProblem(param, param.default);
       if (problem) add(issues, at, `默认值不对：${problem}`);
     }
+    const rule = param.scheduled;
+    if (rule?.use === "date" && param.type === "text") {
+      const problem = rule.format
+        ? dateFormatProblem(rule.format)
+        : "文本参数要写日期格式，如 FY%y_%m_M";
+      if (problem) add(issues, at, `定时运行时的取法不对：${problem}`);
+    }
   });
   return issues;
+}
+
+const MONTHS = Array.from({ length: 49 }, (_, i) => i - 24);
+
+// How a released job's scheduled runs fill the parameter in (docs/api/projects.md).
+function ScheduledField({
+  param,
+  onChange,
+}: {
+  param: Param;
+  onChange: (scheduled: Scheduled | null) => void;
+}) {
+  const uses = scheduledUses(param.type);
+  const rule =
+    param.scheduled && uses.includes(param.scheduled.use)
+      ? param.scheduled
+      : null;
+  const fallback =
+    param.default !== null
+      ? "用默认值"
+      : param.required
+        ? "没写：上线时取不到，不能上线"
+        : "不填（空值）";
+  return (
+    <>
+      <SelectField
+        label="上线后定时运行时"
+        value={rule?.use ?? ""}
+        help="上线到 prod 后，Databricks 按定时运行时这个参数怎么取。不写时用默认值；必填又没有默认值的参数取不到，不能上线。"
+        choices={[
+          { value: "", label: `不写（${fallback}）` },
+          ...uses.map((use) => ({
+            value: use,
+            label: scheduledUseLabels[use],
+          })),
+        ]}
+        onChange={(use) =>
+          onChange(
+            use
+              ? {
+                  use: use as Scheduled["use"],
+                  format:
+                    use === "date" && param.type === "text"
+                      ? (rule?.format ?? "")
+                      : null,
+                  months: use === "date" ? (rule?.months ?? -1) : 0,
+                  day: null,
+                }
+              : null,
+          )
+        }
+      />
+      {rule?.use === "date" && (
+        <>
+          <SelectField
+            label="推算到哪个月"
+            value={String(rule.months)}
+            choices={MONTHS.map((months) => ({
+              value: String(months),
+              label: monthsText(months),
+            }))}
+            onChange={(months) => onChange({ ...rule, months: Number(months) })}
+          />
+          {param.type !== "month" && (
+            <SelectField
+              label="哪一天"
+              value={rule.day ?? ""}
+              choices={[
+                { value: "", label: "同一天（没有这一天时取月底）" },
+                { value: "first", label: "第一天" },
+                { value: "last", label: "最后一天" },
+              ]}
+              onChange={(day) =>
+                onChange({ ...rule, day: (day || null) as Scheduled["day"] })
+              }
+            />
+          )}
+          {param.type === "text" && (
+            <TextField
+              label="日期格式"
+              value={rule.format ?? ""}
+              maxLength={50}
+              help="只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日），比如 FY%y_%m_M 写出 FY26_10_M。"
+              onChange={(format) => onChange({ ...rule, format })}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
 }
 
 // The default-value control for one parameter type; empty means no default.
@@ -190,7 +339,11 @@ function DefaultField({
         ]}
         onChange={(next) =>
           onChange(
-            next === "" ? null : param.type === "boolean" ? next === "true" : next,
+            next === ""
+              ? null
+              : param.type === "boolean"
+                ? next === "true"
+                : next,
           )
         }
       />
@@ -235,7 +388,13 @@ type Props = {
   onCancel?: () => void;
 } & ({ mode: "create" } | { mode: "edit" });
 
-export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props) {
+export function ProjectForm({
+  initial,
+  options,
+  onSaved,
+  onCancel,
+  mode,
+}: Props) {
   const prefix = useId();
   const [input, setInput] = useState<ProjectInput>(initial);
   const [adopted, setAdopted] = useState(initial.adopted.join("\n"));
@@ -246,10 +405,14 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
   const issues = check(body);
   const blocking = Object.keys(issues).length > 0;
   const dirty =
-    JSON.stringify(body) !== JSON.stringify(payload(initial, initial.adopted.join("\n")));
+    JSON.stringify(body) !==
+    JSON.stringify(payload(initial, initial.adopted.join("\n")));
   useUnsavedWarning(dirty && !saving);
   const at = (where: string) => (shown ? (issues[where] ?? []) : []);
-  const set = <K extends keyof ProjectInput>(key: K, value: ProjectInput[K]) => {
+  const set = <K extends keyof ProjectInput>(
+    key: K,
+    value: ProjectInput[K],
+  ) => {
     setInput((old) => ({ ...old, [key]: value }));
     setError("");
   };
@@ -264,7 +427,11 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
     setSaving(true);
     setError("");
     try {
-      onSaved(mode === "create" ? await createProject(body) : await replaceProject(body));
+      onSaved(
+        mode === "create"
+          ? await createProject(body)
+          : await replaceProject(body),
+      );
     } catch (err) {
       setError(err instanceof ApiError ? err.message : errorMessage(err));
       setSaving(false);
@@ -286,7 +453,10 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
         void save();
       }}
     >
-      <fieldset className="panel asset-section project-form-section" disabled={saving}>
+      <fieldset
+        className="panel asset-section project-form-section"
+        disabled={saving}
+      >
         <legend>基本信息</legend>
         {mode === "create" ? (
           <TextField
@@ -342,7 +512,13 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
           max={10}
           disabled={saving}
           issues={(i) => at(`env.${i}`)}
-          make={() => ({ key: "", label: "", catalog: "", schema: "", cluster_id: null })}
+          make={() => ({
+            key: "",
+            label: "",
+            catalog: "",
+            schema: "",
+            cluster_id: null,
+          })}
           onChange={(environments) => set("environments", environments)}
           render={(env, i, update) => (
             <>
@@ -374,7 +550,11 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
                 label="集群（选填）"
                 value={env.cluster_id ?? ""}
                 maxLength={200}
-                help={i === 0 ? "默认环境。不填集群时用平台配置的集群。" : "不填时用平台配置的集群。"}
+                help={
+                  i === 0
+                    ? "默认环境。不填集群时用平台配置的集群。"
+                    : "不填时用平台配置的集群。"
+                }
                 onChange={(cluster_id) => update({ ...env, cluster_id })}
               />
             </>
@@ -392,7 +572,12 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
           max={100}
           disabled={saving}
           issues={(i) => at(`ref.${i}`)}
-          make={() => ({ name: "", label: null, filter: null, description: "" })}
+          make={() => ({
+            name: "",
+            label: null,
+            filter: null,
+            description: "",
+          })}
           onChange={(references) => set("references", references)}
           render={(ref, _i, update) => (
             <>
@@ -443,7 +628,8 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
             }}
           />
           <small className="muted" id={`${ids.adopted}-hint`}>
-            在平台之外建好、归本项目所有的表，只写表名（不含 catalog、schema），要以表名前缀开头。平台自己建的表不用登记。
+            在平台之外建好、归本项目所有的表，只写表名（不含
+            catalog、schema），要以表名前缀开头。平台自己建的表不用登记。
           </small>
           <FieldIssues id={`${ids.adopted}-issues`} messages={at("adopted")} />
         </div>
@@ -484,16 +670,21 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
               <SelectField
                 label="类型"
                 value={param.type}
-                choices={Object.entries(paramTypeLabels).map(([value, label]) => ({
-                  value,
-                  label,
-                }))}
+                choices={Object.entries(paramTypeLabels).map(
+                  ([value, label]) => ({
+                    value,
+                    label,
+                  }),
+                )}
                 onChange={(type) =>
                   update({
                     ...param,
                     type: type as ParamType,
                     default: null,
-                    choices: type === "select" ? (param.choices ?? [{ value: "", label: null }]) : null,
+                    choices:
+                      type === "select"
+                        ? (param.choices ?? [{ value: "", label: null }])
+                        : null,
                     pattern: type === "text" ? (param.pattern ?? null) : null,
                   })
                 }
@@ -504,12 +695,18 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
                   value={param.pattern ?? ""}
                   maxLength={200}
                   help={PATTERN_HELP}
-                  onChange={(pattern) => update({ ...param, pattern: pattern || null })}
+                  onChange={(pattern) =>
+                    update({ ...param, pattern: pattern || null })
+                  }
                 />
               )}
               <DefaultField
                 param={param}
                 onChange={(value) => update({ ...param, default: value })}
+              />
+              <ScheduledField
+                param={param}
+                onChange={(scheduled) => update({ ...param, scheduled })}
               />
               <CheckField
                 label="必填"
@@ -557,11 +754,15 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
         </p>
       </div>
 
-      <fieldset className="panel asset-section project-form-section" disabled={saving}>
+      <fieldset
+        className="panel asset-section project-form-section"
+        disabled={saving}
+      >
         <legend>验收检查</legend>
         <p className="field-hint">
           项目自己的验收标准，绑定这个项目的运行在数据检查时都会跑（模板里引用{" "}
-          {"{{project.checks}}"}）。不带 catalog、schema 的表名是这次运行写的表，要以表名前缀开头。
+          {"{{project.checks}}"}）。不带 catalog、schema
+          的表名是这次运行写的表，要以表名前缀开头。
         </p>
         <ChecksField
           label="检查（JSON）"
@@ -572,7 +773,10 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
         />
       </fieldset>
 
-      <fieldset className="panel asset-section project-form-section" disabled={saving}>
+      <fieldset
+        className="panel asset-section project-form-section"
+        disabled={saving}
+      >
         <legend>数据外发策略</legend>
         <p className="field-hint">
           管从数据源读出来的值以什么程度发给模型，以及能用哪些模型。不设的项用平台默认。
@@ -585,11 +789,16 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
               value: "",
               label: `平台默认${defaults ? `（${levels.find((level) => level.value === defaults.samples)?.label ?? defaults.samples}）` : ""}`,
             },
-            ...levels.map((level) => ({ value: level.value, label: level.label })),
+            ...levels.map((level) => ({
+              value: level.value,
+              label: level.label,
+            })),
           ]}
           help={
-            levels.find((level) => level.value === (input.policy.samples ?? defaults?.samples))
-              ?.description
+            levels.find(
+              (level) =>
+                level.value === (input.policy.samples ?? defaults?.samples),
+            )?.description
           }
           onChange={(value) =>
             set("policy", {
@@ -598,7 +807,10 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
             })
           }
         />
-        <fieldset className="list-editor" aria-describedby={`${ids.models}-hint`}>
+        <fieldset
+          className="list-editor"
+          aria-describedby={`${ids.models}-hint`}
+        >
           <legend>允许的模型</legend>
           {known === null ? (
             <TextField
@@ -635,7 +847,9 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
           )}
           <small className="muted" id={`${ids.models}-hint`}>
             都不选时用平台默认
-            {defaults?.models?.length ? `（只用 ${defaults.models.join("、")}）` : "（不限定）"}
+            {defaults?.models?.length
+              ? `（只用 ${defaults.models.join("、")}）`
+              : "（不限定）"}
             。选了以后，运行里每个调模型的节点都只能用这些模型。
           </small>
         </fieldset>
@@ -643,15 +857,25 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
 
       {error && <ErrorNotice message={error} />}
       <div className="datasource-save-row">
-        <button className="button primary" disabled={saving || (mode === "edit" && !dirty)}>
+        <button
+          className="button primary"
+          disabled={saving || (mode === "edit" && !dirty)}
+        >
           {saving ? "正在保存…" : mode === "create" ? "建立项目" : "保存"}
         </button>
         {onCancel && (
-          <button type="button" className="button secondary" disabled={saving} onClick={onCancel}>
+          <button
+            type="button"
+            className="button secondary"
+            disabled={saving}
+            onClick={onCancel}
+          >
             取消
           </button>
         )}
-        {mode === "edit" && !dirty && <p className="field-hint">还没有修改。</p>}
+        {mode === "edit" && !dirty && (
+          <p className="field-hint">还没有修改。</p>
+        )}
       </div>
     </form>
   );

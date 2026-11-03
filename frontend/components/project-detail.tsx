@@ -10,6 +10,7 @@ import {
   getProjectOptions,
   paramText,
   paramTypeLabels,
+  scheduledText,
   projectInput,
   samplesText,
   type Project,
@@ -73,7 +74,13 @@ export function NewProject() {
   );
 }
 
-function Rows({ headings, rows }: { headings: string[]; rows: (string | null)[][] }) {
+function Rows({
+  headings,
+  rows,
+}: {
+  headings: string[];
+  rows: (string | null)[][];
+}) {
   return (
     <div className="table-scroll">
       <table className="mapping-table">
@@ -102,7 +109,13 @@ function Rows({ headings, rows }: { headings: string[]; rows: (string | null)[][
   );
 }
 
-function ProjectView({ project, options }: { project: Project; options: ProjectOptions | null }) {
+function ProjectView({
+  project,
+  options,
+}: {
+  project: Project;
+  options: ProjectOptions | null;
+}) {
   const defaults = options?.defaults;
   const level = options?.sample_levels.find(
     (item) => item.value === (project.policy.samples ?? defaults?.samples),
@@ -132,7 +145,10 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
           </div>
         </dl>
       </section>
-      <section className="panel asset-section" aria-labelledby="project-environments">
+      <section
+        className="panel asset-section"
+        aria-labelledby="project-environments"
+      >
         <h2 id="project-environments">环境</h2>
         <Rows
           headings={["标识", "显示名", "写到哪里", "集群"]}
@@ -174,14 +190,24 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
             ))}
           </ul>
         ) : (
-          <p className="muted">没有。平台自己建的表会打上项目标记，不用登记。</p>
+          <p className="muted">
+            没有。平台自己建的表会打上项目标记，不用登记。
+          </p>
         )}
       </section>
       <section className="panel asset-section" aria-labelledby="project-params">
         <h2 id="project-params">运行参数</h2>
         {project.params.length ? (
           <Rows
-            headings={["标识", "显示名", "类型", "必填", "默认值", "说明"]}
+            headings={[
+              "标识",
+              "显示名",
+              "类型",
+              "必填",
+              "默认值",
+              "上线后定时运行时",
+              "说明",
+            ]}
             rows={project.params.map((param) => [
               param.key,
               param.label,
@@ -192,6 +218,7 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
                   : paramTypeLabels[param.type],
               param.required ? "是" : "否",
               paramText(param, param.default),
+              scheduledText(param),
               param.description,
             ])}
           />
@@ -208,7 +235,8 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
               String(check.id ?? ""),
               String(check.label ?? ""),
               checkKinds[String(check.kind)] ?? String(check.kind ?? ""),
-              severityLabels[String(check.severity ?? "error")] ?? String(check.severity),
+              severityLabels[String(check.severity ?? "error")] ??
+                String(check.severity),
             ])}
           />
         ) : (
@@ -288,7 +316,12 @@ export function ProjectDetail({ id }: { id: string }) {
         <Icon name="back" size={16} />
         返回项目
       </Link>
-      {error && <ErrorNotice message={error} onRetry={() => setRevision((n) => n + 1)} />}
+      {error && (
+        <ErrorNotice
+          message={error}
+          onRetry={() => setRevision((n) => n + 1)}
+        />
+      )}
       {!project && !error && <AssetLoading />}
       {project && (
         <>
@@ -323,7 +356,11 @@ export function ProjectDetail({ id }: { id: string }) {
             {project.description}
           </AssetHeading>
           {deleteError && <ErrorNotice message={deleteError} />}
-          <p className={notice ? "copy-notice" : "sr-only"} role="status" aria-live="polite">
+          <p
+            className={notice ? "copy-notice" : "sr-only"}
+            role="status"
+            aria-live="polite"
+          >
             {notice}
           </p>
           {editing ? (

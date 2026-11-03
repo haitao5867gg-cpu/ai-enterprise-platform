@@ -2394,6 +2394,12 @@ textarea::placeholder {
 .question-why > span:first-child:not(.suggested-tag) {
   font-weight: 600;
 }
+.question-only-for {
+  margin: 2px 0 6px;
+  color: #8a6d3b;
+  font-size: 11px;
+  line-height: 1.7;
+}
 .question-choices {
   display: grid;
   gap: 6px;

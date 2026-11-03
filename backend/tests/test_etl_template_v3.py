@@ -251,13 +251,15 @@ class ProjectLake:
         await self.service.wait_idle()
         return (await self.api.get(f"/runs/{run_id}")).json()
 
-    async def start(self, golden: str = "old.jade.table2") -> tuple[str, dict]:
+    async def start(
+        self, golden: str = "old.jade.table2", params: dict[str, Any] | None = None
+    ) -> tuple[str, dict]:
         made = await self.api.post(
             "/runs",
             json={
                 "app": "ibf",
                 "input": {"datasource": self.lake, "request": "整理 Table 2", "golden": golden},
-                "project": {"project_id": "jade-ibf"},
+                "project": {"project_id": "jade-ibf", "params": params or {}},
                 "requester": "李雷",
             },
         )
@@ -364,6 +366,14 @@ async def test_a_bound_run_is_planned_checked_and_delivered(make, monkeypatch):
 
     view = await lake.submit(run_id, "approve")
     assert view["step"]["node"] == "release_review", view["error"]
+    pending = view["pending"]
+    assert pending["options"] == ["release", "skip"]
+    assert pending["fields"][0]["only_for"] == ["release"]
+    # The release brief: where it goes, the scheduled runs' parameters, how to undo it.
+    show = pending["details"]["show"]
+    assert "## 上线说明" in show and "`icsd-ace-prod.jade`" in show
+    assert "| 统计月（`update_month`） | 用默认值 | 2026-10 |" in show
+    assert "### 怎么撤销" in show
     view = await lake.submit(run_id, "release", values={"schedule": "0 0 2 1 * ?"})
     assert view["status"] == "done", view["error"]
     assert view["outcome"] == "delivered"
@@ -452,10 +462,11 @@ def test_template_follows_the_contract():
     old = builtin.TEMPLATES["etl-lakehouse"].config["graph"]
     ids = [n["id"] for n in old["nodes"]]
     nodes = {n["id"]: n for n in template.config["graph"]["nodes"]}
-    # Version 2's nodes, with the data check before the review; version 2 is unchanged.
-    at = ids.index("data_review")
-    assert list(nodes) == [*ids[:at], "checks", *ids[at:]]
-    assert "checks" not in ids
+    # Version 2's nodes, with the data check before the review and whether the project
+    # can release before the release approval; version 2 is unchanged.
+    at, then = ids.index("data_review"), ids.index("release_review")
+    assert list(nodes) == [*ids[:at], "checks", *ids[at:then], "can_release", *ids[then:]]
+    assert "checks" not in ids and "can_release" not in ids
     start = nodes["start"]
     assert start["project"] == "required"
     assert [(i["key"], i.get("advanced", False)) for i in start["inputs"]] == [
@@ -483,3 +494,59 @@ def test_template_follows_the_contract():
         assert ("dev_run", branch, "checks") in edges
         assert ("checks", branch, "data_review") in edges
         assert ("dev_run", branch, "data_review") not in edges
+    # Releasing (jadeflow retest I-19): asked only when the project has a prod environment
+    # the run is not in, offered only when the scheduled runs can fill in every parameter;
+    # the refresh time is asked only of someone releasing.
+    assert ("data_review", "approve", "can_release") in edges
+    assert ("can_release", "yes", "release_review") in edges
+    assert ("can_release", "else", "end") in edges
+    assert ("data_review", "approve", "release_review") not in edges
+    [rule] = nodes["can_release"]["rules"]
+    assert rule["conditions"] == [{"left": "{{project.can_release}}", "op": "eq", "right": True}]
+    release_review = nodes["release_review"]
+    assert release_review["options"][0] == {
+        "key": "release",
+        "label": "上线到 prod",
+        "requires": "{{project.release_ready}}",
+    }
+    assert "{{project.release_brief}}" in release_review["show"]
+    assert release_review["fields"][0]["only_for"] == ["release"]
+
+
+async def test_the_release_step_follows_the_project(make, monkeypatch):
+    """jadeflow retest I-19: no release step without prod; 先不上线 needs no refresh time;
+    no release while a parameter of the scheduled runs cannot be filled in."""
+    put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
+
+    async def reviewed(params: dict[str, Any] | None = None) -> tuple[ProjectLake, str, dict]:
+        lake = await make([reply(v3_plan()), GOOD_CODE], [PASSED], [PREVIEW])
+        run_id, view = await lake.start(params=params)
+        view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
+        assert view["step"]["node"] == "data_review", view["error"]
+        return lake, run_id, await lake.submit(run_id, "approve")
+
+    environments = PROJECT["environments"]
+    monkeypatch.setitem(PROJECT, "environments", environments[:1])
+    lake, run_id, view = await reviewed()
+    # Only a dev environment: delivered right after the review.
+    assert (view["status"], view["outcome"]) == ("done", "delivered"), view["error"]
+    assert view["result"]["release"] is None
+    steps = (await lake.api.get(f"/runs/{run_id}/flow")).json()["steps"]
+    assert "release_review" not in [s["node"] for s in steps]
+
+    monkeypatch.setitem(PROJECT, "environments", environments)
+    month = {"key": "update_month", "label": "统计月", "type": "month", "required": True}
+    monkeypatch.setitem(PROJECT, "params", [month])
+    lake, run_id, view = await reviewed({"update_month": "2026-10"})
+    assert view["step"]["node"] == "release_review", view["error"]
+    pending = view["pending"]
+    # 统计月 has no rule for scheduled runs and no default: releasing is not offered, and
+    # neither is the refresh time, asked only of someone releasing.
+    assert pending["options"] == ["skip"]
+    assert pending["fields"] is None
+    assert "**现在不能上线：**" in pending["details"]["show"]
+    refused = await lake.answer(run_id, "release", values={"schedule": "0 0 2 * * ?"})
+    assert refused.status_code == 422
+    view = await lake.submit(run_id, "skip")
+    assert (view["status"], view["outcome"]) == ("done", "delivered"), view["error"]
+    assert lake.ws.jobs.keys() == {100}  # only the dev job

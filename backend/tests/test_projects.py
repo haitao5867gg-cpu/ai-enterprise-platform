@@ -590,3 +590,166 @@ async def test_saving_checks_project_references():
         )
         assert tested.status_code == 200, tested.text
         assert tested.json()["rendered"]["prompt"].startswith("统计月 2026-09，写到 c.s")
+
+
+VERSION = {
+    "key": "version_id",
+    "label": "版本",
+    "type": "text",
+    "required": True,
+    "pattern": r"FY[0-9]{2}_(0[1-9]|1[01])_M",
+    "description": "月度版本 FY{yy}_{MM}_M，MM 是 01–11",
+}
+BATCH = {"key": "run_id", "label": "运行批次", "type": "text", "required": True}
+
+
+ONLY_DATE = "只有按日期推算（date）才写 format、months、day"
+
+
+def scheduled(param: dict[str, Any], **rule: Any) -> dict[str, Any]:
+    return param | {"scheduled": rule}
+
+
+@pytest.mark.parametrize(
+    ("param", "detail"),
+    [
+        (
+            scheduled(BATCH, use="run_id", months=1),
+            "只有按日期推算（date）才写 format、months、day",
+        ),
+        (
+            scheduled(BATCH, use="this_run", format="%Y"),
+            "只有按日期推算（date）才写 format、months、day",
+        ),
+        (
+            scheduled({**BATCH, "type": "number"}, use="run_id"),
+            "作业运行的 ID 只能填进文本参数",
+        ),
+        (
+            scheduled({**BATCH, "type": "boolean"}, use="date"),
+            "按日期推算只能用在文本、日期或月份参数上",
+        ),
+        (scheduled(VERSION, use="date"), "文本参数要写日期格式 format，如 FY%y_%m_M"),
+        (
+            scheduled({**BATCH, "type": "month"}, use="date", format="%Y%m"),
+            "月份参数的格式是固定的，不写 format",
+        ),
+        (scheduled({**BATCH, "type": "month"}, use="date", day="last"), "月份参数不用写 day"),
+        (
+            scheduled(VERSION, use="date", format="FY%y_%B"),
+            "日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）",
+        ),
+        (
+            scheduled(VERSION, use="date", format="FY%%"),
+            "日期格式里至少要有 %Y、%y、%m、%d 中的一个",
+        ),
+    ],
+)
+def test_how_scheduled_runs_fill_in_a_parameter_is_checked(param, detail):
+    with pytest.raises(ValueError, match="定时运行时的取法不对：") as caught:
+        ProjectBody.model_validate(project(params=[param]))
+    assert detail in str(caught.value)
+    with pytest.raises(ValueError, match="greater than or equal to -24"):
+        ProjectBody.model_validate(project(params=[scheduled(VERSION, use="date", months=-25)]))
+
+
+async def test_scheduled_values_and_what_a_release_says():
+    """jadeflow retest I-19: a released job's scheduled runs must not reuse the run's
+    version and batch; the release step says how they are filled in."""
+    from datetime import UTC, datetime
+
+    from aep.projects import project_value, release_brief, scheduled_values
+
+    store = MemoryProjectStore()
+    month = {"key": "month", "label": "统计月", "type": "month", "default": "2026-10"}
+    note = {"key": "note", "label": "备注", "type": "text"}
+    params = [
+        scheduled(VERSION, use="date", format="FY%y_%m_M", months=-1),
+        scheduled(BATCH, use="run_id"),
+        month,
+        note,
+        scheduled({**note, "key": "kind", "label": "口径"}, use="this_run"),
+        scheduled({**month, "key": "close", "label": "关账日", "type": "date", "default": None},
+                  use="date", months=-1, day="last"),
+    ]  # fmt: skip
+    body = ProjectBody.model_validate(project(params=params)).body()
+    assert body["params"][0]["scheduled"] == {
+        "use": "date",
+        "format": "FY%y_%m_M",
+        "months": -1,
+        "day": None,
+    }
+    assert body["params"][2]["scheduled"] is None
+    saved = await store.create(body)
+    given = {"version_id": "FY26_06_M", "run_id": "RUN_JF_F", "kind": "按需求"}
+    snap = snapshot(saved, "dev", given)
+
+    # 2026-11-30 22:00 UTC is already 1 December in Shanghai.
+    now = datetime(2026, 11, 30, 22, 0, tzinfo=UTC)
+    found = scheduled_values(snap, "Asia/Shanghai", now)
+    assert found.today == "2026-12-01" and found.problems == []
+    assert found.fixed == {
+        "version_id": None,
+        "run_id": None,
+        "month": "2026-10",
+        "note": None,
+        "kind": "按需求",
+        "close": None,
+    }
+    assert [(r["key"], r["use"]) for r in found.rules] == [
+        ("version_id", "date"),
+        ("run_id", "run_id"),
+        ("close", "date"),
+    ]
+    assert found.rules[0] == {
+        "key": "version_id",
+        "label": "版本",
+        "type": "text",
+        "use": "date",
+        "format": "FY%y_%m_M",
+        "months": -1,
+        "day": None,
+        "pattern": VERSION["pattern"],
+        "description": VERSION["description"],
+    }
+    assert [(line["how"], line["value"]) for line in found.lines] == [
+        ("按运行那天推算上个月，写成 FY{yy}_{MM}_M", "FY26_11_M"),
+        ("每次用 Databricks 作业运行的 ID", "（运行时才知道）"),
+        ("用默认值", "2026-10"),
+        ("不填（空值）", None),
+        ("一直用这次运行的值", "按需求"),
+        ("按运行那天推算上个月最后一天，写成 {yyyy}-{MM}-{dd}", "2026-11-30"),
+    ]
+    # In January the version would be FY26_12_M, which the parameter's format refuses.
+    january = scheduled_values(snap, "Asia/Shanghai", datetime(2027, 1, 5, tzinfo=UTC))
+    assert january.lines[0]["value"] == "FY26_12_M"
+    assert january.lines[0]["warning"] == "这个值不符合参数的格式，这样的日子定时运行会报错、不写表"
+
+    assert project_value(snap, "can_release") is True
+    assert project_value(snap, "release_ready", "Asia/Shanghai") is True
+    said = release_brief(snap, "Asia/Shanghai", now)
+    assert said.startswith("## 上线说明\n\n- 上线到项目「IBF 入库运费」的 生产 环境（prod）")
+    assert "### 定时运行时的参数（按今天 2026-12-01，Asia/Shanghai）" in said
+    assert "| 版本（`version_id`） | 按运行那天推算上个月，写成 FY{yy}_{MM}_M | FY26_11_M |" in said
+    assert "### 怎么撤销" in said and "现在不能上线" not in said
+
+    # A required parameter with neither a rule nor a default cannot be filled in.
+    bare = snap | {"params": [VERSION, *snap["params"][1:]]}
+    found = scheduled_values(bare, "Asia/Shanghai", now)
+    assert found.problems == [
+        "参数「版本」没有写定时运行时怎么取，也没有默认值：在项目的运行参数里给它写上定时运行时的"
+        "取法（或者默认值），再重新发起运行"
+    ]
+    assert project_value(bare, "release_ready") is False
+    assert "**现在不能上线：**" in release_brief(bare, "Asia/Shanghai", now)
+
+    # No prod environment, a run in prod, an old snapshot, an unbound run.
+    no_prod = snap | {"environments": snap["environments"][:1]}
+    in_prod = snapshot(saved, "prod", given)
+    old = {k: v for k, v in snap.items() if k != "environments"}
+    for case in (no_prod, in_prod, old):
+        assert project_value(case, "can_release") is False
+        assert project_value(case, "release_ready") is False
+        assert project_value(case, "release_brief") == ""
+    assert project_value(None, "can_release") is None
+    assert project_value(None, "release_brief") == ""

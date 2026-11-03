@@ -27,6 +27,7 @@ export function ApprovalQuestions({
   errors,
   disabled,
   aside,
+  optionLabel,
 }: {
   questions: Question[];
   values: FieldValues;
@@ -34,6 +35,8 @@ export function ApprovalQuestions({
   errors: Record<string, string>;
   disabled: boolean;
   aside?: (question: Question) => ReactNode;
+  // An option's name, for a question answered only with some options.
+  optionLabel?: (option: string) => string;
 }) {
   return (
     <div className="approval-questions">
@@ -56,6 +59,15 @@ export function ApprovalQuestions({
             <legend>
               {index + 1}. {question.label}
             </legend>
+            {question.only_for?.length ? (
+              <p className="question-only-for">
+                只在选
+                {question.only_for
+                  .map((option) => `「${optionLabel?.(option) ?? option}」`)
+                  .join("或")}
+                时要答，选别的不用答
+              </p>
+            ) : null}
             {question.why && (
               <p className="question-why">
                 <span>为什么问：</span>

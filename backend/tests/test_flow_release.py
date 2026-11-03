@@ -264,3 +264,66 @@ def test_a_runs_snapshot_keeps_every_environment():
     taken = snapshot(project, "uat", None)
     assert taken["environment"] == ENVIRONMENTS[2]
     assert taken["environments"] == ENVIRONMENTS
+
+
+def rule(**found: Any) -> dict[str, Any]:
+    """A parameter's ``scheduled`` as a project stores it."""
+    return {"use": "date", "format": None, "months": 0, "day": None} | found
+
+
+async def test_scheduled_runs_of_a_released_job_work_out_their_parameters(tmp_path):
+    """jadeflow retest I-19: the job no longer reruns the released run's version."""
+    import json
+
+    workspace = fake_databricks.FakeWorkspace(tmp_path)
+    settings = {"databricks_cluster_id": "c", "databricks_deploy": "job"}
+    month, cutoff, scale = PROJECT["params"]
+    batch = {"key": "batch", "label": "运行批次", "type": "text", "required": True}
+    project = BOUND | {
+        "params": [
+            month | {"scheduled": rule(months=-1)},
+            cutoff | {"default": "2026-01-01"},
+            scale | {"scheduled": rule(use="this_run", months=0)},
+            batch | {"pattern": "[0-9]+", "scheduled": rule(use="run_id")},
+        ],
+        "values": PROJECT["values"] | {"batch": "RUN_7"},
+    }
+    done = await release(RELEASE, dev_state(bound_bundle(), project), workspace, **settings)
+
+    assert done.branch == "deployed", done.outputs["errors"]
+    parameters = workspace.jobs[100]["tasks"][0]["notebook_task"]["base_parameters"]
+    # Fixed at the release: the default, this run's value, and none for the worked-out ones.
+    assert json.loads(parameters["params"]) == {
+        "update_month": None,
+        "cutoff": "2026-01-01",
+        "scale": 1.5,
+        "batch": None,
+    }
+    rules = json.loads(parameters["param_rules"])
+    assert rules["timezone"] == "Asia/Shanghai"
+    assert [(r["key"], r["type"], r["use"], r["months"]) for r in rules["params"]] == [
+        ("update_month", "month", "date", -1),
+        ("batch", "text", "run_id", 0),
+    ]
+    assert rules["params"][1]["pattern"] == "[0-9]+"
+    report = done.outputs["report"]
+    assert "- 下一次运行：" in report
+    assert "### 定时运行时的参数" in report
+    assert "| 统计月（`update_month`） | 按运行那天推算上个月，写成 {yyyy}-{MM} |" in report
+    assert "| 运行批次（`batch`） | 每次用 Databricks 作业运行的 ID | （运行时才知道） |" in report
+    assert "| 系数（`scale`） | 一直用这次运行的值 | 1.5 |" in report
+    assert "删掉「ibf_table2（jade-ibf/prod）」" in report
+
+    # A required parameter the scheduled runs cannot fill in: nothing is deployed.
+    stuck = project | {"params": [*project["params"][:3], batch]}
+    done = await release(RELEASE, dev_state(bound_bundle(), stuck), workspace, **settings)
+    assert done.branch == "failed"
+    assert done.outputs["errors"].startswith("参数「运行批次」没有写定时运行时怎么取，也没有默认值")
+    # Code generated before the platform knew how: it cannot pass the rules.
+    old = bound_bundle()
+    old.files["databricks.yml"] = old.files["databricks.yml"].replace("param_rules", "rules_x")
+    done = await release(RELEASE, dev_state(old, project), workspace, **settings)
+    assert done.outputs["errors"] == (
+        "这次运行的代码是平台升级前生成的，定时运行时没法按项目的规则算参数，请重新发起运行"
+    )
+    assert sorted(workspace.jobs) == [100]

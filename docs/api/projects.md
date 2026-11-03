@@ -63,7 +63,16 @@
   "default": "2026-10",                   // 可选，默认 null；有值时要符合类型
   "choices": [{"value": "a", "label": "A"}],   // 只用于 select，1–50 个，value 不重复
   "pattern": "FY\\d{2}_\\d{2}_M",            // 只用于 text，可选：整个值要符合的正则表达式（RE2），1–200 字符，默认 null
-  "description": "按自然月，C+3 当天跑上个月"     // 可选，最多 500 字符
+  "description": "按自然月，C+3 当天跑上个月",    // 可选，最多 500 字符
+  "scheduled": Scheduled                  // 可选，上线后定时运行时怎么取这个参数，默认 null，见“定时运行时参数怎么取”
+}
+
+// Scheduled（jadeflow 复测后新增）
+{
+  "use": "date" | "run_id" | "this_run",
+  "format": "FY%y_%m_M",                  // 只用于 date 和 text 参数，必填：日期格式，只能用 %Y %y %m %d（和 %%），1–50 字符
+  "months": -1,                           // 只用于 date：从运行那天往前（负数）或往后推几个月，-24–24，默认 0
+  "day": "first" | "last" | null          // 只用于 date：取那个月的第一天、最后一天，null 是同一天（没有这一天时取月底）
 }
 
 // Policy
@@ -78,6 +87,7 @@
 - `filter` 只做形状检查：不能有分号、注释（`--`、`/*`），不能出现 `SELECT` 关键字（不分大小写，按整词匹配），括号要配对。它会原样拼进 `WHERE (…)`，语义由 Databricks 判断，写错了在读表时报错。
 - 参数值：`text` 1–500 字符；`number` 是 JSON 数字；`boolean` 是 true 或 false；`date` 是 `YYYY-MM-DD`；`month` 是 `YYYY-MM`；`select` 是 `choices` 里的某个 `value`。
 - `pattern`（试点后新增）：`text` 参数的值要整个符合它（相当于前后加了 `^`、`$`），不符合时“参数「版本」要符合格式 FY\d{2}_\d{2}_M”，默认值和新建运行时填的值都查。语法是 RE2（Python 的 `re` 的常用写法都能用，不支持反向引用和环视）：匹配时间和值的长度成正比，项目写什么样的格式都不会让接口卡住。别的类型写了它报“参数「统计月」不是文本，不能写格式”；写错了报“参数「版本」的格式不是有效的正则表达式（missing ): (a）”，括号里是 RE2 的原话。以前保存的参数没有这个键，等于没有格式。
+- `scheduled`：`use` 是 `run_id` 或 `this_run` 时不能写 `format`、`months`、`day`（“只有按日期推算（date）才写 format、months、day”）；`run_id` 只能用在 `text` 参数上；`date` 只能用在 `text`、`date`、`month` 参数上，`text` 参数要写 `format`（“文本参数要写日期格式 format，如 FY%y_%m_M”），`date` 和 `month` 参数的格式固定是 `YYYY-MM-DD`、`YYYY-MM`，不能写 `format`，`month` 参数不能写 `day`；`format` 里有别的 `%` 写法报“日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）”，一个都没有报“日期格式里至少要有 %Y、%y、%m、%d 中的一个”。报错写成“参数「版本」定时运行时的取法不对：……”。以前保存的参数没有这个键，等于 null。
 - `models` 里的别名必须在模型网关上（同编排应用保存检查用的模型清单）；网关读不到清单时不检查。
 - `checks`：每条按 `data_check` 的规则检查（`aep.etl.checks.problems`），报第一个问题，写成“验收检查 c1（where）：条件不能为空”（没有 id 时“第 2 条验收检查：…”）；另外 id 不能重复（“验收检查 id c1 重复”）、不能用 `golden`（“验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比”）；条件和表达式里的 `${param.<key>}` 要是本项目的参数（“验收检查 c1（where）用的运行参数 ${param.month} 不是本项目定义的参数”）；不带点的表名是这次运行在环境里写的表，要以表名前缀开头（“验收检查 c1（table）：不带 catalog、schema 的 t2 是本项目在运行环境里的表，要以表名前缀 ibf_ 开头”）。保存以前建的项目没有这个键，读出来是 `[]`。
 
@@ -164,11 +174,29 @@
 | `references` | 引用表列表，同项目的 `references` |
 | `params` | `[{"key", "label", "type", "value", "description"}]`，`value` 是这次的值 |
 | `checks` | 项目的验收检查（同项目的 `checks`），给数据检查节点的 `include` 用；快照里没有时（加这个字段以前的运行）是 `[]` |
+| `can_release` | 能不能上线（jadeflow 复测后新增）：项目有 key 为 `prod` 的环境，而且这次运行不在 `prod` 里时为 true；快照里没有 `environments`（第五批以前的运行）时为 false |
+| `release_ready` | `can_release` 为 true，而且每个参数在定时运行时都取得到（见下一节）时为 true |
+| `release_brief` | `can_release` 为 true 时，给人看的上线说明（Markdown），否则 `""`：上线到哪个环境、写到哪个 `catalog.schema`、只写前缀开头的本项目表；平台在 Databricks 上建（或更新）一个 notebook Job，按选的时间运行，上线时不马上运行；有参数时列一张表：每个参数定时运行时怎么取、按今天（`AEP_DATABRICKS_PROD_TIMEZONE` 的日期）运行的话是什么值，算出的值不符合参数格式时注明“这样的日子定时运行会报错、不写表”；有参数取不到时写“现在不能上线”和原因；最后是怎么撤销（删掉或暂停 Job；写进表的数据不跟着撤销，Delta 表可以 `RESTORE TABLE … TO VERSION AS OF …`） |
 | `brief` | 给模型看的一段 Markdown，由平台按快照写：项目名称和说明；写到哪里（`catalog.schema`）和表名前缀；“只能写以前缀开头、属于本项目的表”；引用表（全名、名称、读取筛选、说明）；运行参数（标识、名称、类型（有格式时写成“text，格式 `…`”）、这次的值、说明），以及生成的代码用 `param("标识")` 读、方案和检查里的条件用 `${param.标识}` 写；有验收检查时再列一张表（id、名称、级别、检查什么），并说“方案里建议的数据检查不要重复这些，id 也不能和它们相同” |
 
-- 没绑定项目的运行里（只有 `optional` 的应用会这样）两种引用都是 null，`brief` 是 `""`，节点要自己处理空值。
+- 没绑定项目的运行里（只有 `optional` 的应用会这样）两种引用都是 null，`brief` 和 `release_brief` 是 `""`，节点要自己处理空值。
 - 单节点试跑（`POST /apps/{app}/nodes/{node}/test`）的测试值可以给 `param.<key>`、`project.<字段>`，没给的按没绑定项目算。
 - 这些都是人配的项目信息，不算数据值，不受数据外发策略的样本级别影响。
+
+### 定时运行时参数怎么取（jadeflow 复测后新增）
+
+绑定项目的运行上线到 prod 后（data-nodes.md 的 `databricks_release`），Databricks 按定时运行这个 Job，每次运行的参数按参数的 `scheduled` 取，不再一直用上线那次运行的值（每月换一次的版本号照搬会每天重算同一个旧版本）：
+
+| `scheduled` | 定时运行时的值 |
+| --- | --- |
+| `{"use": "date", "format": "FY%y_%m_M", "months": -1}` | 按运行那天（`AEP_DATABRICKS_PROD_TIMEZONE`，和定时同一个时区）推算：上个月，写成 `FY26_10_M`；`date` 参数写成 `YYYY-MM-DD`，`month` 参数写成 `YYYY-MM` |
+| `{"use": "run_id"}` | 这次 Databricks 作业运行的 ID（数字），同写进表属性的 `run_id` |
+| `{"use": "this_run"}` | 一直用上线那次运行的值 |
+| 不写（null） | 有默认值用默认值；不是必填的为空值；必填又没有默认值的取不到，不能上线 |
+
+- 取不到的参数在上线说明里写明，平台不部署，上线节点走 `failed`：“参数「运行批次」没有写定时运行时怎么取，也没有默认值：在项目的运行参数里给它写上定时运行时的取法（或者默认值），再重新发起运行”。运行用的是绑定时的快照，改了项目要重新发起运行。
+- 每次运行在集群上算值（`aep.cluster_harness.scheduled_params`）。参数有 `pattern` 时，算出的值要整个符合它，不符合时这次运行报错、不写表：“定时运行在 2027-01-01 算出参数「版本」= FY26_12_M，不符合它的格式（月度版本 …），这次不运行，没有写表”（括号里是参数的说明，没有说明时是“要整段符合 <正则>”）。
+- 上线时平台把不用每次算的值（默认值、空值、`this_run`）写进 Job 的 `params`，把要每次算的写进 Job 的 `param_rules`（`{"timezone": "Asia/Shanghai", "params": [{"key", "label", "type", "use", "format", "months", "day", "pattern", "description"}]}`）。
 
 ## 数据外发策略
 

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
   answersChanged,
+  questionsFor,
   cancelRun,
   messageTime,
   durationText,
@@ -266,8 +267,11 @@ export function RunDetail({
       return;
     const fields = run.pending.fields ?? [];
     const submittedValues = { ...initialValues(fields), ...values };
-    // An approval's questions have no defaults: each one is answered.
-    const asking = run.pending.kind === "approval" && fields.length > 0;
+    // An approval's questions have no defaults: each one that goes with the decision is
+    // answered (a question only for other options is not).
+    const asked =
+      run.pending.kind === "approval" ? questionsFor(fields, decision) : fields;
+    const asking = run.pending.kind === "approval" && asked.length > 0;
     const issues =
       run.pending.kind === "form"
         ? Object.fromEntries(
@@ -277,7 +281,7 @@ export function RunDetail({
             ]),
           )
         : asking
-          ? questionErrors(fields, values)
+          ? questionErrors(asked, values)
           : {};
     setValueErrors(issues);
     // The record says who decided: the page asks for a name (the API does not),
@@ -318,7 +322,7 @@ export function RunDetail({
                   ...(asking
                     ? {
                         values: Object.fromEntries(
-                          fields.map((field) => [field.key, values[field.key]]),
+                          asked.map((field) => [field.key, values[field.key]]),
                         ),
                       }
                     : {}),
@@ -485,9 +489,11 @@ export function RunDetail({
   const viewShown = Boolean(planReview || devReview);
   const round =
     typeof humanDetails?.round === "number" ? humanDetails.round : null;
+  // Questions only for some options are not counted: they are asked with those.
   const unanswered = questions.filter(
     (question) =>
-      values[question.key] === undefined || values[question.key] === "",
+      !question.only_for?.length &&
+      (values[question.key] === undefined || values[question.key] === ""),
   ).length;
   const remarked = Boolean(comment.trim()) || (viewShown && notes.length > 0);
   const answered = answersChanged(questions, values);
@@ -1173,6 +1179,7 @@ export function RunDetail({
                           }}
                           errors={valueErrors}
                           disabled={controlsDisabled}
+                          optionLabel={optionLabel}
                         />
                       )}
                       {run.pending.kind !== "form" && (

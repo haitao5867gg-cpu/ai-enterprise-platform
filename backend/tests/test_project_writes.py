@@ -886,6 +886,62 @@ def test_the_notebook_reads_the_project_from_its_widgets(monkeypatch, tmp_path):
     cluster_harness.run_notebook(None, Dbutils, "pipeline.py")
     assert "project" not in seen and seen["params"] == {} and seen["loads"] == {}
 
+    # A released job's scheduled run works out the parameters its rules name.
+    seen.clear()
+    batch = {"key": "batch", "label": "运行批次", "type": "text", "use": "run_id"}
+    widgets |= {
+        "params": '{"update_month": "2026-09", "batch": null}',
+        "param_rules": json.dumps({"timezone": "Asia/Shanghai", "params": [batch]}),
+        "run_id": "4417",
+    }
+    cluster_harness.run_notebook(None, Dbutils, "pipeline.py")
+    assert seen["params"] == {"update_month": "2026-09", "batch": "4417"}
+
+
+def test_scheduled_runs_work_out_dates_and_check_the_format():
+    """jadeflow retest I-19 (docs/api/projects.md, "定时运行时参数怎么取")."""
+    from datetime import date, datetime
+
+    shift = cluster_harness.shift_months
+    assert shift(date(2026, 3, 31), -1) == date(2026, 2, 28)
+    assert shift(date(2026, 1, 15), -1) == date(2025, 12, 15)
+    assert shift(date(2026, 11, 3), 14, "first") == date(2028, 1, 1)
+    assert shift(date(2024, 3, 3), -1, "last") == date(2024, 2, 29)
+
+    version = {
+        "key": "version_id",
+        "label": "版本",
+        "type": "text",
+        "use": "date",
+        "format": "FY%y_%m_M",
+        "months": -1,
+        "day": None,
+        "pattern": "FY[0-9]{2}_(0[1-9]|1[01])_M",
+        "description": "月度版本 FY{yy}_{MM}_M，MM 是 01–11",
+    }
+    close = {"key": "close", "label": "关账日", "type": "date", "use": "date", "months": -1,
+             "day": "last"}  # fmt: skip
+    month = {"key": "month", "label": "统计月", "type": "month", "use": "date", "months": 0}
+    rules = {"timezone": "Asia/Shanghai", "params": [version, close, month]}
+    fixed = {"version_id": None, "close": None, "month": None, "kind": "按需求"}
+    worked = cluster_harness.scheduled_params(fixed, rules, "88", datetime(2026, 12, 1, 2))
+    assert worked == {
+        "version_id": "FY26_11_M",
+        "close": "2026-11-30",
+        "month": "2026-12",
+        "kind": "按需求",
+    }
+    assert cluster_harness.scheduled_params(fixed, {}, "88") is fixed
+    with pytest.raises(ValueError) as caught:
+        cluster_harness.scheduled_params(fixed, rules, "88", datetime(2027, 1, 1, 2))
+    assert str(caught.value) == (
+        "定时运行在 2027-01-01 算出参数「版本」= FY26_12_M，不符合它的格式"
+        "（月度版本 FY{yy}_{MM}_M，MM 是 01–11），这次不运行，没有写表"
+    )
+    batch = {"key": "batch", "label": "运行批次", "type": "text", "use": "run_id"}
+    with pytest.raises(ValueError, match="拿不到作业运行的 ID"):
+        cluster_harness.scheduled_params({}, {"params": [batch]}, "")
+
 
 # Where the dev run deploys and runs
 
@@ -955,6 +1011,8 @@ async def test_a_bound_job_runs_in_the_environment_and_marks_the_run(tmp_path):
         "table_prefix": "ibf_",
         "adopted": '["ibf_table1_cw"]',
         "params": PROJECT["values"],
+        # Only a release says how scheduled runs work out parameters.
+        "param_rules": "{}",
         "run_id": "{{job.run_id}}",
     }
     [run_now] = [r for r in workspace.requests if r.url.path.endswith("/jobs/run-now")]

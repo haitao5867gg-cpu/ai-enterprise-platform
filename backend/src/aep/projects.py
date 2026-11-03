@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from aep.cluster_harness import PARAM
+from aep.cluster_harness import DATE_DIRECTIVES, FIXED_FORMATS, PARAM, rule_value
 from aep.policy import LEVELS, DataPolicy
 from aep.runtime.store import DEFAULT_TENANT
 
@@ -51,7 +51,12 @@ FIELDS = (
     "params",
     "checks",
     "brief",
+    "can_release",
+    "release_ready",
+    "release_brief",
 )
+# The environment a run releases to (the template's databricks_release node).
+RELEASE_ENVIRONMENT = "prod"
 MAX_CHECKS = 50
 MAX_PATTERN = 200
 # A text parameter's format is RE2: matching takes linear time, so whatever a project
@@ -199,6 +204,30 @@ class Choice(_Model):
     label: _text(1, 50) | None = None
 
 
+class Scheduled(_Model):
+    """How a released job's scheduled runs fill in a parameter (docs/api/projects.md,
+    "定时运行时参数怎么取"): ``this_run`` keeps the value of the run that released it,
+    ``run_id`` takes the Databricks job run's id, ``date`` works out a date ``months``
+    from the day it runs (its ``first`` or ``last`` day, or the same day), written in
+    ``format`` for a text parameter."""
+
+    use: Literal["this_run", "run_id", "date"]
+    format: _text(1, 50) | None = None
+    months: int = Field(0, ge=-24, le=24)
+    day: Literal["first", "last"] | None = None
+
+
+def format_problem(form: str) -> str | None:
+    """Why ``form`` cannot be a text parameter's date format, or None: only %Y, %y, %m
+    and %d (and %% for a percent sign), at least one of them."""
+    directives = re.findall(r"%.?", form)
+    if any(d not in DATE_DIRECTIVES for d in directives):
+        return "日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）"
+    if not any(d != "%%" for d in directives):
+        return "日期格式里至少要有 %Y、%y、%m、%d 中的一个"
+    return None
+
+
 class Param(_Model):
     key: Annotated[str, StringConstraints(pattern=KEY)]
     label: _text(1, 50)
@@ -212,9 +241,13 @@ class Param(_Model):
         | None
     ) = None
     description: Annotated[str, StringConstraints(max_length=500, pattern=NO_NUL)] = ""
+    # How a released job's scheduled runs fill it in; None: its default, else empty.
+    scheduled: Scheduled | None = None
 
     @model_validator(mode="after")
     def valid(self) -> "Param":
+        if self.scheduled is not None and (problem := self._scheduled_problem(self.scheduled)):
+            raise ValueError(f"参数「{self.label}」定时运行时的取法不对：{problem}")
         if self.pattern is not None:
             if self.type != "text":
                 raise ValueError(f"参数「{self.label}」不是文本，不能写格式")
@@ -233,6 +266,24 @@ class Param(_Model):
             if problem:
                 raise ValueError(f"默认值不对：{problem}")
         return self
+
+    def _scheduled_problem(self, rule: Scheduled) -> str | None:
+        if rule.use != "date" and (rule.format or rule.months or rule.day):
+            return "只有按日期推算（date）才写 format、months、day"
+        if rule.use == "run_id" and self.type != "text":
+            return "作业运行的 ID 只能填进文本参数"
+        if rule.use == "date":
+            if self.type not in ("text", "date", "month"):
+                return "按日期推算只能用在文本、日期或月份参数上"
+            if self.type == "text" and rule.format is None:
+                return "文本参数要写日期格式 format，如 FY%y_%m_M"
+            if self.type != "text" and rule.format is not None:
+                return f"{'日期' if self.type == 'date' else '月份'}参数的格式是固定的，不写 format"
+            if self.type == "month" and rule.day is not None:
+                return "月份参数不用写 day"
+            if rule.format is not None and (problem := format_problem(rule.format)):
+                return problem
+        return None
 
 
 class Policy(_Model):
@@ -575,11 +626,20 @@ def run_summary(project: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def project_value(project: dict[str, Any] | None, name: str) -> Any:
+def project_value(
+    project: dict[str, Any] | None, name: str, timezone: str = "UTC", now: datetime | None = None
+) -> Any:
     """``{{project.<name>}}`` in a run bound to ``project`` (a snapshot); None unbound
-    (``brief`` is "")."""
+    (``brief`` and ``release_brief`` are ""). The release fields work out scheduled
+    values on the day it is ``now`` in ``timezone`` (where released jobs run)."""
     if not project:
-        return "" if name == "brief" else None
+        return "" if name in ("brief", "release_brief") else None
+    if name == "can_release":
+        return can_release(project)
+    if name == "release_ready":
+        return can_release(project) and not scheduled_values(project, timezone, now).problems
+    if name == "release_brief":
+        return release_brief(project, timezone, now) if can_release(project) else ""
     env = project["environment"]
     if name == "environment":
         return env["key"]
@@ -680,4 +740,163 @@ def brief(project: dict[str, Any]) -> str:
             "",
             "方案里建议的数据检查不要重复这些，id 也不能和它们相同。",
         ]
+    return "\n".join(lines)
+
+
+# Releasing: what a released job's scheduled runs use
+
+
+def can_release(project: dict[str, Any]) -> bool:
+    """Whether a run bound to ``project`` can release to its prod environment: the
+    project has one and the run is not in it (snapshots from before runs kept all the
+    environments cannot)."""
+    keys = [e.get("key") for e in project.get("environments") or []]
+    return RELEASE_ENVIRONMENT in keys and project["environment"]["key"] != RELEASE_ENVIRONMENT
+
+
+@dataclass(frozen=True)
+class Scheduling:
+    """How a released job fills in the run parameters (``scheduled_values``): ``fixed``
+    values set at the release, ``rules`` worked out at each run (the job's
+    ``param_rules``, read by ``aep.cluster_harness.scheduled_params``), a line per
+    parameter for people (``lines``: key, label, how, the value on ``today``, a warning)
+    and why the job cannot be released (``problems``)."""
+
+    fixed: dict[str, Any]
+    rules: list[dict[str, Any]]
+    lines: list[dict[str, Any]]
+    problems: list[str]
+    today: str
+    timezone: str
+
+
+def _months_text(months: int, day: str | None, with_day: bool) -> str:
+    month = {-1: "上个月", 0: "当月", 1: "下个月"}.get(
+        months, f"{abs(months)} 个月{'前' if months < 0 else '后'}"
+    )
+    if not with_day:
+        return month
+    if day is not None:
+        return f"{month}{'第一天' if day == 'first' else '最后一天'}"
+    if months == 0:
+        return "运行当天"
+    return f"{month}的同一天（没有这一天时取月底）"
+
+
+def _form_text(form: str) -> str:
+    """A date format as people write it: ``FY%y_%m_M`` is ``FY{yy}_{MM}_M``."""
+    names = {"%Y": "{yyyy}", "%y": "{yy}", "%m": "{MM}", "%d": "{dd}", "%%": "%"}
+    return re.sub(r"%.", lambda m: names.get(m[0], m[0]), form)
+
+
+def scheduled_values(
+    project: dict[str, Any], timezone: str = "UTC", now: datetime | None = None
+) -> Scheduling:
+    """How a job released from a run bound to ``project`` fills in each run parameter:
+    by its ``scheduled`` rule, else its default, else empty; a required parameter with
+    neither cannot be filled in, so the job cannot be released."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        zone: Any = ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone, timezone = UTC, "UTC"
+    today = (now or datetime.now(UTC)).astimezone(zone).date()
+    fixed: dict[str, Any] = {}
+    rules: list[dict[str, Any]] = []
+    lines: list[dict[str, Any]] = []
+    problems: list[str] = []
+    values = project.get("values") or {}
+    for p in project.get("params") or []:
+        key, label = p["key"], p["label"]
+        rule = p.get("scheduled")
+        line: dict[str, Any] = {"key": key, "label": label, "value": None, "warning": None}
+        if rule is None:
+            if p.get("default") is not None:
+                fixed[key] = p["default"]
+                line |= {"how": "用默认值", "value": p["default"]}
+            elif not p.get("required"):
+                fixed[key] = None
+                line |= {"how": "不填（空值）"}
+            else:
+                line |= {"how": "没有写定时运行时怎么取，也没有默认值"}
+                problems.append(
+                    f"参数「{label}」没有写定时运行时怎么取，也没有默认值：在项目的运行参数里"
+                    "给它写上定时运行时的取法（或者默认值），再重新发起运行"
+                )
+        elif rule["use"] == "this_run":
+            fixed[key] = values.get(key)
+            line |= {"how": "一直用这次运行的值", "value": values.get(key)}
+        else:
+            found = {
+                "key": key,
+                "label": label,
+                "type": p["type"],
+                "use": rule["use"],
+                "format": rule.get("format"),
+                "months": rule.get("months") or 0,
+                "day": rule.get("day"),
+                "pattern": p.get("pattern"),
+                "description": p.get("description") or "",
+            }
+            rules.append(found)
+            fixed[key] = None
+            if rule["use"] == "run_id":
+                line |= {"how": "每次用 Databricks 作业运行的 ID", "value": "（运行时才知道）"}
+            else:
+                form = FIXED_FORMATS.get(p["type"]) or rule["format"]
+                with_day = "%d" in form
+                when = _months_text(found["months"], found["day"], with_day)
+                value = rule_value(found, today, "")
+                line |= {
+                    "how": f"按运行那天推算{when}，写成 {_form_text(form)}",
+                    "value": value,
+                }
+                if (pattern := p.get("pattern")) and _pattern(pattern).fullmatch(value) is None:
+                    line["warning"] = "这个值不符合参数的格式，这样的日子定时运行会报错、不写表"
+        lines.append(line)
+    return Scheduling(fixed, rules, lines, problems, today.isoformat(), timezone)
+
+
+def release_brief(
+    project: dict[str, Any], timezone: str = "UTC", now: datetime | None = None
+) -> str:
+    """What a person reads before releasing a run bound to ``project`` to its prod
+    environment (Markdown): where it goes, what runs, the parameters of the scheduled
+    runs and how to take it back."""
+    env = next(e for e in project["environments"] if e["key"] == RELEASE_ENVIRONMENT)
+    scheduling = scheduled_values(project, timezone, now)
+    lines = [
+        "## 上线说明",
+        "",
+        f"- 上线到项目「{project['name']}」的 {env['label']} 环境（{env['key']}）："
+        f"结果写到 `{env['catalog']}.{env['schema']}`，只写以 `{project['table_prefix']}` "
+        "开头、属于本项目的表，按方案的写表方式写。",
+        "- 平台在 Databricks 上建一个 notebook Job（这个项目和应用已有的就更新它），"
+        "按选的时间自动运行；上线时不会马上运行。",
+    ]
+    if project.get("params"):
+        lines += [
+            "",
+            f"### 定时运行时的参数（按今天 {scheduling.today}，{scheduling.timezone}）",
+            "",
+            "| 参数 | 定时运行时怎么取 | 今天运行的话 |",
+            "| --- | --- | --- |",
+        ]
+        for line in scheduling.lines:
+            value = _cell(line["value"]) if line["value"] is not None else "—"
+            if line["warning"]:
+                value += f"（{line['warning']}）"
+            lines.append(f"| {_cell(line['label'])}（`{line['key']}`） | {line['how']} | {value} |")
+    if scheduling.problems:
+        lines += ["", "**现在不能上线：**", ""]
+        lines += [f"- {problem}" for problem in scheduling.problems]
+    lines += [
+        "",
+        "### 怎么撤销",
+        "",
+        "- 在 Databricks 的 Jobs 里删掉这个 Job，或者暂停它的定时，以后就不再自动运行。",
+        "- 已经写进表里的数据不会跟着撤销；Delta 表可以用 `RESTORE TABLE … TO VERSION AS OF …`"
+        " 恢复到写之前的版本。",
+    ]
     return "\n".join(lines)

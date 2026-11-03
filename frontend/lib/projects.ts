@@ -1,4 +1,10 @@
-import { ApiError, isRecord, requestJson, sampleLabels, type SampleLevel } from "./runs";
+import {
+  ApiError,
+  isRecord,
+  requestJson,
+  sampleLabels,
+  type SampleLevel,
+} from "./runs";
 
 // docs/api/projects.md is the source of truth for these wire types.
 export type Environment = {
@@ -14,7 +20,13 @@ export type Reference = {
   filter: string | null;
   description: string;
 };
-export type ParamType = "text" | "number" | "boolean" | "date" | "month" | "select";
+export type ParamType =
+  | "text"
+  | "number"
+  | "boolean"
+  | "date"
+  | "month"
+  | "select";
 export type Choice = { value: string; label: string | null };
 export type ParamValue = string | number | boolean | null;
 export type Param = {
@@ -28,7 +40,78 @@ export type Param = {
   // projects saved before it have no such key).
   pattern?: string | null;
   description: string;
+  // How a released job's scheduled runs fill it in (docs/api/projects.md, "定时运行时参数
+  // 怎么取"); null or absent: its default, else empty.
+  scheduled?: Scheduled | null;
 };
+export type Scheduled = {
+  use: "this_run" | "run_id" | "date";
+  format: string | null;
+  months: number;
+  day: "first" | "last" | null;
+};
+// The ways a parameter of this type can be filled in by scheduled runs.
+export function scheduledUses(type: ParamType): Scheduled["use"][] {
+  if (type === "text") return ["this_run", "run_id", "date"];
+  if (type === "date" || type === "month") return ["this_run", "date"];
+  return ["this_run"];
+}
+export const scheduledUseLabels: Record<Scheduled["use"], string> = {
+  this_run: "一直用上线那次运行的值",
+  run_id: "每次用 Databricks 作业运行的 ID",
+  date: "按运行那天推算日期",
+};
+const DATE_DIRECTIVES = ["%Y", "%y", "%m", "%d", "%%"];
+// Why a text parameter's date format cannot be used, as the backend says it.
+export function dateFormatProblem(format: string): string | null {
+  const directives = format.match(/%.?/g) ?? [];
+  if (directives.some((d) => !DATE_DIRECTIVES.includes(d)))
+    return "日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）";
+  if (!directives.some((d) => d !== "%%"))
+    return "日期格式里至少要有 %Y、%y、%m、%d 中的一个";
+  return null;
+}
+export function monthsText(months: number): string {
+  if (months === -1) return "上个月";
+  if (months === 0) return "当月";
+  if (months === 1) return "下个月";
+  return `${Math.abs(months)} 个月${months < 0 ? "前" : "后"}`;
+}
+// How a parameter is filled in by scheduled runs, in words (as the release brief says it).
+export function scheduledText(
+  param: Pick<Param, "type" | "default" | "required" | "scheduled">,
+): string {
+  const rule = param.scheduled;
+  if (!rule) {
+    if (param.default !== null && param.default !== undefined)
+      return "用默认值";
+    return param.required ? "没写（上线时取不到，不能上线）" : "不填（空值）";
+  }
+  if (rule.use !== "date") return scheduledUseLabels[rule.use];
+  const format =
+    param.type === "date"
+      ? "%Y-%m-%d"
+      : param.type === "month"
+        ? "%Y-%m"
+        : (rule.format ?? "");
+  const withDay = format.includes("%d");
+  const month = monthsText(rule.months);
+  const when = !withDay
+    ? month
+    : rule.day
+      ? `${month}${rule.day === "first" ? "第一天" : "最后一天"}`
+      : rule.months === 0
+        ? "运行当天"
+        : `${month}的同一天（没有这一天时取月底）`;
+  const names: Record<string, string> = {
+    "%Y": "{yyyy}",
+    "%y": "{yy}",
+    "%m": "{MM}",
+    "%d": "{dd}",
+    "%%": "%",
+  };
+  return `按运行那天推算${when}，写成 ${format.replace(/%./g, (d) => names[d] ?? d)}`;
+}
 // The project's own setting; null parts follow the platform default.
 export type ProjectPolicy = {
   samples: SampleLevel | null;
@@ -87,6 +170,9 @@ export const PROJECT_FIELDS = [
   "params",
   "checks",
   "brief",
+  "can_release",
+  "release_ready",
+  "release_brief",
 ];
 
 export const paramTypeLabels: Record<ParamType, string> = {
@@ -165,7 +251,11 @@ function validDate(value: string, month: boolean) {
     ? /^(\d{4})-(\d{2})$/.exec(value)
     : /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return false;
-  const [year, mon, day] = [Number(match[1]), Number(match[2]), Number(match[3] ?? 1)];
+  const [year, mon, day] = [
+    Number(match[1]),
+    Number(match[2]),
+    Number(match[3] ?? 1),
+  ];
   const date = new Date(Date.UTC(year, mon - 1, day));
   return (
     year >= 1 &&
@@ -191,17 +281,33 @@ export function paramProblem(
   value: unknown,
 ): string | null {
   const { label, type } = param;
-  if (type === "text" && !(typeof value === "string" && value.length >= 1 && value.length <= 500))
+  if (
+    type === "text" &&
+    !(typeof value === "string" && value.length >= 1 && value.length <= 500)
+  )
     return `参数「${label}」要写 1–500 个字`;
-  if (type === "text" && param.pattern && patternRegExp(param.pattern)?.test(String(value)) === false)
+  if (
+    type === "text" &&
+    param.pattern &&
+    patternRegExp(param.pattern)?.test(String(value)) === false
+  )
     return `参数「${label}」要符合格式 ${param.pattern}`;
-  if (type === "number" && !(typeof value === "number" && Number.isFinite(value)))
+  if (
+    type === "number" &&
+    !(typeof value === "number" && Number.isFinite(value))
+  )
     return `参数「${label}」要是数字`;
   if (type === "boolean" && typeof value !== "boolean")
     return `参数「${label}」要是 true 或 false`;
-  if (type === "date" && !(typeof value === "string" && validDate(value, false)))
+  if (
+    type === "date" &&
+    !(typeof value === "string" && validDate(value, false))
+  )
     return `参数「${label}」要写成 YYYY-MM-DD`;
-  if (type === "month" && !(typeof value === "string" && validDate(value, true)))
+  if (
+    type === "month" &&
+    !(typeof value === "string" && validDate(value, true))
+  )
     return `参数「${label}」要写成 YYYY-MM`;
   if (type === "select") {
     const values = (param.choices ?? []).map((choice) => choice.value);
@@ -212,14 +318,20 @@ export function paramProblem(
 }
 
 // A parameter value as the run page and the form show it.
-export function paramText(param: Pick<Param, "type" | "choices"> | undefined, value: unknown) {
+export function paramText(
+  param: Pick<Param, "type" | "choices"> | undefined,
+  value: unknown,
+) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "是" : "否";
   const choice = param?.choices?.find((item) => item.value === value);
   return choice?.label ?? String(value);
 }
 
-export const samplesText = (samples: SampleLevel | null, defaults?: SampleLevel) =>
+export const samplesText = (
+  samples: SampleLevel | null,
+  defaults?: SampleLevel,
+) =>
   samples
     ? sampleLabels[samples]
     : `平台默认${defaults ? `（${sampleLabels[defaults]}）` : ""}`;
@@ -254,7 +366,9 @@ export function projectInput(project: Project): ProjectInput {
     adopted: [...project.adopted],
     params: project.params.map((param) => ({
       ...param,
-      choices: param.choices ? param.choices.map((choice) => ({ ...choice })) : null,
+      choices: param.choices
+        ? param.choices.map((choice) => ({ ...choice }))
+        : null,
     })),
     checks: (project.checks ?? []).map((check) => ({ ...check })),
     policy: {
