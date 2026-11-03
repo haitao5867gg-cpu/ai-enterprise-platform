@@ -327,6 +327,106 @@ def texts(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
                     yield f"{side}.{key}", check[side][key]
 
 
+# Which columns a check names (jadeflow retest I-10: a model check said max(c), and the
+# result table has no c). Read without parsing, so only what is surely a column counts.
+_SQL_WORDS = frozenset(
+    """
+    and or not null true false is in like ilike rlike regexp between case when then else end
+    as distinct interval cast try_cast exists all any some over partition by order asc desc
+    nulls first last rows range unbounded preceding following current row filter within group
+    escape from for to with where select limit both leading trailing position extract
+    substring overlay placing int integer bigint smallint tinyint long string varchar char
+    double float real decimal dec numeric date timestamp timestamp_ntz timestamp_ltz boolean
+    binary array map struct void year years month months day days hour hours minute minutes
+    second seconds week weeks quarter millisecond milliseconds microsecond microseconds
+    current_date current_timestamp current_timezone current_user current_catalog
+    current_schema current_database
+    """.split()
+)
+_LITERAL = re.compile(r"(?<![\w])[xXrRbB]?(?:'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.)*\")")
+_QUOTED = re.compile(r"`((?:[^`]|``)+)`")
+_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_LAMBDA = re.compile(r"(?:\(([^()]*)\)|([A-Za-z_][A-Za-z0-9_]*))\s*->")
+
+
+def columns_named(text: Any) -> list[str]:
+    """The column names an expression or condition names, as far as can be told without
+    parsing it: backquoted names, and bare words that are no keyword or type, function,
+    qualifier or struct field, alias after AS, lambda variable or ``${param.*}``."""
+    if not isinstance(text, str):
+        return []
+    found: list[str] = []
+    rest = PARAM.sub(" ", _LITERAL.sub(" ", text))
+    for quoted in _QUOTED.findall(rest):
+        found.append(quoted.replace("``", "`"))
+    rest = _QUOTED.sub(" __aep_quoted ", rest)
+    bound = set()
+    for listed, single in _LAMBDA.findall(rest):
+        names = listed.split(",") if listed else [single]
+        bound |= {n.strip().lower() for n in names if n.strip()}
+    previous = ""
+    for m in _WORD.finditer(rest):
+        word = m.group()
+        before = rest[: m.start()].rstrip()
+        after = rest[m.end() :].lstrip()
+        start_ok = m.start() == 0 or not (
+            rest[m.start() - 1].isalnum() or rest[m.start() - 1] in "_$."
+        )
+        skip = (
+            not start_ok
+            or word == "__aep_quoted"
+            or word.lower() in _SQL_WORDS
+            or word.lower() in bound
+            or after.startswith(("(", ".", "->"))
+            or before.endswith(".")
+            or previous.lower() == "as"
+        )
+        previous = word
+        if not skip:
+            found.append(word)
+    return list(dict.fromkeys(found))
+
+
+def column_uses(check: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
+    """Where a check names columns: the table they belong to, where in the check, and the
+    names (``group_by`` names columns of both sides of a reconcile; a lookup's ``on``
+    pairs a column of the check's table with one of the other table)."""
+    kind = check.get("kind")
+
+    def names(value: Any) -> list[str]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+    def side(value: Any, where: str) -> Iterator[tuple[str, str, list[str]]]:
+        if not isinstance(value, dict) or not isinstance(value.get("table"), str):
+            return
+        for key in ("expr", "where"):
+            if found := columns_named(value.get(key)):
+                yield value["table"], f"{where}{key}", found
+
+    if kind == "reconcile":
+        for name in ("left", "right"):
+            yield from side(check.get(name), f"{name}.")
+            if isinstance(check.get(name), dict) and (grouped := names(check.get("group_by"))):
+                yield str(check[name].get("table")), "group_by", grouped
+        return
+    if kind not in ("aggregate", "unique", "rows"):
+        return
+    yield from side(check, "")
+    table = check.get("table")
+    if not isinstance(table, str):
+        return
+    if listed := names(check.get("group_by") if kind == "aggregate" else check.get("columns")):
+        yield table, "group_by" if kind == "aggregate" else "columns", listed
+    lookup = check.get("lookup") if kind == "rows" else None
+    if isinstance(lookup, dict) and isinstance(lookup.get("on"), dict):
+        on = lookup["on"]
+        yield table, "lookup.on", [k for k in on if isinstance(k, str)]
+        if isinstance(lookup.get("table"), str):
+            yield lookup["table"], "lookup.on", [v for v in on.values() if isinstance(v, str)]
+            if found := columns_named(lookup.get("where")):
+                yield lookup["table"], "lookup.where", found
+
+
 def _table(value: dict[str, Any], key: str, loc: Loc, add: Callable[[Loc, str], None]) -> None:
     name = value.get(key)
     if not isinstance(name, str) or not TABLE.match(name):

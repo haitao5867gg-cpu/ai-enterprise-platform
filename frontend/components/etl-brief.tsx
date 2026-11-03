@@ -246,6 +246,10 @@ export function TechPlanView({
   ruleNotes?: boolean;
   checkNotes?: boolean;
 }) {
+  // A model's error-level check blocks delivery when it fails (jadeflow retest I-10).
+  const blocking = plan.checks.filter(
+    (check) => check.severity === "error",
+  ).length;
   return (
     <section className="etl-tech-plan" aria-labelledby="tech-plan-title">
       <h3 id="tech-plan-title">技术方案</h3>
@@ -407,15 +411,27 @@ export function TechPlanView({
           <p className="muted">
             开发环境试算之后检查；填了老系统结果表时另加一条逐行对比。
           </p>
+          {blocking > 0 && (
+            <p className="check-blocking-note" role="note">
+              其中 {blocking}{" "}
+              条是错误级，会挡住交付：不通过就不能选“通过”。这些检查是模型建议的，
+              请核对条件和方向写得对；拿不准的写意见改成警告。
+            </p>
+          )}
           <ul className="quality-rules">
             {plan.checks.map((check) => (
-              <li key={check.id}>
+              <li
+                key={check.id}
+                className={
+                  check.severity === "error" ? "check-blocking" : undefined
+                }
+              >
                 <div>
                   <strong>{check.label}</strong>
                   <span>
                     {checkKinds[check.kind] ?? check.kind}
                     {check.severity === "error"
-                      ? " · 错误：不通过时结果不能直接通过"
+                      ? " · 错误：会挡住交付"
                       : ` · ${checkSeverities[check.severity] ?? check.severity}`}
                   </span>
                 </div>

@@ -388,9 +388,10 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   await expect(proposed).toContainText(
     "ads_sales_city_member_m 里没有满足 sales_amount < 0 的行；已知差异 1 处（退货中心的冲红单按负数记）不算不通过",
   );
-  // An error check says what it means: failed, the result cannot be approved as it is.
-  await expect(proposed).toContainText(
-    "键不重复 · 错误：不通过时结果不能直接通过",
+  // An error check says it blocks delivery, and the page counts them (I-10).
+  await expect(proposed).toContainText("键不重复 · 错误：会挡住交付");
+  await expect(proposed.getByRole("note")).toContainText(
+    "其中 2 条是错误级，会挡住交付",
   );
   await expect(
     proposed.getByRole("button", { name: "这里不对：没有负的销售额" }),

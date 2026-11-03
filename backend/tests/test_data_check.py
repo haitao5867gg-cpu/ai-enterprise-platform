@@ -1155,3 +1155,57 @@ async def test_group_keys_line_up_across_number_types():
     )
     found = await checks.run(c, checks.Scope(None, "", None), call)
     assert (found["status"], found["message"]) == ("passed", "按 year 分 1 组，每组都一致")
+
+
+def test_the_columns_a_check_names():
+    # Read without parsing (jadeflow retest I-10): only what is surely a column counts.
+    named = checks.columns_named
+    assert named("max(c)") == ["c"]
+    assert named("sum(cw_07) AS total") == ["cw_07"]
+    assert named("version_id = ${param.version_id} AND NOT (cw_07 <=> 0)") == [
+        "version_id",
+        "cw_07",
+    ]
+    assert named("coalesce(trim(platform_original), '') <> 'a b'") == ["platform_original"]
+    assert named("CAST(substring(update_month, 5, 2) AS INT) < 3") == ["update_month"]
+    assert named("filter(arr, x -> x > 0) AND transform(m, (k, v) -> k + v)") == ["arr", "m"]
+    assert named("t.col + s.f > 0") == []
+    assert named("`weird col` > 1 AND `a``b` IS NULL") == ["weird col", "a`b"]
+    assert named("date '2026-01-01' < d AND current_date - d > interval 3 days") == ["d"]
+    assert named("count(*)") == []
+    uses = list(
+        checks.column_uses(
+            check(
+                "r4",
+                "rows",
+                table="res",
+                where="NOT (cw_07 <=> 0)",
+                lookup={
+                    "table": "alloc",
+                    "on": {"lane": "lane_id"},
+                    "where": "m = 7",
+                    "found": False,
+                },  # fmt: skip
+            )
+        )
+    )
+    assert uses == [
+        ("res", "where", ["cw_07"]),
+        ("res", "lookup.on", ["lane"]),
+        ("alloc", "lookup.on", ["lane_id"]),
+        ("alloc", "lookup.where", ["m"]),
+    ]
+    grouped = check(
+        "vol",
+        "reconcile",
+        left={"table": "a", "expr": "sum(x)"},
+        right={"table": "b", "expr": "sum(y)", "where": "z > 0"},
+        group_by=["g"],
+    )
+    assert list(checks.column_uses(grouped)) == [
+        ("a", "left.expr", ["x"]),
+        ("a", "group_by", ["g"]),
+        ("b", "right.expr", ["y"]),
+        ("b", "right.where", ["z"]),
+        ("b", "group_by", ["g"]),
+    ]

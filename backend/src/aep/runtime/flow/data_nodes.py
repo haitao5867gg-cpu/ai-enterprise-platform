@@ -773,6 +773,17 @@ def _dropped_text(dropped: list[str]) -> str:
     )
 
 
+def _source_columns(profile: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The profiled tables' column names, by table name."""
+    return {
+        str(t["name"]): [
+            str(c["name"]) for c in t.get("columns") or [] if isinstance(c, dict) and c.get("name")
+        ]
+        for t in profile
+        if isinstance(t.get("name"), str) and isinstance(t.get("columns"), list)
+    }
+
+
 async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     get = rt.lookup(state)
     profile = refs.resolve(node["profile"], get)
@@ -812,6 +823,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
                 shown,
                 project,
                 existing,
+                _source_columns(profile),
             )
         elif v2:
             plan, cleaned = validate_plan_v2(

@@ -239,6 +239,41 @@ def test_proposed_checks_are_checked():
     ]
 
 
+def test_a_proposed_check_names_columns_its_tables_have():
+    # jadeflow retest I-10: a model check said max(c) and the result table has no c.
+    def found(*proposed: dict, sources: dict | None = None) -> list[str]:
+        with pytest.raises(PlanError) as failed:
+            validate_plan_v3(
+                v3_plan(*proposed),
+                SOURCES,
+                KNOWN,
+                SEEN,
+                references=[HIT],
+                project=copy.deepcopy(PROJECT),
+                source_columns=sources,
+            )
+        return failed.value.problems
+
+    plan, _ = check3(v3_plan({**TOTAL, "where": "city IS NOT NULL AND `stat_day` > '2026'"}))
+    assert len(plan.checks) == 1
+    have = "avg_quantity、city、order_count、quantity_sum、stat_day"
+    assert found({**TOTAL, "expr": "max(c)", "where": "Order_Count > 0 AND city <> 'x'"}) == [
+        f"checks[0].expr：city_daily 没有列 c，检查里只能用表里有的列：{have}"
+    ]
+    assert found({**KEYS, "columns": ["stat_day", "town"]}) == [
+        f"checks[0].columns：city_daily 没有列 town，检查里只能用表里有的列：{have}"
+    ]
+    # A source's columns are known from the profile; a table not profiled is not looked at.
+    orders = {"sales.orders": ["order_id", "status"]}
+    wrong = {**RECONCILE, "right": {**RECONCILE["right"], "where": "state = 'paid'"}}
+    assert found(wrong, sources=orders) == [
+        "checks[0].right.where：sales.orders 没有列 state，检查里只能用表里有的列：order_id、status"
+    ]
+    assert found(wrong, {**TOTAL, "expr": "max(c)"}) == [
+        f"checks[1].expr：city_daily 没有列 c，检查里只能用表里有的列：{have}"
+    ]
+
+
 def test_output_formats():
     # Versions 1 and 2 stay as they are; version 3 asks for write modes and checks.
     for old in (OUTPUT_FORMAT, OUTPUT_FORMAT_V2):
