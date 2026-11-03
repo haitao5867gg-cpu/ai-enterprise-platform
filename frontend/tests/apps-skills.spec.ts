@@ -63,9 +63,9 @@ test("application draft, evaluation, publish, configuration comparison and confi
   await page.addInitScript(() => localStorage.setItem("aep.actor", "张三"));
   await page.goto("/apps");
   await expect(
-    page.getByRole("link", { name: /自然语言 ETL 工作流/ }),
+    page.getByRole("article", { name: "自然语言 ETL 工作流" }),
   ).toContainText("需通过评测");
-  await page.getByRole("link", { name: /自然语言 ETL 工作流/ }).click();
+  await page.getByRole("link", { name: "设计「自然语言 ETL 工作流」" }).click();
   await expect(
     page.getByRole("region", { name: "应用设计", exact: true }),
   ).toContainText("固定流程的工作流");

@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -131,6 +132,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
 };
 
 function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
+  const t = useT();
   if (!canFail(node)) return null;
   const current: OnError = ("on_error" in node && node.on_error) || {
     then: "stop",
@@ -159,10 +161,10 @@ function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
   };
   const defaults = current.then === "default" ? current.default : {};
   return (
-    <fieldset className="list-editor" aria-label="出错时">
-      <legend>出错时</legend>
+    <fieldset className="list-editor" aria-label={t("出错时")}>
+      <legend>{t("出错时")}</legend>
       <NumberField
-        label="重试次数"
+        label={t("重试次数")}
         min={0}
         max={3}
         value={retry.max}
@@ -170,7 +172,7 @@ function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
       />
       {retry.max > 0 && (
         <NumberField
-          label="重试间隔秒数"
+          label={t("重试间隔秒数")}
           min={0}
           max={60}
           value={retry.interval_seconds}
@@ -180,12 +182,12 @@ function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
         />
       )}
       <SelectField
-        label="重试后仍失败"
+        label={t("重试后仍失败")}
         value={current.then}
         choices={[
-          { value: "stop", label: "停止运行" },
-          { value: "default", label: "用默认值继续" },
-          { value: "branch", label: "走“出错”分支" },
+          { value: "stop", label: t("停止运行") },
+          { value: "default", label: t("用默认值继续") },
+          { value: "branch", label: t("走“出错”分支") },
         ]}
         onChange={(then) => {
           const base = current.retry ? { retry: current.retry } : {};
@@ -206,7 +208,7 @@ function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
         outputs.map((key) => (
           <TextField
             key={key}
-            label={`默认值：${key}`}
+            label={t("默认值：{key}", { key })}
             value={
               typeof defaults[key] === "string"
                 ? (defaults[key] as string)
@@ -235,7 +237,9 @@ function ErrorHandling({ node, change }: { node: FlowNode; change: Change }) {
         ))}
       {current.then !== "stop" && (
         <p className="muted">
-          出错后，后面的节点可以引用这个节点的 error_type 和 error_message。
+          {t(
+            "出错后，后面的节点可以引用这个节点的 error_type 和 error_message。",
+          )}
         </p>
       )}
     </fieldset>
@@ -251,6 +255,7 @@ function NodeTestPanel({
   node: FlowNode;
   config: FlowConfig;
 }) {
+  const t = useT();
   const refs = referencesIn(node).filter(
     (ref) => ref.node !== "env" && ref.node !== "secret",
   );
@@ -259,10 +264,12 @@ function NodeTestPanel({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   return (
-    <section className="node-test" aria-label="试跑这个节点">
-      <h4>试跑这个节点</h4>
+    <section className="node-test" aria-label={t("试跑这个节点")}>
+      <h4>{t("试跑这个节点")}</h4>
       <p className="muted">
-        用下面的测试值只跑这一个节点，不保存、不建运行记录。用的是页面上还没保存的设置。
+        {t(
+          "用下面的测试值只跑这一个节点，不保存、不建运行记录。用的是页面上还没保存的设置。",
+        )}
       </p>
       {refs.map((ref) => (
         <TextField
@@ -275,7 +282,7 @@ function NodeTestPanel({
         />
       ))}
       {!refs.length && (
-        <p className="muted">这个节点没有引用其他节点的变量。</p>
+        <p className="muted">{t("这个节点没有引用其他节点的变量。")}</p>
       )}
       <button
         type="button"
@@ -294,20 +301,22 @@ function NodeTestPanel({
           }
         }}
       >
-        {busy ? "试跑中…" : "开始试跑"}
+        {busy ? t("试跑中…") : t("开始试跑")}
       </button>
       {error && <p className="field-error">{error}</p>}
       {result && (
         <div
           className={`node-test-result ${result.status}`}
-          aria-label="试跑结果"
+          aria-label={t("试跑结果")}
           role="region"
         >
           <strong>
-            {result.status === "done" ? "试跑成功" : "试跑出错"} ·{" "}
-            {result.duration_ms} 毫秒
+            {result.status === "done" ? t("试跑成功") : t("试跑出错")} ·{" "}
+            {t("{ms} 毫秒", { ms: result.duration_ms })}
             {result.branch
-              ? ` · 会走：${branchLabel(node, result.branch)}`
+              ? t(" · 会走：{branch}", {
+                  branch: t(branchLabel(node, result.branch)),
+                })
               : ""}
           </strong>
           {result.error && (
@@ -317,7 +326,7 @@ function NodeTestPanel({
           )}
           {result.outputs && (
             <>
-              <h5>产出</h5>
+              <h5>{t("产出")}</h5>
               <pre className="flow-json">
                 {JSON.stringify(result.outputs, null, 2)}
               </pre>
@@ -325,7 +334,7 @@ function NodeTestPanel({
           )}
           {Object.keys(result.rendered).length > 0 && (
             <>
-              <h5>替换变量后的设置</h5>
+              <h5>{t("替换变量后的设置")}</h5>
               <pre className="flow-json">
                 {JSON.stringify(result.rendered, null, 2)}
               </pre>
@@ -338,6 +347,7 @@ function NodeTestPanel({
 }
 
 function DraftRun({ app, data }: { app: string; data: AppDetail }) {
+  const t = useT();
   const router = useRouter();
   const config = data.draft?.config;
   const start =
@@ -354,7 +364,7 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
   return (
     <form
       className="draft-run asset-form"
-      aria-label="用草稿试运行"
+      aria-label={t("用草稿试运行")}
       onSubmit={async (event) => {
         event.preventDefault();
         const issues = validateFields(fields, values, "input");
@@ -379,7 +389,7 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
       }}
     >
       <p className="muted">
-        用已保存的草稿运行一次，运行记录会标注“试运行（未发布版本）”。
+        {t("用已保存的草稿运行一次，运行记录会标注“试运行（未发布版本）”。")}
       </p>
       <InputFields
         fields={fields}
@@ -392,7 +402,7 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
       />
       {error && <p className="field-error">{error}</p>}
       <button className="button primary" disabled={busy}>
-        {busy ? "正在创建…" : "开始试运行"}
+        {busy ? t("正在创建…") : t("开始试运行")}
       </button>
     </form>
   );
@@ -435,6 +445,7 @@ export function FlowEditor({
   disabled: boolean;
   manual: AppManual | null;
 }) {
+  const t = useT();
   const desktop = useSyncExternalStore(
     subscribeDesktop,
     () => window.matchMedia("(min-width: 900px)").matches,
@@ -475,9 +486,9 @@ export function FlowEditor({
   const invalid = new Set(Object.keys(issues.nodes));
   const nodeIssues = node ? issues.nodes[node.id] : undefined;
   const runReason = dirty
-    ? "有未保存的修改，请先保存草稿。"
+    ? t("有未保存的修改，请先保存草稿。")
     : !data.draft
-      ? "保存草稿后可以用草稿试运行。"
+      ? t("保存草稿后可以用草稿试运行。")
       : "";
 
   const change: Change = (next, rename) => {
@@ -505,7 +516,7 @@ export function FlowEditor({
     const copy = {
       ...structuredClone(item),
       id: freeId(config, item.id),
-      title: `${item.title}（副本）`.slice(0, 50),
+      title: t("{title}（副本）", { title: item.title }).slice(0, 50),
       ...(point ? { ui: { x: point.x + 40, y: point.y + 40 } } : {}),
     };
     setConfig(insertNode(config, copy, item.id));
@@ -531,9 +542,11 @@ export function FlowEditor({
     idValue === node?.id
       ? ""
       : !NODE_ID_PATTERN.test(idValue) || ["env", "secret"].includes(idValue)
-        ? "标识以小写字母开头，只用小写字母、数字和下划线，最多 32 个字符；env、secret 不能用。"
+        ? t(
+            "标识以小写字母开头，只用小写字母、数字和下划线，最多 32 个字符；env、secret 不能用。",
+          )
         : nodes.some((item) => item.id === idValue)
-          ? "已有节点用了这个标识。"
+          ? t("已有节点用了这个标识。")
           : "";
   const removal = removing ? impactOf(config, removing) : null;
   const removingNode = nodes.find((item) => item.id === removing);
@@ -547,7 +560,7 @@ export function FlowEditor({
             formKeys[node.type].includes(head)
           );
         })
-        .map(([key, msg]) => (key ? `${key}：${msg}` : msg))
+        .map(([key, msg]) => (key ? t("{key}：{msg}", { key, msg }) : msg))
     : [];
 
   const removalDialog =
@@ -555,12 +568,12 @@ export function FlowEditor({
       <div
         className="remove-node"
         role="dialog"
-        aria-label={`删除节点「${removingNode.title}」`}
+        aria-label={t("删除节点「{title}」", { title: removingNode.title })}
       >
-        <strong>删除「{removingNode.title}」？</strong>
+        <strong>{t("删除「{title}」？", { title: removingNode.title })}</strong>
         {removal.edges.length > 0 && (
           <>
-            <p>会一起删除这些连线：</p>
+            <p>{t("会一起删除这些连线：")}</p>
             <ul>
               {removal.edges.map((edge) => (
                 <li key={edge}>{edge}</li>
@@ -570,7 +583,7 @@ export function FlowEditor({
         )}
         {removal.references.length > 0 && (
           <>
-            <p>这些设置引用了它的变量，删除后需要修改：</p>
+            <p>{t("这些设置引用了它的变量，删除后需要修改：")}</p>
             <ul>
               {removal.references.map((ref) => (
                 <li key={ref}>{ref}</li>
@@ -579,7 +592,7 @@ export function FlowEditor({
           </>
         )}
         {!removal.edges.length && !removal.references.length && (
-          <p>没有连线和变量引用受影响。</p>
+          <p>{t("没有连线和变量引用受影响。")}</p>
         )}
         <div className="asset-actions">
           <button
@@ -592,14 +605,14 @@ export function FlowEditor({
               setRemoving("");
             }}
           >
-            确认删除
+            {t("确认删除")}
           </button>
           <button
             type="button"
             className="button secondary"
             onClick={() => setRemoving("")}
           >
-            取消
+            {t("取消")}
           </button>
         </div>
       </div>
@@ -608,7 +621,7 @@ export function FlowEditor({
   return (
     <section
       className="panel flow-editor"
-      aria-label="编排"
+      aria-label={t("编排")}
       onKeyDown={(event) => {
         if (
           !canvasMode ||
@@ -627,23 +640,19 @@ export function FlowEditor({
         if (canvasRef.current?.deleteSelection()) event.preventDefault();
       }}
     >
-      <div className="section-heading">
-        <h2>编排</h2>
-        <span className="muted">
-          {dirty
-            ? "有未保存的修改，保存草稿后生效"
-            : canvasMode
-              ? "拖动出口连线，点击节点修改设置"
-              : "增删节点、设置每个节点，用“下一步”连线"}
-        </span>
-      </div>
+      {/* The tab above already says 编排; the heading stays for screen readers. */}
+      <h2 className="sr-only">{t("编排")}</h2>
       <div className="flow-editor-toolbar">
         {desktop && (
-          <div className="flow-view-switch" role="group" aria-label="编排视图">
+          <div
+            className="flow-view-switch"
+            role="group"
+            aria-label={t("编排视图")}
+          >
             {(
               [
-                ["canvas", "画布"],
-                ["list", "列表"],
+                ["canvas", t("画布")],
+                ["list", t("列表#视图")],
               ] as const
             ).map(([view, label]) => (
               <button
@@ -674,20 +683,29 @@ export function FlowEditor({
           aria-expanded={runOpen}
           onClick={() => setRunOpen((value) => !value)}
         >
-          用草稿试运行
+          {t("用草稿试运行")}
         </button>
         {runReason && (
           <span className="muted" id="draft-run-reason">
             {runReason}
           </span>
         )}
+        <span className="muted flow-editor-hint">
+          {dirty
+            ? t("有未保存的修改，保存草稿后生效")
+            : canvasMode
+              ? t("拖动出口连线，点击节点修改设置")
+              : t("增删节点、设置每个节点，用“下一步”连线")}
+        </span>
       </div>
       {runOpen && !runReason && (
         <DraftRun key={data.draft?.created_at} app={app} data={data} />
       )}
       {canvasMode && removalDialog}
       {canvasMode && typesError && (
-        <p className="field-error">读取节点类型失败：{typesError}</p>
+        <p className="field-error">
+          {t("读取节点类型失败：{error}", { error: typesError })}
+        </p>
       )}
       {!canvasMode && (
         <div className="flow-editor-preview">
@@ -754,7 +772,7 @@ export function FlowEditor({
           />
         )}
         {!canvasMode && (
-          <aside className="node-list" aria-label="节点列表">
+          <aside className="node-list" aria-label={t("节点列表")}>
             <ul>
               {nodes.map((item) => (
                 <li
@@ -765,11 +783,16 @@ export function FlowEditor({
                     type="button"
                     className="node-list-select"
                     aria-pressed={item.id === node?.id}
-                    aria-label={`${item.title}（${item.id}）${invalid.has(item.id) ? "，有问题" : ""}`}
+                    aria-label={t(
+                      invalid.has(item.id)
+                        ? "{title}（{id}），有问题"
+                        : "{title}（{id}）",
+                      { title: item.title, id: item.id },
+                    )}
                     onClick={() => setSelected(item.id)}
                   >
                     <span className={`node-type-badge ${item.type}`}>
-                      {typeLabels[item.type]}
+                      {t(typeLabels[item.type])}
                     </span>
                     <strong>{item.title}</strong>
                     <code>{item.id}</code>
@@ -779,19 +802,19 @@ export function FlowEditor({
                       type="button"
                       className="text-button"
                       disabled={disabled || item.type === "start"}
-                      aria-label={`复制节点 ${item.title}`}
+                      aria-label={t("复制节点 {title}", { title: item.title })}
                       onClick={() => copyNode(item)}
                     >
-                      复制
+                      {t("复制")}
                     </button>
                     <button
                       type="button"
                       className="text-button"
                       disabled={disabled}
-                      aria-label={`删除节点 ${item.title}`}
+                      aria-label={t("删除节点 {title}", { title: item.title })}
                       onClick={() => setRemoving(item.id)}
                     >
-                      删除
+                      {t("删除")}
                     </button>
                   </span>
                 </li>
@@ -807,10 +830,12 @@ export function FlowEditor({
                 setAdding(true);
               }}
             >
-              添加节点
+              {t("添加节点")}
             </button>
             {typesError && (
-              <p className="field-error">读取节点类型失败：{typesError}</p>
+              <p className="field-error">
+                {t("读取节点类型失败：{error}", { error: typesError })}
+              </p>
             )}
           </aside>
         )}
@@ -829,21 +854,21 @@ export function FlowEditor({
           <div
             className="node-panel"
             role="region"
-            aria-label={`节点设置：${node.title}`}
+            aria-label={t("节点设置：{title}", { title: node.title })}
           >
             <div className="flow-detail-heading">
               <span className={`node-type-badge ${node.type}`}>
-                {typeLabels[node.type]}
+                {t(typeLabels[node.type])}
               </span>
               <h3>{node.title}</h3>
               {canvasMode && (
                 <button
                   type="button"
                   className="text-button"
-                  aria-label="关闭节点设置"
+                  aria-label={t("关闭节点设置")}
                   onClick={() => setPanelOpen(false)}
                 >
-                  关闭
+                  {t("关闭")}
                 </button>
               )}
             </div>
@@ -860,7 +885,7 @@ export function FlowEditor({
                   disabled={disabled || node.type === "start"}
                   onClick={() => copyNode(node)}
                 >
-                  复制
+                  {t("复制")}
                 </button>
                 <button
                   type="button"
@@ -868,7 +893,7 @@ export function FlowEditor({
                   disabled={disabled}
                   onClick={() => setRemoving(node.id)}
                 >
-                  删除节点
+                  {t("删除节点")}
                 </button>
               </div>
             )}
@@ -879,7 +904,7 @@ export function FlowEditor({
             ))}
             <fieldset className="node-form" disabled={disabled}>
               <TextField
-                label="标题"
+                label={t("标题")}
                 value={node.title}
                 maxLength={50}
                 issues={issuesUnder(nodeIssues, "title")}
@@ -891,12 +916,12 @@ export function FlowEditor({
                 onChange={(note) => change({ ...node, note })}
               />
               <TextField
-                label="标识"
+                label={t("标识")}
                 value={idValue}
                 issues={[idIssue, ...issuesUnder(nodeIssues, "id")].filter(
                   Boolean,
                 )}
-                help="改标识时，连线和引用它的变量会一起更新。"
+                help={t("改标识时，连线和引用它的变量会一起更新。")}
                 onChange={(value) => setIdDraft({ node: node.id, value })}
                 onBlur={commitId}
               />
@@ -911,11 +936,11 @@ export function FlowEditor({
               <ErrorHandling node={node} change={change} />
               {node.type !== "end" && (
                 <fieldset className="list-editor next-steps">
-                  <legend>下一步</legend>
+                  <legend>{t("下一步")}</legend>
                   {branchesOf(node).map((branch) => (
                     <SelectField
                       key={branch}
-                      label={branchLabel(node, branch)}
+                      label={t(branchLabel(node, branch))}
                       value={targetOf(config, node.id, branch)}
                       issues={
                         nodeIssues?.[`next:${branch}`]
@@ -930,15 +955,18 @@ export function FlowEditor({
                         } else setConfig(setNext(config, node.id, branch, to));
                       }}
                       choices={[
-                        { value: "", label: "（未连接）" },
+                        { value: "", label: t("（未连接）") },
                         ...nodes
                           .filter((item) => item.type !== "start")
                           .map((item) => ({
                             value: item.id,
-                            label: `${item.title}（${item.id}）`,
+                            label: t("{title}（{id}）", {
+                              title: item.title,
+                              id: item.id,
+                            }),
                           })),
                         ...(types.length
-                          ? [{ value: "__new__", label: "新建节点…" }]
+                          ? [{ value: "__new__", label: t("新建节点…") }]
                           : []),
                       ]}
                     />
@@ -946,14 +974,14 @@ export function FlowEditor({
                 </fieldset>
               )}
               <details className="node-advanced">
-                <summary>高级</summary>
+                <summary>{t("高级")}</summary>
                 <NumberField
-                  label="一次运行最多执行次数"
+                  label={t("一次运行最多执行次数")}
                   min={1}
                   max={10}
                   value={node.max_visits ?? 3}
                   issues={issuesUnder(nodeIssues, "max_visits")}
-                  help="循环里的节点超过这个次数时运行失败。"
+                  help={t("循环里的节点超过这个次数时运行失败。")}
                   onChange={(max_visits) => change({ ...node, max_visits })}
                 />
               </details>
@@ -968,7 +996,7 @@ export function FlowEditor({
             )}
           </div>
         ) : !canvasMode ? (
-          <p className="muted">还没有节点。</p>
+          <p className="muted">{t("还没有节点。")}</p>
         ) : null}
       </div>
     </section>

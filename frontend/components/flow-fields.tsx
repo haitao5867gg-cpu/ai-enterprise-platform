@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import { useId, useRef, useState, type ReactNode } from "react";
 import type { Variable } from "../lib/flow-edit";
 
@@ -75,10 +76,11 @@ export function NoteField({
   onChange: (value: string) => void;
   issues?: string[];
 }) {
+  const t = useT();
   const id = useId();
   return (
     <div className="asset-field">
-      <label htmlFor={id}>讲解说明</label>
+      <label htmlFor={id}>{t("讲解说明")}</label>
       <textarea
         id={id}
         rows={3}
@@ -90,7 +92,7 @@ export function NoteField({
         }
       />
       <small id={`${id}-count`} className="muted note-count">
-        {Array.from(value).length} / 500 字
+        {t("{n} / 500 字", { n: Array.from(value).length })}
       </small>
       <FieldIssues id={`${id}-issues`} messages={issues} />
     </div>
@@ -218,6 +220,7 @@ export function RefField({
   multiline?: boolean;
   rows?: number;
 }) {
+  const t = useT();
   const id = useId();
   const box = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
   const field = useRef<HTMLDivElement>(null);
@@ -273,11 +276,11 @@ export function RefField({
           type="button"
           className="text-button"
           aria-expanded={open}
-          aria-label={`插入变量：${label}`}
+          aria-label={t("插入变量：{label}", { label })}
           disabled={disabled}
           onClick={() => setOpen((value) => !value)}
         >
-          插入变量
+          {t("插入变量")}
         </button>
       </div>
       {multiline ? <textarea {...props} rows={rows} /> : <input {...props} />}
@@ -285,14 +288,14 @@ export function RefField({
         <div
           className="ref-menu"
           role="group"
-          aria-label={`可插入「${label}」的变量`}
+          aria-label={t("可插入「{label}」的变量", { label })}
           onKeyDown={(event) => {
             if (event.key === "Escape") setOpen(false);
           }}
         >
           {!variables.length && (
             <p className="muted">
-              这里还没有可引用的变量。先把前面的节点连到这个节点。
+              {t("这里还没有可引用的变量。先把前面的节点连到这个节点。")}
             </p>
           )}
           {groups.map((group) => (
@@ -346,6 +349,7 @@ export function ListEditor<T>({
   disabled?: boolean;
   onRemove?: (item: T) => void;
 }) {
+  const t = useT();
   const move = (from: number, to: number) => {
     const next = [...items];
     next.splice(to, 0, next.splice(from, 1)[0]);
@@ -372,7 +376,7 @@ export function ListEditor<T>({
               <button
                 type="button"
                 className="text-button"
-                aria-label={`上移${label} ${index + 1}`}
+                aria-label={t("上移{label} {n}", { label, n: index + 1 })}
                 disabled={index === 0}
                 onClick={() => move(index, index - 1)}
               >
@@ -381,7 +385,7 @@ export function ListEditor<T>({
               <button
                 type="button"
                 className="text-button"
-                aria-label={`下移${label} ${index + 1}`}
+                aria-label={t("下移{label} {n}", { label, n: index + 1 })}
                 disabled={index === items.length - 1}
                 onClick={() => move(index, index + 1)}
               >
@@ -390,18 +394,18 @@ export function ListEditor<T>({
               <button
                 type="button"
                 className="text-button"
-                aria-label={`删除${label} ${index + 1}`}
+                aria-label={t("删除{label} {n}", { label, n: index + 1 })}
                 disabled={items.length <= min}
                 onClick={() => {
                   onRemove?.(item);
                   onChange(items.filter((_, i) => i !== index));
                 }}
               >
-                删除
+                {t("删除")}
               </button>
             </div>
             {messages.length > 0 && (
-              <p className="field-error">{messages.join("；")}</p>
+              <p className="field-error">{messages.join(t("；"))}</p>
             )}
           </div>
         );
@@ -412,7 +416,7 @@ export function ListEditor<T>({
         disabled={items.length >= max}
         onClick={() => onChange([...items, make()])}
       >
-        添加{label}
+        {t("添加{label}", { label })}
       </button>
     </fieldset>
   );

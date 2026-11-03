@@ -104,3 +104,25 @@ test("resource lists read in English; one Chinese word can have two translations
   await expect(page.getByRole("heading", { name: "New run" })).toBeVisible();
   await expect(page.getByLabel("App", { exact: true })).toBeVisible();
 });
+
+test("app pages read in English, including the canvas and node settings", async ({
+  page,
+  context,
+}) => {
+  await context.addCookies([
+    { name: "aep_locale", value: "en", url: "http://127.0.0.1:3100" },
+  ]);
+  await page.goto("/apps");
+  const hello = page.getByRole("article", { name: "问答示例" });
+  await expect(
+    hello.getByRole("link", { name: "Use “问答示例”" }),
+  ).toBeVisible();
+  await hello.getByRole("link", { name: "Design “问答示例”" }).click();
+  await page.getByRole("tab", { name: "Flow" }).click();
+  const canvas = page.getByRole("group", { name: "Flow canvas", exact: true });
+  await expect(canvas.getByText("Call model", { exact: true })).toBeVisible();
+  await canvas.locator('.react-flow__node[data-id="draft"]').click();
+  await expect(page.getByLabel("Model", { exact: true })).toBeVisible();
+  await expect(page.getByText("0 / 500 chars")).toBeVisible();
+  await expect(page.getByText("0 constants, 0 secrets")).toBeVisible();
+});

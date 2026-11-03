@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import { AppAccess } from "./app-access";
 import { AppBudget } from "./app-budget";
 import { AppSchedules } from "./app-schedules";
@@ -74,24 +75,29 @@ function Evaluation({
   // The eval set changed after this eval started.
   stale: boolean;
 }) {
+  const t = useT();
   if (!evaluation)
     return (
-      <p className="muted">尚未运行评测。每次保存草稿后，需要重新评测。</p>
+      <p className="muted">
+        {t("尚未运行评测。每次保存草稿后，需要重新评测。")}
+      </p>
     );
   return (
     <div className="evaluation-result" aria-live="polite">
       {stale && evaluation.status !== "running" && (
-        <p className="eval-stale">评测集改过了，建议重新评测。</p>
+        <p className="eval-stale">{t("评测集改过了，建议重新评测。")}</p>
       )}
       <div className={`eval-summary ${evaluation.status}`}>
-        <strong>{evalLabels[evaluation.status]}</strong>
+        <strong>{t(evalLabels[evaluation.status])}</strong>
         <span>
-          总分 {scoreText(evaluation.score)} · 阈值{" "}
-          {scoreText(evaluation.threshold)}
+          {t("总分 {score} · 阈值 {threshold}", {
+            score: scoreText(evaluation.score),
+            threshold: scoreText(evaluation.threshold),
+          })}
         </span>
       </div>
       {evaluation.error && <p className="field-error">{evaluation.error}</p>}
-      <ul className="eval-cases" aria-label="评测用例">
+      <ul className="eval-cases" aria-label={t("评测用例")}>
         {evaluation.cases.map((item) => (
           <li key={item.id}>
             {item.run_id ? (
@@ -102,14 +108,16 @@ function Evaluation({
               <span>{item.title || item.id}</span>
             )}
             <span>
-              {caseLabels[item.status] ?? item.status} · 得分{" "}
-              {scoreText(item.score)}
+              {t("{status} · 得分 {score}", {
+                status: t(caseLabels[item.status] ?? item.status),
+                score: scoreText(item.score),
+              })}
             </span>
             {item.error && <p className="field-error">{item.error}</p>}
             {item.checks && item.checks.length > 0 && (
               <ul
                 className="eval-check-results"
-                aria-label={`${item.title || item.id} 的检查`}
+                aria-label={t("{name} 的检查", { name: item.title || item.id })}
               >
                 {item.checks.map((check, i) => (
                   <li
@@ -129,10 +137,10 @@ function Evaluation({
                       {check.name}
                       <span className="sr-only">
                         {check.passed === null
-                          ? "（跳过）"
+                          ? t("（跳过）")
                           : check.passed
-                            ? "（通过）"
-                            : "（没通过）"}
+                            ? t("（通过）")
+                            : t("（没通过）")}
                       </span>
                       {check.detail && (
                         <small className="muted"> · {check.detail}</small>
@@ -158,14 +166,18 @@ function ConfigDiff({
   right: AppVersion;
   data: AppDetail;
 }) {
+  const t = useT();
   if (isFlowConfig(left.config) || isFlowConfig(right.config))
     return (
-      <section className="asset-diff" aria-label="配置差异">
+      <section className="asset-diff" aria-label={t("配置差异")}>
         <h3>
-          配置差异：v{left.version} → v{right.version}
+          {t("配置差异：v{left} → v{right}", {
+            left: left.version ?? "—",
+            right: right.version ?? "—",
+          })}
         </h3>
         {JSON.stringify(left.config) === JSON.stringify(right.config) ? (
-          <p className="muted">两个版本配置相同。</p>
+          <p className="muted">{t("两个版本配置相同。")}</p>
         ) : (
           <div className="flow-config-comparison">
             <pre className="flow-json">
@@ -216,14 +228,17 @@ function ConfigDiff({
   }
   const show = (value: unknown) =>
     value === undefined
-      ? "未设置"
+      ? t("未设置")
       : value === null
-        ? "平台默认"
+        ? t("平台默认")
         : JSON.stringify(value);
   return (
-    <section className="asset-diff" aria-label="配置差异">
+    <section className="asset-diff" aria-label={t("配置差异")}>
       <h3>
-        配置差异：v{left.version} → v{right.version}
+        {t("配置差异：v{left} → v{right}", {
+          left: left.version ?? "—",
+          right: right.version ?? "—",
+        })}
       </h3>
       {changes.length ? (
         <ul>
@@ -249,13 +264,15 @@ function ConfigDiff({
           })}
         </ul>
       ) : (
-        <p className="muted">两个版本配置相同。</p>
+        <p className="muted">{t("两个版本配置相同。")}</p>
       )}
     </section>
   );
 }
 
 type Tab = "overview" | "design" | "release" | "access";
+const NOT_FOUND = "没有找到这个应用。";
+
 const TABS: [Tab, string][] = [
   ["overview", "概览"],
   ["design", "编排"],
@@ -270,8 +287,13 @@ function AppTabs({
   tab: Tab;
   onChange: (tab: Tab) => void;
 }) {
+  const t = useT();
   return (
-    <div className="filter-tabs app-tabs" role="tablist" aria-label="应用页">
+    <div
+      className="filter-tabs app-tabs"
+      role="tablist"
+      aria-label={t("应用页")}
+    >
       {TABS.map(([key, label], i) => (
         <button
           key={key}
@@ -297,7 +319,7 @@ function AppTabs({
             document.getElementById(`app-tab-${next}`)?.focus();
           }}
         >
-          {label}
+          {t(label)}
         </button>
       ))}
     </div>
@@ -328,6 +350,7 @@ function TabPanel({
 }
 
 export function AppDetailView({ app }: { app: string }) {
+  const t = useT();
   const [data, setData] = useState<AppDetail | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [view, setView] = useState<"draft" | "current">("current");
@@ -388,7 +411,7 @@ export function AppDetailView({ app }: { app: string }) {
         if (!controller.signal.aborted)
           setError(
             err instanceof ApiError && err.status === 404
-              ? "没有找到这个应用。"
+              ? NOT_FOUND
               : errorMessage(err),
           );
       });
@@ -472,7 +495,7 @@ export function AppDetailView({ app }: { app: string }) {
   function switchView(next: "current" | "draft") {
     if (
       !data ||
-      (dirty && !window.confirm("切换版本会丢弃未保存的修改，继续吗？"))
+      (dirty && !window.confirm(t("切换版本会丢弃未保存的修改，继续吗？")))
     )
       return;
     setView(next);
@@ -494,10 +517,10 @@ export function AppDetailView({ app }: { app: string }) {
             ...knowledgeIssues(config, data.options.rerank_models ?? []),
           ];
           if (localIssues.length)
-            throw new ApiError("请检查检索设置", 422, localIssues);
+            throw new ApiError(t("请检查检索设置"), 422, localIssues);
           accept(
             await saveAppDraft(app, config),
-            "草稿已保存，上次评测结果已清空。",
+            t("草稿已保存，上次评测结果已清空。"),
           );
         } catch (err) {
           if (
@@ -514,8 +537,10 @@ export function AppDetailView({ app }: { app: string }) {
           );
           throw new ApiError(
             [
-              "草稿没有保存。",
-              count ? `有 ${count} 处问题，已标在对应的节点和设置下。` : "",
+              t("草稿没有保存。"),
+              count
+                ? t("有 {count} 处问题，已标在对应的节点和设置下。", { count })
+                : "",
               ...sorted.graph,
             ]
               .filter(Boolean)
@@ -532,7 +557,7 @@ export function AppDetailView({ app }: { app: string }) {
         node.settings.map((setting) =>
           codeNodes[node.id]
             ? settingError(setting, codeNodes[node.id])
-            : `缺少节点 ${node.id} 的配置`,
+            : t("缺少节点 {id} 的配置", { id: node.id }),
         ),
       )
       .filter(Boolean);
@@ -543,7 +568,7 @@ export function AppDetailView({ app }: { app: string }) {
     void action(async () =>
       accept(
         await saveAppDraft(app, config),
-        "草稿已保存，上次评测结果已清空。",
+        t("草稿已保存，上次评测结果已清空。"),
       ),
     );
   }
@@ -552,11 +577,11 @@ export function AppDetailView({ app }: { app: string }) {
     return (
       <div className="asset-page">
         <Link href="/apps" className="back-link">
-          ← 应用
+          {t("← 应用")}
         </Link>
         {error ? (
           <ErrorNotice
-            message={error}
+            message={error === NOT_FOUND ? t(NOT_FOUND) : error}
             onRetry={() => setRetry((value) => value + 1)}
           />
         ) : (
@@ -581,15 +606,15 @@ export function AppDetailView({ app }: { app: string }) {
   const displayedEval =
     view === "draft" ? (data.draft?.eval ?? null) : data.current.eval;
   const publishReason = !data.draft
-    ? "请先保存草稿。"
+    ? t("请先保存草稿。")
     : view !== "draft"
-      ? "请切换到草稿后发布。"
+      ? t("请切换到草稿后发布。")
       : dirty
-        ? "有未保存的修改，请先保存草稿并重新评测。"
+        ? t("有未保存的修改，请先保存草稿并重新评测。")
         : running
-          ? "评测运行中，请等待结果。"
+          ? t("评测运行中，请等待结果。")
           : data.has_eval_set && data.draft.eval?.status !== "passed"
-            ? "草稿须先通过评测才能发布；总分需达到阈值。"
+            ? t("草稿须先通过评测才能发布；总分需达到阈值。")
             : "";
   const left = versions.find((item) => item.version === compare[0]);
   const right = versions.find((item) => item.version === compare[1]);
@@ -597,108 +622,118 @@ export function AppDetailView({ app }: { app: string }) {
   return (
     <div className="asset-page">
       <Link href="/apps" className="back-link">
-        ← 应用
+        {t("← 应用")}
       </Link>
-      <AssetHeading eyebrow={app} title={data.title}>
+      <AssetHeading
+        eyebrow={data.kind === "flow" ? app : t("{app} · 代码应用", { app })}
+        title={data.title}
+        action={
+          <div className="asset-actions heading-actions">
+            <Link
+              className="button secondary"
+              href={`/use/${encodeURIComponent(app)}`}
+            >
+              {t("使用页")}
+            </Link>
+            <Link
+              className="button primary"
+              href={`/runs/new?app=${encodeURIComponent(app)}`}
+            >
+              {t("新建运行")}
+            </Link>
+          </div>
+        }
+      >
         {data.summary}
       </AssetHeading>
-      <div className="asset-actions">
-        <span className="app-tag">
-          {data.kind === "flow" ? "编排应用" : "代码应用"}
-        </span>
-        <Link
-          className="button secondary"
-          href={`/use/${encodeURIComponent(app)}`}
-        >
-          使用页
-        </Link>
-        <Link
-          className="button primary"
-          href={`/runs/new?app=${encodeURIComponent(app)}`}
-        >
-          新建运行
-        </Link>
-      </div>
       {error && <ErrorNotice message={error} />}
       {notice && (
         <p className="asset-notice" role="status">
           {notice}
         </p>
       )}
-      <AppTabs tab={tab} onChange={selectTab} />
-      {(tab === "design" || tab === "release") && (
-        <section
-          className={`panel config-banner ${view}`}
-          aria-label="正在查看的配置"
-        >
-          <div>
-            <strong>
-              {view === "draft"
-                ? "正在查看：草稿"
-                : `正在查看：当前版本 v${data.current_version}`}
-            </strong>
-            <p>
-              {dirty
-                ? "有未保存的修改"
-                : view === "draft"
-                  ? `草稿已保存 · 当前发布版本 v${data.current_version}`
-                  : data.kind === "flow"
-                    ? "新运行使用当前发布版本。"
-                    : "编辑节点设置后，可保存为草稿。"}
-            </p>
-          </div>
-          <div className="asset-actions">
-            {data.draft && (
-              <>
-                <button
-                  type="button"
-                  className="button secondary"
-                  disabled={busy || view === "current"}
-                  onClick={() => switchView("current")}
-                >
-                  查看当前版本
-                </button>
-                <button
-                  type="button"
-                  className="button secondary"
-                  disabled={busy || view === "draft"}
-                  onClick={() => switchView("draft")}
-                >
-                  查看草稿
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              className="button primary"
-              disabled={busy || running || !dirty}
-              onClick={save}
-            >
-              保存草稿
-            </button>
-            <button
-              type="button"
-              className="button secondary"
-              disabled={busy || (!data.draft && !dirty)}
-              onClick={() => {
-                if (!window.confirm("确定放弃草稿和未保存的修改吗？")) return;
-                void action(async () => {
-                  // With only unsaved edits there is no draft on the server to delete.
-                  if (data.draft) await deleteAppDraft(app);
-                  accept(await getApp(app), "已放弃草稿。");
-                });
-              }}
-            >
-              放弃草稿
-            </button>
-          </div>
-        </section>
-      )}
+      {/* The tabs and the version being edited share one row. */}
+      <div className="app-tabbar">
+        <AppTabs tab={tab} onChange={selectTab} />
+        {(tab === "design" || tab === "release") && (
+          <section
+            className={`panel config-banner ${view}`}
+            aria-label={t("正在查看的配置")}
+          >
+            <div>
+              <strong>
+                {view === "draft"
+                  ? t("正在查看：草稿")
+                  : t("正在查看：当前版本 v{current_version}", {
+                      current_version: data.current_version,
+                    })}
+              </strong>
+              <p>
+                {dirty
+                  ? t("有未保存的修改")
+                  : view === "draft"
+                    ? t("草稿已保存 · 当前发布版本 v{current_version}", {
+                        current_version: data.current_version,
+                      })
+                    : data.kind === "flow"
+                      ? t("新运行使用当前发布版本。")
+                      : t("编辑节点设置后，可保存为草稿。")}
+              </p>
+            </div>
+            <div className="asset-actions">
+              {data.draft && (
+                <>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={busy || view === "current"}
+                    onClick={() => switchView("current")}
+                  >
+                    {t("查看当前版本")}
+                  </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={busy || view === "draft"}
+                    onClick={() => switchView("draft")}
+                  >
+                    {t("查看草稿")}
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                className="button primary"
+                disabled={busy || running || !dirty}
+                onClick={save}
+              >
+                {t("保存草稿")}
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={busy || (!data.draft && !dirty)}
+                onClick={() => {
+                  if (!window.confirm(t("确定放弃草稿和未保存的修改吗？")))
+                    return;
+                  void action(async () => {
+                    // With only unsaved edits there is no draft on the server to delete.
+                    if (data.draft) await deleteAppDraft(app);
+                    accept(await getApp(app), t("已放弃草稿。"));
+                  });
+                }}
+              >
+                {t("放弃草稿")}
+              </button>
+            </div>
+          </section>
+        )}
+      </div>
       <TabPanel tab="overview" current={tab}>
         {data.kind === "flow" && (
           <AppMetadata
             data={data}
-            changed={(value) => accept(value, "应用信息已保存。")}
+            changed={(value) => accept(value, t("应用信息已保存。"))}
           />
         )}
         <AppManualPanel
@@ -708,7 +743,7 @@ export function AppDetailView({ app }: { app: string }) {
               <div
                 className="asset-actions manual-version"
                 role="group"
-                aria-label="说明书版本"
+                aria-label={t("说明书版本")}
               >
                 <button
                   type="button"
@@ -716,7 +751,7 @@ export function AppDetailView({ app }: { app: string }) {
                   aria-pressed={manualDraft}
                   onClick={() => setManualDraft(true)}
                 >
-                  看草稿
+                  {t("看草稿")}
                 </button>
                 <button
                   type="button"
@@ -724,7 +759,7 @@ export function AppDetailView({ app }: { app: string }) {
                   aria-pressed={!manualDraft}
                   onClick={() => setManualDraft(false)}
                 >
-                  看生效版本
+                  {t("看生效版本")}
                 </button>
               </div>
             )
@@ -761,19 +796,22 @@ export function AppDetailView({ app }: { app: string }) {
             />
           </>
         ) : (
-          <section className="panel run-flow app-design" aria-label="应用设计">
+          <section
+            className="panel run-flow app-design"
+            aria-label={t("应用设计")}
+          >
             <div className="section-heading">
-              <h2>应用设计与节点配置</h2>
-              <span className="muted">点选节点查看设计与设置</span>
+              <h2>{t("应用设计与节点配置")}</h2>
+              <span className="muted">{t("点选节点查看设计与设置")}</span>
             </div>
             <div className="flow-about">
               <dl>
                 <div>
-                  <dt>运行方式</dt>
+                  <dt>{t("运行方式")}</dt>
                   <dd>{data.pattern}</dd>
                 </div>
                 <div>
-                  <dt>知识库</dt>
+                  <dt>{t("知识库")}</dt>
                   <dd>{data.knowledge}</dd>
                 </div>
                 <div>
@@ -793,7 +831,7 @@ export function AppDetailView({ app }: { app: string }) {
                 <div
                   className="flow-detail"
                   role="region"
-                  aria-label={`节点 ${node.title}`}
+                  aria-label={t("节点 {title}", { title: node.title })}
                 >
                   <FlowNodeDesign
                     node={graph.nodes.find((item) => item.id === node.id)!}
@@ -813,7 +851,7 @@ export function AppDetailView({ app }: { app: string }) {
                       }}
                     />
                   ) : (
-                    <p className="muted">此节点没有可调设置。</p>
+                    <p className="muted">{t("此节点没有可调设置。")}</p>
                   )}
                 </div>
               )}
@@ -823,9 +861,9 @@ export function AppDetailView({ app }: { app: string }) {
       </TabPanel>
       <TabPanel tab="release" current={tab}>
         <div className="asset-two-columns">
-          <section className="panel asset-section" aria-label="发布前评测">
+          <section className="panel asset-section" aria-label={t("发布前评测")}>
             <div className="asset-section-heading">
-              <h2>发布前评测</h2>
+              <h2>{t("发布前评测")}</h2>
               {data.has_eval_set && (
                 <button
                   className="button secondary"
@@ -837,23 +875,23 @@ export function AppDetailView({ app }: { app: string }) {
                     void action(async () =>
                       accept(
                         await evaluateAppDraft(app),
-                        "评测已开始，每 5 秒更新结果。",
+                        t("评测已开始，每 5 秒更新结果。"),
                       ),
                     )
                   }
                 >
-                  {running ? "评测运行中…" : "运行评测"}
+                  {running ? t("评测运行中…") : t("运行评测")}
                 </button>
               )}
             </div>
             {data.has_eval_set ? (
               <>
                 <p className="muted">
-                  当前展示
                   {view === "draft"
-                    ? "草稿最近一次"
-                    : `版本 v${data.current_version} 发布时的`}
-                  评测。
+                    ? t("当前展示草稿最近一次评测。")
+                    : t("当前展示版本 v{version} 发布时的评测。", {
+                        version: data.current_version,
+                      })}
                 </p>
                 <Evaluation
                   evaluation={displayedEval}
@@ -869,11 +907,13 @@ export function AppDetailView({ app }: { app: string }) {
                 />
               </>
             ) : (
-              <p className="muted">此应用没有评测集，保存草稿后可直接发布。</p>
+              <p className="muted">
+                {t("此应用没有评测集，保存草稿后可直接发布。")}
+              </p>
             )}
           </section>
-          <section className="panel asset-section" aria-label="发布应用">
-            <h2>发布应用</h2>
+          <section className="panel asset-section" aria-label={t("发布应用")}>
+            <h2>{t("发布应用")}</h2>
             <form
               className="asset-form"
               onSubmit={(event) => {
@@ -885,7 +925,7 @@ export function AppDetailView({ app }: { app: string }) {
                       note.trim(),
                       actorPayload(actor).actor,
                     ),
-                    "应用已发布为新版本。",
+                    t("应用已发布为新版本。"),
                   );
                   setNote("");
                   await refreshHistory();
@@ -893,7 +933,7 @@ export function AppDetailView({ app }: { app: string }) {
               }}
             >
               <label className="asset-field">
-                发布说明（必填）
+                {t("发布说明（必填）")}
                 <textarea
                   required
                   value={note}
@@ -915,7 +955,7 @@ export function AppDetailView({ app }: { app: string }) {
                   publishReason ? "app-publish-reason" : undefined
                 }
               >
-                发布新版本
+                {t("发布新版本")}
               </button>
             </form>
           </section>
@@ -939,8 +979,8 @@ export function AppDetailView({ app }: { app: string }) {
           }}
         />
         <AppBudget app={app} title={data.title} />
-        <section className="panel asset-section" aria-label="版本历史">
-          <h2>版本历史</h2>
+        <section className="panel asset-section" aria-label={t("版本历史")}>
+          <h2>{t("版本历史")}</h2>
           {historyError && (
             <ErrorNotice
               message={historyError}
@@ -953,13 +993,17 @@ export function AppDetailView({ app }: { app: string }) {
                 <div>
                   <strong>
                     v{version.version} ·{" "}
-                    {version.status === "current" ? "当前版本" : "历史版本"}
+                    {version.status === "current"
+                      ? t("当前版本")
+                      : t("历史版本")}
                   </strong>
                   <p>{version.note}</p>
                   <small>
-                    {version.created_by ?? "未署名"} ·{" "}
-                    <AssetTime value={version.created_at} /> · 评测分{" "}
-                    {scoreText(version.eval?.score)}
+                    {version.created_by ?? t("未署名")} ·{" "}
+                    <AssetTime value={version.created_at} /> ·{" "}
+                    {t("评测分 {score}", {
+                      score: scoreText(version.eval?.score),
+                    })}
                   </small>
                 </div>
                 {data.kind === "flow" && (
@@ -971,7 +1015,7 @@ export function AppDetailView({ app }: { app: string }) {
                       void action(() => exportAppVersion(app, version.version!))
                     }
                   >
-                    导出
+                    {t("导出")}
                   </button>
                 )}
                 {version.status !== "current" && (
@@ -982,7 +1026,10 @@ export function AppDetailView({ app }: { app: string }) {
                     onClick={() => {
                       if (
                         !window.confirm(
-                          `确定将 v${version.version} 设为当前版本吗？新运行将使用该版本。`,
+                          t(
+                            "确定将 v{version} 设为当前版本吗？新运行将使用该版本。",
+                            { version: version.version ?? "—" },
+                          ),
                         )
                       )
                         return;
@@ -993,13 +1040,15 @@ export function AppDetailView({ app }: { app: string }) {
                             version.version!,
                             actorPayload(actor).actor,
                           ),
-                          `已将 v${version.version} 设为当前版本。`,
+                          t("已将 v{version} 设为当前版本。", {
+                            version: version.version ?? "—",
+                          }),
                         );
                         await refreshHistory();
                       });
                     }}
                   >
-                    设为当前版本
+                    {t("设为当前版本")}
                   </button>
                 )}
               </li>
