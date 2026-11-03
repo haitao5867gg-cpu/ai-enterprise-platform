@@ -1,8 +1,9 @@
 import { connection } from "next/server";
 import { RunDetail } from "../../../components/run-detail";
 import { getLangfuseTraceBaseUrl } from "../../../lib/server/config";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "运行详情" };
+export const generateMetadata = pageTitle("运行详情");
 
 export default async function RunPage({
   params,

@@ -1,6 +1,7 @@
 import { NewRun } from "../../../components/new-run";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "新建运行" };
+export const generateMetadata = pageTitle("新建运行");
 
 export default async function NewRunPage({
   searchParams,

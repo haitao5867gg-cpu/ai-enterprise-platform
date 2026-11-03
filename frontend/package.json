@@ -7,9 +7,10 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --max-warnings=0",
+    "lint": "eslint . --max-warnings=0 && node scripts/check-i18n.mjs",
     "test": "playwright test",
-    "test:live": "playwright test --config playwright.live.config.ts"
+    "test:live": "playwright test --config playwright.live.config.ts",
+    "i18n:check": "node scripts/check-i18n.mjs"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.3",

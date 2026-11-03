@@ -1,6 +1,7 @@
 import { AppUse } from "../../../components/app-use";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "使用应用" };
+export const generateMetadata = pageTitle("使用应用");
 export default async function UsePage({
   params,
 }: {

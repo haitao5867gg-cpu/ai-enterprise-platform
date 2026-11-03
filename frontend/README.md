@@ -53,6 +53,16 @@ AEP_MOCK_RUNS=false AEP_API_INTERNAL_URL=http://localhost:8000 npm run dev
 
 `GET /apps/{app}/manual`（支持 `version`、`draft` 查询）和 `GET /runs/{id}/manual` 通过同源 API 转发；mock 模式模拟相同契约，代码应用 `etl` 也支持说明书。说明书加载失败时可单独重试。
 
+## 中英文界面
+
+顶栏和登录页右上角的「中 / EN」切换界面语言，默认中文。选择存在 `aep_locale` cookie 里（一年），根布局按它在服务端渲染，所以刷新后不会先闪一下中文；`<html lang>` 和页面标题跟着切换。
+
+写法：界面文字仍写中文，用 `useT()` 拿到的 `t()` 包一层，英文写在 `lib/i18n/en.json`（键是中文原文）。带变量的句子写成 `t("共 {n} 条运行", { n })`，不要拼字符串。服务端页面标题用 `export const generateMetadata = pageTitle("应用")`（`lib/server/locale.ts`）。时间、时长、运行步骤这类文字用 `lib/i18n/format.ts`，它们按语言格式化。没有英文的句子照原样显示中文。
+
+不翻译：用户和应用写的内容（应用名、节点名、方案、模型输出、知识库文档），以及后端返回的报错。
+
+`npm run lint` 会跑 `scripts/check-i18n.mjs`：所有 `t("中文")` 都要有英文、占位符一致；列在脚本 `TRANSLATED` 里的文件不能再有没翻译的中文（字符串、JSX 文字、模板字符串）。一个文件翻完就把它加进去；确实不翻的那一行末尾写 `// i18n-ignore`。
+
 ## 验证
 
 ```bash

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { statusText, type RunSummary } from "../lib/runs";
+import { useT } from "../lib/i18n/client";
 import { Icon } from "./icons";
 
 export function StatusBadge({
@@ -7,11 +8,12 @@ export function StatusBadge({
 }: {
   run: Pick<RunSummary, "status" | "outcome" | "step">;
 }) {
+  const t = useT();
   const stopped = run.status === "done" && run.outcome === "stopped";
   return (
     <span className={`status-badge ${run.status}${stopped ? " stopped" : ""}`}>
       <span className="dot" />
-      {statusText(run)}
+      {t(statusText(run))}
     </span>
   );
 }
@@ -23,13 +25,14 @@ export function ErrorNotice({
   message: string;
   onRetry?: () => void;
 }) {
+  const t = useT();
   return (
     <div className="error-notice" role="alert">
       <Icon name="alert" />
       <span>{message}</span>
       {onRetry && (
         <button type="button" className="text-button" onClick={onRetry}>
-          重试
+          {t("重试")}
           <Icon name="refresh" size={14} />
         </button>
       )}
