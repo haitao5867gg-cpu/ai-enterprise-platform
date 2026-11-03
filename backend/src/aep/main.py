@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aep import __version__, compute, llm, tracing
 from aep.api import (
@@ -48,6 +49,7 @@ from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.eval_sets import PostgresEvalSetStore
 from aep.feedback import PostgresFeedbackStore
 from aep.health import check_llm_gateway, check_postgres, check_redis, demo_checks
+from aep.i18n import translated_http_error
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
@@ -291,6 +293,8 @@ def create_app() -> FastAPI:
         dependencies=[Depends(authorize)],
     )
     app.middleware("http")(audit_middleware)
+    # Error messages in the reader's language (Accept-Language), see aep.i18n.
+    app.add_exception_handler(StarletteHTTPException, translated_http_error)
     # Connector tests and each data source's health (kept for a minute in this process).
     app.state.connector_check = ConnectorCheck()
     app.include_router(auth.router)

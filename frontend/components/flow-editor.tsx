@@ -1,6 +1,6 @@
 "use client";
 
-import { useT } from "../lib/i18n/client";
+import { useLocale, useT } from "../lib/i18n/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -473,6 +473,8 @@ export function FlowEditor({
     value: string;
   } | null>(null);
   const [runOpen, setRunOpen] = useState(false);
+  // The API names the node types in the reader's language: fetched again on a switch.
+  const { locale } = useLocale();
   useEffect(() => {
     const controller = new AbortController();
     getNodeTypes(controller.signal)
@@ -481,7 +483,7 @@ export function FlowEditor({
         (err) => !controller.signal.aborted && setTypesError(errorMessage(err)),
       );
     return () => controller.abort();
-  }, []);
+  }, [locale]);
   const node = nodes.find((item) => item.id === selected) ?? nodes[0];
   const invalid = new Set(Object.keys(issues.nodes));
   const nodeIssues = node ? issues.nodes[node.id] : undefined;

@@ -1,3 +1,9 @@
+import {
+  LOCALE_COOKIE,
+  parseLocale,
+  translate,
+  type Locale,
+} from "../../../lib/i18n/locale";
 import { isLocalMockEnabled } from "../../../lib/server/config";
 
 export const runtime = "nodejs";
@@ -13,7 +19,8 @@ function jsonError(detail: string, status: number) {
 }
 
 // What the API needs from the browser's request: the body's type, the sign-in cookie
-// and the client's address for the record of changes. Nothing else is passed on.
+// the client's address for the record of changes and the reader's language. Nothing else
+// is passed on.
 function forwarded(request: Request, hasBody: boolean, isUpload: boolean) {
   const headers: Record<string, string> = {};
   if (hasBody)
@@ -28,7 +35,21 @@ function forwarded(request: Request, hasBody: boolean, isUpload: boolean) {
   if (session) headers.Cookie = session;
   const client = request.headers.get("x-forwarded-for");
   if (client) headers["X-Forwarded-For"] = client;
+  // The API's own messages come back in the language the reader picked (aep.i18n).
+  headers["Accept-Language"] = readerLocale(request) === "en" ? "en" : "zh-CN";
   return headers;
+}
+
+// The language picked with the page's switch (lib/i18n), not the browser's.
+function readerLocale(request: Request): Locale {
+  return parseLocale(
+    request.headers
+      .get("cookie")
+      ?.split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${LOCALE_COOKIE}=`))
+      ?.slice(LOCALE_COOKIE.length + 1),
+  );
 }
 
 async function handle(request: Request, context: Context) {
@@ -163,7 +184,10 @@ async function handle(request: Request, context: Context) {
       ?.toLowerCase()
       .startsWith("multipart/form-data;")
   )
-    return jsonError("请使用 multipart 表单上传文件", 415);
+    return jsonError(
+      translate(readerLocale(request), "请使用 multipart 表单上传文件"),
+      415,
+    );
 
   if (endpoint !== "readyz" && isLocalMockEnabled()) {
     if (path[0] === "ops" || (path[0] === "apps" && path[2] === "budget")) {
@@ -277,9 +301,10 @@ async function handle(request: Request, context: Context) {
     // Stream upstream bytes unchanged, including ZIP archives and error responses.
     return new Response(response.body, { status: response.status, headers });
   } catch (error) {
-    // Pages may show a 502 detail on its own (lib/runs.ts requestJson), so it is Chinese.
+    // Pages may show a 502 detail on its own (lib/runs.ts requestJson): in the reader's
+    // language.
     return jsonError(
-      "后端服务暂不可用。",
+      translate(readerLocale(request), "后端服务暂不可用。"),
       error instanceof Error && error.name === "TimeoutError" ? 504 : 502,
     );
   }

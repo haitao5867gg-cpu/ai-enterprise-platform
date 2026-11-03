@@ -179,6 +179,11 @@ createServer(async (request, response) => {
   if (path === "/runs/unavailable-run") return request.socket.destroy();
   if (path === "/runs/timeout-run") return;
   if (path === "/runs/fixture") return json({ source: "contract-fixture" });
+  // The language the proxy asks the API to answer in (aep.i18n).
+  if (path === "/runs/language")
+    return json({
+      accept_language: request.headers["accept-language"] ?? null,
+    });
   if (path === "/runs/fixture/flow")
     return json({ source: "contract-fixture-flow" });
   const appSummary = {
