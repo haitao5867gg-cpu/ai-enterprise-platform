@@ -61,7 +61,13 @@ async def test_nine_read_only_tools_with_checked_arguments():
             "aggregate", {"table": "main.sales.orders", "expr": "count(*)", "lookup": lookup}
         )
         assert not looked.is_error
-        for wrong in [{"found": "false"}, {"found": None}, {"on": {}}, {"extra": 1}]:
+        for wrong in [
+            {"found": "false"},
+            {"found": None},
+            {"on": {}},
+            {"extra": 1},
+            {"trim": "true"},
+        ]:
             bad = await client.call_tool(
                 "aggregate",
                 {"table": "main.sales.orders", "expr": "count(*)", "lookup": lookup | wrong},

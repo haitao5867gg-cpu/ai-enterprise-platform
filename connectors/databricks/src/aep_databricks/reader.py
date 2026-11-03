@@ -179,16 +179,25 @@ class Reader:
 
     def _lookup(self, lookup: dict[str, Any]) -> str:
         """``[NOT] EXISTS`` a row of another table that matches the row being read (alias
-        ``__aep_t``) on the ``on`` columns, nulls matching nulls, and meets the lookup's
-        own ``where``: "rows with no applicable allocation", without arbitrary SQL."""
+        ``__aep_t``) on the ``on`` columns, nulls matching nulls (with ``trim``, both sides
+        without leading and trailing spaces), and meets the lookup's own ``where``: "rows
+        with no applicable allocation", without arbitrary SQL."""
         other = self._table(lookup.get("table"))
         on = lookup.get("on")
         if not isinstance(on, dict) or not on:
             raise ConnectorError("lookup.on 至少要有一对列：{本表的列: 另一张表的列}")
         outer = columns(list(on), "lookup.on ", most=MAX_LOOKUP_COLUMNS)
         inner = [column(name) for name in on.values()]
+        trim = lookup.get("trim", False)
+        if not isinstance(trim, bool):
+            raise ConnectorError("lookup.trim 要是 true（两边去掉首尾空格再比）或 false")
+
+        def side(alias: str, name: str) -> str:
+            return f"trim({alias}.{ident(name)})" if trim else f"{alias}.{ident(name)}"
+
         pairs = " AND ".join(
-            f"__aep_l.{ident(b)} <=> __aep_t.{ident(a)}" for a, b in zip(outer, inner, strict=True)
+            f"{side('__aep_l', b)} <=> {side('__aep_t', a)}"
+            for a, b in zip(outer, inner, strict=True)
         )
         where = lookup.get("where")
         more = "" if where is None else f" AND ({expression(where, 'lookup.where ')})"

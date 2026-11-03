@@ -656,6 +656,24 @@ async def test_rows_may_look_up_another_table(monkeypatch: pytest.MonkeyPatch):
         "`ibf_table2` 里没有满足 `qty <> 0`、并且在 `t` 里找不到 sku = code 对应的行"
     )
 
+    # trim: both sides without leading and trailing spaces (jadeflow retest, C8).
+    spaced = [dict(r) for r in forecast]
+    spaced[0]["sku"] = " A1 "
+    monkeypatch.setitem(
+        fake_connector.DATABRICKS_TABLES,
+        ("prev.sales", "forecast"),
+        {"comment": None, "columns": COLUMNS, "foreign_keys": [], "rows": spaced},
+    )
+    calls.clear()
+    out = await run(node(checks=[have]), state(lake), rt)
+    assert [r["sku"] for r in out.outputs["results"][0]["rows"]] == ["C3"]
+    trimmed = have | {"lookup": have["lookup"] | {"trim": True}}
+    out = await run(node(checks=[trimmed]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert [r["sku"] for r in found["rows"]] == ["A1", "C3"]
+    assert calls[-1][1]["lookup"]["trim"] is True
+    assert "找得到 sku、month（去掉首尾空格后） 对应" in found["message"]
+
 
 def test_what_a_lookup_may_say():
     def said(lookup: Any) -> list[tuple[Any, str]]:
@@ -678,7 +696,9 @@ def test_what_a_lookup_may_say():
         (good | {"where": ""}, ("lookup", "where"), "lookup 的条件要写成不为空的文字"),
         (good | {"found": "false"}, ("lookup", "found"), "lookup.found 要写 true"),
         ({k: v for k, v in good.items() if k != "found"}, ("lookup", "found"), "lookup.found"),
+        (good | {"trim": "yes"}, ("lookup", "trim"), "lookup.trim 要写 true"),
     ]  # fmt: skip
+    assert said(good | {"trim": True}) == []
     for lookup, loc, message in cases:
         problems = said(lookup)
         assert any(p[0] == loc and p[1].startswith(message) for p in problems), (lookup, problems)

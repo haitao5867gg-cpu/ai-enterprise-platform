@@ -66,7 +66,7 @@ FIELDS = {
 }
 SIDE = {"table", "expr", "where"}
 # A rows check may keep only the rows with (or without) a matching row in another table.
-LOOKUP = {"table", "on", "where", "found"}
+LOOKUP = {"table", "on", "where", "found", "trim"}
 MAX_LOOKUP_COLUMNS = 10
 
 STATUS_TEXT = {"passed": "通过", "failed": "不通过", "error": "出错", "skipped": "跳过"}
@@ -162,7 +162,7 @@ def _lookup_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> 
         return
     for key in lookup:
         if key not in LOOKUP:
-            add(("lookup", key), f"lookup 没有 {key} 这一项，只有 table、on、where、found")
+            add(("lookup", key), f"lookup 没有 {key} 这一项，只有 table、on、where、found、trim")
     _table(lookup, "table", ("lookup",), add)
     on = lookup.get("on")
     if (
@@ -187,6 +187,8 @@ def _lookup_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> 
             ("lookup", "found"),
             "lookup.found 要写 true（只看找得到对应行的行）或 false（只看找不到的行）",
         )
+    if "trim" in lookup and not isinstance(lookup["trim"], bool):
+        add(("lookup", "trim"), "lookup.trim 要写 true（两边去掉首尾空格再比）或 false")
 
 
 def known_columns(check: dict[str, Any]) -> list[str] | None:
@@ -764,7 +766,8 @@ def _rows_said(check: dict[str, Any], code: Callable[[str], str] = str) -> str:
     on = "、".join(a if a == b else f"{a} = {b}" for a, b in lookup["on"].items())
     where = f"（满足 {code(lookup['where'])}）" if lookup.get("where") else ""
     found = "找得到" if lookup["found"] else "找不到"
-    return f"{said}、并且在 {code(lookup['table'])} 里{found} {on} 对应{where}的行"
+    trimmed = "（去掉首尾空格后）" if lookup.get("trim") else ""
+    return f"{said}、并且在 {code(lookup['table'])} 里{found} {on}{trimmed} 对应{where}的行"
 
 
 async def _aggregate(
@@ -1254,6 +1257,8 @@ async def _rows(
     if lookup := check.get("lookup"):
         other = scope.table(lookup["table"])
         looked = {"table": other, "on": lookup["on"], "found": lookup["found"]}
+        if lookup.get("trim"):
+            looked["trim"] = True
         if condition := scope.condition(other, lookup.get("where")):
             looked["where"] = condition
         more = {"lookup": looked}

@@ -390,7 +390,8 @@ function describeCheckOnly(check: Record<string, unknown>): string {
     .join("、");
   const where = text(lookup.where) ? `（满足 ${text(lookup.where)}）` : "";
   const found = lookup.found === true ? "找得到" : "找不到";
-  return `${table} 里没有满足 ${text(check.where)}、并且在 ${text(lookup.table)} 里${found} ${on} 对应${where}的行`;
+  const trimmed = lookup.trim === true ? "（去掉首尾空格后）" : "";
+  return `${table} 里没有满足 ${text(check.where)}、并且在 ${text(lookup.table)} 里${found} ${on}${trimmed} 对应${where}的行`;
 }
 
 export type CheckResult = {
