@@ -1,6 +1,7 @@
 import { NotificationList } from "../../components/notification-list";
+import { pageTitle } from "../../lib/server/locale";
 
-export const metadata = { title: "通知" };
+export const generateMetadata = pageTitle("通知");
 export default function NotificationsPage() {
   return <NotificationList />;
 }

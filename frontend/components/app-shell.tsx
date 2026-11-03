@@ -12,13 +12,16 @@ import {
   type User,
 } from "../lib/auth";
 import { isRecord, requestJson } from "../lib/runs";
+import { useT } from "../lib/i18n/client";
 import { Icon } from "./icons";
+import { LocaleSwitch } from "./locale-switch";
 import { NotificationBell } from "./notification-bell";
 import { PasswordDialog } from "./password-dialog";
 import { SessionProvider, useSession } from "./session";
 import { EmptyState } from "./ui";
 
 function BackendHealth() {
+  const t = useT();
   const [healthy, setHealthy] = useState<boolean | null>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -45,7 +48,9 @@ function BackendHealth() {
       <span
         className={`dot ${healthy === null ? "" : healthy ? "green" : "amber"}`}
       />
-      服务状态：{healthy === null ? "检查中" : healthy ? "正常" : "不可用"}
+      {t("服务状态：{state}", {
+        state: t(healthy === null ? "检查中" : healthy ? "正常" : "不可用"),
+      })}
     </span>
   );
 }
@@ -124,6 +129,7 @@ function crumb(pathname: string) {
 }
 
 function Account({ user }: { user: User }) {
+  const t = useT();
   const [changing, setChanging] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -135,7 +141,7 @@ function Account({ user }: { user: User }) {
       <span className="account-name">
         <strong>{user.display_name}</strong>
         <span className="muted">
-          {user.roles.map((role) => roleLabels[role]).join("、")}
+          {user.roles.map((role) => t(roleLabels[role])).join(t("、"))}
         </span>
       </span>
       <span className="account-actions">
@@ -144,7 +150,7 @@ function Account({ user }: { user: User }) {
           className="text-button"
           onClick={() => setChanging(true)}
         >
-          修改密码
+          {t("修改密码")}
         </button>
         <button
           type="button"
@@ -160,7 +166,7 @@ function Account({ user }: { user: User }) {
             }
           }}
         >
-          {leaving ? "正在退出…" : "退出"}
+          {t(leaving ? "正在退出…" : "退出")}
         </button>
       </span>
       {changing && (
@@ -177,6 +183,7 @@ function Shell({
   children: ReactNode;
   mockEnabled: boolean;
 }) {
+  const t = useT();
   const pathname = usePathname();
   const router = useRouter();
   const { status, loaded } = useSession();
@@ -194,19 +201,19 @@ function Shell({
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
-        跳到主要内容
+        {t("跳到主要内容")}
       </a>
       <aside className="sidebar">
-        <Link className="brand" href="/" aria-label="AEP 工作台首页">
+        <Link className="brand" href="/" aria-label={t("AEP 工作台首页")}>
           <span className="brand-mark">
             <Icon name="grid" size={21} />
           </span>
           <span>
-            AEP<span className="brand-subtitle">企业 AI 应用平台</span>
+            AEP<span className="brand-subtitle">{t("企业 AI 应用平台")}</span>
           </span>
         </Link>
-        <div className="nav-label">工作台</div>
-        <nav aria-label="主导航">
+        <div className="nav-label">{t("工作台")}</div>
+        <nav aria-label={t("主导航")}>
           {NAV.filter(
             (item) =>
               // Account and record pages exist only with sign-in on.
@@ -219,7 +226,7 @@ function Shell({
               className={`nav-link ${item.active(pathname) ? "active" : ""}`}
             >
               <Icon name={item.icon} />
-              {item.label}
+              {t(item.label)}
             </Link>
           ))}
         </nav>
@@ -228,11 +235,12 @@ function Shell({
       <div className="main-shell">
         <header className="topbar">
           <span>
-            <span className="muted">工作台</span>
+            <span className="muted">{t("工作台")}</span>
             <span className="crumb-divider">/</span>
-            {crumb(pathname)}
+            {t(crumb(pathname))}
           </span>
           <span className="topbar-tools">
+            <LocaleSwitch />
             {loaded && !signedOut && <NotificationBell />}
             <BackendHealth />
           </span>
@@ -240,9 +248,9 @@ function Shell({
         {mockEnabled && (
           <div className="mock-banner">
             <span className="dot violet" />
-            本地模拟模式
+            {t("本地模拟模式")}
             <span className="mock-description">
-              运行数据仅保存在当前开发进程中，不会调用真实工作流。
+              {t("运行数据仅保存在当前开发进程中，不会调用真实工作流。")}
             </span>
           </div>
         )}
@@ -250,23 +258,25 @@ function Shell({
           {!loaded || signedOut ? (
             <div className="loading-state" role="status">
               <span className="spinner" />
-              正在加载…
+              {t("正在加载…")}
             </div>
           ) : !signIn && accountsOnly(pathname) ? (
-            <EmptyState title="没有打开登录">
-              账号和操作记录在打开登录（AEP_AUTH_ENABLED）后才有。
+            <EmptyState title={t("没有打开登录")}>
+              {t("账号和操作记录在打开登录（AEP_AUTH_ENABLED）后才有。")}
             </EmptyState>
           ) : may(needed) ? (
             children
           ) : (
-            <EmptyState title="没有权限">
-              这个页面需要{roleLabels[needed]}
-              权限。需要的话请找管理员在「账号」里给你加上。
+            <EmptyState title={t("没有权限")}>
+              {t("这个页面需要{role}权限。需要的话请找管理员在「账号」里给你加上。", {
+                role: t(roleLabels[needed]),
+              })}
             </EmptyState>
           )}
         </main>
         <footer className="footer">
-          企业 AI 应用平台<span>让每一个需求，成为可追踪的交付。</span>
+          {t("企业 AI 应用平台")}
+          <span>{t("让每一个需求，成为可追踪的交付。")}</span>
         </footer>
       </div>
     </div>

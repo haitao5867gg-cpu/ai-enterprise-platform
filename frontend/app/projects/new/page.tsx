@@ -1,6 +1,7 @@
 import { NewProject } from "../../../components/project-detail";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "新建项目" };
+export const generateMetadata = pageTitle("新建项目");
 export default function NewProjectPage() {
   return <NewProject />;
 }

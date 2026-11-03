@@ -1,6 +1,7 @@
 import { SkillDetailView } from "../../../components/skill-detail";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "Skill 内容与版本" };
+export const generateMetadata = pageTitle("Skill 内容与版本");
 export default async function SkillPage({
   params,
 }: {

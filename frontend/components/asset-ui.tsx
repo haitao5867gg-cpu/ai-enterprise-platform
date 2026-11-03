@@ -2,6 +2,7 @@
 
 import { useEffect, type ReactNode } from "react";
 import { saveActor } from "../lib/actor";
+import { useT } from "../lib/i18n/client";
 import { useSignedIn } from "./session";
 
 export function AssetHeading({
@@ -28,10 +29,11 @@ export function AssetHeading({
 }
 
 export function AssetLoading() {
+  const t = useT();
   return (
     <div className="loading-state" role="status">
       <span className="spinner" />
-      正在加载…
+      {t("正在加载…")}
     </div>
   );
 }
@@ -45,18 +47,22 @@ export function ActorField({
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
+  const t = useT();
   const me = useSignedIn();
   if (me)
     return (
       <p className="field-hint">
-        以「{me.display_name}」的身份保存，记录里会写这个名字。
+        {t("以「{name}」的身份保存，记录里会写这个名字。", {
+          name: me.display_name,
+        })}
       </p>
     );
   return (
     <label className="asset-field">
-      你的名字<span className="muted">和运行页共用，浏览器会记住</span>
+      {t("你的名字")}
+      <span className="muted">{t("和运行页共用，浏览器会记住")}</span>
       <input
-        aria-label="你的名字"
+        aria-label={t("你的名字")}
         value={actor}
         disabled={disabled}
         onChange={(event) => {
@@ -72,6 +78,7 @@ export function ActorField({
 export const UNSAVED_MESSAGE = "有未保存的修改，确定离开这个页面吗？";
 
 export function useUnsavedWarning(dirty: boolean) {
+  const t = useT();
   useEffect(() => {
     if (!dirty) return;
     function warn(event: BeforeUnloadEvent) {
@@ -94,7 +101,7 @@ export function useUnsavedWarning(dirty: boolean) {
       ) {
         return;
       }
-      if (!window.confirm(UNSAVED_MESSAGE)) {
+      if (!window.confirm(t(UNSAVED_MESSAGE))) {
         event.preventDefault();
         event.stopPropagation();
       }
@@ -105,7 +112,7 @@ export function useUnsavedWarning(dirty: boolean) {
       window.removeEventListener("beforeunload", warn);
       document.removeEventListener("click", guard, true);
     };
-  }, [dirty]);
+  }, [dirty, t]);
 }
 
 export function VersionPicker({
@@ -117,9 +124,10 @@ export function VersionPicker({
   selected: number[];
   onChange: (value: number[]) => void;
 }) {
+  const t = useT();
   return (
     <fieldset className="version-picker">
-      <legend>选择两个版本对比</legend>
+      <legend>{t("选择两个版本对比")}</legend>
       {versions.map((version) => (
         <label key={version}>
           <input

@@ -1,6 +1,7 @@
 import { KnowledgeDetail } from "../../../components/knowledge-detail";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "知识库详情" };
+export const generateMetadata = pageTitle("知识库详情");
 export default async function KnowledgePage({
   params,
 }: {

@@ -10,7 +10,9 @@ import {
   USERNAME_HINT,
 } from "../lib/auth";
 import { errorMessage } from "../lib/runs";
+import { useT } from "../lib/i18n/client";
 import { Icon } from "./icons";
+import { LocaleSwitch } from "./locale-switch";
 import { useSession } from "./session";
 import { ErrorNotice } from "./ui";
 
@@ -22,6 +24,7 @@ function safeNext(value: string | null) {
 }
 
 export function LoginPage() {
+  const t = useT();
   const id = useId();
   const params = useSearchParams();
   const next = safeNext(params.get("next"));
@@ -41,16 +44,16 @@ export function LoginPage() {
 
   const blocker = setup
     ? !USERNAME.test(username.trim().toLowerCase())
-      ? `登录名${USERNAME_HINT}`
+      ? t("登录名{hint}", { hint: t(USERNAME_HINT) })
       : !displayName.trim()
-        ? "请填显示名。"
+        ? t("请填显示名。")
         : password.length < 8
-          ? "密码至少 8 个字符。"
+          ? t("密码至少 8 个字符。")
           : password !== again
-            ? "两次填的密码不一样。"
+            ? t("两次填的密码不一样。")
             : ""
     : !username.trim() || !password
-      ? "请填登录名和密码。"
+      ? t("请填登录名和密码。")
       : "";
 
   async function submit() {
@@ -76,18 +79,22 @@ export function LoginPage() {
   return (
     <main className="login-page" id="main-content">
       <div className="login-card">
-        <div className="brand login-brand">
-          <span className="brand-mark">
-            <Icon name="grid" size={21} />
-          </span>
-          <span>
-            AEP<span className="brand-subtitle">企业 AI 应用平台</span>
-          </span>
+        <div className="login-top">
+          <div className="brand login-brand">
+            <span className="brand-mark">
+              <Icon name="grid" size={21} />
+            </span>
+            <span>
+              AEP
+              <span className="brand-subtitle">{t("企业 AI 应用平台")}</span>
+            </span>
+          </div>
+          <LocaleSwitch />
         </div>
         {!loaded ? (
           <div className="loading-state" role="status">
             <span className="spinner" />
-            正在加载…
+            {t("正在加载…")}
           </div>
         ) : (
           <form
@@ -98,14 +105,16 @@ export function LoginPage() {
               void submit();
             }}
           >
-            <h1>{setup ? "建第一个管理员" : "登录"}</h1>
+            <h1>{t(setup ? "建第一个管理员" : "登录")}</h1>
             {setup && (
               <p className="field-hint">
-                平台里还没有账号。先建一个管理员，之后在「账号」里给同事建账号、分角色。
+                {t(
+                  "平台里还没有账号。先建一个管理员，之后在「账号」里给同事建账号、分角色。",
+                )}
               </p>
             )}
             <div className="asset-field">
-              <label htmlFor={`${id}-username`}>登录名</label>
+              <label htmlFor={`${id}-username`}>{t("登录名")}</label>
               <input
                 id={`${id}-username`}
                 autoFocus
@@ -119,25 +128,25 @@ export function LoginPage() {
               />
               {setup && (
                 <p className="field-hint" id={`${id}-username-hint`}>
-                  {USERNAME_HINT}
+                  {t(USERNAME_HINT)}
                 </p>
               )}
             </div>
             {setup && (
               <div className="asset-field">
-                <label htmlFor={`${id}-name`}>显示名</label>
+                <label htmlFor={`${id}-name`}>{t("显示名")}</label>
                 <input
                   id={`${id}-name`}
                   autoComplete="name"
                   maxLength={50}
                   value={displayName}
-                  placeholder="运行和审批记录里写的名字，例如：张三"
+                  placeholder={t("运行和审批记录里写的名字，例如：张三")}
                   onChange={(event) => setDisplayName(event.target.value)}
                 />
               </div>
             )}
             <div className="asset-field">
-              <label htmlFor={`${id}-password`}>密码</label>
+              <label htmlFor={`${id}-password`}>{t("密码")}</label>
               <input
                 id={`${id}-password`}
                 type="password"
@@ -149,13 +158,13 @@ export function LoginPage() {
               />
               {setup && (
                 <p className="field-hint" id={`${id}-password-hint`}>
-                  {PASSWORD_HINT}
+                  {t(PASSWORD_HINT)}
                 </p>
               )}
             </div>
             {setup && (
               <div className="asset-field">
-                <label htmlFor={`${id}-again`}>再填一次密码</label>
+                <label htmlFor={`${id}-again`}>{t("再填一次密码")}</label>
                 <input
                   id={`${id}-again`}
                   type="password"
@@ -172,7 +181,7 @@ export function LoginPage() {
               disabled={Boolean(blocker) || busy}
               aria-describedby={blocker ? `${id}-blocker` : undefined}
             >
-              {busy ? "请稍候…" : setup ? "建管理员并登录" : "登录"}
+              {t(busy ? "请稍候…" : setup ? "建管理员并登录" : "登录")}
             </button>
             {blocker && setup && (
               <p className="field-hint" id={`${id}-blocker`}>
@@ -180,7 +189,9 @@ export function LoginPage() {
               </p>
             )}
             {!setup && (
-              <p className="field-hint">忘了密码请找管理员在「账号」里重设。</p>
+              <p className="field-hint">
+                {t("忘了密码请找管理员在「账号」里重设。")}
+              </p>
             )}
           </form>
         )}

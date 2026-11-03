@@ -1,6 +1,7 @@
 import { RunCompare } from "../../../components/run-compare";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "对比运行" };
+export const generateMetadata = pageTitle("对比运行");
 
 export default async function ComparePage({
   searchParams,
