@@ -1,5 +1,6 @@
 // GET /runs/{id}/flow: how the run's app is built and the steps this run took.
 // The contract is documented in backend/src/aep/api/runs.py.
+import { translate } from "./i18n/locale";
 import { ApiError, isRecord } from "./runs";
 
 export type NodeKind = "tool" | "model" | "human" | "code" | "terminal";
@@ -67,18 +68,32 @@ export type StepUsage = {
   cost_usd: number | null;
 };
 
-export function msText(ms: number | null | undefined): string {
+// The helpers below take `t` from useT() for the reader's language; without it they
+// return Chinese.
+type Tr = (text: string, vars?: Record<string, string | number>) => string;
+const zh: Tr = (text, vars) => translate("zh", text, vars);
+export function msText(ms: number | null | undefined, t: Tr = zh): string {
   if (ms == null) return "—";
-  if (ms < 1000) return `${ms} 毫秒`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`;
+  if (ms < 1000) return t("{ms} 毫秒", { ms });
+  if (ms < 60_000) return t("{s} 秒", { s: (ms / 1000).toFixed(1) });
   const seconds = Math.round(ms / 1000);
-  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  return t("{m} 分 {s} 秒", { m: Math.floor(seconds / 60), s: seconds % 60 });
 }
-export function tokensText(usage: StepUsage | null | undefined): string {
-  if (!usage) return "没有模型调用";
+export function tokensText(
+  usage: StepUsage | null | undefined,
+  t: Tr = zh,
+): string {
+  if (!usage) return t("没有模型调用");
   const total = usage.prompt_tokens + usage.completion_tokens;
   const cost = usage.cost_usd == null ? "" : ` · $${usage.cost_usd.toFixed(4)}`;
-  return `${usage.calls} 次调用 · ${total.toLocaleString("en-US")} tokens（输入 ${usage.prompt_tokens.toLocaleString("en-US")} / 输出 ${usage.completion_tokens.toLocaleString("en-US")}）${cost}`;
+  return (
+    t("{calls} 次调用 · {total} tokens（输入 {input} / 输出 {output}）", {
+      calls: usage.calls,
+      total: total.toLocaleString("en-US"),
+      input: usage.prompt_tokens.toLocaleString("en-US"),
+      output: usage.completion_tokens.toLocaleString("en-US"),
+    }) + cost
+  );
 }
 
 export type Flow = {

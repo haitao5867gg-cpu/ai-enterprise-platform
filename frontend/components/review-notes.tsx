@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import {
   createContext,
   useContext,
@@ -58,6 +59,7 @@ export function NotesScope({
 }
 
 export function NoteButton({ item, label }: { item: string; label: string }) {
+  const t = useT();
   const scope = useContext(NotesContext);
   const id = useId();
   const [draft, setDraft] = useState<string | null>(null);
@@ -68,13 +70,13 @@ export function NoteButton({ item, label }: { item: string; label: string }) {
     return (
       <span className="note-editor">
         <label htmlFor={id} className="sr-only">
-          对「{label}」的意见
+          {t("对「{label}」的意见", { label })}
         </label>
         <textarea
           id={id}
           rows={2}
           maxLength={MAX_NOTE_LENGTH}
-          placeholder={`「${label}」哪里不对，应该怎样…`}
+          placeholder={t("「{label}」哪里不对，应该怎样…", { label })}
           value={draft}
           autoFocus
           disabled={scope.disabled}
@@ -93,14 +95,14 @@ export function NoteButton({ item, label }: { item: string; label: string }) {
               setDraft(null);
             }}
           >
-            挂上意见
+            {t("挂上意见")}
           </button>
           <button
             type="button"
             className="text-button"
             onClick={() => setDraft(null)}
           >
-            取消
+            {t("取消")}
           </button>
         </span>
       </span>
@@ -109,26 +111,26 @@ export function NoteButton({ item, label }: { item: string; label: string }) {
     return (
       <span className="note-attached">
         <span className="note-text">
-          <span className="note-tag">意见</span>
+          <span className="note-tag">{t("意见")}</span>
           {note.text}
         </span>
         <button
           type="button"
           className="text-button"
-          aria-label={`修改对「${label}」的意见`}
+          aria-label={t("修改对「{label}」的意见", { label })}
           disabled={scope.disabled}
           onClick={() => setDraft(note.text)}
         >
-          修改
+          {t("修改")}
         </button>
         <button
           type="button"
           className="text-button"
-          aria-label={`删除对「${label}」的意见`}
+          aria-label={t("删除对「{label}」的意见", { label })}
           disabled={scope.disabled}
           onClick={() => scope.remove(item)}
         >
-          删除
+          {t("删除")}
         </button>
       </span>
     );
@@ -136,12 +138,12 @@ export function NoteButton({ item, label }: { item: string; label: string }) {
     <button
       type="button"
       className="note-button"
-      aria-label={`这里不对：${label}`}
-      title={full ? `最多挂 ${MAX_NOTES} 条意见` : undefined}
+      aria-label={t("这里不对：{label}", { label })}
+      title={full ? t("最多挂 {MAX_NOTES} 条意见", { MAX_NOTES }) : undefined}
       disabled={scope.disabled || full}
       onClick={() => setDraft("")}
     >
-      这里不对
+      {t("这里不对")}
     </button>
   );
 }
@@ -156,10 +158,11 @@ export function NoteList({
   onRemove: (item: string) => void;
   disabled: boolean;
 }) {
+  const t = useT();
   if (!notes.length) return null;
   return (
-    <div className="note-list" aria-label="挂的意见">
-      <p>挂了 {notes.length} 条意见</p>
+    <div className="note-list" aria-label={t("挂的意见")}>
+      <p>{t("挂了 {n} 条意见", { n: notes.length })}</p>
       <ul>
         {notes.map((note) => (
           <li key={note.item}>
@@ -168,11 +171,11 @@ export function NoteList({
             <button
               type="button"
               className="text-button"
-              aria-label={`删除对「${note.label}」的意见`}
+              aria-label={t("删除对「{label}」的意见", { label: note.label })}
               disabled={disabled}
               onClick={() => onRemove(note.item)}
             >
-              删除
+              {t("删除")}
             </button>
           </li>
         ))}

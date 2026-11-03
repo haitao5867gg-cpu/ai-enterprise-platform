@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -24,20 +25,21 @@ function JsonBlock({ value }: { value: unknown }) {
 }
 
 function AgentSteps({ output }: { output: unknown }) {
+  const t = useT();
   if (!isRecord(output) || !Array.isArray(output.steps)) return null;
   return (
-    <ol className="agent-steps" aria-label="智能体步骤">
+    <ol className="agent-steps" aria-label={t("智能体步骤")}>
       {output.steps.filter(isRecord).map((step, i) => (
         <li key={i}>
           {step.tool === "search_knowledge" ? (
             <>
-              检索知识库：
-              {isRecord(step.args)
-                ? String(step.args.query ?? "")
-                : ""}（命中 {typeof step.hits === "number" ? step.hits : 0} 条）
+              {t("检索知识库：{query}（命中 {n} 条）", {
+                query: isRecord(step.args) ? String(step.args.query ?? "") : "",
+                n: typeof step.hits === "number" ? step.hits : 0,
+              })}
             </>
           ) : (
-            String(step.tool ?? "工具调用")
+            String(step.tool ?? t("工具调用"))
           )}
           {Boolean(step.error) && (
             <p className="flow-error">{String(step.error)}</p>
@@ -68,20 +70,21 @@ const DEV_KEY = "aep.developerView";
 // Rerun the source run from this node, on the app's draft or the run's own configuration
 // (docs/api/evals.md, "从某一步重跑").
 function RerunFrom({ runId, node }: { runId: string; node: FlowNode }) {
+  const t = useT();
   const router = useRouter();
   const [config, setConfig] = useState<"draft" | "same">("draft");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
-    <div className="rerun-from" role="group" aria-label="从这一步重跑">
+    <div className="rerun-from" role="group" aria-label={t("从这一步重跑")}>
       <select
-        aria-label="用哪份配置重跑"
+        aria-label={t("用哪份配置重跑")}
         value={config}
         disabled={busy}
         onChange={(e) => setConfig(e.target.value as "draft" | "same")}
       >
-        <option value="draft">用应用的草稿</option>
-        <option value="same">用这次运行的配置</option>
+        <option value="draft">{t("用应用的草稿")}</option>
+        <option value="same">{t("用这次运行的配置")}</option>
       </select>
       <button
         type="button"
@@ -99,10 +102,12 @@ function RerunFrom({ runId, node }: { runId: string; node: FlowNode }) {
           }
         }}
       >
-        {busy ? "正在创建…" : "从这一步重跑"}
+        {busy ? t("正在创建…") : t("从这一步重跑")}
       </button>
       <small className="muted">
-        新运行带着这一步之前的全部状态，从「{node.title}」开始往下跑。
+        {t("新运行带着这一步之前的全部状态，从「{title}」开始往下跑。", {
+          title: node.title,
+        })}
       </small>
       {error && (
         <p className="field-error" role="alert">
@@ -129,12 +134,13 @@ function NodeDetail({
   // The run to rerun from this node, when the person may.
   rerunOf: string | null;
 }) {
+  const t = useT();
   const runs = steps.filter((step) => step.node === node.id);
   const step = runs.find((s) => s.id === stepId) ?? runs[runs.length - 1];
   return (
     <div
       className="flow-detail"
-      aria-label={`节点 ${node.title}`}
+      aria-label={t("节点 {title}", { title: node.title })}
       role="region"
     >
       {node.kind === "terminal" ? (
@@ -143,23 +149,23 @@ function NodeDetail({
           <NodeNote note={node.design?.note} />
           <p className="flow-summary">
             {node.id === "__start__"
-              ? "运行从这里开始，带着创建运行时填的输入。"
-              : "运行到这里结束，最终结果见运行结果。"}
+              ? t("运行从这里开始，带着创建运行时填的输入。")
+              : t("运行到这里结束，最终结果见运行结果。")}
           </p>
         </>
       ) : (
         <>
           <FlowNodeDesign node={node} />
-          <h4>本次运行</h4>
+          <h4>{t("本次运行")}</h4>
           {runs.length === 0 ? (
-            <p className="muted flow-note">这次运行没有走到这个节点。</p>
+            <p className="muted flow-note">{t("这次运行没有走到这个节点。")}</p>
           ) : (
             <>
               {runs.length > 1 && (
                 <div
                   className="flow-attempts"
                   role="group"
-                  aria-label="执行次数"
+                  aria-label={t("执行次数")}
                 >
                   {runs.map((run, i) => (
                     <button
@@ -169,7 +175,10 @@ function NodeDetail({
                       aria-pressed={run.id === step?.id}
                       onClick={() => onStep(run.id)}
                     >
-                      第 {i + 1} 次 · {stepLabels[run.status]}
+                      {t("第 {n} 次 · {status}", {
+                        n: i + 1,
+                        status: t(stepLabels[run.status]),
+                      })}
                     </button>
                   ))}
                 </div>
@@ -178,20 +187,22 @@ function NodeDetail({
                 <div className="flow-step">
                   <p className="flow-note">
                     <span className={`flow-status ${step.status}`}>
-                      {stepLabels[step.status]}
+                      {t(stepLabels[step.status])}
                     </span>
                     {step.started_at && (
-                      <span>开始于 {timeOf(step.started_at)}</span>
+                      <span>
+                        {t("开始于 {time}", { time: timeOf(step.started_at) })}
+                      </span>
                     )}
                   </p>
                   {developer && (
                     <p className="flow-note step-usage">
-                      耗时 {msText(step.duration_ms)}
+                      {t("耗时 {time}", { time: msText(step.duration_ms, t) })}
                       {step.duration_ms != null &&
                         !step.finished_at &&
-                        "（还没结束）"}
+                        t("（还没结束）")}
                       {" · "}
-                      {tokensText(step.usage)}
+                      {tokensText(step.usage, t)}
                     </p>
                   )}
                   {developer &&
@@ -202,18 +213,20 @@ function NodeDetail({
                     )}
                   {askedPrompt(step.interrupt) && (
                     <p className="flow-asked">
-                      等待处理：{askedPrompt(step.interrupt)}
+                      {t("等待处理：{prompt}", {
+                        prompt: askedPrompt(step.interrupt) ?? "",
+                      })}
                     </p>
                   )}
                   {step.error && <p className="flow-error">{step.error}</p>}
                   {node.type === "agent" && <AgentSteps output={step.output} />}
                   <details open>
-                    <summary>输出（这一步写回的内容）</summary>
+                    <summary>{t("输出（这一步写回的内容）")}</summary>
                     {step.output == null ? (
                       <p className="muted flow-note">
                         {step.status === "waiting"
-                          ? "等人做出决定后才有输出。"
-                          : "还没有输出。"}
+                          ? t("等人做出决定后才有输出。")
+                          : t("还没有输出。")}
                       </p>
                     ) : (
                       <>
@@ -243,7 +256,7 @@ function NodeDetail({
                     )}
                   </details>
                   <details>
-                    <summary>输入（这一步开始时看到的状态）</summary>
+                    <summary>{t("输入（这一步开始时看到的状态）")}</summary>
                     <JsonBlock value={step.input} />
                   </details>
                 </div>
@@ -280,12 +293,17 @@ function nodeOutput(output: unknown, node: string): unknown {
 
 // The run an app node started (docs/api/flow-apps.md, "app 调用应用").
 function AppCallOutput({ output }: { output: unknown }) {
+  const t = useT();
   if (!isRecord(output) || typeof output.run_id !== "string") return null;
   return (
-    <div className="release-output passed" role="group" aria-label="调用的运行">
-      <p>被调用的运行已完成。</p>
+    <div
+      className="release-output passed"
+      role="group"
+      aria-label={t("调用的运行")}
+    >
+      <p>{t("被调用的运行已完成。")}</p>
       <Link href={`/runs/${encodeURIComponent(output.run_id)}`}>
-        查看被调用的运行
+        {t("查看被调用的运行")}
       </Link>
     </div>
   );
@@ -293,19 +311,24 @@ function AppCallOutput({ output }: { output: unknown }) {
 
 // The pull request a 提交 PR step opened or updated (docs/api/git.md).
 function PullRequestOutput({ output }: { output: unknown }) {
+  const t = useT();
   if (!isRecord(output) || typeof output.url !== "string") return null;
   // The address comes from the connector: only a web link is made a link.
   const url = /^https?:\/\//i.test(output.url) ? output.url : null;
   const changed = Array.isArray(output.changed) ? output.changed.length : 0;
   return (
-    <div className="release-output passed" role="group" aria-label="提交的 PR">
+    <div
+      className="release-output passed"
+      role="group"
+      aria-label={t("提交的 PR")}
+    >
       <p>
-        {typeof output.summary === "string" ? output.summary : "已提交 PR"}
-        {changed ? `（改动 ${changed} 个文件）` : ""}
+        {typeof output.summary === "string" ? output.summary : t("已提交 PR")}
+        {changed ? t("（改动 {changed} 个文件）", { changed }) : ""}
       </p>
       {url && (
         <a href={url} target="_blank" rel="noreferrer">
-          打开 PR #{String(output.number)} ↗
+          {t("打开 PR #{n} ↗", { n: String(output.number) })}
         </a>
       )}
     </div>
@@ -315,18 +338,19 @@ function PullRequestOutput({ output }: { output: unknown }) {
 // What a release did (docs/api/data-nodes.md, "databricks_release"): the job and its
 // schedule, or why nothing was released.
 function ReleaseOutput({ output }: { output: unknown }) {
+  const t = useT();
   if (!isRecord(output) || typeof output.summary !== "string") return null;
   const url = typeof output.url === "string" ? output.url : null;
   return (
     <div
       className={`release-output ${output.ok === true ? "passed" : "failed"}`}
       role="group"
-      aria-label="上线结果"
+      aria-label={t("上线结果")}
     >
       <p>{output.summary}</p>
       {url && (
         <a href={url} target="_blank" rel="noreferrer">
-          在 Databricks 上打开 Job ↗
+          {t("在 Databricks 上打开 Job ↗")}
         </a>
       )}
     </div>
@@ -348,6 +372,7 @@ export function RunFlow({
   rerun?: boolean;
   traceUrl?: string | null;
 }) {
+  const t = useT();
   const [developer, setDeveloper] = useState(false);
   const [other, setOther] = useState("");
   useEffect(() => {
@@ -413,23 +438,24 @@ export function RunFlow({
   if (missing && !flow) return null;
   if (!flow) {
     return (
-      <section className="panel run-flow" aria-label="工作流程">
+      <section className="panel run-flow" aria-label={t("工作流程")}>
         {error ? (
           // The flow only explains the run; failing to load it must not look like the run failed.
           <p className="panel-padding muted flow-note">
-            暂时无法加载工作流程：{error}
+            {t("暂时无法加载工作流程：{error}", { error })}
             <button
               type="button"
               className="text-button"
               onClick={() => setRetry((v) => v + 1)}
             >
-              重新加载流程
+              {t("重新加载流程")}
             </button>
           </p>
         ) : (
           <div className="loading-state" role="status">
             <span className="spinner" />
-            正在加载工作流程…
+
+            {t("正在加载工作流程…")}
           </div>
         )}
       </section>
@@ -466,10 +492,14 @@ export function RunFlow({
       <div className="section-heading">
         <h2 id="run-flow-title">
           <Icon name="grid" />
-          工作流程
+
+          {t("工作流程")}
         </h2>
         <span className="muted">
-          {flow.nodes.length - 2} 个节点 · 本次走了 {steps.length} 步
+          {t("{nodes} 个节点 · 本次走了 {steps} 步", {
+            nodes: flow.nodes.length - 2,
+            steps: steps.length,
+          })}
         </span>
         <label className="developer-toggle">
           <input
@@ -477,24 +507,27 @@ export function RunFlow({
             checked={developer}
             onChange={(e) => toggle(e.target.checked)}
           />
-          开发者视图
+
+          {t("开发者视图")}
         </label>
       </div>
       {developer && (
-        <div className="developer-bar" aria-label="开发者视图">
+        <div className="developer-bar" aria-label={t("开发者视图")}>
           <span>
-            合计耗时{" "}
-            {msText(
-              steps.some((s) => s.duration_ms != null)
-                ? steps.reduce((sum, s) => sum + (s.duration_ms ?? 0), 0)
-                : null,
-            )}
+            {t("合计耗时 {time}", {
+              time: msText(
+                steps.some((s) => s.duration_ms != null)
+                  ? steps.reduce((sum, s) => sum + (s.duration_ms ?? 0), 0)
+                  : null,
+                t,
+              ),
+            })}
             {" · "}
-            {tokensText(totalUsage(steps))}
+            {tokensText(totalUsage(steps), t)}
           </span>
           {traceUrl && (
             <a target="_blank" rel="noopener noreferrer" href={traceUrl}>
-              在 Langfuse 中看每次模型调用 ↗
+              {t("在 Langfuse 中看每次模型调用 ↗")}
             </a>
           )}
           <form
@@ -502,8 +535,8 @@ export function RunFlow({
             onSubmit={(event) => event.preventDefault()}
           >
             <input
-              aria-label="要对比的运行编号"
-              placeholder="另一次运行的编号"
+              aria-label={t("要对比的运行编号")}
+              placeholder={t("另一次运行的编号")}
               value={other}
               onChange={(e) => setOther(e.target.value.trim())}
             />
@@ -512,11 +545,11 @@ export function RunFlow({
                 className="button secondary"
                 href={`/runs/compare?a=${encodeURIComponent(runId)}&b=${encodeURIComponent(other)}`}
               >
-                对比两次运行
+                {t("对比两次运行")}
               </Link>
             ) : (
               <button className="button secondary" type="button" disabled>
-                对比两次运行
+                {t("对比两次运行")}
               </button>
             )}
           </form>
@@ -534,8 +567,8 @@ export function RunFlow({
             <dl>
               {(
                 [
-                  ["运行方式", flow.design.pattern],
-                  ["知识库", flow.design.knowledge],
+                  [t("运行方式"), flow.design.pattern],
+                  [t("知识库"), flow.design.knowledge],
                   ["Skill", flow.design.skills],
                 ] as const
               )
@@ -551,7 +584,7 @@ export function RunFlow({
         </div>
       )}
       {steps.length > 0 && (
-        <ol className="flow-path" aria-label="本次运行的步骤">
+        <ol className="flow-path" aria-label={t("本次运行的步骤")}>
           {steps.map((step, i) => {
             const node = flow.nodes.find((n) => n.id === step.node);
             return (

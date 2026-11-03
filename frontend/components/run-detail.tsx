@@ -1,34 +1,43 @@
 "use client";
 
+import { useLocale, useT } from "../lib/i18n/client";
+import {
+  durationParts,
+  failureText,
+  formatTime,
+  messageTime,
+  policyText,
+  runTitle,
+  stepText,
+  timeAgo,
+  triggerText,
+  versionLabel,
+} from "../lib/i18n/format";
 import Link from "next/link";
-import { CitationScope, CitedMarkdown, SourceList } from "./citations";
+import {
+  CitationScope,
+  CitedMarkdown,
+  REVEAL,
+  SourceList,
+} from "./citations";
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   ApiError,
   answersChanged,
   questionsFor,
   cancelRun,
-  messageTime,
-  durationText,
   errorMessage,
-  failureText,
   fieldErrors,
-  formatTime,
   isFinished,
   isRecord,
   jsonObject,
-  policyText,
   retryRun,
   readReceipt,
   readRun,
   requestJson,
-  runTitle,
-  stepText,
-  timeAgo,
-  versionLabel,
   type Decision,
   type Run,
-  triggerText,
 } from "../lib/runs";
 import { Icon } from "./icons";
 import { paramText } from "../lib/projects";
@@ -66,19 +75,20 @@ import {
 import { NoteList, NotesScope, type Note } from "./review-notes";
 import { EtlResultView } from "./etl-result";
 import { readChanges, StepChanges } from "./step-changes";
-import { isV2Result, readAnswer } from "../lib/etl-v2";
+import { isV2Result } from "../lib/etl-v2";
 
 // What a person typed is shown as typed; replies are Markdown with [n]
 // citations. A reply that is one JSON object is folded away: LLM nodes with JSON
 // output used to add them, and so did text nodes asked for JSON before they
 // could be quiet (such as plan and codegen in older runs and apps).
 function MessageContent({ role, content }: { role: string; content: string }) {
+  const t = useT();
   if (role === "user") return <p className="message-content">{content}</p>;
   const data = jsonObject(content);
   if (data)
     return (
       <details className="message-content message-data">
-        <summary>模型返回的结构化数据</summary>
+        <summary>{t("模型返回的结构化数据")}</summary>
         <pre>{JSON.stringify(data, null, 2)}</pre>
       </details>
     );
@@ -92,7 +102,8 @@ function MessageContent({ role, content }: { role: string; content: string }) {
 // The result's own texts (its top-level strings) are read as Markdown; the
 // whole result, structured parts included, is in the developer view.
 function ResultView({ result }: { result: unknown }) {
-  if (result == null) return <p>应用已完成本次运行。</p>;
+  const t = useT();
+  if (result == null) return <p>{t("应用已完成本次运行。")}</p>;
   if (typeof result === "string") return <CitedMarkdown text={result} />;
   const texts = isRecord(result)
     ? Object.entries(result).filter(
@@ -114,15 +125,67 @@ function ResultView({ result }: { result: unknown }) {
             (value) =>
               value == null || (typeof value === "string" && !value.trim()),
           )
-            ? "应用已完成本次运行，没有产出结果。"
-            : "应用已完成本次运行，结果在下面的开发者视图里。"}
+            ? t("应用已完成本次运行，没有产出结果。")
+            : t("应用已完成本次运行，结果在下面的开发者视图里。")}
         </p>
       )}
       <details className="developer-view">
-        <summary>开发者视图</summary>
+        <summary>{t("开发者视图")}</summary>
         <pre className="result-json">{JSON.stringify(result, null, 2)}</pre>
       </details>
     </>
+  );
+}
+
+const MISMATCH = "服务返回的运行编号不匹配，请重试。";
+
+type RunTab = "main" | "process" | "details";
+
+function RunTabs({
+  tabs,
+  tab,
+  onChange,
+}: {
+  tabs: [RunTab, string][];
+  tab: RunTab;
+  onChange: (tab: RunTab) => void;
+}) {
+  const t = useT();
+  return (
+    <div
+      className="filter-tabs run-tabs"
+      role="tablist"
+      aria-label={t("运行详情")}
+    >
+      {tabs.map(([key, label], i) => (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          id={`run-tab-${key}`}
+          aria-selected={tab === key}
+          aria-controls={`run-panel-${key}`}
+          className={tab === key ? "selected" : ""}
+          tabIndex={tab === key ? 0 : -1}
+          onClick={() => onChange(key)}
+          onKeyDown={(event) => {
+            const step =
+              event.key === "ArrowRight"
+                ? 1
+                : event.key === "ArrowLeft"
+                  ? -1
+                  : 0;
+            if (!step) return;
+            event.preventDefault();
+            const [next] = tabs[(i + step + tabs.length) % tabs.length];
+            onChange(next);
+            document.getElementById(`run-tab-${next}`)?.focus();
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -133,6 +196,8 @@ export function RunDetail({
   id: string;
   langfuseTraceBaseUrl: string | null;
 }) {
+  const t = useT();
+  const { locale } = useLocale();
   const [run, setRun] = useState<Run | null>(null);
   const [now, setNow] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -159,6 +224,12 @@ export function RunDetail({
   // Whether the run process is open, once someone opened or closed it (the
   // page is keyed by the run, so another run starts afresh).
   const [historyOpen, setHistoryOpen] = useState<boolean | null>(null);
+  // The tab someone picked holds while the run stays in the same status; when the run
+  // moves on (say, it now waits for a person), the page opens on what is new.
+  const [tabChoice, setTabChoice] = useState<{
+    status: string;
+    tab: RunTab;
+  } | null>(null);
   const historyRef = useRef<HTMLDetailsElement>(null);
   const pollAbort = useRef<AbortController | null>(null);
   const mutationAbort = useRef<AbortController | null>(null);
@@ -173,6 +244,21 @@ export function RunDetail({
   const confirmOpen = confirmingCancel && Boolean(run?.actions?.cancel);
 
   useEffect(() => () => mutationAbort.current?.abort(), []);
+  // A citation whose source is on a tab not shown (say, under 过程 while the page shows
+  // 待处理) asks for that tab; it is shown at once so the source can take focus.
+  const status = run?.status ?? "";
+  useEffect(() => {
+    const reveal = (event: Event) => {
+      const panel = (event.target as Element).closest?.(
+        '[role="tabpanel"][id^="run-panel-"]',
+      );
+      if (!(panel instanceof HTMLElement) || !panel.hidden) return;
+      const tab = panel.id.slice("run-panel-".length) as RunTab;
+      flushSync(() => setTabChoice({ status, tab }));
+    };
+    document.addEventListener(REVEAL, reveal);
+    return () => document.removeEventListener(REVEAL, reveal);
+  }, [status]);
 
   // The confirmation opens on its safe choice.
   useEffect(() => {
@@ -216,8 +302,7 @@ export function RunDetail({
           }),
         );
         if (controller.signal.aborted) return;
-        if (value.run_id !== id)
-          throw new ApiError("服务返回的运行编号不匹配，请重试。");
+        if (value.run_id !== id) throw new ApiError(MISMATCH);
         if (controlsHoldFocus()) refocus.current = true;
         // 运行过程 does not fold away under someone reading in it.
         const history = historyRef.current;
@@ -289,7 +374,7 @@ export function RunDetail({
     // unless sign-in is on and the API takes the signed-in name.
     const nameless = !me && !actor.trim();
     if (nameless) {
-      setActorError("先填你的名字再提交，记录里会写是谁处理的。");
+      setActorError(t("先填你的名字再提交，记录里会写是谁处理的。"));
       actorInput.current?.focus();
     }
     if (nameless || Object.keys(issues).length) return;
@@ -335,7 +420,7 @@ export function RunDetail({
       );
       if (controller.signal.aborted) return;
       if (receipt.run_id !== id)
-        throw new ApiError("服务返回的运行编号不匹配，请刷新核对。");
+        throw new ApiError(t("服务返回的运行编号不匹配，请刷新核对。"));
       setComment("");
       setValues({});
       setValueErrors({});
@@ -355,8 +440,8 @@ export function RunDetail({
         setMutationError(
           err instanceof ApiError &&
             err.status === 409 &&
-            err.message.includes("内容已经更新")
-            ? "内容已经更新：已重新载入，请看过最新的内容再处理。"
+            err.message.includes(t("内容已经更新"))
+            ? t("内容已经更新：已重新载入，请看过最新的内容再处理。")
             : errorMessage(err),
         );
         setValueErrors(fieldErrors(err, "values"));
@@ -390,7 +475,7 @@ export function RunDetail({
           : await retryRun(id, who, controller.signal);
       if (controller.signal.aborted) return;
       if (receipt.run_id !== id)
-        throw new ApiError("服务返回的运行编号不匹配，请刷新核对。");
+        throw new ApiError(t("服务返回的运行编号不匹配，请刷新核对。"));
       setConfirmingCancel(false);
       // Until the run is read again, offer only what fits its new status.
       setRun((previous) =>
@@ -513,12 +598,12 @@ export function RunDetail({
     run?.pending?.option_labels?.[option] ??
     (option === "approve"
       ? release
-        ? "确认上线"
-        : "确认"
+        ? t("确认上线")
+        : t("确认")
       : option === "reject"
-        ? "驳回"
+        ? t("驳回")
         : option === "submit"
-          ? "提交"
+          ? t("提交")
           : option);
   const humanShow =
     run?.status === "waiting" &&
@@ -542,38 +627,61 @@ export function RunDetail({
     (run?.status === "done" && run.result != null)
   );
   const showHistory = historyOpen ?? historyDefault;
+  // 待处理 while it waits for a person, 结果 once done (it says so when there is no
+  // result); a run that is running, failed or cancelled opens on 过程, where it shows
+  // how far it got.
+  const resultTab = run?.status === "done";
+  const tabs: [RunTab, string][] = [
+    ...(run?.status === "waiting"
+      ? [["main", t("待处理")] as [RunTab, string]]
+      : resultTab
+        ? [["main", t("结果")] as [RunTab, string]]
+        : []),
+    ["process", t("过程")],
+    ["details", t("详情")],
+  ];
+  const tab: RunTab =
+    tabChoice &&
+    tabChoice.status === run?.status &&
+    tabs.some(([key]) => key === tabChoice.tab)
+      ? tabChoice.tab
+      : tabs[0][0];
+  const chooseTab = (next: RunTab) =>
+    setTabChoice({ status: run?.status ?? "", tab: next });
   const stateText =
     run?.status === "running"
-      ? "应用正在运行，消息将自动更新"
+      ? t("应用正在运行，消息将自动更新")
       : run?.status === "waiting"
-        ? "应用已暂停，等待人工确认"
+        ? t("应用已暂停，等待人工确认")
         : run?.status === "done"
-          ? "本次运行已结束"
+          ? t("本次运行已结束")
           : run?.status === "cancelled"
-            ? "本次运行已取消"
-            : "本次运行失败";
+            ? t("本次运行已取消")
+            : t("本次运行失败");
   return (
     <CitationScope sources={run?.sources ?? []}>
       <Link className="back-link" href="/">
         <Icon name="back" size={16} />
-        返回运行记录
+
+        {t("返回运行记录")}
       </Link>
       <div className="page-heading detail-heading">
         <div>
           <h1 ref={title} tabIndex={-1}>
             <span className="detail-title">
-              {run ? runTitle(run) : "运行详情"}
+              {run ? runTitle(t, run) : t("运行详情")}
             </span>
             {run && <StatusBadge run={run} />}
           </h1>
           {run && (
             <p className="detail-meta">
               {[
-                run.created_by && `${run.created_by} 提出`,
-                run.trigger && triggerText(run.trigger),
-                run.created_at && timeAgo(run.created_at, now),
-                durationText(run, now),
-                [run.app_title || run.app, versionLabel(run)]
+                run.created_by &&
+                  t("{created_by} 提出", { created_by: run.created_by }),
+                run.trigger && triggerText(t, run.trigger),
+                run.created_at && timeAgo(locale, run.created_at, now),
+                durationParts(t, run, now).join(" · "),
+                [run.app_title || run.app, versionLabel(t, run)]
                   .filter(Boolean)
                   .join(" "),
               ]
@@ -593,7 +701,8 @@ export function RunDetail({
               onClick={() => setConfirmingCancel(true)}
             >
               <Icon name="close" size={15} />
-              取消运行
+
+              {t("取消运行")}
             </button>
           )}
           {run?.actions?.retry && (
@@ -605,12 +714,15 @@ export function RunDetail({
               {acting === "retry" ? (
                 <>
                   <span className="spinner" />
-                  正在重试…
+
+                  {t("正在重试…")}
                 </>
               ) : (
                 <>
                   <Icon name="refresh" size={15} />
-                  {run.failed?.title ? `从「${run.failed.title}」重试` : "重试"}
+                  {run.failed?.title
+                    ? t("从「{title}」重试", { title: run.failed.title })
+                    : t("重试")}
                 </>
               )}
             </button>
@@ -620,12 +732,13 @@ export function RunDetail({
               className="button secondary"
               href={`/runs/new?from=${encodeURIComponent(id)}`}
             >
-              复制并重新发起
+              {t("复制并重新发起")}
             </Link>
           )}
           <Link className="button secondary" href="/runs/new">
             <Icon name="plus" size={16} />
-            新建运行
+
+            {t("新建运行")}
           </Link>
         </div>
       </div>
@@ -641,10 +754,11 @@ export function RunDetail({
             if (event.key === "Escape" && acting === null) closeConfirm();
           }}
         >
-          <h2 id="cancel-title">取消这次运行？</h2>
+          <h2 id="cancel-title">{t("取消这次运行？")}</h2>
           <p id="cancel-description">
-            取消后这次运行不能再继续，只能复制后重新发起。已经写进开发环境的表会保留，正在
-            Databricks 上运行的作业也不会被停下。
+            {t(
+              "取消后这次运行不能再继续，只能复制后重新发起。已经写进开发环境的表会保留，正在 Databricks 上运行的作业也不会被停下。",
+            )}
           </p>
           <div className="cancel-confirm-actions">
             <button
@@ -655,10 +769,11 @@ export function RunDetail({
               {acting === "cancel" ? (
                 <>
                   <span className="spinner" />
-                  正在取消…
+
+                  {t("正在取消…")}
                 </>
               ) : (
-                "确定取消"
+                t("确定取消")
               )}
             </button>
             <button
@@ -667,7 +782,7 @@ export function RunDetail({
               disabled={acting !== null}
               onClick={closeConfirm}
             >
-              不取消
+              {t("不取消")}
             </button>
           </div>
         </section>
@@ -675,117 +790,553 @@ export function RunDetail({
       {actionError && <ErrorNotice message={actionError} />}
       {error && (
         <ErrorNotice
-          message={error}
+          message={error === MISMATCH ? t(MISMATCH) : error}
           onRetry={() => setRevision((value) => value + 1)}
         />
       )}
       {loading ? (
         <div className="panel loading-state" role="status">
           <span className="spinner" />
-          正在加载运行详情…
+
+          {t("正在加载运行详情…")}
         </div>
       ) : (
         run && (
-          <div className="detail-grid">
-            <div className="run-main">
-              <StepChanges changes={stepChanges} />
-              {planReview && (
-                <NotesScope
-                  notes={notes}
-                  onChange={setNotes}
-                  disabled={controlsDisabled}
-                >
-                  <EtlPlanReview
-                    review={planReview}
-                    title={run.step?.title ?? "确认方案"}
-                    round={round}
-                    questions={questions}
-                    values={values}
-                    onChange={(next) => {
-                      setValues(next);
-                      setValueErrors({});
-                    }}
-                    errors={valueErrors}
-                    disabled={controlsDisabled}
-                  />
-                </NotesScope>
-              )}
-              {devReview && (
-                <NotesScope
-                  notes={notes}
-                  onChange={setNotes}
-                  disabled={controlsDisabled}
-                >
-                  <EtlDevReview
-                    review={devReview}
-                    title={run.step?.title ?? "审核试算结果"}
-                    round={round}
-                    runId={id}
-                  />
-                </NotesScope>
-              )}
-              {v2Result && (
-                <EtlResultView
-                  run={run}
-                  result={v2Result}
-                  traceUrl={
-                    langfuseTraceBaseUrl && run.trace_id
-                      ? `${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`
-                      : null
-                  }
-                />
-              )}
-              {humanShow && !viewShown && (
-                <section
-                  className="panel human-show-panel"
-                  aria-labelledby="human-show-title"
-                >
-                  <h2 id="human-show-title">
-                    {run.step?.title ?? "待确认的内容"}
-                  </h2>
-                  <div className="human-show">
-                    <CitedMarkdown text={humanShow} breaks />
+          <>
+            <RunTabs tabs={tabs} tab={tab} onChange={chooseTab} />
+            {mutationError && <ErrorNotice message={mutationError} />}
+            <div
+              className="run-tab-panel"
+              role="tabpanel"
+              id="run-panel-main"
+              aria-labelledby="run-tab-main"
+              hidden={tab !== "main"}
+            >
+              {run.status === "waiting" ? (
+                <div className="detail-grid">
+                  <div className="run-main">
+                    <StepChanges changes={stepChanges} />
+                    {planReview && (
+                      <NotesScope
+                        notes={notes}
+                        onChange={setNotes}
+                        disabled={controlsDisabled}
+                      >
+                        <EtlPlanReview
+                          review={planReview}
+                          title={run.step?.title ?? t("确认方案")}
+                          round={round}
+                          questions={questions}
+                          values={values}
+                          onChange={(next) => {
+                            setValues(next);
+                            setValueErrors({});
+                          }}
+                          errors={valueErrors}
+                          disabled={controlsDisabled}
+                        />
+                      </NotesScope>
+                    )}
+                    {devReview && (
+                      <NotesScope
+                        notes={notes}
+                        onChange={setNotes}
+                        disabled={controlsDisabled}
+                      >
+                        <EtlDevReview
+                          review={devReview}
+                          title={run.step?.title ?? t("审核试算结果")}
+                          round={round}
+                          runId={id}
+                        />
+                      </NotesScope>
+                    )}
+                    {humanShow && !viewShown && (
+                      <section
+                        className="panel human-show-panel"
+                        aria-labelledby="human-show-title"
+                      >
+                        <h2 id="human-show-title">
+                          {run.step?.title ?? t("待确认的内容")}
+                        </h2>
+                        <div className="human-show">
+                          <CitedMarkdown text={humanShow} breaks />
+                        </div>
+                        {/* On a narrow screen the decision comes after the whole page. */}
+                        <a className="jump-to-decision" href="#approval">
+                          {run.pending?.kind === "form"
+                            ? t("去填写")
+                            : t("去确认")}
+                          <Icon name="arrow" size={14} />
+                        </a>
+                      </section>
+                    )}
+                    {plan && <EtlPlanView plan={plan} />}
+                    {release && <EtlReleaseView request={release} />}
+                    {/* The earlier decisions are read with the one asked now. */}
+                    {release && etlResult && <EtlTrail result={etlResult} />}
+                    {release && etlResult && (
+                      <GeneratedFiles result={etlResult} runId={id} />
+                    )}
                   </div>
-                  {/* On a narrow screen the decision comes after the whole page. */}
-                  <a className="jump-to-decision" href="#approval">
-                    {run.pending?.kind === "form" ? "去填写" : "去确认"}
-                    <Icon name="arrow" size={14} />
-                  </a>
+                  {/* The decision stays in view while the content beside it is read. */}
+                  <aside className="run-sidebar run-decision">
+                    {run.status === "waiting" && (
+                      <section
+                        id="approval"
+                        className="approval-card"
+                        aria-labelledby="approval-title"
+                      >
+                        <span className="approval-icon">
+                          <Icon name="alert" size={20} />
+                        </span>
+                        <h2 id="approval-title">
+                          {run.pending?.kind === "form"
+                            ? t("需要你填写")
+                            : t("需要你的确认")}
+                        </h2>
+                        {run.pending ? (
+                          <>
+                            <p className="message-content">
+                              {run.pending.prompt}
+                            </p>
+                            {run.pending.kind === "form" && (
+                              <InputFields
+                                key={String(humanDetails?.node ?? "form")}
+                                fields={run.pending.fields ?? []}
+                                values={{
+                                  ...initialValues(run.pending.fields ?? []),
+                                  ...values,
+                                }}
+                                onChange={(next) => {
+                                  setValues(next);
+                                  setValueErrors({});
+                                }}
+                                errors={valueErrors}
+                                disabled={controlsDisabled}
+                                prefix="human"
+                              />
+                            )}
+                            {approvalBlocked && (
+                              <p className="datasource-note warn" role="note">
+                                {t(
+                                  "这一步要审批者确认。你可以看内容，但不能提交；需要的话请找管理员给你加上审批者角色。",
+                                )}
+                              </p>
+                            )}
+                            {me ? (
+                              <p className="field-hint">
+                                {t(
+                                  "以「{name}」的身份处理，记录里会写这个名字。",
+                                  { name: me.display_name },
+                                )}
+                              </p>
+                            ) : (
+                              <>
+                                <label htmlFor="approval-actor">
+                                  {t("你的名字")}
+                                  <span className="muted">
+                                    {t("（必填，浏览器会记住）")}
+                                  </span>
+                                </label>
+                                <input
+                                  id="approval-actor"
+                                  ref={actorInput}
+                                  autoComplete="name"
+                                  value={actor}
+                                  maxLength={80}
+                                  aria-required
+                                  aria-invalid={Boolean(actorError)}
+                                  aria-describedby={
+                                    actorError
+                                      ? "approval-actor-error"
+                                      : undefined
+                                  }
+                                  onChange={(e) => {
+                                    setActor(e.target.value);
+                                    setActorError("");
+                                    saveActor(e.target.value.trim());
+                                  }}
+                                  disabled={controlsDisabled}
+                                />
+                                {actorError && (
+                                  <p
+                                    className="field-error"
+                                    id="approval-actor-error"
+                                    role="alert"
+                                  >
+                                    {actorError}
+                                  </p>
+                                )}
+                              </>
+                            )}
+                            {dropped.length > 0 && (
+                              <div className="dropped-questions" role="note">
+                                <p>{t("没有问的题")}</p>
+                                <ul>
+                                  {dropped.map((item, i) => (
+                                    <li key={i}>
+                                      {typeof item.index === "number"
+                                        ? typeof item.key === "string"
+                                          ? t("第 {n} 题（{key}）：", {
+                                              n: item.index + 1,
+                                              key: item.key,
+                                            })
+                                          : t("第 {n} 题：", {
+                                              n: item.index + 1,
+                                            })
+                                        : ""}
+                                      {String(item.problem ?? "")}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {planReview && questions.length > 0 && (
+                              <p
+                                className={
+                                  unanswered && Object.keys(valueErrors).length
+                                    ? "field-error"
+                                    : "field-hint"
+                                }
+                                role={
+                                  unanswered && Object.keys(valueErrors).length
+                                    ? "alert"
+                                    : undefined
+                                }
+                              >
+                                {unanswered
+                                  ? t("还有 {unanswered} 题没答，", {
+                                      unanswered,
+                                    })
+                                  : t("{length} 题都答了，", {
+                                      length: questions.length,
+                                    })}
+                                <a href="#questions">{t("去看问题")}</a>
+                              </p>
+                            )}
+                            {viewShown && (
+                              <NoteList
+                                notes={notes}
+                                onRemove={(item) =>
+                                  setNotes(
+                                    notes.filter((note) => note.item !== item),
+                                  )
+                                }
+                                disabled={controlsDisabled}
+                              />
+                            )}
+                            {!planReview && questions.length > 0 && (
+                              <ApprovalQuestions
+                                key={`${String(humanDetails?.node)}-${String(humanDetails?.round)}`}
+                                questions={questions}
+                                values={values}
+                                onChange={(next) => {
+                                  setValues(next);
+                                  setValueErrors({});
+                                }}
+                                errors={valueErrors}
+                                disabled={controlsDisabled}
+                                optionLabel={optionLabel}
+                              />
+                            )}
+                            {run.pending.kind !== "form" && (
+                              <>
+                                <label htmlFor="rejection-comment">
+                                  {humanDetails &&
+                                  !run.pending.options.includes("reject")
+                                    ? t("意见")
+                                    : t("修改意见")}
+                                  <span className="muted">
+                                    {humanDetails
+                                      ? requiredOptions.length
+                                        ? t("（选{options}时必填{also}）", {
+                                            options: requiredOptions
+                                              .filter((option) =>
+                                                run.pending!.options.includes(
+                                                  option,
+                                                ),
+                                              )
+                                              .map((option) =>
+                                                t("「{option}」", {
+                                                  option: optionLabel(option),
+                                                }),
+                                              )
+                                              .join(""),
+                                            also:
+                                              questions.length && viewShown
+                                                ? t("，改了答案、挂了意见也算")
+                                                : questions.length
+                                                  ? t("，改了答案也算")
+                                                  : viewShown
+                                                    ? t("，挂了意见也算")
+                                                    : "",
+                                          })
+                                        : t("（选填）")
+                                      : commentRequired
+                                        ? t("（驳回时必填）")
+                                        : requiredOptions.length
+                                          ? t("（部分操作必填）")
+                                          : t("（选填）")}
+                                  </span>
+                                </label>
+                                <textarea
+                                  id="rejection-comment"
+                                  rows={3}
+                                  placeholder={t("说明需要调整的地方…")}
+                                  value={comment}
+                                  onChange={(e) => setComment(e.target.value)}
+                                  disabled={controlsDisabled}
+                                />
+                              </>
+                            )}
+                            {turning && turnTo && (
+                              <p className="turn-hint" role="status">
+                                {t(
+                                  "你改了建议的答案或写了意见，会按「{option}」处理。要按原样继续，把答案改回建议、清空意见。",
+                                  { option: optionLabel(turnTo) },
+                                )}
+                              </p>
+                            )}
+                            <div className="approval-actions">
+                              {(run.pending.option_labels ||
+                              run.pending.kind === "form"
+                                ? run.pending.options
+                                : ["approve", "reject"]
+                              )
+                                .filter(
+                                  (option) =>
+                                    !turning ||
+                                    option === turnTo ||
+                                    requiredOptions.includes(option),
+                                )
+                                .map((option) => {
+                                  const stops =
+                                    option === "reject" || option === "stop";
+                                  // A step's own options: the one that needs a remark is
+                                  // not the main one, unless an answer or remark made it so.
+                                  const tone = stops
+                                    ? "reject"
+                                    : turning
+                                      ? option === turnTo
+                                        ? "primary"
+                                        : "secondary"
+                                      : humanDetails &&
+                                          requiredOptions.includes(option)
+                                        ? "secondary"
+                                        : "primary";
+                                  return (
+                                    <button
+                                      key={option}
+                                      type="button"
+                                      className={`button ${tone}`}
+                                      disabled={
+                                        controlsDisabled ||
+                                        !run.pending!.options.includes(
+                                          option,
+                                        ) ||
+                                        (requiredOptions.includes(option) &&
+                                          !remarked &&
+                                          !answered)
+                                      }
+                                      onClick={() => void resume(option)}
+                                    >
+                                      {submitting === option ? (
+                                        <>
+                                          <span className="spinner" />
+
+                                          {t("提交中…")}
+                                        </>
+                                      ) : (
+                                        <>
+                                          {stops ? (
+                                            <Icon name="close" size={16} />
+                                          ) : (
+                                            <Icon name="check" size={16} />
+                                          )}
+                                          {optionLabel(option)}
+                                        </>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                            </div>
+                            {rechecking && (
+                              <p className="field-hint" role="status">
+                                {t("正在核对最新运行状态…")}
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p>{t("应用正在准备确认内容，请稍候…")}</p>
+                        )}
+                      </section>
+                    )}
+                  </aside>
+                </div>
+              ) : resultTab ? (
+                <div className="run-result-stack">
+                  {v2Result && (
+                    <EtlResultView
+                      run={run}
+                      result={v2Result}
+                      traceUrl={
+                        langfuseTraceBaseUrl && run.trace_id
+                          ? `${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`
+                          : null
+                      }
+                    />
+                  )}
+                  {/* The ETL result names its own outcome: no second card for it. */}
+                  {!v2Result && !hasReport && (
+                    <section
+                      className="panel result-card"
+                      aria-labelledby="result-title"
+                    >
+                      <span
+                        className={`result-icon ${failedResult ? "failed" : ""}`}
+                      >
+                        <Icon
+                          name={failedResult ? "alert" : "check"}
+                          size={20}
+                        />
+                      </span>
+                      <h2 id="result-title">{t("运行结果")}</h2>
+                      {etlResult ? (
+                        <p>
+                          {etlResult.release?.status === "deployed"
+                            ? t("已上线到 prod（{catalog}.{schema}）。", {
+                                catalog: etlResult.release.catalog,
+                                schema: etlResult.release.schema,
+                              })
+                            : etlResult.release?.status === "failed"
+                              ? t(
+                                  "审批已通过，但上线 prod 失败，请查看主区域列出的报错。",
+                                )
+                              : !etlResult.checks.passed
+                                ? t(
+                                    "代码检查未通过，请查看并处理主区域列出的问题。",
+                                  )
+                                : etlResult.verification?.status === "failed"
+                                  ? t(
+                                      "代码已生成，但 Databricks dev 试跑未通过，请查看主区域列出的报错。",
+                                    )
+                                  : etlResult.verification?.status === "passed"
+                                    ? t(
+                                        "已生成 {length} 个文件，并在 Databricks dev 目标上试跑通过。",
+                                        {
+                                          length: Object.keys(etlResult.files)
+                                            .length,
+                                        },
+                                      )
+                                    : t(
+                                        "已生成 {length} 个文件，可查看代码或下载 ZIP。",
+                                        {
+                                          length: Object.keys(etlResult.files)
+                                            .length,
+                                        },
+                                      )}
+                        </p>
+                      ) : (
+                        <ResultView result={run.result} />
+                      )}
+                      <SourceList />
+                    </section>
+                  )}
+                  {hasReport && (
+                    <section
+                      className="panel result-card run-report"
+                      aria-labelledby="result-title"
+                    >
+                      <span className="result-icon">
+                        <Icon name="check" size={20} />
+                      </span>
+                      <h2 id="result-title">{t("运行结果")}</h2>
+                      <ResultView result={run.result} />
+                      <SourceList />
+                    </section>
+                  )}
+                  {/* Where it went live and its PR are part of what the run came to. */}
+                  {etlResult && <EtlTrail result={etlResult} />}
+                  {resultPlan && <EtlPlanView plan={resultPlan} asResult />}
+                  {etlResult && (
+                    <GeneratedFiles result={etlResult} runId={id} />
+                  )}
+                  <RunFeedbackPanel
+                    key={run.feedback?.mine?.at ?? "none"}
+                    run={run}
+                    onChange={(feedback) =>
+                      setRun((now) => (now ? { ...now, feedback } : now))
+                    }
+                  />
+                </div>
+              ) : null}
+            </div>
+            <div
+              className="run-tab-panel run-process"
+              role="tabpanel"
+              id="run-panel-process"
+              aria-labelledby="run-tab-process"
+              hidden={tab !== "process"}
+            >
+              {run.status === "error" && (
+                <section className="panel failure-card">
+                  <h2>{t("运行失败")}</h2>
+                  {run.failed && <p>{failureText(t, run.failed)}</p>}
+                  <p className="message-content failure-detail">
+                    {run.error || t("应用未提供错误详情。")}
+                  </p>
+                  {run.actions?.rerun !== false && (
+                    <Link
+                      className="text-button"
+                      href={
+                        run.actions
+                          ? `/runs/new?from=${encodeURIComponent(id)}`
+                          : "/runs/new"
+                      }
+                    >
+                      {run.actions ? t("复制并重新发起") : t("重新发起")}
+                      <Icon name="arrow" size={14} />
+                    </Link>
+                  )}
                 </section>
               )}
-              {plan && <EtlPlanView plan={plan} />}
-              {release && <EtlReleaseView request={release} />}
-              {etlResult && <EtlTrail result={etlResult} />}
-              {etlResult && <GeneratedFiles result={etlResult} runId={id} />}
-              <RunManual runId={id} />
-              {/* A delivered or stopped ETL run keeps it in its developer view. */}
-              {!v2Result && (
-                <RunFlow
-                  runId={id}
-                  version={`${run.status}:${run.messages.length}`}
-                  live={run.status === "running"}
-                  rerun={mayBuild && Array.isArray(run.inputs)}
-                  traceUrl={
-                    langfuseTraceBaseUrl && run.trace_id
-                      ? `${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`
-                      : null
-                  }
-                />
-              )}
-              {resultPlan && <EtlPlanView plan={resultPlan} asResult />}
-              {run.status === "done" && hasReport && (
-                <section
-                  className="panel result-card run-report"
-                  aria-labelledby="result-title"
-                >
-                  <span className="result-icon">
-                    <Icon name="check" size={20} />
-                  </span>
-                  <h2 id="result-title">运行结果</h2>
-                  <ResultView result={run.result} />
-                  <SourceList />
+              {run.status === "cancelled" && (
+                <section className="panel failure-card cancelled-card">
+                  <h2>{t("已取消")}</h2>
+                  <p>
+                    {run.cancelled_by
+                      ? t("{cancelled_by} 取消了这次运行", {
+                          cancelled_by: run.cancelled_by,
+                        })
+                      : t("这次运行已取消")}
+                    {run.error
+                      ? t("，原因：{error}", { error: run.error })
+                      : ""}
+                    {t("。已经写进开发环境的表会保留。")}
+                  </p>
+                  {run.actions?.rerun && (
+                    <Link
+                      className="text-button"
+                      href={`/runs/new?from=${encodeURIComponent(id)}`}
+                    >
+                      {t("复制并重新发起")}
+                      <Icon name="arrow" size={14} />
+                    </Link>
+                  )}
                 </section>
               )}
+              <RunFlow
+                runId={id}
+                version={`${run.status}:${run.messages.length}`}
+                live={run.status === "running"}
+                rerun={mayBuild && Array.isArray(run.inputs)}
+                traceUrl={
+                  langfuseTraceBaseUrl && run.trace_id
+                    ? `${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`
+                    : null
+                }
+              />
               <details
                 ref={historyRef}
                 className="conversation-history"
@@ -805,18 +1356,19 @@ export function RunDetail({
                 >
                   <h2>
                     <Icon name="runs" />
-                    运行过程
+
+                    {t("运行过程")}
                     <span className="muted">
                       {" "}
-                      · {run.messages.length} 条消息
+                      · {t("{n} 条消息", { n: run.messages.length })}
                     </span>
                   </h2>
                 </summary>
                 <section
                   className="panel conversation-panel"
-                  aria-label="运行过程"
+                  aria-label={t("运行过程")}
                 >
-                  <ol className="messages" aria-label="消息记录">
+                  <ol className="messages" aria-label={t("消息记录")}>
                     {run.messages.map((message, index) => {
                       // A person is named by who they said they are; a step
                       // of the app by its title.
@@ -829,7 +1381,7 @@ export function RunDetail({
                           (!message.node && index === 0
                             ? run.created_by?.trim()
                             : "") ||
-                          "未署名"
+                          t("未署名")
                         : message.node_title || run.app_title || run.app;
                       const step = fromPerson ? message.node_title : null;
                       return (
@@ -853,9 +1405,10 @@ export function RunDetail({
                               {message.at && (
                                 <time
                                   dateTime={message.at}
-                                  title={formatTime(message.at)}
+                                  title={formatTime(locale, message.at)}
                                 >
                                   {messageTime(
+                                    locale,
                                     message.at,
                                     run.messages[index - 1]?.at,
                                   )}
@@ -875,7 +1428,9 @@ export function RunDetail({
                     })}
                   </ol>
                   {run.messages.length === 0 && (
-                    <p className="panel-padding muted">应用暂未返回消息。</p>
+                    <p className="panel-padding muted">
+                      {t("应用暂未返回消息。")}
+                    </p>
                   )}
                   {/* Until the result card shows them, [n] in replies point here. */}
                   {run.status !== "done" && run.sources?.length ? (
@@ -899,17 +1454,19 @@ export function RunDetail({
                   </div>
                 </section>
               </details>
-              {/* Heard even while 运行过程 is closed. */}
-              <p className="sr-only" role="status">
-                {stateText}
-              </p>
             </div>
-            <aside className="run-sidebar">
+            <div
+              className="run-tab-panel run-details"
+              role="tabpanel"
+              id="run-panel-details"
+              aria-labelledby="run-tab-details"
+              hidden={tab !== "details"}
+            >
               <div className="panel run-info">
-                <h2>运行信息</h2>
+                <h2>{t("运行信息")}</h2>
                 <dl>
                   <div>
-                    <dt>应用</dt>
+                    <dt>{t("应用#字段")}</dt>
                     <dd>
                       <span className="app-tag">
                         <Icon name="spark" size={14} />
@@ -918,48 +1475,48 @@ export function RunDetail({
                     </dd>
                   </div>
                   <div>
-                    <dt>应用版本</dt>
+                    <dt>{t("应用版本")}</dt>
                     <dd>
                       {run.draft
-                        ? "试运行（未发布版本）"
+                        ? t("试运行（未发布版本）")
                         : run.app_version
                           ? `v${run.app_version}`
                           : "—"}
                     </dd>
                   </div>
                   <div>
-                    <dt>当前状态</dt>
+                    <dt>{t("当前状态")}</dt>
                     <dd>
                       <StatusBadge run={run} />
-                      {stepText(run) && (
-                        <span className="run-step">{stepText(run)}</span>
+                      {stepText(t, run) && (
+                        <span className="run-step">{stepText(t, run)}</span>
                       )}
                     </dd>
                   </div>
                   <div>
-                    <dt>提出人</dt>
+                    <dt>{t("提出人")}</dt>
                     <dd>{run.created_by || "—"}</dd>
                   </div>
                   {run.trigger && (
                     <div>
-                      <dt>发起方式</dt>
+                      <dt>{t("发起方式")}</dt>
                       <dd>
                         {run.trigger.kind === "app" ? (
                           <Link
                             className="text-button"
                             href={`/runs/${encodeURIComponent(run.trigger.run_id)}`}
                           >
-                            {triggerText(run.trigger)}
+                            {triggerText(t, run.trigger)}
                           </Link>
                         ) : (
-                          triggerText(run.trigger)
+                          triggerText(t, run.trigger)
                         )}
                       </dd>
                     </div>
                   )}
                   {run.project && (
                     <div>
-                      <dt>项目</dt>
+                      <dt>{t("项目")}</dt>
                       <dd>
                         <Link
                           className="text-button"
@@ -968,7 +1525,9 @@ export function RunDetail({
                           {run.project.name}
                         </Link>
                         <span className="run-step">
-                          环境：{run.project.environment_label}
+                          {t("环境：{env}", {
+                            env: run.project.environment_label,
+                          })}
                         </span>
                       </dd>
                     </div>
@@ -976,7 +1535,7 @@ export function RunDetail({
                   {run.project &&
                     Object.keys(run.project.params).length > 0 && (
                       <div>
-                        <dt>运行参数</dt>
+                        <dt>{t("运行参数")}</dt>
                         <dd className="run-params">
                           {Object.entries(run.project.params).map(
                             ([key, value]) => (
@@ -989,46 +1548,48 @@ export function RunDetail({
                         </dd>
                       </div>
                     )}
-                  {policyText(run.policy, run.project) && (
+                  {policyText(t, run.policy, run.project) && (
                     <div>
-                      <dt>发给模型的数据</dt>
-                      <dd>{policyText(run.policy, run.project)}</dd>
+                      <dt>{t("发给模型的数据")}</dt>
+                      <dd>{policyText(t, run.policy, run.project)}</dd>
                     </div>
                   )}
                   {run.start_at && (
                     <div>
-                      <dt>重跑自</dt>
+                      <dt>{t("重跑自")}</dt>
                       <dd>
                         <Link
                           className="text-button"
                           href={`/runs/${encodeURIComponent(run.start_at.run_id)}`}
                         >
-                          原运行的「{run.start_at.title}」这一步
+                          {t("原运行的「{title}」这一步", {
+                            title: run.start_at.title,
+                          })}
                         </Link>
                       </dd>
                     </div>
                   )}
                   {run.rerun_of && !run.start_at && (
                     <div>
-                      <dt>复制自</dt>
+                      <dt>{t("复制自")}</dt>
                       <dd>
                         <Link
                           className="text-button"
                           href={`/runs/${encodeURIComponent(run.rerun_of)}`}
                         >
-                          查看原运行
+                          {t("查看原运行")}
                         </Link>
                       </dd>
                     </div>
                   )}
                   {run.created_at && (
                     <div>
-                      <dt>提交时间</dt>
-                      <dd>{formatTime(run.created_at)}</dd>
+                      <dt>{t("提交时间")}</dt>
+                      <dd>{formatTime(locale, run.created_at)}</dd>
                     </div>
                   )}
                   <div>
-                    <dt>运行编号</dt>
+                    <dt>{t("运行编号")}</dt>
                     <dd className="monospace">{run.run_id}</dd>
                   </div>
                 </dl>
@@ -1039,372 +1600,34 @@ export function RunDetail({
                     rel="noopener noreferrer"
                     href={`${langfuseTraceBaseUrl}${encodeURIComponent(run.trace_id)}`}
                   >
-                    在 Langfuse 中查看
+                    {t("在 Langfuse 中查看")}
                     <Icon name="arrow" size={14} />
                   </a>
                 )}
               </div>
-              {run.status === "waiting" && (
-                <section
-                  id="approval"
-                  className="approval-card"
-                  aria-labelledby="approval-title"
-                >
-                  <span className="approval-icon">
-                    <Icon name="alert" size={20} />
-                  </span>
-                  <h2 id="approval-title">
-                    {run.pending?.kind === "form"
-                      ? "需要你填写"
-                      : "需要你的确认"}
-                  </h2>
-                  {run.pending ? (
-                    <>
-                      <p className="message-content">{run.pending.prompt}</p>
-                      {run.pending.kind === "form" && (
-                        <InputFields
-                          key={String(humanDetails?.node ?? "form")}
-                          fields={run.pending.fields ?? []}
-                          values={{
-                            ...initialValues(run.pending.fields ?? []),
-                            ...values,
-                          }}
-                          onChange={(next) => {
-                            setValues(next);
-                            setValueErrors({});
-                          }}
-                          errors={valueErrors}
-                          disabled={controlsDisabled}
-                          prefix="human"
-                        />
-                      )}
-                      {approvalBlocked && (
-                        <p className="datasource-note warn" role="note">
-                          这一步要审批者确认。你可以看内容，但不能提交；需要的话请找管理员给你加上审批者角色。
-                        </p>
-                      )}
-                      {me ? (
-                        <p className="field-hint">
-                          以「{me.display_name}
-                          」的身份处理，记录里会写这个名字。
-                        </p>
-                      ) : (
-                        <>
-                          <label htmlFor="approval-actor">
-                            你的名字
-                            <span className="muted">
-                              （必填，浏览器会记住）
-                            </span>
-                          </label>
-                          <input
-                            id="approval-actor"
-                            ref={actorInput}
-                            autoComplete="name"
-                            value={actor}
-                            maxLength={80}
-                            aria-required
-                            aria-invalid={Boolean(actorError)}
-                            aria-describedby={
-                              actorError ? "approval-actor-error" : undefined
-                            }
-                            onChange={(e) => {
-                              setActor(e.target.value);
-                              setActorError("");
-                              saveActor(e.target.value.trim());
-                            }}
-                            disabled={controlsDisabled}
-                          />
-                          {actorError && (
-                            <p
-                              className="field-error"
-                              id="approval-actor-error"
-                              role="alert"
-                            >
-                              {actorError}
-                            </p>
-                          )}
-                        </>
-                      )}
-                      {dropped.length > 0 && (
-                        <div className="dropped-questions" role="note">
-                          <p>没有问的题</p>
-                          <ul>
-                            {dropped.map((item, i) => (
-                              <li key={i}>
-                                {typeof item.index === "number"
-                                  ? `第 ${item.index + 1} 题${
-                                      typeof item.key === "string"
-                                        ? `（${item.key}）`
-                                        : ""
-                                    }：`
-                                  : ""}
-                                {String(item.problem ?? "")}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {planReview && questions.length > 0 && (
-                        <p
-                          className={
-                            unanswered && Object.keys(valueErrors).length
-                              ? "field-error"
-                              : "field-hint"
-                          }
-                          role={
-                            unanswered && Object.keys(valueErrors).length
-                              ? "alert"
-                              : undefined
-                          }
-                        >
-                          {unanswered
-                            ? `还有 ${unanswered} 题没答，`
-                            : `${questions.length} 题都答了，`}
-                          <a href="#questions">去看问题</a>
-                        </p>
-                      )}
-                      {viewShown && (
-                        <NoteList
-                          notes={notes}
-                          onRemove={(item) =>
-                            setNotes(notes.filter((note) => note.item !== item))
-                          }
-                          disabled={controlsDisabled}
-                        />
-                      )}
-                      {!planReview && questions.length > 0 && (
-                        <ApprovalQuestions
-                          key={`${String(humanDetails?.node)}-${String(humanDetails?.round)}`}
-                          questions={questions}
-                          values={values}
-                          onChange={(next) => {
-                            setValues(next);
-                            setValueErrors({});
-                          }}
-                          errors={valueErrors}
-                          disabled={controlsDisabled}
-                          optionLabel={optionLabel}
-                        />
-                      )}
-                      {run.pending.kind !== "form" && (
-                        <>
-                          <label htmlFor="rejection-comment">
-                            {humanDetails &&
-                            !run.pending.options.includes("reject")
-                              ? "意见"
-                              : "修改意见"}
-                            <span className="muted">
-                              {humanDetails
-                                ? requiredOptions.length
-                                  ? `（选${requiredOptions
-                                      .filter((option) =>
-                                        run.pending!.options.includes(option),
-                                      )
-                                      .map(
-                                        (option) =>
-                                          `「${optionLabel(option)}」`,
-                                      )
-                                      .join("")}时必填${
-                                      questions.length && viewShown
-                                        ? "，改了答案、挂了意见也算"
-                                        : questions.length
-                                          ? "，改了答案也算"
-                                          : viewShown
-                                            ? "，挂了意见也算"
-                                            : ""
-                                    }）`
-                                  : "（选填）"
-                                : commentRequired
-                                  ? "（驳回时必填）"
-                                  : requiredOptions.length
-                                    ? "（部分操作必填）"
-                                    : "（选填）"}
-                            </span>
-                          </label>
-                          <textarea
-                            id="rejection-comment"
-                            rows={3}
-                            placeholder="说明需要调整的地方…"
-                            value={comment}
-                            onChange={(e) => setComment(e.target.value)}
-                            disabled={controlsDisabled}
-                          />
-                        </>
-                      )}
-                      {turning && turnTo && (
-                        <p className="turn-hint" role="status">
-                          你改了建议的答案或写了意见，会按「
-                          {optionLabel(turnTo)}
-                          」处理。要按原样继续，把答案改回建议、清空意见。
-                        </p>
-                      )}
-                      <div className="approval-actions">
-                        {(run.pending.option_labels ||
-                        run.pending.kind === "form"
-                          ? run.pending.options
-                          : ["approve", "reject"]
-                        )
-                          .filter(
-                            (option) =>
-                              !turning ||
-                              option === turnTo ||
-                              requiredOptions.includes(option),
-                          )
-                          .map((option) => {
-                            const stops =
-                              option === "reject" || option === "stop";
-                            // A step's own options: the one that needs a remark is
-                            // not the main one, unless an answer or remark made it so.
-                            const tone = stops
-                              ? "reject"
-                              : turning
-                                ? option === turnTo
-                                  ? "primary"
-                                  : "secondary"
-                                : humanDetails &&
-                                    requiredOptions.includes(option)
-                                  ? "secondary"
-                                  : "primary";
-                            return (
-                              <button
-                                key={option}
-                                type="button"
-                                className={`button ${tone}`}
-                                disabled={
-                                  controlsDisabled ||
-                                  !run.pending!.options.includes(option) ||
-                                  (requiredOptions.includes(option) &&
-                                    !remarked &&
-                                    !answered)
-                                }
-                                onClick={() => void resume(option)}
-                              >
-                                {submitting === option ? (
-                                  <>
-                                    <span className="spinner" />
-                                    提交中…
-                                  </>
-                                ) : (
-                                  <>
-                                    {stops ? (
-                                      <Icon name="close" size={16} />
-                                    ) : (
-                                      <Icon name="check" size={16} />
-                                    )}
-                                    {optionLabel(option)}
-                                  </>
-                                )}
-                              </button>
-                            );
-                          })}
-                      </div>
-                      {rechecking && (
-                        <p className="field-hint" role="status">
-                          正在核对最新运行状态…
-                        </p>
-                      )}
-                    </>
-                  ) : (
-                    <p>应用正在准备确认内容，请稍候…</p>
-                  )}
-                </section>
+              <RunManual runId={id} />
+              {!resultTab && (
+                <RunFeedbackPanel
+                  key={run.feedback?.mine?.at ?? "none"}
+                  run={run}
+                  onChange={(feedback) =>
+                    setRun((now) => (now ? { ...now, feedback } : now))
+                  }
+                />
               )}
-              {mutationError && <ErrorNotice message={mutationError} />}
-              {run.status === "done" && !hasReport && (
-                <section
-                  className="panel result-card"
-                  aria-labelledby="result-title"
-                >
-                  <span
-                    className={`result-icon ${failedResult ? "failed" : ""}`}
-                  >
-                    <Icon name={failedResult ? "alert" : "check"} size={20} />
-                  </span>
-                  <h2 id="result-title">运行结果</h2>
-                  {v2Result ? (
-                    <p>
-                      {run.outcome === "stopped"
-                        ? `已终止：${typeof v2Result.reason === "string" && v2Result.reason ? v2Result.reason : "没有写明原因"}`
-                        : `已交付。${readAnswer(v2Result.answer)?.conclusion ?? ""}`}
-                    </p>
-                  ) : etlResult ? (
-                    <p>
-                      {etlResult.release?.status === "deployed"
-                        ? `已上线到 prod（${etlResult.release.catalog}.${etlResult.release.schema}）。`
-                        : etlResult.release?.status === "failed"
-                          ? "审批已通过，但上线 prod 失败，请查看主区域列出的报错。"
-                          : !etlResult.checks.passed
-                            ? "代码检查未通过，请查看并处理主区域列出的问题。"
-                            : etlResult.verification?.status === "failed"
-                              ? "代码已生成，但 Databricks dev 试跑未通过，请查看主区域列出的报错。"
-                              : etlResult.verification?.status === "passed"
-                                ? `已生成 ${Object.keys(etlResult.files).length} 个文件，并在 Databricks dev 目标上试跑通过。`
-                                : `已生成 ${Object.keys(etlResult.files).length} 个文件，可查看代码或下载 ZIP。`}
-                    </p>
-                  ) : (
-                    <ResultView result={run.result} />
-                  )}
-                  <SourceList />
-                </section>
-              )}
-              {run.status === "error" && (
-                <section className="panel failure-card">
-                  <h2>运行失败</h2>
-                  {run.failed && <p>{failureText(run.failed)}</p>}
-                  <p className="message-content failure-detail">
-                    {run.error || "应用未提供错误详情。"}
-                  </p>
-                  {run.actions?.rerun !== false && (
-                    <Link
-                      className="text-button"
-                      href={
-                        run.actions
-                          ? `/runs/new?from=${encodeURIComponent(id)}`
-                          : "/runs/new"
-                      }
-                    >
-                      {run.actions ? "复制并重新发起" : "重新发起"}
-                      <Icon name="arrow" size={14} />
-                    </Link>
-                  )}
-                </section>
-              )}
-              <RunFeedbackPanel
-                key={run.feedback?.mine?.at ?? "none"}
-                run={run}
-                onChange={(feedback) =>
-                  setRun((now) => (now ? { ...now, feedback } : now))
-                }
-              />
-              {run.status === "cancelled" && (
-                <section className="panel failure-card cancelled-card">
-                  <h2>已取消</h2>
-                  <p>
-                    {run.cancelled_by
-                      ? `${run.cancelled_by} 取消了这次运行`
-                      : "这次运行已取消"}
-                    {run.error ? `，原因：${run.error}` : ""}
-                    。已经写进开发环境的表会保留。
-                  </p>
-                  {run.actions?.rerun && (
-                    <Link
-                      className="text-button"
-                      href={`/runs/new?from=${encodeURIComponent(id)}`}
-                    >
-                      复制并重新发起
-                      <Icon name="arrow" size={14} />
-                    </Link>
-                  )}
-                </section>
-              )}
-              {!isFinished(run.status) && (
-                <p className="detail-note">
-                  <Icon name="refresh" size={14} />
-                  运行期间每 2 秒自动更新
-                </p>
-              )}
-            </aside>
-          </div>
+            </div>
+            {/* Heard even while 运行过程 is closed. */}
+            <p className="sr-only" role="status">
+              {stateText}
+            </p>
+            {!isFinished(run.status) && (
+              <p className="detail-note">
+                <Icon name="refresh" size={14} />
+
+                {t("运行期间每 2 秒自动更新")}
+              </p>
+            )}
+          </>
         )
       )}
     </CitationScope>

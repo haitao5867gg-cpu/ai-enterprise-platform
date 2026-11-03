@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { runTab } from "./run-page";
 
 test("ETL flow view: design, path, current node and each step's input and output", async ({
   page,
@@ -12,6 +13,7 @@ test("ETL flow view: design, path, current node and each step's input and output
   });
   const { run_id: id } = await created.json();
   await page.goto(`/runs/${id}`);
+  await runTab(page, "过程");
 
   const flow = page.getByRole("region", { name: "工作流程" });
   await expect(flow).toContainText("固定流程的工作流");
@@ -44,16 +46,27 @@ test("ETL flow view: design, path, current node and each step's input and output
     "orders_clean",
   );
 
+  // The decision is made under 待处理; once the run waits again, back to 过程.
+  await runTab(page, "待处理");
   await page.getByLabel("你的名字").fill("李四");
   await page.getByLabel("修改意见").fill("改成全量");
   await page.getByRole("button", { name: "驳回", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "ETL 方案", exact: true }),
+  ).toContainText("已根据意见调整");
+  await runTab(page, "过程");
   await expect(path.getByRole("button")).toHaveCount(5);
   await expect(
     chart.getByRole("button", { name: /^出方案.*执行 2 次/ }),
   ).toBeVisible();
   await expect(chart.locator(".flow-edge.on")).toHaveCount(4);
 
+  await runTab(page, "待处理");
   await page.getByRole("button", { name: "确认", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "上线审批", exact: true }),
+  ).toBeVisible();
+  await runTab(page, "过程");
   await expect(path.getByRole("button")).toHaveText([
     "1. 探查数据",
     "2. 出方案",
@@ -86,7 +99,10 @@ test("ETL flow view: design, path, current node and each step's input and output
     flow.getByRole("region", { name: "节点 上线 prod" }),
   ).toContainText("这次运行没有走到这个节点");
 
+  await runTab(page, "待处理");
   await page.getByRole("button", { name: "确认上线", exact: true }).click();
+  await runTab(page, "结果");
+  await runTab(page, "过程");
   await expect(path.getByRole("button")).toHaveCount(11);
   await expect(path.getByRole("button").last()).toHaveText("11. 上线 prod");
   await expect(chart.locator(".flow-node.current")).toHaveCount(0);

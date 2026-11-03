@@ -4,6 +4,7 @@ import {
   type APIRequestContext,
   type Page,
 } from "@playwright/test";
+import { runTab } from "./run-page";
 import type { AppDetail, FlowConfig } from "../lib/apps";
 
 // docs/api/flow-apps.md, "app 调用应用": one flow app calls another as a step.
@@ -102,6 +103,7 @@ test("an app node is set up in the editor and its run links the called run", asy
     )
     .toBe("done");
   await page.goto(`/runs/${run_id}`);
+  await runTab(page, "过程");
   await page.getByText(/^运行过程 · \d+ 条消息$/).click();
   await expect(
     page.getByText(/调用「查订单」：运行 \w{8} 已完成。/),

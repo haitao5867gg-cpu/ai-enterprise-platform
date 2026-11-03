@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdir, readFile } from "node:fs/promises";
+import { runTab } from "./run-page";
 
 async function capture(page: Page, name: string) {
   if (process.env.AEP_CAPTURE_SCREENSHOTS !== "1") return;
@@ -105,12 +106,15 @@ test("ETL: source → request → plan → reject → approve → release → re
   const id = new URL(page.url()).pathname.split("/").at(-1)!;
   expect((await request.get(`/api/runs/${id}/files.zip`)).status()).toBe(404);
   const detail = await (await request.get(`/api/runs/${id}`)).json();
+  // The run's facts, its trace among them, are under 详情.
+  await runTab(page, "详情");
   const trace = page.getByRole("link", { name: "在 Langfuse 中查看" });
   await expect(trace).toHaveAttribute(
     "href",
     `http://localhost:3100/project/aep-local/traces/${detail.trace_id}`,
   );
   await expect(trace).toHaveAttribute("rel", "noopener noreferrer");
+  await runTab(page, "待处理");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
     await page.evaluate(

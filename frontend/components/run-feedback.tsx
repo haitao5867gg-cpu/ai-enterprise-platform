@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import Link from "next/link";
 import { useState } from "react";
 import {
@@ -20,6 +21,7 @@ export function RunFeedbackPanel({
   run: Run;
   onChange: (feedback: RunFeedback) => void;
 }) {
+  const t = useT();
   const mayBuild = useMay("builder");
   const feedback = run.feedback;
   const [note, setNote] = useState(feedback?.mine?.note ?? "");
@@ -51,8 +53,12 @@ export function RunFeedbackPanel({
   return (
     <section className="panel run-feedback" aria-labelledby="feedback-title">
       <div className="run-feedback-row">
-        <h2 id="feedback-title">这次的结果对吗？</h2>
-        <div className="run-feedback-buttons" role="group" aria-label="评价">
+        <h2 id="feedback-title">{t("这次的结果对吗？")}</h2>
+        <div
+          className="run-feedback-buttons"
+          role="group"
+          aria-label={t("评价")}
+        >
           <button
             type="button"
             className={`button ${mine?.rating === "good" ? "primary" : "secondary"}`}
@@ -60,7 +66,7 @@ export function RunFeedbackPanel({
             disabled={busy}
             onClick={() => void rate("good")}
           >
-            👍 对
+            {t("👍 对")}
           </button>
           <button
             type="button"
@@ -69,12 +75,15 @@ export function RunFeedbackPanel({
             disabled={busy}
             onClick={() => void rate("bad")}
           >
-            👎 不对
+            {t("👎 不对")}
           </button>
         </div>
         {feedback.good + feedback.bad > 0 && (
           <span className="muted">
-            {feedback.good} 人说对 · {feedback.bad} 人说不对
+            {t("{good} 人说对 · {bad} 人说不对", {
+              good: feedback.good,
+              bad: feedback.bad,
+            })}
           </span>
         )}
       </div>
@@ -87,7 +96,7 @@ export function RunFeedbackPanel({
           }}
         >
           <label className="asset-field">
-            说一句为什么（可不填）
+            {t("说一句为什么（可不填）")}
             <input
               value={note}
               maxLength={500}
@@ -99,7 +108,7 @@ export function RunFeedbackPanel({
             className="button secondary"
             disabled={busy || note.trim() === (mine.note ?? "")}
           >
-            保存说明
+            {t("保存说明")}
           </button>
           <button
             type="button"
@@ -112,7 +121,7 @@ export function RunFeedbackPanel({
               })
             }
           >
-            撤回评价
+            {t("撤回评价")}
           </button>
         </form>
       )}
@@ -136,18 +145,24 @@ export function RunFeedbackPanel({
                 });
                 setSaved(
                   made.expect.length
-                    ? `已存成评测用例 ${made.id}，按这次的结果生成了 ${made.expect.length} 项检查。`
-                    : `已存成评测用例 ${made.id}。这次的结果不对，请到评测集里写上应该是什么。`,
+                    ? t(
+                        "已存成评测用例 {id}，按这次的结果生成了 {length} 项检查。",
+                        { id: made.id, length: made.expect.length },
+                      )
+                    : t(
+                        "已存成评测用例 {id}。这次的结果不对，请到评测集里写上应该是什么。",
+                        { id: made.id },
+                      ),
                 );
               })
             }
           >
-            存成评测用例
+            {t("存成评测用例")}
           </button>
           <span className="muted">
             {mine?.rating === "bad"
-              ? "按“不对”存：不带检查，由你补上应该是什么。"
-              : "以后改应用时，用它检查结果没变坏。"}
+              ? t("按“不对”存：不带检查，由你补上应该是什么。")
+              : t("以后改应用时，用它检查结果没变坏。")}
           </span>
         </div>
       )}
@@ -155,16 +170,16 @@ export function RunFeedbackPanel({
         <p className="asset-notice" role="status">
           {saved}{" "}
           <Link href={`/apps/${encodeURIComponent(run.app)}#release`}>
-            去评测集看看
+            {t("去评测集看看")}
           </Link>
         </p>
       )}
       {feedback.cases.length > 0 && !saved && (
         <p className="muted">
-          已存成评测用例：
+          {t("已存成评测用例：")}
           {feedback.cases.map((item, i) => (
             <span key={item.case_id}>
-              {i > 0 && "、"}
+              {i > 0 && t("、")}
               <Link
                 href={`/apps/${encodeURIComponent(item.app)}#release`}
                 className="monospace"

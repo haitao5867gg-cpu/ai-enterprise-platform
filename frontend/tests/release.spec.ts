@@ -4,6 +4,7 @@ import {
   type APIRequestContext,
   type Page,
 } from "@playwright/test";
+import { runTab } from "./run-page";
 import type { AppDetail, FlowConfig } from "../lib/apps";
 
 // docs/api/data-nodes.md, "第五批：上线到 prod": the release node in the editor and on
@@ -174,6 +175,7 @@ test("the run page shows the released job, or why nothing was released", async (
     "已上线到 prod：Job 100，每月 1 日 02:00（Asia/Shanghai）刷新 `demo_prod`.retail_mart",
   );
   await page.goto(`/runs/${done}`);
+  await runTab(page, "过程");
   const flow = page.getByRole("region", { name: "工作流程" });
   await flow
     .getByRole("list", { name: "本次运行的步骤" })
@@ -187,6 +189,7 @@ test("the run page shows the released job, or why nothing was released", async (
 
   const failed = await releaseRun(request, id("unreleased"), "fail_sales");
   await page.goto(`/runs/${failed}`);
+  await runTab(page, "过程");
   await page
     .getByRole("region", { name: "工作流程" })
     .getByRole("list", { name: "本次运行的步骤" })

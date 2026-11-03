@@ -67,7 +67,8 @@ for (const decision of ["approve", "reject"] as const) {
       })
       .click();
     if (decision === "reject") {
-      await expect(page.getByRole("list", { name: "消息记录" })).toContainText(
+      // The conversation is under 过程; the page stays on 待处理 for the next decision.
+      await expect(page.locator(".conversation-history")).toContainText(
         "已根据意见重新生成：请调整输入",
       );
       await page.getByRole("button", { name: "确认", exact: true }).click();

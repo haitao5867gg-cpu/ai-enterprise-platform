@@ -126,3 +126,52 @@ test("app pages read in English, including the canvas and node settings", async 
   await expect(page.getByText("0 / 500 chars")).toBeVisible();
   await expect(page.getByText("0 constants, 0 secrets")).toBeVisible();
 });
+
+test("the run page reads in English: its tabs, the plan review and how the run went", async ({
+  page,
+  context,
+  request,
+}) => {
+  const created = await request.post("/api/runs", {
+    data: {
+      app: "retail-etl-v2",
+      input: {
+        datasource: "sample-postgres",
+        request: "按城市和会员等级统计上个月的销售",
+        tables: "retail.*",
+        language: "pyspark",
+      },
+    },
+  });
+  const { run_id } = (await created.json()) as { run_id: string };
+  await expect
+    .poll(
+      async () =>
+        (await (await request.get(`/api/runs/${run_id}`)).json()).status,
+    )
+    .toBe("waiting");
+  await context.addCookies([
+    { name: "aep_locale", value: "en", url: "http://127.0.0.1:3100" },
+  ]);
+  await page.goto(`/runs/${run_id}`);
+  const tabs = page.getByRole("tablist", { name: "Run details" });
+  await expect(tabs.getByRole("tab")).toHaveText([
+    "To do",
+    "Process",
+    "Details",
+  ]);
+  await expect(tabs.getByRole("tab", { name: "To do" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  // The plan's own words stay as written; the page's own words are English.
+  await expect(
+    page.getByRole("button", { name: /^Not right: / }).first(),
+  ).toBeAttached();
+  await tabs.getByRole("tab", { name: "Process" }).click();
+  await expect(
+    page.getByRole("region", { name: "Workflow", exact: true }),
+  ).toBeVisible();
+  await tabs.getByRole("tab", { name: "Details" }).click();
+  await expect(page.getByRole("heading", { name: "Run info" })).toBeVisible();
+});

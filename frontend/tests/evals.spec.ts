@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import type { FlowConfig } from "../lib/apps";
+import { runTab } from "./run-page";
 
 // docs/api/evals.md: eval sets, feedback on runs and the developer view.
 const id = (prefix: string) =>
@@ -205,6 +206,7 @@ test("developer view: step time and tokens, rerun from a step on the draft, comp
   await page.goto(`/runs/${runId}`);
   await page.evaluate(() => localStorage.removeItem("aep.developerView"));
   await page.reload();
+  await runTab(page, "过程");
   const flow = page.getByRole("region", { name: "工作流程" });
   await expect(flow.locator(".developer-bar")).toHaveCount(0);
   await flow.getByLabel("开发者视图").check();
@@ -231,6 +233,7 @@ test("developer view: step time and tokens, rerun from a step on the draft, comp
   await rerun.getByRole("button", { name: "从这一步重跑" }).click();
   await expect(page).not.toHaveURL(`/runs/${runId}`);
   const newId = new URL(page.url()).pathname.split("/").at(-1)!;
+  await runTab(page, "详情");
   await expect(page.getByText("原运行的「回答」这一步")).toBeVisible();
   await expect
     .poll(
@@ -257,6 +260,7 @@ test("developer view: step time and tokens, rerun from a step on the draft, comp
 
   // The view stays on for this viewer; compare the two runs.
   await page.reload();
+  await runTab(page, "过程");
   const bar = page
     .getByRole("region", { name: "工作流程" })
     .locator(".developer-bar");
