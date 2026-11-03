@@ -60,6 +60,16 @@ const formKeys: Record<FlowNode["type"], string[]> = {
   start: ["inputs"],
   llm: ["model", "skills", "system", "prompt", "output"],
   classifier: ["model", "skills", "text", "instruction", "classes"],
+  llm_review: [
+    "model",
+    "skills",
+    "subject",
+    "context",
+    "instruction",
+    "rules",
+    "max_attempts",
+    "on_stuck",
+  ],
   condition: ["rules"],
   knowledge: [
     "knowledge_bases",

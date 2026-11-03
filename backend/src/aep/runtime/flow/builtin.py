@@ -789,15 +789,52 @@ def _etl_lakehouse() -> dict[str, Any]:
 
 PROJECT_PLAN_PROMPT = PLAN_PROMPT.replace(
     "期望的代码语言：{{start.language}}\n",
-    "\n项目说明（环境、表名前缀、引用表、运行参数）：\n{{project.brief}}\n",
+    "\n项目说明（环境、表名前缀、引用表、运行参数、约定）：\n{{project.brief}}\n",
 ).replace(
     "{{profile.description}}\n\n",
     "{{profile.description}}\n\n本项目在环境里已有的表（不是源表）：\n"
     "{{profile.existing_description}}\n\n",
 )
-PROJECT_CODEGEN_PROMPT = (
-    "项目说明（表名前缀、引用表、运行参数）：\n{{project.brief}}\n\n" + CODEGEN_PROMPT
+PROJECT_PLAN_PROMPT = PROJECT_PLAN_PROMPT.replace(
+    "平台校验发现的问题（为空时忽略）：{{check_plan.problems}}\n",
+    "平台校验发现的问题（为空时忽略）：{{check_plan.problems}}\n"
+    "模型审查发现的问题（为空时忽略；要逐条改掉，要写成问题的写进 questions）："
+    "{{review_plan.problems}}\n",
 )
+PROJECT_CODEGEN_PROMPT = (
+    "项目说明（表名前缀、引用表、运行参数、约定）：\n{{project.brief}}\n\n"
+    + CODEGEN_PROMPT.replace(
+        "静态检查发现的问题（为空时忽略）：{{check_code.problems}}\n",
+        "静态检查发现的问题（为空时忽略）：{{check_code.problems}}\n"
+        "模型审查发现的问题（为空时忽略，要逐条改掉）：{{review_code.problems}}\n",
+    )
+)
+# What the plan of a project's run is reviewed against (jadeflow 4th retest I-12, S-22,
+# I-10), besides the project's own conventions for plans. Prompt rules alone were not
+# followed; a review that asks only these is.
+PLAN_REVIEW_RULES = [
+    {
+        "key": "open_items",
+        "title": "资料写明还没定的事要写成问题",
+        "instruction": "参考资料里写明还没定、暂不实现、试点不做、要另行确认或开发时再确认的事，"
+        "方案的规则、指标、筛选或技术方案对它做了决定（不管依据写的是需求、资料还是数据），"
+        "questions 里却没有对应的问题，就是违反。where 写方案里做决定的位置（如 规则 r5），"
+        "quote 写资料里说它还没定的原话。",
+    },
+    {
+        "key": "data_rules",
+        "title": "按数据自己加的处理规则要写成问题",
+        "instruction": "依据（basis）是 data 的规则，会删掉行、改掉值或改变口径（不只是描述数据"
+        "现状），资料和需求里都没有这样要求，questions 里又没有对应的问题，就是违反。",
+    },
+    {
+        "key": "checks_hold",
+        "title": "建议的检查在结果正确时要能通过",
+        "instruction": "方案建议的每条数据检查（checks），在结果完全正确时也要能通过。资料里写明的"
+        "例外（不分摊的行、允许的负数、只在部分月份适用的组合等）检查没有排除，比较的两边按资料"
+        "本来就不相等，或者标题和条件说的不是一回事，就是违反。where 写检查的 id。",
+    },
+]
 
 
 def _etl_lakehouse_project() -> dict[str, Any]:
@@ -862,6 +899,50 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "prompt": PROJECT_CODEGEN_PROMPT,
     }
     del found["check_code"]["name"]
+    # The plan and the code are reviewed by another model call before a person or the
+    # cluster sees them (jadeflow 4th retest I-12, I-18): problems go back to the model;
+    # after 2 reviews in a row with problems the run goes on and the person sees them.
+    review_plan = {
+        "id": "review_plan",
+        "type": "llm_review",
+        "title": "审查方案",
+        "note": "另调一次模型，只按清单审查方案：资料写明还没定的事有没有写成问题，按数据自己加的"
+        "会删行改值的规则有没有写成问题，建议的检查在结果正确时能不能通过，以及项目写方案时的约定。"
+        "有问题就让模型带着问题重写；连续 2 次没改过来就放行，把问题列在确认页上。",
+        "model": None,
+        "skills": [],
+        "subject": "{{check_plan.plan}}",
+        "context": "需求：{{start.request}}\n\n{{project.brief}}\n\n公司数据口径（参考资料）：\n"
+        "{{glossary.context}}\n\n源表：\n{{profile.description}}",
+        "rules": [*PLAN_REVIEW_RULES, "{{project.plan_rules}}"],
+        "max_attempts": 2,
+        "on_stuck": "pass",
+        "max_visits": 20,
+        "on_error": _retry(1, 2),
+    }
+    nodes.insert(nodes.index(found["check_plan"]) + 1, review_plan)
+    review_code = {
+        "id": "review_code",
+        "type": "llm_review",
+        "title": "审查代码",
+        "note": "按项目写代码时的约定审查代码（项目没写约定时跳过，不调模型）。有问题就让模型带着"
+        "问题重写；连续 2 次没改过来就照常试算，把问题列在审核页上。",
+        "model": None,
+        "skills": [],
+        "subject": "{{check_code.code}}",
+        "context": "已确认的方案：\n{{check_plan.plan}}\n\n{{project.brief}}",
+        "rules": ["{{project.code_rules}}"],
+        "max_attempts": 2,
+        "on_stuck": "pass",
+        "max_visits": 20,
+        "on_error": _retry(1, 2),
+    }
+    nodes.insert(nodes.index(found["check_code"]) + 1, review_code)
+    # A rewrite for a reviewer is one more visit of the step it goes back to.
+    for node in (found["plan"], found["check_plan"], found["codegen"], found["check_code"]):
+        node["max_visits"] = 20
+    found["review"]["show"] = "{{review_plan.report}}\n\n{{check_plan.message}}"
+    found["review"]["data"]["review"] = "{{review_plan.findings}}"
     found["dev_run"]["note"] = (
         "把 bundle 部署成已有集群上的 Job，在项目的开发环境运行：结果写到环境的 catalog 和 schema，"
         "只写项目自己的表，按方案的写表方式写。能修的报错带回去重写代码，每轮最多运行 3 次。"
@@ -893,8 +974,12 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "请看开发环境试算的结果、数据检查、代码和方案。通过后交付；改代码、改方案时写明意见，"
         "可以挂在某一列、某条质量规则、某条数据检查或某个文件上；终止时写明原因。"
     )
-    review["show"] = "{{dev_run.report}}\n\n{{checks.report}}"
-    review["data"] |= {"checks": "{{checks.results}}", "checks_summary": "{{checks.summary}}"}
+    review["show"] = "{{review_code.report}}\n\n{{dev_run.report}}\n\n{{checks.report}}"
+    review["data"] |= {
+        "checks": "{{checks.results}}",
+        "checks_summary": "{{checks.summary}}",
+        "code_review": "{{review_code.findings}}",
+    }
     review["options"][0]["requires"] = ["{{dev_run.ok}}", "{{checks.ok}}"]
     for end in (found["end"], found["stopped"]):
         end["outputs"].append({"key": "checks", "from": ["{{checks.report}}"]})
@@ -946,6 +1031,18 @@ def _etl_lakehouse_project() -> dict[str, Any]:
                     {"from": "checks", "to": "data_review", "branch": "passed"},
                     {"from": "checks", "to": "data_review", "branch": "failed"},
                 ]
+        elif edge["from"] == "check_plan" and edge.get("branch") == "ok":
+            edges += [
+                edge | {"to": "review_plan"},
+                {"from": "review_plan", "to": "review", "branch": "ok"},
+                {"from": "review_plan", "to": "plan", "branch": "retry"},
+            ]
+        elif edge["from"] == "check_code" and edge.get("branch") == "ok":
+            edges += [
+                edge | {"to": "review_code"},
+                {"from": "review_code", "to": "dev_run", "branch": "ok"},
+                {"from": "review_code", "to": "codegen", "branch": "retry"},
+            ]
         elif edge["from"] == "data_review" and edge["to"] == "release_review":
             edges += [
                 edge | {"to": "can_release"},

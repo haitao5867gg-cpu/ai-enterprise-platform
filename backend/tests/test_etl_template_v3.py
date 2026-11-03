@@ -133,6 +133,8 @@ return rows.join(source("prev.sales.sku"), "sku").select(
 )
 """
 GOOD_CODE = reply({"targets": {"ibf_table2": BODY}})
+# The plan review finds nothing (the project has no conventions: the code is not reviewed).
+REVIEWED = reply({"findings": []})
 WRITE = {
     "mode": "replace_where",
     "version": 4,
@@ -313,7 +315,7 @@ async def make(tmp_path):
 
 async def test_a_bound_run_is_planned_checked_and_delivered(make, monkeypatch):
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
-    lake = await make([reply(v3_plan()), GOOD_CODE], [PASSED], [PREVIEW])
+    lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE], [PASSED], [PREVIEW])
     run_id, view = await lake.start()
 
     # The project's reference tables were profiled, the forecast through its filter.
@@ -407,7 +409,7 @@ async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, 
     repeated = GOOD_ROWS + [{"sku": "A1", "month": "2026-10", "qty": 0}]
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", repeated)
     lake = await make(
-        [reply(v3_plan()), GOOD_CODE, GOOD_CODE], [PASSED, PASSED], [PREVIEW, PREVIEW]
+        [reply(v3_plan()), REVIEWED, GOOD_CODE, GOOD_CODE], [PASSED, PASSED], [PREVIEW, PREVIEW]
     )
     run_id, view = await lake.start(golden="")
     view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
@@ -439,7 +441,7 @@ async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, 
 async def test_a_failed_dev_run_skips_the_checks(make, monkeypatch):
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
     failed = {"write_errors": ["ibf_table2: 写表失败：没有权限"]}
-    lake = await make([reply(v3_plan()), GOOD_CODE], [failed], [])
+    lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE], [failed], [])
     run_id, view = await lake.start()
     profiled = len(lake.calls)  # The profile counts the filtered reference's rows.
     view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
@@ -462,11 +464,23 @@ def test_template_follows_the_contract():
     old = builtin.TEMPLATES["etl-lakehouse"].config["graph"]
     ids = [n["id"] for n in old["nodes"]]
     nodes = {n["id"]: n for n in template.config["graph"]["nodes"]}
-    # Version 2's nodes, with the data check before the review and whether the project
-    # can release before the release approval; version 2 is unchanged.
+    # Version 2's nodes, with the reviews after the plan and code checks, the data check
+    # before the review and whether the project can release before the release approval;
+    # version 2 is unchanged.
+    plan, code = ids.index("check_plan") + 1, ids.index("check_code") + 1
     at, then = ids.index("data_review"), ids.index("release_review")
-    assert list(nodes) == [*ids[:at], "checks", *ids[at:then], "can_release", *ids[then:]]
-    assert "checks" not in ids and "can_release" not in ids
+    assert list(nodes) == [
+        *ids[:plan],
+        "review_plan",
+        *ids[plan:code],
+        "review_code",
+        *ids[code:at],
+        "checks",
+        *ids[at:then],
+        "can_release",
+        *ids[then:],
+    ]
+    assert not {"checks", "can_release", "review_plan", "review_code"} & set(ids)
     start = nodes["start"]
     assert start["project"] == "required"
     assert [(i["key"], i.get("advanced", False)) for i in start["inputs"]] == [
@@ -511,6 +525,37 @@ def test_template_follows_the_contract():
     }
     assert "{{project.release_brief}}" in release_review["show"]
     assert release_review["fields"][0]["only_for"] == ["release"]
+    # The plan and the code are reviewed (jadeflow 4th retest I-12, I-18): the plan against
+    # the template's rules and the project's conventions for plans, the code against the
+    # project's conventions for code; problems go back, and after 2 the run goes on.
+    review_plan, review_code = nodes["review_plan"], nodes["review_code"]
+    assert (review_plan["type"], review_plan["subject"]) == ("llm_review", "{{check_plan.plan}}")
+    assert [r["key"] for r in review_plan["rules"][:-1]] == [
+        "open_items",
+        "data_rules",
+        "checks_hold",
+    ]
+    assert review_plan["rules"][-1] == "{{project.plan_rules}}"
+    assert (review_code["subject"], review_code["rules"]) == (
+        "{{check_code.code}}",
+        ["{{project.code_rules}}"],
+    )
+    for node in (review_plan, review_code):
+        assert (node["max_attempts"], node["on_stuck"]) == (2, "pass")
+    # Each rewrite for a reviewer is one more visit of the steps in the loop.
+    for key in ("plan", "check_plan", "review_plan", "codegen", "check_code", "review_code"):
+        assert nodes[key]["max_visits"] == 20
+    assert ("check_plan", "ok", "review_plan") in edges
+    assert ("review_plan", "ok", "review") in edges
+    assert ("review_plan", "retry", "plan") in edges
+    assert ("check_code", "ok", "review_code") in edges
+    assert ("review_code", "ok", "dev_run") in edges
+    assert ("review_code", "retry", "codegen") in edges
+    assert ("check_plan", "ok", "review") not in edges
+    assert "{{review_plan.problems}}" in nodes["plan"]["prompt"]
+    assert "{{review_code.problems}}" in nodes["codegen"]["prompt"]
+    assert nodes["review"]["data"]["review"] == "{{review_plan.findings}}"
+    assert review["data"]["code_review"] == "{{review_code.findings}}"
 
 
 async def test_the_release_step_follows_the_project(make, monkeypatch):
@@ -519,7 +564,7 @@ async def test_the_release_step_follows_the_project(make, monkeypatch):
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
 
     async def reviewed(params: dict[str, Any] | None = None) -> tuple[ProjectLake, str, dict]:
-        lake = await make([reply(v3_plan()), GOOD_CODE], [PASSED], [PREVIEW])
+        lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE], [PASSED], [PREVIEW])
         run_id, view = await lake.start(params=params)
         view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
         assert view["step"]["node"] == "data_review", view["error"]
@@ -550,3 +595,89 @@ async def test_the_release_step_follows_the_project(make, monkeypatch):
     view = await lake.submit(run_id, "skip")
     assert (view["status"], view["outcome"]) == ("done", "delivered"), view["error"]
     assert lake.ws.jobs.keys() == {100}  # only the dev job
+
+
+async def test_the_plan_and_the_code_are_reviewed(make, monkeypatch):
+    """jadeflow 4th retest I-12, I-18: another model call reviews the plan against the
+    template's rules and the project's conventions for plans, and the code against the
+    project's conventions for code. Problems go back to the model; not fixed after 2
+    reviews, the run goes on and the person sees them."""
+    put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
+    convention = {
+        "key": "by_version",
+        "title": "读预测表先按统计月筛选",
+        "text": "所有读 prev.sales.forecast 的地方先按 update_month 筛选",
+        "applies_to": "code",
+    }
+    monkeypatch.setitem(PROJECT, "conventions", [convention])
+    open_item = reply(
+        {
+            "findings": [
+                {
+                    "rule": "open_items",
+                    "where": "规则 r1",
+                    "problem": "资料说统计月的取法还没定，方案直接定了",
+                    "quote": "统计月待定",
+                    "fix": "写成问题",
+                }
+            ]
+        }
+    )
+    no_filter = reply(
+        {
+            "findings": [
+                {
+                    "rule": "by_version",
+                    "where": "ibf_table2",
+                    "problem": "读预测表没有按统计月筛选",
+                    "fix": "加上 where",
+                }
+            ]
+        }
+    )
+    plan = reply(v3_plan())
+    replies = [plan, open_item, plan, open_item, GOOD_CODE, no_filter, GOOD_CODE, REVIEWED]
+    lake = await make(replies, [PASSED], [PREVIEW])
+    run_id, view = await lake.start()
+    requests = lake.gateway.requests
+    # The plan was rewritten with the review's problem, and reviewed again.
+    review = requests[1]["body"]["messages"][-1]["content"]
+    assert review.startswith("审查清单：\n- 〔open_items〕资料写明还没定的事要写成问题：")
+    assert "- 〔data_rules〕按数据自己加的处理规则要写成问题：" in review
+    assert "- 〔checks_hold〕建议的检查在结果正确时要能通过：" in review
+    assert "需求：整理 Table 2" in review and "## 项目：IBF 预测" in review
+    rewrite = requests[2]["body"]["messages"][-1]["content"]
+    said = "- 〔资料写明还没定的事要写成问题〕（规则 r1）资料说统计月的取法还没定，方案直接定了"
+    assert "模型审查发现的问题（为空时忽略；要逐条改掉，要写成问题的写进 questions）：" + said in (
+        rewrite
+    )
+    # Not fixed twice: the person confirming the plan sees the problem.
+    assert view["step"]["node"] == "review", view["error"]
+    details = view["pending"]["details"]
+    assert details["show"].startswith("### 审查方案：没改过来的问题")
+    assert [f["rule"] for f in details["data"]["review"]] == ["open_items"]
+    said = [m["content"] for m in view["messages"] if m["node"] == "review_plan"]
+    assert said == [
+        "审查方案发现 1 处问题，让上一步带着问题重写（第 1/2 次）",
+        "审查方案连续 2 次发现问题，没改过来，交给后面确认的人看",
+    ]
+
+    view = await lake.submit(run_id, "approve", seen=details["seen"])
+    assert view["step"]["node"] == "data_review", view["error"]
+    # The code was reviewed against the project's convention for code, laid out by table,
+    # and rewritten with the problem before the dev run.
+    review = requests[5]["body"]["messages"][-1]["content"]
+    assert review.startswith(
+        "审查清单：\n- 〔by_version〕读预测表先按统计月筛选：所有读 prev.sales.forecast 的地方"
+    )
+    assert "要审查的内容：\n### ibf_table2\n\nrows = source(" in review
+    rewrite = requests[6]["body"]["messages"][-1]["content"]
+    assert (
+        "模型审查发现的问题（为空时忽略，要逐条改掉）："
+        "- 〔读预测表先按统计月筛选〕（ibf_table2）读预测表没有按统计月筛选 怎么改：加上 where"
+    ) in rewrite
+    assert "- **读预测表先按统计月筛选**（写代码时）" in rewrite
+    assert len(requests) == 8
+    data = view["pending"]["details"]["data"]
+    assert data["code_review"] == []
+    assert not view["pending"]["details"]["show"].startswith("### 审查代码")

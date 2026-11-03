@@ -7,6 +7,7 @@ import {
   PROJECT_ID,
   TABLE,
   THREE_PART,
+  conventionStageLabels,
   createProject,
   dateFormatProblem,
   filterProblem,
@@ -17,6 +18,8 @@ import {
   scheduledUseLabels,
   scheduledUses,
   type Choice,
+  type Convention,
+  type ConventionStage,
   type Environment,
   type Param,
   type ParamType,
@@ -97,6 +100,12 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
       scheduled: scheduledBody(param),
     })),
     checks: input.checks,
+    conventions: (input.conventions ?? []).map((item) => ({
+      key: item.key.trim(),
+      title: item.title.trim(),
+      text: item.text,
+      applies_to: item.applies_to,
+    })),
     policy: {
       samples: input.policy.samples,
       models: input.policy.models?.length ? input.policy.models : null,
@@ -158,6 +167,15 @@ function check(body: ProjectInput): Issues {
     add(issues, "checks", "验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比");
   const checksTwice = twice(checkIds);
   if (checksTwice.length) add(issues, "checks", `验收检查 id ${checksTwice.join("、")} 重复`);
+  const conventions = body.conventions ?? [];
+  if (conventions.length > 30) add(issues, "conventions", "最多 30 条约定");
+  const conventionKeys = twice(conventions.map((item) => item.key));
+  conventions.forEach((item, i) => {
+    const at = `convention.${i}`;
+    if (!KEY.test(item.key)) add(issues, at, `标识要${KEY_RULE}`);
+    else if (conventionKeys.includes(item.key)) add(issues, at, `约定 ${item.key} 重复`);
+    if (!item.title) add(issues, at, "请写这条约定");
+  });
   const paramKeys = twice(body.params.map((param) => param.key));
   body.params.forEach((param, i) => {
     const at = `param.${i}`;
@@ -682,6 +700,60 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
           onChange={(checks) => set("checks", checks)}
         />
       </fieldset>
+
+      <div className="panel asset-section project-form-section">
+        <ListEditor<Convention>
+          label="约定"
+          items={input.conventions ?? []}
+          max={30}
+          disabled={saving}
+          issues={(i) => at(`convention.${i}`)}
+          make={() => ({
+            key: `rule_${(input.conventions?.length ?? 0) + 1}`,
+            title: "",
+            text: "",
+            applies_to: "both",
+          })}
+          onChange={(conventions) => set("conventions", conventions)}
+          render={(item, _i, update) => (
+            <>
+              <TextField
+                label="标识"
+                value={item.key}
+                maxLength={32}
+                onChange={(key) => update({ ...item, key })}
+              />
+              <TextField
+                label="约定"
+                value={item.title}
+                maxLength={100}
+                help="一句话，比如“读 table1 的地方都先按 version_id 筛选”。"
+                onChange={(title) => update({ ...item, title })}
+              />
+              <TextField
+                label="补充说明（选填）"
+                value={item.text}
+                maxLength={2000}
+                help="为什么、怎么判断有没有遵守。"
+                onChange={(text) => update({ ...item, text })}
+              />
+              <SelectField
+                label="什么时候遵守"
+                value={item.applies_to}
+                choices={(Object.keys(conventionStageLabels) as ConventionStage[]).map(
+                  (value) => ({ value, label: conventionStageLabels[value] }),
+                )}
+                onChange={(value) => update({ ...item, applies_to: value as ConventionStage })}
+              />
+            </>
+          )}
+        />
+        <FieldIssues id={`${prefix}-conventions-issues`} messages={at("conventions")} />
+        <p className="field-hint">
+          这个项目通用的写法要求，比如数据怎么读、口径怎么算。写方案和写代码的模型都会看到；模板里的「模型审查」节点会逐条审查，没遵守就让模型重写（引用{" "}
+          {"{{project.plan_rules}}"}、{"{{project.code_rules}}"}）。不要写成某一次需求的答案。
+        </p>
+      </div>
 
       <fieldset className="panel asset-section project-form-section" disabled={saving}>
         <legend>数据外发策略</legend>

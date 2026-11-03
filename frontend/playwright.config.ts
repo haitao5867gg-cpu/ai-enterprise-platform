@@ -41,6 +41,7 @@ export default defineConfig({
         "app-access.spec.ts",
         "evals.spec.ts",
         "release.spec.ts",
+        "llm-review.spec.ts",
         "schedules.spec.ts",
         "app-node.spec.ts",
         "git-pr.spec.ts",

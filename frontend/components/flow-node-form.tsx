@@ -21,6 +21,8 @@ import type {
   Input,
   InputType,
   OutputField,
+  ReviewNode,
+  ReviewRule,
   ToolNode,
   ValueType,
 } from "../lib/apps";
@@ -773,6 +775,88 @@ function ClassifierFields({
               })
             }
           />
+        </>
+      )}
+    />
+  );
+}
+
+// A review node's checklist: rules written here, or references to lists of rules such as
+// {{project.code_rules}} (docs/api/flow-apps.md, "llm_review 模型审查").
+function ReviewRules({
+  node,
+  change,
+  issues,
+  variables,
+}: {
+  node: ReviewNode;
+  change: Change;
+  issues: Issues;
+  variables: Variable[];
+}) {
+  const set = (i: number, rule: ReviewRule) =>
+    change({
+      ...node,
+      rules: node.rules.map((r, j) => (j === i ? rule : r)),
+    });
+  return (
+    <ListEditor
+      label="审查清单"
+      items={node.rules}
+      min={1}
+      max={20}
+      onChange={(rules) => change({ ...node, rules })}
+      make={() => ({
+        key: `rule_${node.rules.length + 1}`,
+        title: "",
+        instruction: "",
+      })}
+      issues={(i) => issuesUnder(issues, `rules.${i}`)}
+      render={(item, i) => (
+        <>
+          <SelectField
+            label="这一项"
+            value={typeof item === "string" ? "ref" : "rule"}
+            onChange={(kind) =>
+              set(
+                i,
+                kind === "ref"
+                  ? ""
+                  : { key: `rule_${i + 1}`, title: "", instruction: "" },
+              )
+            }
+            choices={[
+              { value: "rule", label: "一条规则" },
+              { value: "ref", label: "引用一组规则" },
+            ]}
+          />
+          {typeof item === "string" ? (
+            <RefField
+              label="规则的引用"
+              value={item}
+              variables={variables}
+              help="比如项目的约定 {{project.plan_rules}}、{{project.code_rules}}；没有规则时这一项不算。"
+              onChange={(value) => set(i, value)}
+            />
+          ) : (
+            <>
+              <TextField
+                label="标识"
+                value={item.key}
+                onChange={(key) => set(i, { ...item, key })}
+              />
+              <TextField
+                label="规则名称"
+                value={item.title}
+                onChange={(title) => set(i, { ...item, title })}
+              />
+              <TextField
+                label="怎么判断"
+                value={item.instruction ?? ""}
+                onChange={(instruction) => set(i, { ...item, instruction })}
+              />
+            </>
+          )}
         </>
       )}
     />
@@ -2088,6 +2172,82 @@ export function NodeSettings({
           />
           <ClassifierFields node={node} change={change} issues={issues} />
           <p className="muted">都不匹配时走“都不是”。</p>
+        </>
+      );
+    case "llm_review":
+      return (
+        <>
+          <ModelFields
+            node={node}
+            options={options}
+            change={change}
+            issues={issues}
+          />
+          <RefField
+            label="要审查的内容"
+            value={node.subject}
+            variables={variables}
+            issues={at("subject")}
+            help="一般引用前一步的产出，比如 {{check_plan.plan}}。"
+            onChange={(subject) => change({ ...node, subject })}
+          />
+          <RefField
+            label="参考资料"
+            multiline
+            value={node.context ?? ""}
+            variables={variables}
+            issues={at("context")}
+            help="审查员按它判断，比如需求、知识库、项目说明。"
+            onChange={(context) => change({ ...node, context })}
+          />
+          <RefField
+            label="补充说明"
+            multiline
+            value={node.instruction ?? ""}
+            variables={variables}
+            issues={at("instruction")}
+            onChange={(instruction) => change({ ...node, instruction })}
+          />
+          <ReviewRules
+            node={node}
+            change={change}
+            issues={issues}
+            variables={variables}
+          />
+          {at("rules").map((msg) => (
+            <p className="field-error" key={msg}>
+              {msg}
+            </p>
+          ))}
+          <NumberField
+            label="连续几次没改过来就停"
+            value={node.max_attempts ?? 2}
+            min={1}
+            max={5}
+            issues={at("max_attempts")}
+            onChange={(max_attempts) => change({ ...node, max_attempts })}
+          />
+          <SelectField
+            label="没改过来之后"
+            value={node.on_stuck ?? "pass"}
+            issues={at("on_stuck")}
+            help="交给人时多一个分支「交给人」，一般连到人工节点。"
+            onChange={(next) =>
+              change({
+                ...node,
+                on_stuck: next === "branch" || next === "fail" ? next : "pass",
+              })
+            }
+            choices={[
+              { value: "pass", label: "放行，把问题交给后面确认的人" },
+              { value: "branch", label: "交给人决定" },
+              { value: "fail", label: "报错停下" },
+            ]}
+          />
+          <p className="muted">
+            有问题时走“重写”，一般连回写这份内容的那一步，并在它的提示词里引用{" "}
+            <code>{`{{${node.id}.problems}}`}</code>。
+          </p>
         </>
       );
     case "condition":

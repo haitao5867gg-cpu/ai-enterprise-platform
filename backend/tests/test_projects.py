@@ -2,6 +2,7 @@
 (docs/api/projects.md)."""
 
 import copy
+import json
 import time
 from typing import Any
 
@@ -316,6 +317,66 @@ def test_project_checks_in_old_snapshots_and_unbound_runs():
     params = [{"key": "version_id", "label": "版本", "type": "text", "pattern": r"FY\d{2}|x"}]
     said = brief(snap | {"params": params, "values": {"version_id": "x"}})
     assert r"| `version_id` | 版本 | text，格式 `FY\d{2}\|x` | x | — |" in said
+
+
+CONVENTIONS = [
+    {
+        "key": "by_version",
+        "title": "读 table1_cw 先按版本筛选",
+        "text": "所有读 table1_cw 的地方先按 version_id 筛选",
+        "applies_to": "code",
+    },
+    {"key": "ask_open", "title": "资料没定的事要提问", "text": "", "applies_to": "plan"},
+    {"key": "lower", "title": "列名用小写", "text": "", "applies_to": "both"},
+]
+
+
+async def test_conventions_are_told_to_the_model_and_reviewed_against():
+    """jadeflow 4th retest I-18: a project's conventions go into the brief the model that
+    writes the plan or code reads, and into the checklist of a review node."""
+    async with Platform(["好的"]) as p:
+        repeated = [CONVENTIONS[0], CONVENTIONS[0]]
+        resp = await p.api.post("/projects", json=project(conventions=repeated))
+        assert resp.json()["detail"] == "约定 by_version 重复"
+        wrong = [{**CONVENTIONS[0], "applies_to": "deploy"}]
+        resp = await p.api.post("/projects", json=project(conventions=wrong))
+        assert resp.status_code == 422, resp.text
+        made = await p.api.post("/projects", json=project(conventions=CONVENTIONS))
+        assert made.status_code == 201, made.text
+        assert made.json()["conventions"] == CONVENTIONS
+
+        flow = bound_flow(prompt="{{project.brief}}\n代码：{{project.code_rules}}")
+        await p.new_app("bound", flow)
+        run = await start_run(p, "bound", {"project_id": "jade-ibf"})
+        assert run.status_code == 201, run.text
+        await p.service.wait_idle()
+        sent = p.gateway.requests[0]["body"]["messages"][-1]["content"]
+        said, rules = sent.split("代码：", 1)
+        assert "### 约定（必须遵守，平台会按它们审查）" in said
+        assert (
+            "- **读 table1_cw 先按版本筛选**（写代码时）："
+            "所有读 table1_cw 的地方先按 version_id 筛选" in said
+        )
+        assert "- **资料没定的事要提问**（写方案时）" in said
+        assert "- **列名用小写**（写方案和写代码时）" in said
+        assert [r["key"] for r in json.loads(rules)] == ["by_version", "lower"]
+
+
+def test_conventions_in_old_snapshots_and_unbound_runs():
+    from aep.projects import brief, project_value
+
+    snap = {
+        "name": "x", "description": "", "table_prefix": "ibf_", "references": [], "params": [],
+        "values": {}, "environment": {"key": "dev", "label": "开发", "catalog": "c", "schema": "s"},
+    }  # fmt: skip
+    for name in ("conventions", "plan_rules", "code_rules"):
+        assert project_value(snap, name) == [] and project_value(None, name) == []
+    assert "约定" not in brief(snap)
+    rules = project_value(snap | {"conventions": CONVENTIONS}, "plan_rules")
+    assert rules == [
+        {"key": "ask_open", "title": "资料没定的事要提问", "instruction": ""},
+        {"key": "lower", "title": "列名用小写", "instruction": ""},
+    ]
 
 
 async def test_repeated_keys_and_environment_fields():

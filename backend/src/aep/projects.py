@@ -54,10 +54,17 @@ FIELDS = (
     "can_release",
     "release_ready",
     "release_brief",
+    "conventions",
+    "plan_rules",
+    "code_rules",
 )
 # The environment a run releases to (the template's databricks_release node).
 RELEASE_ENVIRONMENT = "prod"
 MAX_CHECKS = 50
+MAX_CONVENTIONS = 30
+# When a convention applies (``Convention.applies_to``) and how the brief says it.
+STAGES = ("plan", "code", "both")
+STAGE_TEXT = {"plan": "写方案时", "code": "写代码时", "both": "写方案和写代码时"}
 MAX_PATTERN = 200
 # A text parameter's format is RE2: matching takes linear time, so whatever a project
 # writes there cannot stall the API on a value (Python's re can backtrack for minutes).
@@ -286,6 +293,17 @@ class Param(_Model):
         return None
 
 
+class Convention(_Model):
+    """A rule the project's runs follow (jadeflow 4th retest I-18: the first code kept
+    forgetting to filter by version): told to the model that writes the plan or the code
+    (``brief``) and the checklist of a review node (``plan_rules``, ``code_rules``)."""
+
+    key: Annotated[str, StringConstraints(pattern=KEY)]
+    title: _text(1, 100)
+    text: Annotated[str, StringConstraints(max_length=2000, pattern=NO_NUL)] = ""
+    applies_to: Literal["plan", "code", "both"] = "both"
+
+
 class Policy(_Model):
     samples: Literal["full", "masked", "stats", "schema"] | None = None
     models: list[_text(1, 100)] | None = Field(None, min_length=1, max_length=20)
@@ -304,6 +322,7 @@ class ProjectBody(_Model):
     params: list[Param] = Field(default_factory=list, max_length=20)
     # The project's acceptance checks: Check of the data_check node.
     checks: list[Any] = Field(default_factory=list, max_length=MAX_CHECKS)
+    conventions: list[Convention] = Field(default_factory=list, max_length=MAX_CONVENTIONS)
     policy: Policy = Field(default_factory=Policy)
 
     @model_validator(mode="after")
@@ -315,6 +334,7 @@ class ProjectBody(_Model):
             ("引用表", [r.name for r in self.references]),
             ("参数", [p.key for p in self.params]),
             ("归本项目的表", self.adopted),
+            ("约定", [c.key for c in self.conventions]),
         ):
             repeated = sorted({k for k in keys if keys.count(k) > 1})
             if repeated:
@@ -594,6 +614,7 @@ def snapshot(project: Project, environment: str | None, given: Any) -> dict[str,
         "params": body["params"],
         "values": values,
         "checks": body.get("checks") or [],
+        "conventions": body.get("conventions") or [],
         "policy": body["policy"],
     }
 
@@ -630,9 +651,12 @@ def project_value(
     project: dict[str, Any] | None, name: str, timezone: str = "UTC", now: datetime | None = None
 ) -> Any:
     """``{{project.<name>}}`` in a run bound to ``project`` (a snapshot); None unbound
-    (``brief`` and ``release_brief`` are ""). The release fields work out scheduled
-    values on the day it is ``now`` in ``timezone`` (where released jobs run)."""
+    (``brief`` and ``release_brief`` are "", the conventions and review rules []). The
+    release fields work out scheduled values on the day it is ``now`` in ``timezone``
+    (where released jobs run)."""
     if not project:
+        if name in ("conventions", "plan_rules", "code_rules"):
+            return []
         return "" if name in ("brief", "release_brief") else None
     if name == "can_release":
         return can_release(project)
@@ -640,6 +664,11 @@ def project_value(
         return can_release(project) and not scheduled_values(project, timezone, now).problems
     if name == "release_brief":
         return release_brief(project, timezone, now) if can_release(project) else ""
+    if name == "conventions":
+        # Snapshots taken before projects had conventions have none.
+        return project.get("conventions") or []
+    if name in ("plan_rules", "code_rules"):
+        return review_rules(project, name.removesuffix("_rules"))
     env = project["environment"]
     if name == "environment":
         return env["key"]
@@ -740,7 +769,24 @@ def brief(project: dict[str, Any]) -> str:
             "",
             "方案里建议的数据检查不要重复这些，id 也不能和它们相同。",
         ]
+    if project.get("conventions"):
+        lines += ["", "### 约定（必须遵守，平台会按它们审查）", ""]
+        lines += [
+            f"- **{c['title']}**（{STAGE_TEXT.get(c.get('applies_to') or 'both', '')}）"
+            + (f"：{c['text']}" if c.get("text") else "")
+            for c in project["conventions"]
+        ]
     return "\n".join(lines)
+
+
+def review_rules(project: dict[str, Any] | None, stage: str) -> list[dict[str, str]]:
+    """The project's conventions for ``stage`` (plan or code) as a review node's checklist
+    (``{{project.plan_rules}}``, ``{{project.code_rules}}``)."""
+    return [
+        {"key": c["key"], "title": c["title"], "instruction": c.get("text") or ""}
+        for c in (project or {}).get("conventions") or []
+        if (c.get("applies_to") or "both") in (stage, "both")
+    ]
 
 
 # Releasing: what a released job's scheduled runs use

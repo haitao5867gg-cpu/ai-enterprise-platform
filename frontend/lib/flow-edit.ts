@@ -12,6 +12,7 @@ export const REF_PATTERN =
 export const BRANCHED_ERROR_TYPES = [
   "llm",
   "classifier",
+  "llm_review",
   "tool",
   "agent",
   "code",
@@ -41,6 +42,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   start: "开始",
   llm: "调用模型",
   classifier: "意图分类",
+  llm_review: "模型审查",
   condition: "条件判断",
   tool: "调用工具",
   knowledge: "知识检索",
@@ -61,7 +63,8 @@ export const typeLabels: Record<FlowNode["type"], string> = {
 };
 
 export function nodeKind(type: FlowNode["type"]): NodeKind {
-  if (["llm", "classifier", "agent"].includes(type)) return "model";
+  if (["llm", "classifier", "agent", "llm_review"].includes(type))
+    return "model";
   if (
     [
       "tool",
@@ -102,6 +105,8 @@ export function ownOutputs(node: FlowNode): string[] {
         : ["text"];
     case "classifier":
       return ["class", "label"];
+    case "llm_review":
+      return ["ok", "findings", "problems", "report", "summary"];
     case "condition":
       return ["rule"];
     case "tool":
@@ -293,7 +298,9 @@ export function branchesOf(node: FlowNode): string[] {
           ? node.options.map((item) => item.key)
           : node.type === "end"
             ? []
-            : node.type === "etl_plan_check" || node.type === "etl_code_check"
+            : node.type === "etl_plan_check" ||
+                node.type === "etl_code_check" ||
+                node.type === "llm_review"
               ? [
                   "ok",
                   "retry",
@@ -319,6 +326,7 @@ export function branchLabel(
   if (
     node?.type === "etl_plan_check" ||
     node?.type === "etl_code_check" ||
+    node?.type === "llm_review" ||
     node?.type === "databricks_dev_run"
   ) {
     if (branch === "ok" || branch === "passed") return "通过";
