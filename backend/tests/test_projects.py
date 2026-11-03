@@ -113,6 +113,16 @@ def test_a_text_parameter_may_have_a_format():
     # With a description, people read that instead of the expression (jadeflow retest S-19).
     described = version | {"description": "月度版本 FY{yy}_{MM}_M"}
     assert param_problem(described, "FY26") == "参数「版本」的格式不对：月度版本 FY{yy}_{MM}_M"
+    # A hint on the format is told instead of the whole description (4th retest).
+    hinted = described | {"description": "月度版本；没有默认值，每次都要填",
+                          "pattern_hint": "FY 两位年份_两位月份_M，如 FY26_07_M"}  # fmt: skip
+    assert param_problem(hinted, "FY26") == (
+        "参数「版本」的格式不对：FY 两位年份_两位月份_M，如 FY26_07_M"
+    )
+    with pytest.raises(ValueError, match="参数「字」没有写格式，不用写格式说明"):
+        ProjectBody.model_validate(
+            project(params=[{"key": "w", "label": "字", "type": "text", "pattern_hint": "x"}])
+        )
     assert param_problem({"label": "字", "type": "text"}, "x") is None  # Saved before formats.
     assert pattern_problem("(a") == "不是有效的正则表达式（missing ): (a）"
     assert pattern_problem(r"(a)\1") == r"不是有效的正则表达式（invalid escape sequence: \1）"
@@ -739,6 +749,18 @@ def scheduled(param: dict[str, Any], **rule: Any) -> dict[str, Any]:
             scheduled(VERSION, use="date", format="FY%%"),
             "日期格式里至少要有 %Y、%y、%m、%d 中的一个",
         ),
+        (
+            scheduled(BATCH, use="run_id", on_mismatch="skip"),
+            "只有按日期推算（date）才写不符合格式时怎么办（on_mismatch、skip_note）",
+        ),
+        (
+            scheduled({**BATCH, "type": "month"}, use="date", on_mismatch="skip"),
+            "参数没有写格式，算出的日期都能用，不用写不符合格式时跳过",
+        ),
+        (
+            scheduled(VERSION, use="date", format="FY%y_%m_M", skip_note="12 月不跑"),
+            "skip_note 是跳过时写进运行记录的话，只有不符合格式时跳过（skip）才写",
+        ),
     ],
 )
 def test_how_scheduled_runs_fill_in_a_parameter_is_checked(param, detail):
@@ -774,6 +796,8 @@ async def test_scheduled_values_and_what_a_release_says():
         "format": "FY%y_%m_M",
         "months": -1,
         "day": None,
+        "on_mismatch": "fail",
+        "skip_note": None,
     }
     assert body["params"][2]["scheduled"] is None
     saved = await store.create(body)
@@ -807,6 +831,8 @@ async def test_scheduled_values_and_what_a_release_says():
         "day": None,
         "pattern": VERSION["pattern"],
         "description": VERSION["description"],
+        "on_mismatch": "fail",
+        "skip_note": None,
     }
     assert [(line["how"], line["value"]) for line in found.lines] == [
         ("按运行那天推算上个月，写成 FY{yy}_{MM}_M", "FY26_11_M"),
@@ -820,6 +846,14 @@ async def test_scheduled_values_and_what_a_release_says():
     january = scheduled_values(snap, "Asia/Shanghai", datetime(2027, 1, 5, tzinfo=UTC))
     assert january.lines[0]["value"] == "FY26_12_M"
     assert january.lines[0]["warning"] == "这个值不符合参数的格式，这样的日子定时运行会报错、不写表"
+    # 4th retest S-21: or such a day is skipped, which is no failure.
+    skipping = {**params[0]["scheduled"], "on_mismatch": "skip", "skip_note": "12 月版本不跑"}
+    later = snap | {"params": [{**snap["params"][0], "scheduled": skipping}]}
+    january = scheduled_values(later, "Asia/Shanghai", datetime(2027, 1, 5, tzinfo=UTC))
+    assert january.lines[0]["warning"] == (
+        "这个值不符合参数的格式，这样的日子定时运行会跳过、不写表，不算失败：12 月版本不跑"
+    )
+    assert january.rules[0]["on_mismatch"] == "skip"
 
     assert project_value(snap, "can_release") is True
     assert project_value(snap, "release_ready", "Asia/Shanghai") is True

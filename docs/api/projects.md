@@ -65,6 +65,7 @@
   "default": "2026-10",                   // 可选，默认 null；有值时要符合类型
   "choices": [{"value": "a", "label": "A"}],   // 只用于 select，1–50 个，value 不重复
   "pattern": "FY\\d{2}_\\d{2}_M",            // 只用于 text，可选：整个值要符合的正则表达式（RE2），1–200 字符，默认 null
+  "pattern_hint": "FY 两位年份_两位月份_M",     // 可选，写了 pattern 才能写：值不符合格式时提示这句话，1–200 字符，默认 null（jadeflow 第 4 轮复测后新增）
   "description": "按自然月，C+3 当天跑上个月",    // 可选，最多 500 字符
   "scheduled": Scheduled                  // 可选，上线后定时运行时怎么取这个参数，默认 null，见“定时运行时参数怎么取”
 }
@@ -74,7 +75,9 @@
   "use": "date" | "run_id" | "this_run",
   "format": "FY%y_%m_M",                  // 只用于 date 和 text 参数，必填：日期格式，只能用 %Y %y %m %d（和 %%），1–50 字符
   "months": -1,                           // 只用于 date：从运行那天往前（负数）或往后推几个月，-24–24，默认 0
-  "day": "first" | "last" | null          // 只用于 date：取那个月的第一天、最后一天，null 是同一天（没有这一天时取月底）
+  "day": "first" | "last" | null,         // 只用于 date：取那个月的第一天、最后一天，null 是同一天（没有这一天时取月底）
+  "on_mismatch": "fail" | "skip",         // 只用于 date：算出的值不符合参数的 pattern 时报错（默认）还是跳过（jadeflow 第 4 轮复测后新增）
+  "skip_note": "12 月版本没有 Forecast 月份"  // 可选，只用于 skip：跳过时写进运行记录的话，1–200 字符，默认 null
 }
 
 // Convention（jadeflow 第 4 轮复测后新增）：这个项目的运行要遵守的规则
@@ -97,7 +100,8 @@
 - `filter` 只做形状检查：不能有分号、注释（`--`、`/*`），不能出现 `SELECT` 关键字（不分大小写，按整词匹配），括号要配对。它会原样拼进 `WHERE (…)`，语义由 Databricks 判断，写错了在读表时报错。
 - 参数值：`text` 1–500 字符；`number` 是 JSON 数字；`boolean` 是 true 或 false；`date` 是 `YYYY-MM-DD`；`month` 是 `YYYY-MM`；`select` 是 `choices` 里的某个 `value`。
 - `pattern`（试点后新增）：`text` 参数的值要整个符合它（相当于前后加了 `^`、`$`），不符合时“参数「版本」要符合格式 FY\d{2}_\d{2}_M”，默认值和新建运行时填的值都查。语法是 RE2（Python 的 `re` 的常用写法都能用，不支持反向引用和环视）：匹配时间和值的长度成正比，项目写什么样的格式都不会让接口卡住。别的类型写了它报“参数「统计月」不是文本，不能写格式”；写错了报“参数「版本」的格式不是有效的正则表达式（missing ): (a）”，括号里是 RE2 的原话。以前保存的参数没有这个键，等于没有格式。
-- `scheduled`：`use` 是 `run_id` 或 `this_run` 时不能写 `format`、`months`、`day`（“只有按日期推算（date）才写 format、months、day”）；`run_id` 只能用在 `text` 参数上；`date` 只能用在 `text`、`date`、`month` 参数上，`text` 参数要写 `format`（“文本参数要写日期格式 format，如 FY%y_%m_M”），`date` 和 `month` 参数的格式固定是 `YYYY-MM-DD`、`YYYY-MM`，不能写 `format`，`month` 参数不能写 `day`；`format` 里有别的 `%` 写法报“日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）”，一个都没有报“日期格式里至少要有 %Y、%y、%m、%d 中的一个”。报错写成“参数「版本」定时运行时的取法不对：……”。以前保存的参数没有这个键，等于 null。
+- `scheduled`：`use` 是 `run_id` 或 `this_run` 时不能写 `format`、`months`、`day`（“只有按日期推算（date）才写 format、months、day”）；`run_id` 只能用在 `text` 参数上；`date` 只能用在 `text`、`date`、`month` 参数上，`text` 参数要写 `format`（“文本参数要写日期格式 format，如 FY%y_%m_M”），`date` 和 `month` 参数的格式固定是 `YYYY-MM-DD`、`YYYY-MM`，不能写 `format`，`month` 参数不能写 `day`；`format` 里有别的 `%` 写法报“日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）”，一个都没有报“日期格式里至少要有 %Y、%y、%m、%d 中的一个”。`use` 不是 `date` 时不能写 `on_mismatch: "skip"` 和 `skip_note`（“只有按日期推算（date）才写不符合格式时怎么办（on_mismatch、skip_note）”）；参数没有 `pattern` 时不能写 `skip`（“参数没有写格式，算出的日期都能用，不用写不符合格式时跳过”）；`skip_note` 只能和 `skip` 一起写（“skip_note 是跳过时写进运行记录的话，只有不符合格式时跳过（skip）才写”）。报错写成“参数「版本」定时运行时的取法不对：……”。以前保存的参数没有这个键，等于 null；以前保存的 `scheduled` 没有 `on_mismatch`、`skip_note`，等于 `fail` 和 null。
+- `pattern_hint`（jadeflow 第 4 轮复测后新增）：值不符合格式时，报错写“参数「版本」的格式不对：FY 两位年份_两位月份_M”，不再贴整段说明（复测时说明里的“没有默认值，每次运行都要填”也跟着格式错误一起出来）。没写时照旧：有说明写说明，没有说明写“要整段符合正则表达式 …”。新建运行页上参数下面的“格式：”也写它。没有 `pattern` 时写了报“参数「版本」没有写格式，不用写格式说明”。以前保存的参数没有这个键，等于 null。
 - `conventions`：约定会出现在两个地方：给模型看的项目说明（`brief`）里有一节“约定”，写方案和写代码的模型都能看到；模型审查节点（`llm_review`）用 `{{project.plan_rules}}`、`{{project.code_rules}}` 把它们当审查清单，审查出没遵守的就让那一步重写（见 flow-apps.md“llm_review 模型审查”）。key 重复报“约定 by_version 重复”。保存以前建的项目没有这个键，读出来是 `[]`。约定是项目的通用写法要求（数据怎么读、口径怎么算），不要写成某次需求的答案。
 - `model_check_max_severity`：方案里模型建议的数据检查（`etl_plan_check` 第 3 版的 `checks`）最高按什么级别跑，写得更高的降到它，记进方案的 `cleaned`（见 data-nodes.md）。项目自己的验收检查 `checks` 不受影响，照它们写的级别跑。模型建议的检查条件和方向可能写错，一条错的 `error` 检查会挡住对的结果；需要人先核对的项目设成 `warn`，确认方案时觉得哪条该挡住交付，写意见让模型改成 `error`、或者把它加进项目的验收检查。不是这三个值时 422。保存以前建的项目没有这个键，读出来是 `error`（以前的行为）。
 - `models` 里的别名必须在模型网关上（同编排应用保存检查用的模型清单）；网关读不到清单时不检查。
@@ -209,8 +213,9 @@
 | 不写（null） | 有默认值用默认值；不是必填的为空值；必填又没有默认值的取不到，不能上线 |
 
 - 取不到的参数在上线说明里写明，平台不部署，上线节点走 `failed`：“参数「运行批次」没有写定时运行时怎么取，也没有默认值：在项目的运行参数里给它写上定时运行时的取法（或者默认值），再重新发起运行”。运行用的是绑定时的快照，改了项目要重新发起运行。
-- 每次运行在集群上算值（`aep.cluster_harness.scheduled_params`）。参数有 `pattern` 时，算出的值要整个符合它，不符合时这次运行报错、不写表：“定时运行在 2027-01-01 算出参数「版本」= FY26_12_M，不符合它的格式（月度版本 …），这次不运行，没有写表”（括号里是参数的说明，没有说明时是“要整段符合 <正则>”）。
-- 上线时平台把不用每次算的值（默认值、空值、`this_run`）写进 Job 的 `params`，把要每次算的写进 Job 的 `param_rules`（`{"timezone": "Asia/Shanghai", "params": [{"key", "label", "type", "use", "format", "months", "day", "pattern", "description"}]}`）。
+- 每次运行在集群上算值（`aep.cluster_harness.scheduled_params`）。参数有 `pattern` 时，算出的值要整个符合它，不符合时这次运行报错、不写表：“定时运行在 2027-01-01 算出参数「版本」= FY26_12_M，不符合它的格式（月度版本 …），这次不运行，没有写表”（括号里是参数的 `pattern_hint`，没有时是说明，都没有时是“要整段符合 <正则>”）。
+- **跳过**（jadeflow 第 4 轮复测 S-21 后新增）：有的日子本来就不该跑（没有 12 月版本，1 月推算出的上个月版本不符合格式），以前每年这一天都有一次失败的运行。`on_mismatch: "skip"` 时，这样的日子不运行代码、不写表，notebook 正常结束（Job 运行算成功），输出里写明原因：`{"tables": [], "errors": [], "write_errors": [], "skipped": "定时运行在 2027-01-01 算出参数「版本」= FY26_12_M，不符合它的格式，按项目的设置这次跳过，没有写表：12 月版本没有 Forecast 月份"}`（冒号后面是 `skip_note`，没写时不带）。上线说明里那一行的提醒相应写成“这个值不符合参数的格式，这样的日子定时运行会跳过、不写表，不算失败：…”，项目页上显示“…；不符合格式的日子跳过（…）”。
+- 上线时平台把不用每次算的值（默认值、空值、`this_run`）写进 Job 的 `params`，把要每次算的写进 Job 的 `param_rules`（`{"timezone": "Asia/Shanghai", "params": [{"key", "label", "type", "use", "format", "months", "day", "pattern", "description", "on_mismatch", "skip_note"}]}`，`description` 是 `pattern_hint`，没有时是参数的说明）。以前上线的 Job 的 `param_rules` 没有 `on_mismatch`，照旧报错。
 
 ## 数据外发策略
 
@@ -291,6 +296,7 @@
 - 项目接口：增删改查、各字段的取值规则和报错、`adopted` 必须带前缀、`filter` 的形状检查、409；验收检查的各条规则和报错、没写时为 `[]`。
 - 参数格式：整个值要符合、默认值不符合时 422、不是文字参数时 422、RE2 不认的写法（环视、反向引用）422、病态的格式（`(\w+)+\w*\w*\w*x`）配 500 字的值也立刻有结果、`brief` 里写上格式、没有这个键的旧参数照旧；页面上填格式、默认值不符合时的提示、详情页显示格式、新建运行时的提示和报错（Playwright）。
 - 验收检查：快照带上它，`{{project.checks}}` 取到列表，`brief` 列出它；旧快照为 `[]`，没绑定项目为 null。
+- 格式说明和跳过（第 4 轮复测后）：`pattern_hint` 的报错、没有格式时写了 422；`on_mismatch`、`skip_note` 的保存检查；跳过时 `scheduled_params` 抛出的不是报错、notebook 正常结束并写明原因；上线说明的提醒；页面上填格式说明和跳过、新建运行页的提示（Playwright）。
 - 模型检查的最高级别：不写时为 `error`、别的值 422；快照带上它，`brief` 里的那一句只在不是 `error` 时写；页面上能选，详情页显示（Playwright）。
 - 运行绑定：五步检查各自的报错；快照不随项目修改变化；重试沿用快照，rerun 重新绑定、项目删除后 422；`RunDetail.project`、`policy`。
 - 保存检查：`project` 的取值；没写 `project` 时引用 `{{param.*}}`、`{{project.*}}` 报错；`{{project.*}}` 的字段不在清单里报错；`param`、`project` 不能当节点 id。

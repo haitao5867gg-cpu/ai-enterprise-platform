@@ -465,6 +465,8 @@ export function checkRow(
   const mine = isRecord(row.table) ? row.table : {};
   const old = isRecord(row.expected) ? row.expected : {};
   const differs = new Set(texts(row.differs));
+  // Cells a known difference covers, in a row that differs in more (marked "已知").
+  const known = new Set(texts(row.known_columns).map((c) => c.toLowerCase()));
   for (const column of new Set([...Object.keys(mine), ...Object.keys(old)])) {
     out[column] =
       kind === "missing"
@@ -472,7 +474,7 @@ export function checkRow(
         : kind === "extra"
           ? `${cellValue(mine[column])} / —`
           : differs.has(column)
-            ? `${cellValue(mine[column])} / ${cellValue(old[column])}`
+            ? `${cellValue(mine[column])} / ${cellValue(old[column])}${known.has(column.toLowerCase()) ? "（已知）" : ""}`
             : cellValue(mine[column]);
   }
   return out;

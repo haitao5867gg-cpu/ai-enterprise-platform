@@ -846,13 +846,20 @@ def _zone(name: str) -> Any:
         return timezone(timedelta(0))
 
 
+class Skipped(Exception):
+    """A scheduled run that does not run: a parameter's rule says so for a value that does
+    not fit its format (``on_mismatch: skip``). The job run ends without writing and is no
+    failure."""
+
+
 def scheduled_params(
     params: dict[str, Any], rules: dict[str, Any], run_id: str, now: datetime | None = None
 ) -> dict[str, Any]:
     """The run parameters of a released job's run: ``params`` as they were fixed at the
     release, with each of ``rules["params"]`` worked out for this run on the day in
     ``rules["timezone"]``. A value that does not match its parameter's ``pattern``
-    raises ``ValueError``, so nothing is written."""
+    raises ``ValueError``, so nothing is written, or ``Skipped`` when its rule says to
+    skip such a day."""
     found = rules.get("params") or []
     if not found:
         return params
@@ -870,6 +877,12 @@ def scheduled_params(
                 fits = re.fullmatch(pattern, value) is not None
             except re.error:
                 fits = True  # checked when the project was saved (RE2); Python reads it otherwise
+            if not fits and rule.get("on_mismatch") == "skip":
+                note = (rule.get("skip_note") or "").strip()
+                raise Skipped(
+                    f"定时运行在 {today.isoformat()} 算出参数「{rule['label']}」= {value}，"
+                    "不符合它的格式，按项目的设置这次跳过，没有写表" + (f"：{note}" if note else "")
+                )
             if not fits:
                 described = (rule.get("description") or "").strip() or f"要整段符合 {pattern}"
                 raise ValueError(
@@ -903,16 +916,23 @@ def run_notebook(
 
     with open(library, encoding="utf-8") as f:  # notebooks run in their own folder
         code = f.read()
+    try:
+        params = scheduled_params(
+            json.loads(arg("params") or "{}"),
+            json.loads(arg("param_rules") or "{}"),
+            arg("run_id"),
+        )
+    except Skipped as skipped:
+        # Ends the run as succeeded, with why in its output (the job run's record).
+        outcome = {"tables": [], "errors": [], "write_errors": [], "skipped": str(skipped)}
+        dbutils.notebook.exit(MARKER + json.dumps(outcome, ensure_ascii=False))
+        return
     spec: dict[str, Any] = {
         "source_catalog": arg("source_catalog"),
         "write": {"catalog": arg("catalog"), "schema": arg("schema")},
         "loads": (settings or {}).get("loads") or {},
         "param_types": (settings or {}).get("param_types") or {},
-        "params": scheduled_params(
-            json.loads(arg("params") or "{}"),
-            json.loads(arg("param_rules") or "{}"),
-            arg("run_id"),
-        ),
+        "params": params,
         "run_id": arg("run_id"),
     }
     if arg("project"):

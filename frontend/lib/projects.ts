@@ -27,6 +27,8 @@ export type Param = {
   // Only for text: a regular expression the whole value must match (RE2 on the backend;
   // projects saved before it have no such key).
   pattern?: string | null;
+  // What a value that does not fit the format is told (instead of the whole description).
+  pattern_hint?: string | null;
   description: string;
   // How a released job's scheduled runs fill it in (docs/api/projects.md, "定时运行时参数
   // 怎么取"); null or absent: its default, else empty.
@@ -37,6 +39,10 @@ export type Scheduled = {
   format: string | null;
   months: number;
   day: "first" | "last" | null;
+  // A date that does not fit the parameter's format: the run fails, or is skipped (no
+  // failure) with skip_note in the job run's record. Rules saved before have neither.
+  on_mismatch?: "fail" | "skip";
+  skip_note?: string | null;
 };
 // The ways a parameter of this type can be filled in by scheduled runs.
 export function scheduledUses(type: ParamType): Scheduled["use"][] {
@@ -91,7 +97,9 @@ export function scheduledText(
       : rule.months === 0
         ? "运行当天"
         : `${month}的同一天（没有这一天时取月底）`;
-  return `按运行那天推算${when}，写成 ${format.replace(/%./g, (d) => DATE_NAMES[d] ?? d)}`;
+  const said = `按运行那天推算${when}，写成 ${format.replace(/%./g, (d) => DATE_NAMES[d] ?? d)}`;
+  if (rule.on_mismatch !== "skip") return said;
+  return `${said}；不符合格式的日子跳过${rule.skip_note ? `（${rule.skip_note}）` : ""}`;
 }
 // A rule the project's runs follow: told to the model that writes the plan or the code and
 // reviewed against by review nodes ({{project.plan_rules}}, {{project.code_rules}}).
@@ -284,14 +292,16 @@ export function patternRegExp(pattern: string): RegExp | null {
 
 // Why `value` does not fit the parameter, or null (the backend's param_problem).
 export function paramProblem(
-  param: Pick<Param, "label" | "type" | "choices" | "pattern">,
+  param: Pick<Param, "label" | "type" | "choices" | "pattern" | "pattern_hint" | "description">,
   value: unknown,
 ): string | null {
   const { label, type } = param;
   if (type === "text" && !(typeof value === "string" && value.length >= 1 && value.length <= 500))
     return `参数「${label}」要写 1–500 个字`;
   if (type === "text" && param.pattern && patternRegExp(param.pattern)?.test(String(value)) === false)
-    return `参数「${label}」要符合格式 ${param.pattern}`;
+    return param.pattern_hint?.trim() || param.description?.trim()
+      ? `参数「${label}」的格式不对：${param.pattern_hint?.trim() || param.description.trim()}`
+      : `参数「${label}」的格式不对，要整段符合正则表达式 ${param.pattern}`;
   if (type === "number" && !(typeof value === "number" && Number.isFinite(value)))
     return `参数「${label}」要是数字`;
   if (type === "boolean" && typeof value !== "boolean")

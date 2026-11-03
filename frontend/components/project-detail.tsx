@@ -191,7 +191,7 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
               param.type === "select"
                 ? `选项：${(param.choices ?? []).map((choice) => choice.label ?? choice.value).join("、")}`
                 : param.type === "text" && param.pattern
-                  ? `${paramTypeLabels.text}，格式 ${param.pattern}`
+                  ? `${paramTypeLabels.text}，格式 ${param.pattern}${param.pattern_hint ? `（${param.pattern_hint}）` : ""}`
                   : paramTypeLabels[param.type],
               param.required ? "是" : "否",
               paramText(param, param.default),

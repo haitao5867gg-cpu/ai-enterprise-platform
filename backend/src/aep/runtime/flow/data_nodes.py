@@ -1271,7 +1271,7 @@ def dev_report(
     }[branch]
     lines = [head, ""]
     if repeated:
-        lines += [REPEATED_SAID, ""]
+        lines += [repeated_said(error_places(errors)), ""]
     lines.append("- 运行方式：" + HOW[dev.mode].format(cluster=dev.cluster_id))
     if total and total != attempt:
         lines.append(f"- 第 {total} 次试跑（这一轮的第 {attempt} 次）")
@@ -1435,30 +1435,60 @@ def dev_said(
     if branch == "retry":
         return f"{head}，让模型改代码（第 {attempt + 1}/{max_runs} 次运行）"
     if repeated:
-        return f"{head}，和上一次的报错一样，不再自动重写，交给人"
+        return f"{head}，和上一次在同一处报同一类错，不再自动重写，交给人"
     return f"{head}，不再重试"
 
 
 # jadeflow retest I-18: the model rewrote the code with an error and the next run failed
-# the same way; going round again rarely helps, a person's word does.
-REPEATED_SAID = (
-    "> 报错和上一次试跑一样：模型带着这个报错改过一次代码，没有改对，不再自动重写。"
-    "请选「改代码」写明怎么改，或者「改方案」「终止」。"
-)
+# the same way; going round again rarely helps, a person's word does. 4th retest I-18:
+# "the same way" is the same place and kind of error, whatever the words (three rewrites
+# of one slice each failed with other words).
+def repeated_said(places: list[str]) -> str:
+    return (
+        f"> 报错和上一次试跑在同一处、是同一类（{'；'.join(places)}）：模型带着报错改过一次代码，"
+        "没有改对，不再自动重写。请选「改代码」写明怎么改，或者「改方案」「终止」。"
+    )
+
+
 # What varies between two runs of the same failing code: ids, Spark's expression ids
 # (``cw_07#123``), long numbers and spacing.
 _RUN_SPECIFIC = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|#\d+|\b\d{5,}\b|0x[0-9a-f]+",
     re.IGNORECASE,
 )
+# An error as the cluster program writes it (aep.cluster_harness): "<table or file>:
+# <exception type>: <first line>", the first line of a Spark error starting with its error
+# class ("[UNRESOLVED_COLUMN.WITH_SUGGESTION] …"); and a quality rule that fails the run.
+_ERROR_AT = re.compile(
+    r"^(?P<at>[^:\n]{1,200}): (?P<kind>[A-Za-z_][\w.]{0,100})(?::\s*\[(?P<cls>[A-Z][A-Z0-9_]*))?"
+)
+_RULE_FAILED = re.compile(r"^(?P<at>[^:\n]{1,200}): 质量规则 (?P<rule>.+?) 要求整次更新失败")
+
+
+def error_place(error: str) -> str:
+    """Where an error is and what kind it is, as two runs of rewritten code compare:
+    ``order_facts · TypeError``, ``order_facts · AnalysisException[UNRESOLVED_COLUMN]``,
+    ``order_facts · 质量规则 qty_ok``; an error written otherwise is its own words, without
+    what varies between runs."""
+    text = error.strip()
+    if found := _RULE_FAILED.match(text):
+        return f"{found['at'].strip()} · 质量规则 {found['rule']}"
+    if found := _ERROR_AT.match(text):
+        kind = found["kind"] + (f"[{found['cls']}]" if found["cls"] else "")
+        return f"{found['at'].strip()} · {kind}"
+    return " ".join(_RUN_SPECIFIC.sub("#", text).split())
+
+
+def error_places(errors: list[str]) -> list[str]:
+    return sorted({error_place(e) for e in errors})
 
 
 def errors_key(errors: list[str]) -> str | None:
-    """What two dev runs' errors have to share to be the same failure (None: no errors)."""
+    """What two dev runs' errors have to share to be the same failure (None: no errors):
+    the same places and kinds (``error_place``)."""
     if not errors:
         return None
-    said = sorted({" ".join(_RUN_SPECIFIC.sub("#", e).split()) for e in errors})
-    return hashlib.sha256("\n".join(said).encode()).hexdigest()[:16]
+    return hashlib.sha256("\n".join(error_places(errors)).encode()).hexdigest()[:16]
 
 
 def _placement(

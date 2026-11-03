@@ -86,7 +86,9 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await version.getByLabel("显示名").fill("版本");
   await version.getByLabel("格式（选填）").fill("FY\\d{2}_\\d{2}_M");
   await version.getByLabel("默认值（选填）").fill("FY26-06");
-  await expect(version).toContainText("默认值不对：参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
+  await expect(version).toContainText(
+    "默认值不对：参数「版本」的格式不对，要整段符合正则表达式 FY\\d{2}_\\d{2}_M",
+  );
   await version.getByLabel("默认值（选填）").fill("FY26_06_M");
   await expect(version).not.toContainText("默认值不对");
   // How the scheduled runs of a released job fill it in (jadeflow retest I-19).
@@ -97,6 +99,9 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(version).toContainText("日期格式只能用 %Y（四位年份）");
   await version.getByLabel("日期格式").fill("FY%y_%m_M");
   await expect(version).not.toContainText("定时运行时的取法不对");
+  // A day whose version does not fit the format is skipped, with a note (4th retest S-21).
+  await version.getByLabel("推算出的值不符合格式时").selectOption({ label: "跳过，不算失败" });
+  await version.getByLabel("跳过时写进运行记录的话（选填）").fill("12 月版本不跑");
   await form.getByLabel("发给模型的数据").selectOption({ label: "只发统计" });
   await expect(form).toContainText("不发样本行和取值分布");
 
@@ -129,6 +134,16 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
     "按运行那天推算上个月，写成 FY{yy}_{MM}_M",
   );
+  await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
+    "不符合格式的日子跳过（12 月版本不跑）",
+  );
+  const stored = await (await page.request.get(`/api/projects/${id}`)).json();
+  expect(stored.params[1].scheduled).toMatchObject({
+    use: "date",
+    format: "FY%y_%m_M",
+    on_mismatch: "skip",
+    skip_note: "12 月版本不跑",
+  });
   // 统计月 is required with no default and no rule: a release could not fill it in.
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
     "没写（上线时取不到，不能上线）",
@@ -215,7 +230,15 @@ test("文本参数可以限定格式，新建运行时填的值不符合就开�
     environments: [{ key: "dev", label: "开发", catalog: "main", schema: "fm_dev" }],
     params: [
       { key: "update_month", label: "统计月", type: "month", default: "2026-09" },
-      { key: "version_id", label: "版本", type: "text", pattern: "FY\\d{2}_\\d{2}_M" },
+      {
+        key: "version_id",
+        label: "版本",
+        type: "text",
+        pattern: "FY\\d{2}_\\d{2}_M",
+        // The format error says the hint, not the whole description.
+        description: "月度版本；没有默认值，每次都要填",
+        pattern_hint: "FY 两位年份_两位月份_M",
+      },
     ],
   };
   const notText = await request.post("/api/projects", {
@@ -235,7 +258,7 @@ test("文本参数可以限定格式，新建运行时填的值不符合就开�
     },
   });
   expect(wrong.status()).toBe(422);
-  expect((await wrong.json()).detail).toBe("参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
+  expect((await wrong.json()).detail).toBe("参数「版本」的格式不对：FY 两位年份_两位月份_M");
 
   // The run form says the format and checks it before sending.
   await page.goto(`/runs/new?app=${app}`);
@@ -243,10 +266,11 @@ test("文本参数可以限定格式，新建运行时填的值不符合就开�
   await form.getByLabel("客户问题").fill("这个月的预测是多少？");
   await form.getByLabel("项目", { exact: true }).selectOption({ label: `格式 ${id}` });
   const field = form.getByLabel("版本（选填）");
-  await expect(form).toContainText("格式：FY\\d{2}_\\d{2}_M");
+  await expect(form).toContainText("格式：FY 两位年份_两位月份_M");
   await field.fill("FY26-06");
   await form.getByRole("button", { name: "开始运行" }).click();
-  await expect(form).toContainText("参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
+  await expect(form).toContainText("参数「版本」的格式不对：FY 两位年份_两位月份_M");
+  await expect(form).not.toContainText("参数「版本」的格式不对：月度版本");
   await field.fill("FY26_06_M");
   await form.getByRole("button", { name: "开始运行" }).click();
   await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}$/);

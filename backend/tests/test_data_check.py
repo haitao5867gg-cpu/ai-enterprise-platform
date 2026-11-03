@@ -399,6 +399,7 @@ async def test_golden_compares_known_differences_apart():
         "seen": ["B2 数量按新口径"],
         "absent": [],
         "beyond": [],
+        "beyond_why": [],
     }
     known = "(`sku` <=> 'B2' AND `month` <=> '2026-11')"
     assert [(c[1]["where"], c[1]["expected_where"], c[1]["limit"]) for c in calls] == [
@@ -452,17 +453,23 @@ async def test_a_golden_known_difference_covers_its_cells_only(
     assert found["actual"]["different"] == 1
     assert found["rows"][0]["key"] == {"sku": "B2", "month": "2026-11"}
     assert found["rows"][0]["differs"] == ["qty", "amount"]
+    # 4th retest S-20: the column beyond the entry is named, with both values, and the
+    # cell the entry covers is marked in the examples.
+    why = "写明的 qty 之外，amount 也不一致：41 / 40（结果 / 老系统）"
     assert found["known"] == {
         "count": 2,
         "seen": ["sku = C3", "sku = D4"],
         "absent": [],
         "beyond": ["B2 数量按新口径"],
+        "beyond_why": [why],
     }
     assert found["message"] == (
         "和老系统的结果对不上：少 0 行、多 0 行、1 行不一致；另有 2 行是已知差异（sku = C3；"
-        "sku = D4）；已知差异「B2 数量按新口径」的那行和清单写的不一样或还有别的不一致，"
-        "照常算不通过"
+        f"sku = D4）；已知差异「B2 数量按新口径」的那行{why}，照常算不通过"
     )
+    assert found["rows"][0]["known_columns"] == ["qty"]
+    flat = checks._flat(found["rows"][0])
+    assert (flat["qty"], flat["amount"]) == ("4 / 5（已知）", "41 / 40")
 
     # Values pin the cell: the qty must be what the entry says on each side.
     monkeypatch.setitem(
@@ -476,11 +483,15 @@ async def test_a_golden_known_difference_covers_its_cells_only(
     found = await judged(qty | {"columns": {"qty": {"table": 3, "expected": 5}}})
     assert found["status"] == "failed"
     assert found["known"]["beyond"] == ["B2 数量按新口径"]
+    assert found["known"]["beyond_why"] == ["写明 qty 是 3 / 5，这次是 4 / 5（结果 / 老系统）"]
 
     # Without columns a known difference is a row on one side only, not a changed row.
     found = await judged({"match": {"sku": "B2"}})
     assert (found["status"], found["actual"]["different"]) == ("failed", 1)
     assert found["known"]["beyond"] == ["sku = B2"]
+    assert found["known"]["beyond_why"] == [
+        "两边都有、qty（4 / 5） 不一致（结果 / 老系统），清单只管少的行和多的行"
+    ]
     # With columns it is not a missing row.
     found = await judged(qty, *[o | {"columns": ["qty"]} for o in others])
     assert (found["status"], found["actual"]["missing"], found["actual"]["extra"]) == (
@@ -511,6 +522,7 @@ async def test_known_groups_may_pin_their_values():
     found = await judged(november | {"left": 3, "right": 7})
     assert found["status"] == "failed"
     assert found["known"]["beyond"] == ["11 月只到一半"]
+    assert found["known"]["beyond_why"] == ["写明 right 是 7，这次是 6"]
     assert found["rows"] == [{"month": "2026-11", "left": 3, "right": 6}]
 
     low = check("low", "aggregate", table="ibf_table2", expr="sum(qty)", op="ge", value=5,

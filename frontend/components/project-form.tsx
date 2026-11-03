@@ -98,6 +98,10 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
             }))
           : null,
       pattern: param.type === "text" && param.pattern ? param.pattern : null,
+      pattern_hint:
+        param.type === "text" && param.pattern && param.pattern_hint?.trim()
+          ? param.pattern_hint.trim()
+          : null,
       description: param.description,
       scheduled: scheduledBody(param),
     })),
@@ -121,11 +125,14 @@ function scheduledBody(param: Param): Scheduled | null {
   const rule = param.scheduled;
   if (!rule || !scheduledUses(param.type).includes(rule.use)) return null;
   if (rule.use !== "date") return { use: rule.use, format: null, months: 0, day: null };
+  const skip = rule.on_mismatch === "skip" && Boolean(param.pattern);
   return {
     use: "date",
     format: param.type === "text" ? (rule.format ?? "").trim() || null : null,
     months: rule.months,
     day: param.type === "month" ? null : rule.day,
+    on_mismatch: skip ? "skip" : "fail",
+    skip_note: skip ? rule.skip_note?.trim() || null : null,
   };
 }
 
@@ -279,6 +286,32 @@ function ScheduledField({
               maxLength={50}
               help={DATE_FORMAT_HELP}
               onChange={(format) => onChange({ ...rule, format })}
+            />
+          )}
+          {param.pattern && (
+            <SelectField
+              label="推算出的值不符合格式时"
+              value={rule.on_mismatch ?? "fail"}
+              help="比如没有 12 月版本时，1 月推算出的上个月版本不符合格式。跳过时这次定时运行不写表，也不算失败。"
+              choices={[
+                { value: "fail", label: "报错，这次运行算失败" },
+                { value: "skip", label: "跳过，不算失败" },
+              ]}
+              onChange={(value) =>
+                onChange({
+                  ...rule,
+                  on_mismatch: value as "fail" | "skip",
+                  skip_note: value === "skip" ? (rule.skip_note ?? null) : null,
+                })
+              }
+            />
+          )}
+          {param.pattern && rule.on_mismatch === "skip" && (
+            <TextField
+              label="跳过时写进运行记录的话（选填）"
+              value={rule.skip_note ?? ""}
+              maxLength={200}
+              onChange={(note) => onChange({ ...rule, skip_note: note || null })}
             />
           )}
         </>
@@ -633,6 +666,15 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
                   maxLength={200}
                   help={PATTERN_HELP}
                   onChange={(pattern) => update({ ...param, pattern: pattern || null })}
+                />
+              )}
+              {param.type === "text" && param.pattern && (
+                <TextField
+                  label="格式说明（选填）"
+                  value={param.pattern_hint ?? ""}
+                  maxLength={200}
+                  help="填的值不符合格式时提示这句话，如“FY 两位年份_两位月份_M，如 FY26_07_M”。不写时提示参数说明。"
+                  onChange={(hint) => update({ ...param, pattern_hint: hint || null })}
                 />
               )}
               <DefaultField
