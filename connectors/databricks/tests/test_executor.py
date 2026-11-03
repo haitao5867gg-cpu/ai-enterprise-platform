@@ -316,6 +316,51 @@ async def test_a_dropped_context_is_made_again_once():
     await executor.close()
 
 
+async def test_a_restart_drops_every_idle_context():
+    """After a cluster restart every pooled context is gone: the next statement must not
+    try them one by one (the probe answered 500 Internal Server Error on 2026-11-03)."""
+    cluster = Cluster(output=output([["n", "bigint"]], [[1]]))
+    gone: set[str] = set()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/1.2/commands/execute":
+            context = json.loads(request.content)["contextId"]
+            if context in gone:
+                return httpx.Response(400, json={"error": f"Context {context} not found"})
+            await asyncio.sleep(0.01)
+        return cluster(request)
+
+    three = settings(
+        databricks_read_warehouse_id="", databricks_read_cluster_id="c1", databricks_read_contexts=3
+    )
+    executor = ClusterExecutor(three, client(handler))
+    await asyncio.gather(*(executor.query(f"SELECT {i} AS n") for i in range(3)))
+    assert cluster.contexts == 3
+    gone |= {"ctx1", "ctx2", "ctx3"}  # the cluster restarted
+    assert await executor.query("SELECT 1 AS n") == Result([("n", "bigint")], [[1]])
+    assert cluster.contexts == 4
+    assert await executor.query("SELECT 1 AS n") == Result([("n", "bigint")], [[1]])
+    assert cluster.contexts == 4  # the new one is kept, the dead ones are not tried again
+    await executor.close()
+
+
+async def test_a_context_that_vanishes_twice_is_a_connector_error():
+    cluster = Cluster(output=output([["n", "bigint"]], [[1]]))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/1.2/commands/execute":
+            return httpx.Response(400, json={"error": "Context not found"})
+        return cluster(request)
+
+    executor = ClusterExecutor(
+        settings(databricks_read_warehouse_id="", databricks_read_cluster_id="c1"), client(handler)
+    )
+    with pytest.raises(ConnectorError, match="集群可能正在重启"):
+        await executor.query("SELECT 1 AS n")
+    assert cluster.contexts == 2
+    await executor.close()
+
+
 async def test_a_stopped_cluster_is_not_started():
     cluster = Cluster(state="TERMINATED")
     executor = ClusterExecutor(
