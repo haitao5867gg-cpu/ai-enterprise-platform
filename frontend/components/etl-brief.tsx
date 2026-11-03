@@ -22,8 +22,9 @@ const basisLabels: [string, string][] = [
   ["knowledge", "按口径资料"],
   ["request", "按需求"],
   ["data", "按数据里看到的"],
-  ["confirmed", "已经确认过"],
-  ["assumption", "假设"],
+  // Only the platform writes confirmed: from the answers on the review page (I-17).
+  ["confirmed", "已经确认过（确认页上回答的）"],
+  ["assumption", "假设，未确认"],
 ];
 const UNCITED = "没找到口径文档，按需求理解";
 // A text as a name, without its [n].

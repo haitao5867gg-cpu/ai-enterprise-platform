@@ -1074,6 +1074,10 @@ def _generate_answer(plan: EtlPlanV2, cleaned: list[str]) -> None:
         cleaned.append("模型没写答案设计，平台按业务说明生成了一份")
 
 
+def _confirmed_text(given: Confirmed) -> str:
+    return f"{given['actor'] or ''}已确认：{given['label']}——{given['value_label']}"
+
+
 def _confirm(plan: EtlPlanV2, answered: Mapping[str, Confirmed]) -> None:
     """A question a person already answered (in any round: compared by its text, never by
     id) becomes a rule with ``basis`` confirmed, unless the plan has that rule already."""
@@ -1084,10 +1088,38 @@ def _confirm(plan: EtlPlanV2, answered: Mapping[str, Confirmed]) -> None:
         if given is None:
             kept.append(q)
             continue
-        text = f"{given['actor'] or ''}已确认：{given['label']}——{given['value_label']}"
+        text = _confirmed_text(given)
         if not any(r.basis == "confirmed" and bare(r.text) == bare(text) for r in plan.rules):
             _new_rule(plan, text, "confirmed", q)._platform = True
     plan.questions = kept
+
+
+def _only_answers_confirm(
+    plan: EtlPlanV2, answered: Mapping[str, Confirmed], cleaned: list[str]
+) -> None:
+    """``confirmed`` is the platform's word for what a person answered on the review page
+    (jadeflow retest I-17: a model marked its own rule confirmed and skipped the question).
+    A rule the model marked confirmed that no answer of this run backs becomes an
+    assumption; an answer the plan no longer shows as a confirmed rule is put back as
+    the platform's words."""
+    backed = {bare(_confirmed_text(given)): given for given in answered.values()}
+    changed = []
+    for rule in plan.rules:
+        if rule.basis == "confirmed" and not rule._platform and bare(rule.text) not in backed:
+            rule.basis = "assumption"
+            changed.append(rule.id)
+    if changed:
+        cleaned.append(
+            f"规则 {'、'.join(changed)} 写了已确认，但这次运行里没有人回答过对应的问题，"
+            "改成了假设：已确认只由平台按确认页的回答写"
+        )
+    shown = {bare(r.text) for r in plan.rules if r.basis == "confirmed"}
+    for key, given in backed.items():
+        if key not in shown:
+            rule = Rule(id=_free("r", _ids(plan)), text=_confirmed_text(given), basis="confirmed")
+            rule._at = rule._text_at = "rules"
+            rule._platform = True
+            plan.rules.append(rule)
 
 
 def _overflow(plan: EtlPlanV2, cleaned: list[str]) -> None:
@@ -1384,6 +1416,7 @@ def _validated(
     if not model_answer:
         _generate_answer(plan, cleaned)
     _confirm(plan, answered or {})
+    _only_answers_confirm(plan, answered or {}, cleaned)
     _overflow(plan, cleaned)
     _cite_v2(plan, references or [])
     problems = _version_one_checks(
@@ -1478,7 +1511,7 @@ OUTPUT_FORMAT_V2 = """只输出一个 JSON 对象，不要输出其他文字，�
     }
   ],
   "rules": [{"id": "r1", "text": "已经定下的处理，一条一句",
-             "basis": "knowledge、request、data、assumption 或 confirmed"}],
+             "basis": "knowledge、request、data 或 assumption（confirmed 只由平台写）"}],
   "questions": [{"id": "q1", "text": "要人拍板的问题，最多 50 个字", "why": "为什么问",
                  "options": [{"value": "选项值", "label": "选项名称"}],
                  "suggested": "方案现在按哪个选项写（选项的 value）", "affects": ["m1"]}],
@@ -1962,7 +1995,7 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
     }
   ],
   "rules": [{"id": "r1", "text": "已经定下的处理，一条一句",
-             "basis": "knowledge、request、data、assumption 或 confirmed"}],
+             "basis": "knowledge、request、data 或 assumption（confirmed 只由平台写）"}],
   "questions": [{"id": "q1", "text": "要人拍板的问题，最多 50 个字", "why": "为什么问",
                  "options": [{"value": "选项值", "label": "选项名称"}],
                  "suggested": "方案现在按哪个选项写（选项的 value）", "affects": ["m1"]}],

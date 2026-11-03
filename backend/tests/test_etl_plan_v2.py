@@ -757,6 +757,28 @@ def test_a_confirmed_rule_the_plan_has_is_not_added_twice():
     assert [r.id for r in plan.rules] == ["r7"]
 
 
+def test_only_answers_make_a_rule_confirmed():
+    # jadeflow retest I-17: the model marked its own rule confirmed and so skipped the
+    # question nobody had answered.
+    own = rule("原始平台按平台取固定合并值（已确认）", "confirmed", id="r5")
+    plan, cleaned = check(brief_plan(rules=[own]))
+    assert [(r.id, r.basis) for r in plan.rules] == [("r5", "assumption")]
+    assert cleaned == [
+        "规则 r5 写了已确认，但这次运行里没有人回答过对应的问题，改成了假设："
+        "已确认只由平台按确认页的回答写"
+    ]
+    # An answer the plan no longer shows as confirmed (the model reworded it) is put back
+    # in the platform's words; the reworded rule is the model's assumption.
+    reworded = rule("S8 的拼法按建议做（已确认）", "confirmed", id="r5")
+    memory = answered(("S8 的拼法按建议做吗？", "按建议", "张三"))
+    plan, cleaned = check(brief_plan(rules=[reworded]), answered=memory)
+    assert [(r.id, r.text, r.basis) for r in plan.rules] == [
+        ("r5", "S8 的拼法按建议做（已确认）", "assumption"),
+        ("r1", "张三已确认：S8 的拼法按建议做吗？——按建议", "confirmed"),
+    ]
+    assert len(cleaned) == 1
+
+
 def test_answered_questions_go_before_the_sixth_becomes_a_rule():
     many = [question(f"q{i}", f"第 {i} 个问题？", "a", "b") for i in range(1, 7)]
     plan, cleaned = check(
