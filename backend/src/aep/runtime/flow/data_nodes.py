@@ -71,7 +71,7 @@ from aep.etl.profile import (
 from aep.knowledge.citations import IndexedHit
 from aep.projects import KEY as ENVIRONMENT_KEY
 from aep.projects import Scheduling, scheduled_values
-from aep.runtime.flow import refs
+from aep.runtime.flow import diff, refs
 from aep.runtime.flow.nodes import (
     INPUT_ERROR,
     CheckEnv,
@@ -646,7 +646,14 @@ def _check_lines(found: list[dict[str, Any]]) -> list[str]:
     lines = ["", "### 数据检查", ""]
     if not found:
         return lines + ["方案没有建议数据检查。"]
-    lines.append("开发环境试算之后检查（填了老系统结果表时另加一条逐行对比）：")
+    lines.append("开发环境试算之后检查（填了老系统结果表时另加一条逐行对比）。")
+    errors = sum(1 for c in found if c.get("severity") == "error")
+    if errors:
+        # The count is in the text too, not only on the page (jadeflow 4th retest I-10).
+        lines.append(
+            f"共 {len(found)} 条，其中 {errors} 条是错误级：不通过时结果不能直接通过，"
+            "请逐条核对条件和方向。"
+        )
     lines.append("")
     for check in found:
         level = check.get("severity") or "warn"
@@ -654,7 +661,10 @@ def _check_lines(found: list[dict[str, Any]]) -> list[str]:
         if level == "error":
             shown += "：不通过时结果不能直接通过"
         kind = checks.KIND_TEXT[check["kind"]]
-        lines.append(f"- **{check['label']}**（{shown}）：{kind}，{checks.describe(check)}")
+        line = f"- **{check['label']}**（{shown}）：{kind}，{checks.describe(check)}"
+        if level == "error" and check.get("why"):
+            line += f"。为什么是错误级：{check['why']}"
+        lines.append(line)
     return lines
 
 
@@ -711,25 +721,41 @@ def _no_plan() -> dict[str, Any]:
 
 
 # What a check is, whatever it is called: its kind, tables, expressions and conditions.
-_NOT_WHAT = {"id", "label", "severity", "known", "note"}
+_NOT_WHAT = {"id", "label", "severity", "known", "note", "why"}
 
 
-def _check_signature(check: dict[str, Any]) -> str:
-    """A check as compared across versions of a plan (jadeflow retest I-15: two checks only
-    renamed were reported dropped): what it checks, without its id, label, severity and
-    known differences, words lowercased and spaces collapsed."""
+# Settings a check has anyway when it does not write them.
+_CHECK_DEFAULTS: dict[str, Any] = {"tolerance": 0, "relative": False}
 
-    def tidy(value: Any) -> Any:
+
+def _check_fields(check: dict[str, Any]) -> dict[str, Any]:
+    """What a check checks, field by field, as compared across versions of a plan: without
+    its id, label, severity, reason and known differences; words lowercased and spaces
+    collapsed, table names without catalog and schema, and what it leaves at the default
+    left out, so a version the platform only tidied is the same check (jadeflow 4th retest
+    I-15: "表名补全、默认容差" were reported as changes)."""
+
+    def tidy(value: Any, key: str = "") -> Any:
         if isinstance(value, str):
-            return " ".join(value.lower().split())
+            text = " ".join(value.lower().split())
+            return text.replace("`", "").rsplit(".", 1)[-1] if key == "table" else text
         if isinstance(value, dict):
-            return {k: tidy(v) for k, v in sorted(value.items()) if v is not None}
+            return {
+                k: tidy(v, k)
+                for k, v in sorted(value.items())
+                if v not in (None, "", [], {}) and _CHECK_DEFAULTS.get(k, ...) != v
+            }
         if isinstance(value, list):
             return [tidy(v) for v in value]
         return value
 
-    what = {k: v for k, v in check.items() if k not in _NOT_WHAT}
-    return json.dumps(tidy(what), ensure_ascii=False, sort_keys=True)
+    return tidy({k: v for k, v in check.items() if k not in _NOT_WHAT})
+
+
+def _check_signature(check: dict[str, Any]) -> str:
+    """A check as compared across versions of a plan (jadeflow retest I-15: two checks only
+    renamed were reported dropped): ``_check_fields`` as JSON."""
+    return json.dumps(_check_fields(check), ensure_ascii=False, sort_keys=True)
 
 
 def _check_said(check: dict[str, Any]) -> str:
@@ -771,6 +797,7 @@ def _asked(raw: Any) -> list[dict[str, Any]]:
                     "check": keys,
                     "text": f"检查「{keys[-1]}」",
                     "signature": _check_signature(check),
+                    "fields": _check_fields(check),
                     "said": _check_said(check),
                 }
             )
@@ -796,12 +823,14 @@ def _dropped(
     rejected: list[dict[str, Any]], plan: EtlPlan, project: dict[str, Any] | None
 ) -> list[str]:
     """What a version the platform sent back had and the plan that passed has not, one
-    line each: a check, or a column of a table the plan still writes. A model may drop
-    what the platform does not support instead of saying so (jadeflow I-15); the person
-    confirming the plan is told. A check that checks the same thing under another name is
-    kept; one kept by id or label that now checks something else "改了写法", before and
-    after; and when a check was dropped, the checks this version added are listed, to
-    tell whether one replaces it (jadeflow retest I-15). The project's own acceptance
+    short line each: a check, or a column of a table the plan still writes. A model may
+    drop what the platform does not support instead of saying so (jadeflow I-15); the
+    person confirming the plan is told. A check that checks the same thing under another
+    name, or that the platform only tidied, is kept; one kept by id or label that now
+    checks something else "改了", with the fields that changed; and when a check was
+    dropped, the checks this version added are listed, to tell whether one replaces it
+    (jadeflow retest I-15). What a check checks is said in a few words at most (4th
+    retest I-15: whole SQL in the lines was hard to read). The project's own acceptance
     checks run anyway."""
     now = list(plan.checks) if isinstance(plan, EtlPlanV3) else []
     by_key: dict[str, dict[str, Any]] = {}
@@ -834,12 +863,13 @@ def _dropped(
         same = next((by_key[k] for k in item["check"] if str(k).lower() in by_key), None)
         said = item.get("said")
         if same is None:
-            gone.append(f"去掉了{item['text']}" + (f"（{said}）" if said else ""))
+            gone.append(f"去掉了{item['text']}" + (f"（{diff.short(said)}）" if said else ""))
             lost_check = True
         elif signature and _check_signature(same) != signature:
-            new = _check_said(same)
+            fields = item.get("fields")
+            what = diff.field_changes(fields, _check_fields(same)) if fields is not None else ""
             gone.append(
-                f"{item['text']}改了写法：原来是“{said}”，现在是“{new}”，请确认是不是一个意思"
+                f"{item['text']}改了" + (f" {what}" if what else "") + "，请确认是不是一个意思"
             )
     if lost_check:
         for check in now:
@@ -850,16 +880,18 @@ def _dropped(
             said = _check_said(check)
             gone.append(
                 f"新加了检查「{label}」"
-                + (f"（{said}）" if said else "")
-                + "：请确认它是不是替代去掉的那条、够不够"
+                + (f"（{diff.short(said)}）" if said else "")
+                + "：是不是替代去掉的那条、够不够"
             )
     return list(dict.fromkeys(gone))
 
 
 def _dropped_text(dropped: list[str]) -> str:
+    lines = "\n".join(f"> - {line}" for line in dropped)
     return (
-        f"> 注意：方案被平台校验退回后，这一版和退回的那版不一样：{'；'.join(dropped)}。"
-        "请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法，或者在问题里说明。"
+        "> 注意：方案被平台校验退回后，这一版和退回的那版不一样：\n>\n"
+        f"{lines}\n>\n"
+        "> 请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法，或者在问题里说明。"
     )
 
 

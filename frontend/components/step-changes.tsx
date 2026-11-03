@@ -1,0 +1,75 @@
+import { Icon } from "./icons";
+import { isRecord } from "../lib/runs";
+
+// What changed since the person last saw this step: a human node's `changes`
+// (docs/api/flow-apps.md, 人工节点的 changes).
+export type StepChange = {
+  list: string;
+  kind: "added" | "removed" | "changed";
+  key: string;
+  label: string;
+  fields: string;
+  // Whether the remarks that sent it back named the item; null without such remarks.
+  mentioned: boolean | null;
+};
+
+const KINDS = ["added", "removed", "changed"] as const;
+const kindText: Record<StepChange["kind"], string> = {
+  added: "新加",
+  removed: "去掉",
+  changed: "改了",
+};
+
+export function readChanges(value: unknown): StepChange[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).flatMap((item) =>
+    KINDS.includes(item.kind as StepChange["kind"]) &&
+    typeof item.key === "string"
+      ? [
+          {
+            list: typeof item.list === "string" ? item.list : "",
+            kind: item.kind as StepChange["kind"],
+            key: item.key,
+            label: typeof item.label === "string" ? item.label : item.key,
+            fields: typeof item.fields === "string" ? item.fields : "",
+            mentioned:
+              typeof item.mentioned === "boolean" ? item.mentioned : null,
+          },
+        ]
+      : [],
+  );
+}
+
+export function StepChanges({ changes }: { changes: StepChange[] }) {
+  if (!changes.length) return null;
+  const unasked = changes.filter((item) => item.mentioned === false).length;
+  return (
+    <section
+      className="panel step-changes"
+      role="note"
+      aria-label="和上次看到的版本比改了什么"
+    >
+      <h2>
+        <Icon name="alert" size={16} />
+        和你上次看到的版本比，改了 {changes.length} 处
+      </h2>
+      {unasked > 0 && (
+        <p>其中 {unasked} 处意见里没有提到，请确认是不是要这样改。</p>
+      )}
+      <ul>
+        {changes.map((item) => (
+          <li key={`${item.list}:${item.kind}:${item.key}`}>
+            <span className={`change-kind ${item.kind}`}>
+              {kindText[item.kind]}
+            </span>
+            {item.list}「{item.label}」
+            {item.fields && <span className="muted">：{item.fields}</span>}
+            {item.mentioned === false && (
+              <span className="app-tag unasked">意见里没提到</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}

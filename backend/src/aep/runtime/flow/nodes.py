@@ -922,7 +922,11 @@ def _extended(node: dict[str, Any]) -> bool:
     ``dropped_fields``: it sets ``view`` or ``data``, or is an approval that sets
     ``fields`` (a form's fields are the form itself)."""
     approval = node.get("mode", "approval") == "approval"
-    return _set(node, "view") or _set(node, "data") or (approval and _set(node, "fields"))
+    return (
+        _set(node, "view")
+        or _set(node, "data")
+        or (approval and (_set(node, "fields") or _set(node, "changes")))
+    )
 
 
 MAX_ONLY_FOR = 5
@@ -1103,10 +1107,16 @@ async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
             elif branch in guarded:
                 p.add(("changed_branch",), "按意见处理的选项不能设 requires")
         _check_questions(node, p, keys)
+        if node.get("changes") is not None:
+            from aep.runtime.flow import diff
+
+            for where, message in diff.check(node["changes"]):
+                p.add(("changes", *where), message)
     elif mode == "form":
         check_fields(node, "fields", p, QUESTION_TYPES)
-        if node.get("changed_branch") is not None:
-            p.add(("changed_branch",), APPROVAL_ONLY)
+        for key in ("changed_branch", "changes"):
+            if node.get(key) is not None:
+                p.add((key,), APPROVAL_ONLY)
         options = node.get("options")
         for i, o in enumerate(options if isinstance(options, list) else []):
             if isinstance(o, dict) and o.get("requires") is not None:
@@ -1161,6 +1171,15 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         return Outcome(outputs, messages=[said])
     labels = {o["key"]: o.get("label", o["key"]) for o in node["options"]}
     shown = [o["key"] for o in node["options"] if _shown(o, get)]
+    # What changed since this step last showed it (flow-apps.md, changes).
+    kept: dict[str, Any] | None = None
+    if _set(node, "changes"):
+        from aep.runtime.flow import diff
+
+        lists = node["changes"]["lists"]
+        mine = (state.get("private") or {}).get(node["id"]) or {}
+        kept = diff.items(refs.resolve(node["changes"]["of"], get), lists)
+        details["changes"] = diff.changes(mine.get("shown"), kept, lists, mine.get("feedback"))
     # A question only for options not offered now is not asked (flow-apps.md, only_for).
     asked = [
         q if not q.get("only_for") else q | {"only_for": [k for k in q["only_for"] if k in shown]}
@@ -1177,7 +1196,18 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         changed_branch=node.get("changed_branch"),
         seen=extended,
     )
-    return _decided(node, answer, asked, details, rounds, labels)
+    outcome = _decided(node, answer, asked, details, rounds, labels)
+    if kept is not None:
+        # Kept for the next round: what was shown, and what the person said when they sent
+        # it back (a decision that passes their remarks on), to tell what they asked for.
+        sent_back = bool(outcome.outputs.get("feedback"))
+        feedback = (
+            {"comment": outcome.outputs.get("comment"), "notes": outcome.outputs.get("notes")}
+            if sent_back
+            else None
+        )
+        outcome.private = {"shown": kept, "feedback": feedback}
+    return outcome
 
 
 def _shown(option: dict[str, Any], get: refs.Lookup) -> bool:

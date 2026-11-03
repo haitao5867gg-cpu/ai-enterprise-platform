@@ -239,6 +239,7 @@
 | `data` | 两种 | `{}` | 对象，最多 16 个键，键的写法同节点 id。值可以是字面值或引用：恰好是一个引用时取原始值，其余按文本替换，对象和数组里的引用逐层替换（同工具参数）。只放页面要显示的东西，代码这类大块内容不要放，页面另从 `GET /runs/{id}/flow` 取 |
 | `fields` | 确认模式 | 不带题 | 要人回答的题，见下 |
 | `changed_branch` | 确认模式 | null | 必须是某个选项的 key，这个选项不能设 `requires`。提交时改了建议答案、写了意见或挂了意见，就按这个选项处理，见“人工节点在工作台上的样子” |
+| `changes` | 确认模式 | null | 和这一步上次给人看的版本比改了什么，见下（jadeflow 第 4 轮复测后新增） |
 | `options[].requires` | 确认模式 | 总是显示 | `true`、`false`、恰好是一个引用（如 `"{{dev_run.ok}}"`），或者（第三批）1–5 个这样的引用组成的列表（如 `["{{dev_run.ok}}", "{{data_check.ok}}"]`）。到这一步暂停时取值，恰好是 `true`（列表时每一个都恰好是 `true`）才显示；`false`、null、文字、数字都算不显示。至少要有一个选项不设 `requires` |
 
 确认模式的题 `fields`：
@@ -248,9 +249,35 @@
 - 也可以整段引用别的节点产出的题目列表，如 `"{{check_plan.questions}}"`。保存时只检查引用本身；到这一步暂停时取值，按上面的规则逐题检查：`default` 去掉、`required` 改成 true，其他不合格的题丢掉，超过 20 题的从第 21 题起丢掉。丢掉的题列在 `pending.details.dropped_fields`，页面上标出来。取到 null 或空文字时这一步不带题；取到别的不是列表的值，也当作不带题，并在 `dropped_fields` 里记一条。
 - 写成列表的题在运行时也按整段引用的规则逐题检查，丢掉不合格的，记进 `dropped_fields`：以前确认模式的保存检查从来不看 `fields`，导入的文件可能给已经发布的版本留下从没检查过的题。
 
+确认模式的 `changes`：同一步被退回重做后再给人看时，平台把这一版和这一步上次给人看的版本逐条比较，列出改了什么，并标出哪些改动人的意见里没提到（jadeflow 第 4 轮复测 I-3、I-15：按意见重写方案时，模型顺手改了没人要求改的检查，人只能自己逐条对照）。
+
+```jsonc
+"changes": {"of": "{{check_plan.plan}}",               // 要比较的内容：恰好是一个引用
+            "lists": [{"path": "checks", "key": "id", "label": "label", "name": "检查"},
+                      {"path": "brief.metrics", "key": "name", "name": "指标"}]}
+```
+
+- `of` 必须恰好是一个引用，否则报“要比较的内容 of 必须恰好是一个变量，如 {{check_plan.plan}}”。
+- `lists` 是 1–10 个要比较的列表：`path` 是列表在内容里的位置，用 `.` 分层（小写字母、数字、下划线），重复报“列表 checks 重复”；`key` 是条目里用来配对的字段，必填；`label` 是给人看的名字取哪个字段，不写时用 `key`；`name` 是这个列表给人看的名字，1–20 个字符，不写时用 `path`。`key`、`label` 的写法同变量名，最多 64 个字符。`changes` 只有 `of`、`lists` 两项，写了别的报“changes 没有 xxx 这一项”。填写模式写 `changes` 报“只有确认模式可以设”。
+- 比较：每个列表按 `key` 配对，没有 `key` 的条目不比，`key` 重复的只看第一条。比较前把每个条目整理一下：文字的连续空白合成一个空格、去掉值为 null、空文字、空列表、空对象的字段。所以只是空格不同、少写了一个空字段的不算改了。
+- 第 1 轮（这一步还没给人看过）不比，`changes` 为 `[]`。之后每一轮和这一步上一轮给人看的版本比。
+- `pending.details.changes` 是改动的列表，按 `lists` 的顺序，每个列表里先新加和改了的（按这一版的顺序），再去掉的，最多 50 条：
+
+```jsonc
+[{"list": "检查", "kind": "changed", "key": "keys_unique", "label": "主键不重复",
+  "fields": "where、tolerance（0 → 0.005）", "mentioned": false},
+ {"list": "指标", "kind": "added", "key": "客单价", "label": "客单价", "fields": "", "mentioned": true}]
+```
+
+  - `kind`：`added` 新加、`removed` 去掉、`changed` 改了。
+  - `fields`：改了哪些字段，只有 `changed` 有，其余为 `""`。两边都是短的文字或数字（合起来不超过 40 个字符）时带上前后的值，`null` 写成“无”。
+  - `mentioned`：上一轮人是不是在意见里提到了这一条：挂在这一条上的意见（意见的 `item` 冒号后面是这条的 `key`），或者意见、挂的意见里出现了这条的 `key` 或名字（两个字符以上）。只有上一轮这一步的处理把意见往后传了（`feedback` 不为空，即选的是 `comment_required` 里的选项或 `changed_branch`）才判断；上一轮是“确认”这类选项、内容是被后面的步骤退回来改的，`mentioned` 一律为 null，页面只列改动、不标“意见里没提到”。
+- 平台在这一步的私有状态里记下这一轮给人看的条目和意见，供下一轮比较；不在产出里，后面的节点引用不到。
+- 设了 `changes` 的确认模式节点算设了扩展设置（`details` 有 `view`、`data` 这五项，见“带扩展设置的人工节点”），另外多一项 `changes`。
+
 `comment_required` 里的选项，写了意见、挂了至少一条意见、或者改了建议答案，三者有一个就算满足（以前只认意见）。
 
-保存时报错的 `loc` 指到具体设置：`[..., "nodes", "review", "view"]`、`[..., "data", "brief"]`、`[..., "fields", 0, "suggested"]`、`[..., "changed_branch"]`、`[..., "options", 2, "requires"]`。填写模式写了 `changed_branch` 或 `requires`，报错“只有确认模式可以设”。编辑页从来不写这些键，用编辑页建的确认模式节点保存结果不变；导入的配置里确认模式节点如果已经有 `fields`，第二批起会当作题（保存时按上面的规则检查，运行时见上一段）。
+保存时报错的 `loc` 指到具体设置：`[..., "nodes", "review", "view"]`、`[..., "data", "brief"]`、`[..., "fields", 0, "suggested"]`、`[..., "changed_branch"]`、`[..., "options", 2, "requires"]`、`[..., "changes", "lists", 0, "path"]`。填写模式写了 `changed_branch` 或 `requires`，报错“只有确认模式可以设”。编辑页从来不写这些键，用编辑页建的确认模式节点保存结果不变；导入的配置里确认模式节点如果已经有 `fields`，第二批起会当作题（保存时按上面的规则检查，运行时见上一段）。
 
 确认模式的产出：
 
@@ -579,6 +606,7 @@ requires:                 # 方便导入时核对
   - “设了”指配置里有这个键、而且值不是 null：`data: {}`、`fields: []` 算设了；`view: null`、`data: null`、`fields: null`、`changed_branch: null` 和没写一样。
   - `round`：这个节点在这次运行里第几次等人处理，从 1 开始。
   - `seen`：这次显示内容的指纹，写成 `"sha256:" + 十六进制`。算法：整个 `pending` 去掉 `details.seen` 和 `details.round`，转成 JSON（键按字母排序、UTF-8 原样输出中文、不加空格），再算 SHA-256。
+  - `changes`：只有设了 `changes` 的节点有，见上文“确认模式的 `changes`”。页面在这一步的最上面列出来，意见里没提到的标“意见里没提到”。
   - `dropped_fields`：运行时检查没通过、被丢掉的题，`[{"index": 3, "key": "q4", "problem": "建议的答案不在选项里"}]`；`index` 是在题目列表（写的列表或引用到的列表）里的位置，取到的值不是列表时为 null，`key` 认不出时为 null。
 
 提交：

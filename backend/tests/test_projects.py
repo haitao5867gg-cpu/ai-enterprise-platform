@@ -379,6 +379,41 @@ def test_conventions_in_old_snapshots_and_unbound_runs():
     ]
 
 
+async def test_a_cap_on_the_checks_the_model_proposes():
+    """jadeflow 4th retest I-10: a project caps how severe a check the model proposes may
+    be; it is kept, in the snapshot, and told to the model in the brief."""
+    async with Platform(["好的"]) as p:
+        resp = await p.api.post("/projects", json=project(model_check_max_severity="fatal"))
+        assert resp.status_code == 422, resp.text
+        made = await p.api.post("/projects", json=project())
+        assert made.json()["model_check_max_severity"] == "error"
+        changed = await p.api.put(
+            "/projects/jade-ibf", json=project(model_check_max_severity="warn")
+        )
+        assert changed.json()["model_check_max_severity"] == "warn", changed.text
+
+        flow = bound_flow(prompt="{{project.brief}}")
+        await p.new_app("bound", flow)
+        run = await start_run(p, "bound", {"project_id": "jade-ibf"})
+        assert run.status_code == 201, run.text
+        await p.service.wait_idle()
+        said = p.gateway.requests[0]["body"]["messages"][-1]["content"]
+        # The brief is written from the run's snapshot.
+        assert "方案里建议的数据检查最高只能是 warn（项目规定），写得更高的按 warn 运行。" in said
+
+
+def test_the_cap_in_old_snapshots():
+    from aep.projects import brief
+
+    snap = {
+        "name": "x", "description": "", "table_prefix": "ibf_", "references": [], "params": [],
+        "values": {}, "environment": {"key": "dev", "label": "开发", "catalog": "c", "schema": "s"},
+    }  # fmt: skip
+    assert "最高只能是" not in brief(snap)
+    assert "最高只能是" not in brief(snap | {"model_check_max_severity": "error"})
+    assert "最高只能是 info" in brief(snap | {"model_check_max_severity": "info"})
+
+
 async def test_repeated_keys_and_environment_fields():
     async with Platform([]) as p:
         envs = [PROJECT["environments"][0], PROJECT["environments"][0]]

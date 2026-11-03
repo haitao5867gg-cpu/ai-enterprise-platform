@@ -66,8 +66,9 @@ KEYS = {
     "kind": "unique",
     "table": "ibf_table2",
     "columns": ["sku", "month"],
-    # The plan says it must hold; a model's check without a severity only warns.
+    # The plan says it must hold, and why; a model's check without a severity only warns.
     "severity": "error",
+    "why": "一个物料一个月两行，下游汇总会翻倍",
 }
 VOLUME = {
     "id": "volume",

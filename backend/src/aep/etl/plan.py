@@ -1462,8 +1462,11 @@ def _validated(
     problems += structure + _blank_texts(plan) + _version_two_checks(plan, model_answer)
     kept: list[dict[str, Any]] = []
     if version == 3:
-        kept, more = _version_three_checks(plan, proposed, project, existing, source_columns)
+        kept, more, lowered = _version_three_checks(
+            plan, proposed, project, existing, source_columns
+        )
         problems += more
+        cleaned += lowered
     if problems:
         unique = list(dict.fromkeys(problems))
         raise PlanError("；".join(unique), unique)
@@ -1822,20 +1825,44 @@ def _project_problems(plan: EtlPlanV2, project: Mapping[str, Any]) -> list[str]:
     return problems
 
 
+# How severe a check may be, from the least.
+SEVERITY_ORDER = ("info", "warn", "error")
+
+
+def capped_severity(
+    check: Mapping[str, Any], project: Mapping[str, Any] | None
+) -> tuple[str, str | None]:
+    """The severity a check the model proposes runs at, and why it is not the one the model
+    wrote (None when it is): never above the project's ``model_check_max_severity``
+    (jadeflow 4th retest I-10), and an error only with a reason (``why``)."""
+    wrote = check.get("severity") or "warn"
+    cap = (project or {}).get("model_check_max_severity") or "error"
+    label = check.get("label") or check.get("id")
+    if SEVERITY_ORDER.index(wrote) > SEVERITY_ORDER.index(cap):
+        return cap, (
+            f"项目规定模型建议的检查最高是{checks.SEVERITY_TEXT[cap]}级，"
+            f"检查「{label}」从{checks.SEVERITY_TEXT[wrote]}降成{checks.SEVERITY_TEXT[cap]}"
+        )
+    if wrote == "error" and not str(check.get("why") or "").strip():
+        return "warn", f"检查「{label}」没写为什么一不通过就不能交付（why），从错误降成警告"
+    return wrote, None
+
+
 def _plan_checks(
     proposed: Any,
     plan: EtlPlanV2,
     project: Mapping[str, Any] | None,
     columns: Mapping[str, Collection[str]] | None = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """The checks the plan proposes, each one valid (with its ``severity``), and what is
-    wrong with them. ``columns``: the column names (lowercase) of the tables the checks may
-    read, by table name (lowercase); a check naming another column of a table listed there
-    goes back to the model."""
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """The checks the plan proposes, each one valid (with its ``severity``), what is
+    wrong with them, and what the platform changed in them (severities lowered).
+    ``columns``: the column names (lowercase) of the tables the checks may read, by table
+    name (lowercase); a check naming another column of a table listed there goes back to
+    the model."""
     if proposed is None:
-        return [], []
+        return [], [], []
     if not isinstance(proposed, list):
-        return [], ["checks 应该是列表"]
+        return [], ["checks 应该是列表"], []
     problems: list[str] = []
     if len(proposed) > MAX_PLAN_CHECKS:
         problems.append(f"checks 最多 {MAX_PLAN_CHECKS} 条，现在有 {len(proposed)} 条")
@@ -1846,6 +1873,7 @@ def _plan_checks(
     owned = {c.get("id") for c in (project or {}).get("checks") or [] if isinstance(c, dict)}
     ids: set[str] = set()
     kept: list[dict[str, Any]] = []
+    lowered: list[str] = []
     for i, check in enumerate(proposed):
         at = f"checks[{i}]"
         found = checks.problems(check)
@@ -1894,8 +1922,11 @@ def _plan_checks(
             # A check the model proposes only warns unless the plan says it must hold
             # (jadeflow acceptance I-10): a wrong model check at error level blocks a
             # right result.
-            kept.append({**check, "severity": check.get("severity") or "warn"})
-    return kept, problems
+            severity, said = capped_severity(check, project)
+            kept.append({**check, "severity": severity})
+            if said:
+                lowered.append(said)
+    return kept, problems, lowered
 
 
 def _column_problems(
@@ -2023,7 +2054,7 @@ def _version_three_checks(
     project: Mapping[str, Any] | None,
     existing: Sequence[Mapping[str, Any]] | None = None,
     source_columns: Mapping[str, Collection[str]] | None = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     problems: list[str] = _type_problems(plan)
     for target in plan.targets:
         problems += _load_problems(target, project)
@@ -2035,8 +2066,8 @@ def _version_three_checks(
         name.lower(): {c.lower() for c in found} for name, found in (source_columns or {}).items()
     }
     columns |= {t.name.lower(): {c.name.lower() for c in t.columns} for t in plan.targets}
-    kept, more = _plan_checks(proposed, plan, project, columns)
-    return kept, problems + more
+    kept, more, lowered = _plan_checks(proposed, plan, project, columns)
+    return kept, problems + more, lowered
 
 
 # The platform's part of the plan node's prompt for version 3: the JSON it parses. How
@@ -2085,7 +2116,9 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
              "add_up": ["可以跨行相加、但不是 sum 或 count 算出来的指标列，没有就给空数组"]},
   "checks": [{"id": "c1", "label": "检查名称，给人看",
               "kind": "aggregate、reconcile、unique 或 rows",
-              "severity": "warn、error 或 info，不写时是 warn", "其余字段": "按检查的种类，见下"}]
+              "severity": "warn、error 或 info，不写时是 warn",
+              "why": "severity 是 error 时必写：为什么一不通过结果就不能交付；其他时可以不写",
+              "其余字段": "按检查的种类，见下"}]
 }
 不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。
 一个指标落在结果表的多列上（如按月的 12 列）时，columns 列出这些列，column 写其中一列或 null；
@@ -2098,7 +2131,8 @@ checks 是建议在开发环境试算后做的数据检查，最多 10 条，没
 项目说明里的验收检查每次数据检查都会跑，不要再写意思相同的检查，只补它们没管到的。
 表名只能是上面的目标表名和 sources 里的源表，列只能用这些表里有的列。
 severity：warn 不通过时只提醒；error 不通过时结果不能直接通过，确认页会单独标出来，
-只给确定了结果一错就不能交付、条件和方向都核对过的检查用；info 只列出来给人看。各种检查的其余字段：
+只给确定了结果一错就不能交付、条件和方向都核对过的检查用，并在 why 里写明理由（没写的按 warn）；
+项目规定了模型检查的最高级别时，超过的按那个级别；info 只列出来给人看。各种检查的其余字段：
 - aggregate（一个聚合值和期望比）：
   {"table": "表名", "expr": "一个聚合表达式，如 sum(qty)", "where": "条件或 null",
    "group_by": ["可选：按组算，每组都要满足"], "op": "eq、ne、gt、ge、lt、le 或 between",

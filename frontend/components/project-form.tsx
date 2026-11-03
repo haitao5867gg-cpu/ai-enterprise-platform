@@ -17,6 +17,8 @@ import {
   replaceProject,
   scheduledUseLabels,
   scheduledUses,
+  modelCheckCapLabels,
+  type CheckSeverity,
   type Choice,
   type Convention,
   type ConventionStage,
@@ -100,6 +102,7 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
       scheduled: scheduledBody(param),
     })),
     checks: input.checks,
+    model_check_max_severity: input.model_check_max_severity ?? "error",
     conventions: (input.conventions ?? []).map((item) => ({
       key: item.key.trim(),
       title: item.title.trim(),
@@ -698,6 +701,16 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
           issues={at("checks")}
           help={`最多 50 条，id 不能用 golden。${CHECKS_HELP}`}
           onChange={(checks) => set("checks", checks)}
+        />
+        <SelectField
+          label="方案里模型建议的检查"
+          value={input.model_check_max_severity ?? "error"}
+          help="模型在方案里建议的检查不通过时最多算什么。错误会挡住交付，建议先用警告，由人确认；写得更高的按这里运行。项目自己的验收检查不受影响。"
+          choices={(Object.keys(modelCheckCapLabels) as CheckSeverity[]).map((value) => ({
+            value,
+            label: modelCheckCapLabels[value],
+          }))}
+          onChange={(value) => set("model_check_max_severity", value as CheckSeverity)}
         />
       </fieldset>
 

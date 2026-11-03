@@ -7,7 +7,8 @@ import {
 import type { AppDetail, FlowConfig } from "../lib/apps";
 
 // The review node llm_review (docs/api/flow-apps.md, "llm_review 模型审查") in the
-// editor, and a project's conventions (docs/api/projects.md) on the project pages.
+// editor, and a project's conventions and cap on model checks (docs/api/projects.md) on
+// the project pages.
 const id = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const panel = (page: Page) => page.getByRole("region", { name: /^节点设置：/ });
@@ -129,7 +130,7 @@ test("the review node is added, checked and saved with a rule and a reference", 
   );
 });
 
-test("a project's conventions are edited on its page and listed on it", async ({
+test("a project's conventions and cap on model checks are edited on its page and listed on it", async ({
   page,
 }) => {
   const project = `conv-${Date.now().toString(36)}`;
@@ -170,6 +171,8 @@ test("a project's conventions are edited on its page and listed on it", async ({
     .fill("资料说没定的事要写成问题");
   await two.getByLabel("补充说明（选填）").fill("不要替业务做决定");
   await two.getByLabel("什么时候遵守").selectOption("plan");
+  // Checks the model proposes in a plan run at warning at most.
+  await edit.getByLabel("方案里模型建议的检查").selectOption("warn");
   await edit.getByRole("button", { name: "保存" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "已保存" }),
@@ -182,6 +185,10 @@ test("a project's conventions are edited on its page and listed on it", async ({
   const saved = await (
     await page.request.get(`/api/projects/${project}`)
   ).json();
+  await expect(page.getByRole("region", { name: "验收检查" })).toContainText(
+    "方案里模型建议的检查：最高是警告",
+  );
+  expect(saved.model_check_max_severity).toBe("warn");
   expect(saved.conventions).toEqual([
     {
       key: "rule_1",

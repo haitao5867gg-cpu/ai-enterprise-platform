@@ -1212,7 +1212,14 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
       ? (node.options.find((option) => option.key === node.changed_branch)
           ?.label ?? node.changed_branch)
       : "";
-  if (!node.view && !data?.length && !asked && !changed) return null;
+  const compared =
+    node.mode === "approval" && node.changes
+      ? `${settingText(node.changes.of)} 里的${(node.changes.lists ?? [])
+          .map((item) => item.name || item.path)
+          .join("、")}`
+      : "";
+  if (!node.view && !data?.length && !asked && !changed && !compared)
+    return null;
   return (
     <section className="human-extras" aria-label="扩展设置">
       <h4>扩展设置</h4>
@@ -1249,6 +1256,14 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
           issues={issuesUnder(issues, "changed_branch")}
         >
           「{changed}」处理
+        </ReadOnlySetting>
+      )}
+      {compared && (
+        <ReadOnlySetting
+          label="和上次看到的比改了什么"
+          issues={issuesUnder(issues, "changes")}
+        >
+          {compared}
         </ReadOnlySetting>
       )}
     </section>

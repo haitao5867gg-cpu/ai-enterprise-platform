@@ -161,6 +161,22 @@ test("plan review: the brief, questions on the page, notes on items turn the dec
 
   // The plan is written again: the questions answered are rules now, the notes are gone.
   await expect(review.getByText("第 2 轮")).toBeVisible();
+  // What changed since round 1 is listed first, what the notes did not ask for marked.
+  const changed = page.getByRole("note", {
+    name: "和上次看到的版本比改了什么",
+  });
+  await expect(changed).toContainText("和你上次看到的版本比，改了 2 处");
+  await expect(changed).toContainText(
+    "其中 1 处意见里没有提到，请确认是不是要这样改。",
+  );
+  await expect(
+    changed.getByRole("listitem").filter({ hasText: "退款订单整单去掉" }),
+  ).toContainText("新加规则「退款订单整单去掉」意见里没提到");
+  await expect(
+    changed
+      .getByRole("listitem")
+      .filter({ hasText: "ads_sales_city_member_m" }),
+  ).not.toContainText("意见里没提到");
   await expect(page.locator(".note-list")).toHaveCount(0);
   await expect(review.locator(".review-questions")).toHaveCount(0);
   await review.getByText("已按口径处理（5 条）").click();
@@ -346,6 +362,12 @@ test("data review sends the plan back: the plan review says so at its top", asyn
   await expect(returned).toContainText(
     "ads_sales_city_member_m.avg_order_value：按支付金额算",
   );
+  // The plan's changes are listed, not held against remarks made at another step.
+  const changed = page.getByRole("note", {
+    name: "和上次看到的版本比改了什么",
+  });
+  await expect(changed).toContainText("和你上次看到的版本比，改了 2 处");
+  await expect(changed).not.toContainText("意见里没");
 });
 
 test("template v3: write modes and proposed checks on the plan, a failed check has no 通过, a note on it sends the code back", async ({
