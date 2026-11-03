@@ -912,13 +912,14 @@ def _known_seen(
     count: int,
     hit: set[int],
     complete: bool,
-    beyond: set[int] | None = None,
+    beyond: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     """``count`` rows or groups matched known differences, ``hit`` the ones seen among them;
     with ``complete`` (all of them were looked at) the ones that did not show up too.
     ``beyond``: the known differences whose row or group differed in more than they say,
-    which failed as usual (jadeflow retest I-16)."""
-    beyond = beyond or set()
+    which failed as usual (jadeflow retest I-16), each with what else differed (4th retest
+    S-20: the person had to find the column)."""
+    beyond = beyond or {}
     return {
         "count": count,
         "seen": [_named(known[i]) for i in sorted(hit)],
@@ -926,6 +927,7 @@ def _known_seen(
         if complete
         else [],
         "beyond": [_named(known[i]) for i in sorted(beyond)],
+        "beyond_why": [beyond[i] for i in sorted(beyond)],
     }
 
 
@@ -974,19 +976,29 @@ def _apart(
         return rows, None
     new: list[dict[str, Any]] = []
     hit: set[int] = set()
-    beyond: set[int] = set()
+    beyond: dict[int, str] = {}
     count = 0
     for row in rows:
         i = _which(row, known)
         if i is None:
             new.append(row)
         elif not _pinned(row, known[i], check):
-            beyond.add(i)
+            beyond.setdefault(i, _unpinned(row, known[i], check))
             new.append(row)
         else:
             hit.add(i)
             count += 1
     return new, _known_seen(known, count, hit, complete=True, beyond=beyond)
+
+
+def _unpinned(row: dict[str, Any], item: dict[str, Any], check: dict[str, Any]) -> str:
+    """What a failing group a known difference matches has other than it says."""
+    said = [
+        f"写明 {key} 是 {fmt(_plain(item[key]))}，这次是 {fmt(_plain(row.get(key)))}"
+        for key in KNOWN_MORE.get(check["kind"], ())
+        if key in item and key != "columns" and not _close(row.get(key), item[key], check)
+    ]
+    return "，".join(said)
 
 
 def _known_tail(info: dict[str, Any] | None, unit: str) -> str:
@@ -995,9 +1007,15 @@ def _known_tail(info: dict[str, Any] | None, unit: str) -> str:
     parts = []
     if info["count"]:
         parts.append(f"另有 {info['count']:,} {unit}是已知差异（{'；'.join(info['seen'])}）")
-    if info.get("beyond"):
+    why = info.get("beyond_why") or []
+    for name, reason in zip(info.get("beyond") or [], why, strict=False):
+        if reason:
+            parts.append(f"已知差异「{name}」的那{unit}{reason}，照常算不通过")
+    unsaid = [n for n, r in zip(info.get("beyond") or [], why, strict=False) if not r]
+    unsaid += (info.get("beyond") or [])[len(why) :]
+    if unsaid:
         parts.append(
-            f"已知差异「{'；'.join(info['beyond'])}」的那{unit}和清单写的不一样或还有别的不一致，"
+            f"已知差异「{'；'.join(unsaid)}」的那{unit}和清单写的不一样或还有别的不一致，"
             "照常算不通过"
         )
     if info["absent"]:
@@ -1162,7 +1180,7 @@ def _golden_known(
             "请把 match 写得更具体"
         )
     hit: set[int] = set()
-    beyond: set[int] = set()
+    beyond: dict[int, str] = {}
     real: list[dict[str, Any]] = []
     for row in seen["rows"]:
         i = _which(row.get("key"), entries)
@@ -1170,7 +1188,11 @@ def _golden_known(
             hit.add(i)
         else:
             if i is not None:
-                beyond.add(i)
+                beyond.setdefault(i, _golden_beyond(row, entries[i]))
+                listed = entries[i].get("columns")
+                if listed and row.get("kind") == "different":
+                    # The cells the known difference covers are marked in the examples.
+                    row = {**row, "known_columns": [str(c) for c in listed]}
             real.append(row)
     known = _known_seen(entries, total - len(real), hit, complete=True, beyond=beyond)
     if not real or found["missing"] is None:
@@ -1201,6 +1223,47 @@ def _golden_known_row(row: dict[str, Any], item: dict[str, Any]) -> bool:
                 if side in pin and not _close(_cell_of(row.get(side), name), pin[side]):
                     return False
     return True
+
+
+def _golden_beyond(row: dict[str, Any], item: dict[str, Any]) -> str:
+    """What a compared row a golden check's known difference matches has other than it
+    says, as people read it (jadeflow 4th retest S-20): "写明的 platform_original 之外，
+    allocation 也不一致：0.35 / 0.3（结果 / 老系统）"."""
+    columns = item.get("columns")
+    kind = row.get("kind")
+    side = {"missing": "只在老系统里有", "extra": "只在结果表里有"}
+    if kind in side:
+        return f"{side[kind]}，清单写的是 {'、'.join(map(str, columns or []))} 不一致"
+    if kind != "different":
+        return ""
+    mine, old = row.get("table"), row.get("expected")
+
+    def pair(name: str) -> str:
+        return f"{fmt(cell_text(_cell_of(mine, name)))} / {fmt(cell_text(_cell_of(old, name)))}"
+
+    differs = [str(c) for c in row.get("differs") or []]
+    if not columns:
+        listed = "、".join(f"{c}（{pair(c)}）" for c in differs)
+        return f"两边都有、{listed} 不一致（结果 / 老系统），清单只管少的行和多的行"
+    names = {str(c).lower() for c in columns}
+    more = [c for c in differs if c.lower() not in names]
+    if more:
+        if len(more) == 1:
+            also = f"{more[0]} 也不一致：{pair(more[0])}"
+        else:
+            also = "、".join(f"{c}（{pair(c)}）" for c in more) + " 也不一致"
+        return f"写明的 {'、'.join(map(str, columns))} 之外，{also}（结果 / 老系统）"
+    said = []
+    for name, pin in columns.items() if isinstance(columns, dict) else []:
+        wanted = " / ".join(
+            fmt(cell_text(pin[s])) if s in pin else "—" for s in ("table", "expected")
+        )
+        if any(
+            s in pin and not _close(_cell_of(r, name), pin[s])
+            for s, r in (("table", mine), ("expected", old))
+        ):
+            said.append(f"写明 {name} 是 {wanted}，这次是 {pair(name)}")
+    return "，".join(said) + "（结果 / 老系统）" if said else ""
 
 
 def _cell_of(values: Any, name: str) -> Any:
@@ -1476,6 +1539,8 @@ def _flat(row: dict[str, Any]) -> dict[str, Any]:
         return out
     mine, old = row.get("table") or {}, row.get("expected") or {}
     differs = set(row.get("differs") or [])
+    # Cells a known difference covers, in a row that differs in more (4th retest S-20).
+    known = {str(c).lower() for c in row.get("known_columns") or []}
 
     def said(value: Any) -> str:
         return fmt(cell_text(value))
@@ -1487,6 +1552,8 @@ def _flat(row: dict[str, Any]) -> dict[str, Any]:
             out[column] = f"{said(mine.get(column))} / —"
         elif column in differs:
             out[column] = f"{said(mine.get(column))} / {said(old.get(column))}"
+            if column.lower() in known:
+                out[column] += "（已知）"
         else:
             out[column] = said(mine.get(column))
     return out

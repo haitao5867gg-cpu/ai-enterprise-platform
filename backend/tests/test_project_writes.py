@@ -897,6 +897,18 @@ def test_the_notebook_reads_the_project_from_its_widgets(monkeypatch, tmp_path):
     cluster_harness.run_notebook(None, Dbutils, "pipeline.py")
     assert seen["params"] == {"update_month": "2026-09", "batch": "4417"}
 
+    # A day its rule skips (4th retest S-21): the code does not run, the run ends with why.
+    seen.clear()
+    skip = {"key": "v", "label": "版本", "type": "text", "use": "date", "format": "M%m",
+            "months": 0, "pattern": "never", "on_mismatch": "skip",
+            "skip_note": "这个月不跑"}  # fmt: skip
+    widgets |= {"param_rules": json.dumps({"timezone": "UTC", "params": [skip]})}
+    cluster_harness.run_notebook(None, Dbutils, "pipeline.py")
+    assert "params" not in seen
+    said = json.loads(seen["exit"].split(cluster_harness.MARKER, 1)[1])
+    assert said["tables"] == said["errors"] == said["write_errors"] == []
+    assert said["skipped"].endswith("不符合它的格式，按项目的设置这次跳过，没有写表：这个月不跑")
+
 
 def test_scheduled_runs_work_out_dates_and_check_the_format():
     """jadeflow retest I-19 (docs/api/projects.md, "定时运行时参数怎么取")."""
@@ -941,6 +953,19 @@ def test_scheduled_runs_work_out_dates_and_check_the_format():
     batch = {"key": "batch", "label": "运行批次", "type": "text", "use": "run_id"}
     with pytest.raises(ValueError, match="拿不到作业运行的 ID"):
         cluster_harness.scheduled_params({}, {"params": [batch]}, "")
+
+    # 4th retest S-21: there is no December version; January's run is skipped, no failure.
+    skipping = version | {"on_mismatch": "skip", "skip_note": "12 月版本没有 Forecast 月份"}
+    rules = {"timezone": "Asia/Shanghai", "params": [skipping]}
+    with pytest.raises(cluster_harness.Skipped) as skipped:
+        cluster_harness.scheduled_params(fixed, rules, "88", datetime(2027, 1, 1, 2))
+    assert str(skipped.value) == (
+        "定时运行在 2027-01-01 算出参数「版本」= FY26_12_M，不符合它的格式，按项目的设置这次跳过，"
+        "没有写表：12 月版本没有 Forecast 月份"
+    )
+    assert not isinstance(skipped.value, ValueError)
+    worked = cluster_harness.scheduled_params(fixed, rules, "88", datetime(2026, 12, 1, 2))
+    assert worked["version_id"] == "FY26_11_M"
 
 
 # Where the dev run deploys and runs

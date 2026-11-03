@@ -825,9 +825,40 @@ function checkResults(failed: boolean) {
       : result(keys, "passed", "按 stat_month、city、member_level 没有重复"),
     result(amount, "passed", "左边 12,840,331.5，右边 12,840,331.5，一致"),
     result(negative, "passed", "没有满足 sales_amount < 0 的行"),
+    // The comparison with the old system: a row a known difference matches differs in
+    // another column too; the column is named and the known cell marked.
+    ...(failed
+      ? [
+          {
+            id: "golden",
+            label: "和老系统的结果一致",
+            kind: "golden",
+            severity: "error",
+            status: "failed",
+            actual: { missing: 0, extra: 0, different: 1 },
+            expected: null,
+            message:
+              "和老系统的结果对不上：少 0 行、多 0 行、1 行不一致；已知差异「上海按新口径」的那行写明的 avg_order_value 之外，customer_count 也不一致：801 / 800（结果 / 老系统），照常算不通过",
+            rows: [
+              {
+                kind: "different",
+                key: {
+                  stat_month: "2025-11",
+                  city: "上海",
+                  member_level: "silver",
+                },
+                table: { avg_order_value: 211.5, customer_count: 801 },
+                expected: { avg_order_value: 210.0, customer_count: 800 },
+                differs: ["avg_order_value", "customer_count"],
+                known_columns: ["avg_order_value"],
+              },
+            ],
+          },
+        ]
+      : []),
   ];
   const summary = failed
-    ? "3 项检查：2 项通过，1 项不通过"
+    ? "4 项检查：2 项通过，2 项不通过"
     : "3 项检查：3 项通过";
   const report = `## 数据检查\n\n${summary}\n\n| 结果 | 检查 | 说明 |\n| --- | --- | --- |\n${results
     .map(

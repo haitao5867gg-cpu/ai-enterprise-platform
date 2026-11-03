@@ -1950,7 +1950,8 @@ async def test_dev_run_hands_the_same_error_twice_to_a_person(tmp_path):
     said = "order_facts: TypeError: '<' not supported between instances of 'str' and 'int'"
     ws.job_outputs = [
         {"errors": [said + " (expr cw_07#1201)"]},
-        {"errors": [said + " (expr cw_07#1388)"]},
+        # 4th retest I-18: other words, the same place and kind of error.
+        {"errors": ["order_facts: TypeError: unsupported operand type(s) for -: 'str' and 'int'"]},
         {"errors": ["order_facts: AnalysisException: 列不存在"]},
     ]
     rt, _ = await node_env(ws.target(databricks_cluster_id=fake_databricks.CLUSTER_ID))
@@ -1963,21 +1964,33 @@ async def test_dev_run_hands_the_same_error_twice_to_a_person(tmp_path):
     again = await run(node, st, rt)
     assert again.branch == "failed" and again.private == {"attempts": 0}
     assert again.messages[0]["content"] == (
-        "dev 运行失败（1 条报错），和上一次的报错一样，不再自动重写，交给人"
+        "dev 运行失败（1 条报错），和上一次在同一处报同一类错，不再自动重写，交给人"
     )
-    assert data_nodes.REPEATED_SAID in again.outputs["report"]
-    # Another error is worth one more rewrite.
+    assert data_nodes.repeated_said(["order_facts · TypeError"]) in again.outputs["report"]
+    assert "（order_facts · TypeError）" in again.outputs["report"]
+    # Another kind of error is worth one more rewrite.
     other = await run(node, st, rt)
     assert other.branch == "retry" and other.outputs["run"]["attempt"] == 2
-    assert data_nodes.REPEATED_SAID not in other.outputs["report"]
+    assert "在同一处、是同一类" not in other.outputs["report"]
 
 
-def test_errors_key_ignores_what_varies_between_runs():
-    key = data_nodes.errors_key
+def test_the_same_error_is_the_same_place_and_kind():
+    key, place = data_nodes.errors_key, data_nodes.error_place
     assert key([]) is None
-    assert key(["t: E: x#12  at 1234567"]) == key(["t: E:  x#99 at 7654321"])
-    assert key(["t: E: a", "t: E: b"]) == key(["t: E: b", "t: E: a"])
-    assert key(["t: E: line 3"]) != key(["t: E: line 4"])
+    assert key(["t: E: a", "t: E: b"]) == key(["t: E: b"])
+    assert key(["t: E: line 3"]) == key(["t: E: line 4"])
+    assert key(["t: E: a"]) != key(["u: E: a"]) != key(["t: F: a"])
+    assert key(["t: E: a"]) != key(["t: E: a", "u: E: a"])
+    # Spark's error class is part of the kind; its sub-class is not.
+    unresolved = "t: AnalysisException: [UNRESOLVED_COLUMN.WITH_SUGGESTION] 列 `a` 不存在"
+    assert place(unresolved) == "t · AnalysisException[UNRESOLVED_COLUMN]"
+    assert key([unresolved]) == key([unresolved.replace("WITH_", "WITHOUT_")])
+    mismatch = "t: AnalysisException: [DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES] 类型不一致"
+    assert key([unresolved]) != key([mismatch])
+    assert place("t: 质量规则 qty_ok 要求整次更新失败，有 3 行违反") == "t · 质量规则 qty_ok"
+    # Written otherwise: the words, without what varies between runs.
+    assert place("出错了  x#12 at 1234567") == place("出错了 x#99  at 7654321")
+    assert key(["出错了 a"]) != key(["出错了 b"])
 
 
 def answered_plan(**design) -> dict:

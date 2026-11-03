@@ -77,7 +77,8 @@ function ParamInput({
     </label>
   );
   const pattern = param.type === "text" ? param.pattern : null;
-  const hint = [param.description, pattern && `格式：${pattern}`].filter(Boolean).join("；");
+  const format = pattern && (param.pattern_hint || pattern);
+  const hint = [param.description, format && `格式：${format}`].filter(Boolean).join("；");
   const described = [hint && `${id}-hint`, error && `${id}-error`]
     .filter(Boolean)
     .join(" ");

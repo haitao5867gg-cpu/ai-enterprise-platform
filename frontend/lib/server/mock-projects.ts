@@ -258,8 +258,17 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       if (!patternRegExp(param.pattern)) return `参数「${label}」的格式不是有效的正则表达式`;
       pattern = param.pattern;
     }
+    let patternHint: string | null = null;
+    if (param.pattern_hint != null) {
+      patternHint = text(param.pattern_hint, 1, 200);
+      if (!patternHint) return `「${at}的格式说明」的格式、长度或范围不正确`;
+      if (pattern === null) return `参数「${label}」没有写格式，不用写格式说明`;
+    }
+    const description = typeof param.description === "string" ? param.description : "";
     const value = (param.default ?? null) as ParamValue;
-    const problem = value !== null && paramProblem({ label, type, choices, pattern }, value);
+    const problem =
+      value !== null &&
+      paramProblem({ label, type, choices, pattern, pattern_hint: patternHint, description }, value);
     if (problem) return `默认值不对：${problem}`;
     // How scheduled runs fill it in: the shape is kept, the backend checks the rest.
     let scheduled: Scheduled | null = null;
@@ -270,11 +279,16 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       const use = rule.use as Scheduled["use"];
       if (use === "date" && type === "text" && typeof rule.format !== "string")
         return `参数「${label}」定时运行时的取法不对：文本参数要写日期格式 format，如 FY%y_%m_M`;
+      const skip = rule.on_mismatch === "skip";
+      if (skip && (use !== "date" || pattern === null))
+        return `参数「${label}」定时运行时的取法不对：只有写了格式、按日期推算的参数才能写不符合格式时跳过`;
       scheduled = {
         use,
         format: typeof rule.format === "string" ? rule.format : null,
         months: typeof rule.months === "number" ? rule.months : 0,
         day: rule.day === "first" || rule.day === "last" ? rule.day : null,
+        on_mismatch: skip ? "skip" : "fail",
+        skip_note: skip ? text(rule.skip_note, 1, 200) : null,
       };
     }
     params.push({
@@ -285,7 +299,8 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       default: value,
       choices: type === "select" ? choices : null,
       pattern,
-      description: typeof param.description === "string" ? param.description : "",
+      pattern_hint: patternHint,
+      description,
       scheduled,
     });
   }

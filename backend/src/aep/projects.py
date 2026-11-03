@@ -146,6 +146,8 @@ def param_problem(param: dict[str, Any], value: Any) -> str | None:
     if kind == "text" and pattern and _pattern(pattern).fullmatch(value) is None:
         # People read the parameter's description, not the regular expression (jadeflow
         # retest S-19).
+        if hint := (param.get("pattern_hint") or "").strip():
+            return f"参数「{label}」的格式不对：{hint}"
         if described := (param.get("description") or "").strip():
             return f"参数「{label}」的格式不对：{described}"
         return f"参数「{label}」的格式不对，要整段符合正则表达式 {pattern}"
@@ -222,6 +224,11 @@ class Scheduled(_Model):
     format: _text(1, 50) | None = None
     months: int = Field(0, ge=-24, le=24)
     day: Literal["first", "last"] | None = None
+    # A date that does not fit the parameter's format: the run fails, or (jadeflow 4th
+    # retest S-21: no December version, so every January run failed) it is skipped, with
+    # ``skip_note`` in the job run's record.
+    on_mismatch: Literal["fail", "skip"] = "fail"
+    skip_note: _text(1, 200) | None = None
 
 
 def format_problem(form: str) -> str | None:
@@ -248,6 +255,9 @@ class Param(_Model):
         | None
     ) = None
     description: Annotated[str, StringConstraints(max_length=500, pattern=NO_NUL)] = ""
+    # What a value that does not fit ``pattern`` is told, instead of the whole description
+    # (jadeflow 4th retest: "没有默认值" came with a format error).
+    pattern_hint: _text(1, 200) | None = None
     # How a released job's scheduled runs fill it in; None: its default, else empty.
     scheduled: Scheduled | None = None
 
@@ -260,6 +270,8 @@ class Param(_Model):
                 raise ValueError(f"参数「{self.label}」不是文本，不能写格式")
             if problem := pattern_problem(self.pattern):
                 raise ValueError(f"参数「{self.label}」的格式{problem}")
+        elif self.pattern_hint is not None:
+            raise ValueError(f"参数「{self.label}」没有写格式，不用写格式说明")
         if self.type == "select":
             if not self.choices or not 1 <= len(self.choices) <= 50:
                 raise ValueError(f"参数「{self.label}」是选项，要列出 1–50 个选项")
@@ -277,6 +289,12 @@ class Param(_Model):
     def _scheduled_problem(self, rule: Scheduled) -> str | None:
         if rule.use != "date" and (rule.format or rule.months or rule.day):
             return "只有按日期推算（date）才写 format、months、day"
+        if rule.use != "date" and (rule.on_mismatch != "fail" or rule.skip_note):
+            return "只有按日期推算（date）才写不符合格式时怎么办（on_mismatch、skip_note）"
+        if rule.on_mismatch == "skip" and self.pattern is None:
+            return "参数没有写格式，算出的日期都能用，不用写不符合格式时跳过"
+        if rule.skip_note and rule.on_mismatch != "skip":
+            return "skip_note 是跳过时写进运行记录的话，只有不符合格式时跳过（skip）才写"
         if rule.use == "run_id" and self.type != "text":
             return "作业运行的 ID 只能填进文本参数"
         if rule.use == "date":
@@ -893,7 +911,9 @@ def scheduled_values(
                 "months": rule.get("months") or 0,
                 "day": rule.get("day"),
                 "pattern": p.get("pattern"),
-                "description": p.get("description") or "",
+                "description": p.get("pattern_hint") or p.get("description") or "",
+                "on_mismatch": rule.get("on_mismatch") or "fail",
+                "skip_note": rule.get("skip_note"),
             }
             rules.append(found)
             fixed[key] = None
@@ -909,7 +929,13 @@ def scheduled_values(
                     "value": value,
                 }
                 if (pattern := p.get("pattern")) and _pattern(pattern).fullmatch(value) is None:
-                    line["warning"] = "这个值不符合参数的格式，这样的日子定时运行会报错、不写表"
+                    if found["on_mismatch"] == "skip":
+                        note = f"：{found['skip_note']}" if found["skip_note"] else ""
+                        line["warning"] = (
+                            f"这个值不符合参数的格式，这样的日子定时运行会跳过、不写表，不算失败{note}"
+                        )
+                    else:
+                        line["warning"] = "这个值不符合参数的格式，这样的日子定时运行会报错、不写表"
         lines.append(line)
     return Scheduling(fixed, rules, lines, problems, today.isoformat(), timezone)
 

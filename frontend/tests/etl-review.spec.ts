@@ -443,7 +443,21 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   ).toContainText("读预测表的地方都先按版本筛选");
   await expect(review.getByRole("alert")).toContainText("数据检查没通过");
   const checks = review.getByRole("region", { name: "数据检查", exact: true });
-  await expect(checks).toContainText("3 项检查：2 项通过，1 项不通过");
+  await expect(checks).toContainText("4 项检查：2 项通过，2 项不通过");
+  // A known difference's row that differs in more: the column is named, the cell the
+  // known difference covers is marked.
+  const golden = checks
+    .getByRole("listitem")
+    .filter({ hasText: "和老系统的结果一致" });
+  await expect(golden).toContainText(
+    "写明的 avg_order_value 之外，customer_count 也不一致：801 / 800",
+  );
+  const example = golden.getByRole("table", {
+    name: "和老系统的结果一致 的例子",
+  });
+  await expect(example).toContainText("211.5 / 210（已知）");
+  await expect(example).toContainText("801 / 800");
+  await expect(example).not.toContainText("801 / 800（已知）");
   const keys = checks
     .getByRole("listitem")
     .filter({ hasText: "每月每个城市每个等级一行" });
