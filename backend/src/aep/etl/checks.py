@@ -39,10 +39,16 @@ MAX_EXPRESSION = 2000
 MAX_GROUP_COLUMNS = 10
 MAX_KEYS = 20
 MAX_COMPARED = 200
-# Known differences a check may list (jadeflow acceptance I-4).
+# Known differences a check may list (jadeflow acceptance I-4), and what besides ``match``
+# and ``note`` pins one down to a cell or a value (jadeflow retest I-16).
 MAX_KNOWN = 20
 KNOWN_FIELDS = {"match", "note"}
+KNOWN_MORE = {"golden": ("columns",), "aggregate": ("value",), "reconcile": ("left", "right")}
+KNOWN_SIDES = {"table", "expected"}
+MAX_KNOWN_COLUMNS = 20
 MAX_NOTE = 200
+# Rows of known differences a golden check looks at one by one.
+KNOWN_ROWS = 200
 # A table name: a result table (bare), a source (schema.table) or catalog.schema.table.
 _PART = r"[^\s`.]{1,255}"
 TABLE = re.compile(rf"^{_PART}(?:\.{_PART}){{0,2}}$")
@@ -198,7 +204,10 @@ def known_columns(check: dict[str, Any]) -> list[str] | None:
 def _known_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> None:
     """``known``: the differences people already know of (jadeflow acceptance I-4), each
     ``{"match": {column: value}, "note": "why"}``. What they match is reported apart and
-    does not fail the check; anything else still does."""
+    does not fail the check; anything else still does. A golden check's names the
+    ``columns`` that may differ (with the values on each side, when given), a grouped
+    aggregate's its ``value`` and a reconcile's its ``left`` and ``right``: anything else on
+    that row or group still fails (jadeflow retest I-16)."""
     known = check.get("known")
     if known is None:
         return
@@ -215,15 +224,18 @@ def _known_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> N
             "只有按组比的聚合值和对账、键不重复、和老系统对比、不该有的行能写 known（已知差异）",
         )
         return
-    what = {"unique": "检查的 columns", "golden": "keys"}.get(check["kind"], "group_by")
+    kind = check["kind"]
+    what = {"unique": "检查的 columns", "golden": "keys"}.get(kind, "group_by")
+    more = KNOWN_MORE.get(kind, ())
+    fields = "、".join(["match", "note", *more])
     for i, item in enumerate(known):
         at: Loc = ("known", i)
         if not isinstance(item, dict):
             add(at, f"每项已知差异要写成 {shape}")
             continue
         for key in item:
-            if key not in KNOWN_FIELDS:
-                add((*at, key), f"已知差异没有 {key} 这一项，只有 match 和 note")
+            if key not in KNOWN_FIELDS and key not in more:
+                add((*at, key), f"已知差异没有 {key} 这一项，只有 {fields}")
         match = item.get("match")
         if not isinstance(match, dict) or not match:
             add((*at, "match"), "match 要写成 {列: 值}，至少一列")
@@ -233,12 +245,63 @@ def _known_problems(check: dict[str, Any], add: Callable[[Loc, str], None]) -> N
                 add((*at, "match", column), f"列 {column} 要是{what}里的列：{'、'.join(allowed)}")
             elif allowed is None and not (_COLUMN.match(column) and column == column.strip()):
                 add((*at, "match", column), "列名要是文字，不能有反引号")
-            plain = value is None or isinstance(value, str | bool) or _number(value)
-            if not plain:
+            if not _plain_value(value):
                 add((*at, "match", column), "值只能是文字、数字、true、false 或 null")
         note = item.get("note")
         if note is not None and (not isinstance(note, str) or len(note) > MAX_NOTE):
             add((*at, "note"), f"note 要是 {MAX_NOTE} 个字符以内的文字")
+        if kind == "golden" and "columns" in item:
+            _known_columns_problems(check, item["columns"], (*at, "columns"), add)
+        for key in ("value", "left", "right"):
+            if key in more and key in item and not _plain_value(item[key]):
+                add((*at, key), f"{key} 只能是文字、数字、true、false 或 null")
+
+
+def _plain_value(value: Any) -> bool:
+    return value is None or isinstance(value, str | bool) or _number(value)
+
+
+def _known_columns_problems(
+    check: dict[str, Any], columns: Any, at: Loc, add: Callable[[Loc, str], None]
+) -> None:
+    """A golden check's known difference names the columns that may differ: a list of
+    them, or ``{column: {"table": value, "expected": value}}`` with the values seen."""
+    shape = (
+        'columns 要写成可能不一致的列名列表，或 {列: {"table": 结果表的值, "expected": 老系统的值}}'
+    )
+    if isinstance(columns, list):
+        names, pins = columns, None
+    elif isinstance(columns, dict):
+        names, pins = list(columns), columns
+    else:
+        add(at, shape)
+        return
+    if not 1 <= len(names) <= MAX_KNOWN_COLUMNS:
+        add(at, f"columns 要写 1–{MAX_KNOWN_COLUMNS} 列")
+        return
+    keys = {k.lower() for k in check.get("keys") or [] if isinstance(k, str)}
+    listed = check.get("columns")
+    seen: set[str] = set()
+    for name in names:
+        if not isinstance(name, str) or not _COLUMN.match(name) or name != name.strip():
+            add(at, "columns 里的列名要是文字，不能有反引号")
+            continue
+        if name.lower() in seen:
+            add((*at, name), f"列 {name} 写了两次")
+        seen.add(name.lower())
+        if name.lower() in keys:
+            add((*at, name), f"列 {name} 是对齐用的键，键不会不一致；已知差异的键写在 match 里")
+        elif isinstance(listed, list) and name not in listed:
+            add((*at, name), f"列 {name} 不在这项检查比较的 columns 里")
+        if pins is None:
+            continue
+        pin = pins[name]
+        if not isinstance(pin, dict) or not pin or not set(pin) <= KNOWN_SIDES:
+            add((*at, name), shape)
+            continue
+        for side, value in pin.items():
+            if not _plain_value(value):
+                add((*at, name, side), "值只能是文字、数字、true、false 或 null")
 
 
 def tables(check: dict[str, Any]) -> Iterator[tuple[str, Any]]:
@@ -701,19 +764,69 @@ def _named(item: dict[str, Any]) -> str:
             return "true" if v else "false"
         return str(_plain(v))
 
-    return item.get("note") or "、".join(f"{c} = {value(v)}" for c, v in item["match"].items())
+    if item.get("note"):
+        return str(item["note"])
+    said = "、".join(f"{c} = {value(v)}" for c, v in item["match"].items())
+    columns = item.get("columns")
+    return f"{said} 的 {'、'.join(columns)}" if columns else said
 
 
 def _known_seen(
-    known: list[dict[str, Any]], count: int, hit: set[int], complete: bool
+    known: list[dict[str, Any]],
+    count: int,
+    hit: set[int],
+    complete: bool,
+    beyond: set[int] | None = None,
 ) -> dict[str, Any]:
     """``count`` rows or groups matched known differences, ``hit`` the ones seen among them;
-    with ``complete`` (all of them were looked at) the ones that did not show up too."""
+    with ``complete`` (all of them were looked at) the ones that did not show up too.
+    ``beyond``: the known differences whose row or group differed in more than they say,
+    which failed as usual (jadeflow retest I-16)."""
+    beyond = beyond or set()
     return {
         "count": count,
         "seen": [_named(known[i]) for i in sorted(hit)],
-        "absent": [_named(k) for i, k in enumerate(known) if i not in hit] if complete else [],
+        "absent": [_named(k) for i, k in enumerate(known) if i not in hit and i not in beyond]
+        if complete
+        else [],
+        "beyond": [_named(known[i]) for i in sorted(beyond)],
     }
+
+
+def _close(found: Any, wanted: Any, check: dict[str, Any] | None = None) -> bool:
+    """Whether a value is the one a known difference pins: numbers (also written as text,
+    as a decimal column comes back) within the check's tolerance, else the same value."""
+    a, b = _as_number(found), _as_number(wanted)
+    if a is None or b is None:
+        return _equal(found, wanted)
+    check = check or {}
+    tolerance = check.get("tolerance", 0) or 0
+    allowed = tolerance * abs(b) if check.get("relative") else tolerance
+    return abs(a - b) <= max(allowed, 1e-9 * max(1.0, abs(b)))
+
+
+def _as_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if _number(value):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            found = float(value)
+        except ValueError:
+            return None
+        return found if math.isfinite(found) else None
+    return None
+
+
+def _pinned(row: dict[str, Any], item: dict[str, Any], check: dict[str, Any]) -> bool:
+    """Whether a failing group is the one a known difference says: its ``value`` (grouped
+    aggregate) or ``left`` and ``right`` (reconcile), where given."""
+    return all(
+        _close(row.get(key), item[key], check)
+        for key in KNOWN_MORE.get(check["kind"], ())
+        if key in item and key != "columns"
+    )
 
 
 def _apart(
@@ -725,15 +838,19 @@ def _apart(
         return rows, None
     new: list[dict[str, Any]] = []
     hit: set[int] = set()
+    beyond: set[int] = set()
     count = 0
     for row in rows:
         i = _which(row, known)
         if i is None:
             new.append(row)
+        elif not _pinned(row, known[i], check):
+            beyond.add(i)
+            new.append(row)
         else:
             hit.add(i)
             count += 1
-    return new, _known_seen(known, count, hit, complete=True)
+    return new, _known_seen(known, count, hit, complete=True, beyond=beyond)
 
 
 def _known_tail(info: dict[str, Any] | None, unit: str) -> str:
@@ -742,6 +859,11 @@ def _known_tail(info: dict[str, Any] | None, unit: str) -> str:
     parts = []
     if info["count"]:
         parts.append(f"另有 {info['count']:,} {unit}是已知差异（{'；'.join(info['seen'])}）")
+    if info.get("beyond"):
+        parts.append(
+            f"已知差异「{'；'.join(info['beyond'])}」的那{unit}和清单写的不一样或还有别的不一致，"
+            "照常算不通过"
+        )
     if info["absent"]:
         parts.append(f"已知差异「{'；'.join(info['absent'])}」这次没有出现")
     return "".join(f"；{p}" for p in parts)
@@ -877,6 +999,83 @@ async def _unique(
     )
 
 
+def _golden_known(
+    found: dict[str, Any], seen: dict[str, Any], entries: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The comparison of the rows no known difference matches (``found``) with what the
+    ones they match (``seen``) add: a row is known only when it differs in nothing but what
+    its entry says; any other row of theirs counts as missing, extra or different."""
+    repeated = seen["duplicates"]
+    if int(repeated["table"]) or int(repeated["expected"]):
+        both = found["duplicates"]
+        merged = {
+            "duplicates": {
+                side: int(both[side]) + int(repeated[side]) for side in ("table", "expected")
+            },
+            "missing": None,
+            "extra": None,
+            "different": None,
+            "columns": found.get("columns") or seen.get("columns"),
+            "rows": [*seen["rows"], *(r for r in found["rows"] if r.get("kind") == "duplicate")],
+        }
+        return merged, _known_seen(entries, 0, set(), complete=False)
+    total = sum(int(seen[k]) for k in ("missing", "extra", "different"))
+    if total > len(seen["rows"]):
+        raise CheckError(
+            f"已知差异匹配到 {total:,} 行，超过一次能逐行核对的 {KNOWN_ROWS} 行；"
+            "请把 match 写得更具体"
+        )
+    hit: set[int] = set()
+    beyond: set[int] = set()
+    real: list[dict[str, Any]] = []
+    for row in seen["rows"]:
+        i = _which(row.get("key"), entries)
+        if i is not None and _golden_known_row(row, entries[i]):
+            hit.add(i)
+        else:
+            if i is not None:
+                beyond.add(i)
+            real.append(row)
+    known = _known_seen(entries, total - len(real), hit, complete=True, beyond=beyond)
+    if not real or found["missing"] is None:
+        return found, known
+    merged = dict(found)
+    for row in real:
+        merged[row["kind"]] = int(merged[row["kind"]]) + 1
+    merged["rows"] = [*real, *found["rows"]][:EXAMPLES]
+    return merged, known
+
+
+def _golden_known_row(row: dict[str, Any], item: dict[str, Any]) -> bool:
+    """Whether a row of the comparison is what a golden check's known difference says:
+    without ``columns`` a row on one side only; with them a row on both sides that differs
+    in those columns alone, with the values given (I-16)."""
+    columns = item.get("columns")
+    kind = row.get("kind")
+    if kind in ("missing", "extra"):
+        return columns is None
+    if kind != "different" or not columns:
+        return False
+    names = {str(c).lower() for c in columns}
+    if not {str(c).lower() for c in row.get("differs") or []} <= names:
+        return False
+    if isinstance(columns, dict):
+        for name, pin in columns.items():
+            for side in ("table", "expected"):
+                if side in pin and not _close(_cell_of(row.get(side), name), pin[side]):
+                    return False
+    return True
+
+
+def _cell_of(values: Any, name: str) -> Any:
+    """A column's value in one side of a compared row, by name in any case."""
+    if not isinstance(values, dict):
+        return None
+    if name in values:
+        return values[name]
+    return next((v for k, v in values.items() if str(k).lower() == name.lower()), None)
+
+
 async def _golden(
     check: dict[str, Any], scope: Scope, call: Call, expected: str | None
 ) -> dict[str, Any]:
@@ -893,22 +1092,23 @@ async def _golden(
     if check.get("tolerance"):
         more["tolerance"] = check["tolerance"]
 
-    def compare(table_where: str | None, old_where: str | None) -> Awaitable[Any]:
-        args = _args(table, table_where, **more)
+    def compare(
+        table_where: str | None, old_where: str | None, limit: int = EXAMPLES
+    ) -> Awaitable[Any]:
+        args = _args(table, table_where, **(more | {"limit": limit}))
         if old_where:
             args["expected_where"] = old_where
         return call("compare", args)
 
     known: dict[str, Any] | None = None
     if check.get("known"):
-        # The keys people know differ are compared apart from the rest, on both sides.
+        # The keys people know differ are compared apart from the rest, on both sides,
+        # and looked at row by row: only what an entry says may differ (I-16).
         entries = check["known"]
         sql = _known_sql(entries)
         found = await compare(_and(where, f"NOT ({sql})"), _and(expected_where, f"NOT ({sql})"))
-        seen = await compare(_and(where, sql), _and(expected_where, sql))
-        count = sum(int(seen[k]) for k in ("missing", "extra", "different"))
-        hit = {i for r in seen["rows"] if (i := _which(r.get("key"), entries)) is not None}
-        known = _known_seen(entries, count, hit, complete=count <= len(seen["rows"]))
+        seen = await compare(_and(where, sql), _and(expected_where, sql), KNOWN_ROWS)
+        found, known = _golden_known(found, seen, entries)
     else:
         found = await compare(where, expected_where)
     tail = _known_tail(known, "行")

@@ -319,7 +319,7 @@ function namedKnown(item: Record<string, unknown>): string {
   const note = text(item.note);
   if (note) return note;
   const match = isRecord(item.match) ? item.match : {};
-  return Object.entries(match)
+  const said = Object.entries(match)
     .map(([column, value]) => {
       const shown =
         value === null || value === undefined
@@ -330,6 +330,13 @@ function namedKnown(item: Record<string, unknown>): string {
       return `${column} = ${shown}`;
     })
     .join("、");
+  // A golden check's known difference names the columns that may differ (I-16).
+  const columns = Array.isArray(item.columns)
+    ? item.columns.filter((c): c is string => typeof c === "string")
+    : isRecord(item.columns)
+      ? Object.keys(item.columns)
+      : [];
+  return columns.length ? `${said} 的 ${columns.join("、")}` : said;
 }
 
 // What a check checks, in one sentence (aep.etl.checks.describe without the Markdown).
