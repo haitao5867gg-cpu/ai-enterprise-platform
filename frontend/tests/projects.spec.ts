@@ -8,10 +8,7 @@ test.describe.configure({ timeout: 60_000 });
 const unique = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
-async function boundApp(
-  request: APIRequestContext,
-  project: "required" | "optional",
-) {
+async function boundApp(request: APIRequestContext, project: "required" | "optional") {
   const app = unique("bound");
   expect(
     (
@@ -20,36 +17,25 @@ async function boundApp(
       })
     ).status(),
   ).toBe(201);
-  const config: FlowConfig = (
-    await (await request.get(`/api/apps/${app}`)).json()
-  ).current.config;
+  const config: FlowConfig = (await (await request.get(`/api/apps/${app}`)).json()).current
+    .config;
   const start = config.graph.nodes.find((node) => node.type === "start")!;
   if (start.type === "start") start.project = project;
   const answer = config.graph.nodes.find((node) => node.type === "llm")!;
   if (answer.type === "llm")
     answer.prompt =
       "统计月 {{param.update_month}}，写到 {{project.catalog}}.{{project.schema}}\n{{start.question}}";
-  const saved = await request.put(`/api/apps/${app}/draft`, {
-    data: { config },
-  });
+  const saved = await request.put(`/api/apps/${app}/draft`, { data: { config } });
   expect(saved.status(), await saved.text()).toBe(200);
   expect(
-    (
-      await request.post(`/api/apps/${app}/draft/publish`, {
-        data: { note: "用项目" },
-      })
-    ).status(),
+    (await request.post(`/api/apps/${app}/draft/publish`, { data: { note: "用项目" } })).status(),
   ).toBe(200);
   return app;
 }
 
-test("项目页面：新建时先在页面上查出问题，保存后能查看、编辑和删除", async ({
-  page,
-}) => {
+test("项目页面：新建时先在页面上查出问题，保存后能查看、编辑和删除", async ({ page }) => {
   await page.goto("/projects");
-  await expect(
-    page.getByRole("link", { name: "项目", exact: true }),
-  ).toHaveClass(/active/);
+  await expect(page.getByRole("link", { name: "项目", exact: true })).toHaveClass(/active/);
   const list = page.getByRole("table", { name: "项目" });
   await expect(list.getByRole("link", { name: "销售预测" })).toBeVisible();
 
@@ -78,9 +64,7 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
 
   await form.getByRole("button", { name: "添加引用表" }).click();
   const ref = form.getByRole("group", { name: "引用表 1" });
-  await ref
-    .getByLabel("表名（catalog.schema.table）")
-    .fill("prev.sales.forecast");
+  await ref.getByLabel("表名（catalog.schema.table）").fill("prev.sales.forecast");
   await ref.getByLabel("读取筛选（选填）").fill("Type = 'Vol.'; drop");
   await expect(ref).toContainText("读取筛选不能有分号");
   await ref.getByLabel("读取筛选（选填）").fill("Type = 'Vol.'");
@@ -102,19 +86,13 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await version.getByLabel("显示名").fill("版本");
   await version.getByLabel("格式（选填）").fill("FY\\d{2}_\\d{2}_M");
   await version.getByLabel("默认值（选填）").fill("FY26-06");
-  await expect(version).toContainText(
-    "默认值不对：参数「版本」要符合格式 FY\\d{2}_\\d{2}_M",
-  );
+  await expect(version).toContainText("默认值不对：参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
   await version.getByLabel("默认值（选填）").fill("FY26_06_M");
   await expect(version).not.toContainText("默认值不对");
   // How the scheduled runs of a released job fill it in (jadeflow retest I-19).
-  await version
-    .getByLabel("上线后定时运行时")
-    .selectOption({ label: "按运行那天推算日期" });
+  await version.getByLabel("上线后定时运行时").selectOption({ label: "按运行那天推算日期" });
   await expect(version.getByLabel("推算到哪个月")).toHaveValue("-1");
-  await expect(version).toContainText(
-    "定时运行时的取法不对：文本参数要写日期格式，如 FY%y_%m_M",
-  );
+  await expect(version).toContainText("定时运行时的取法不对：文本参数要写日期格式，如 FY%y_%m_M");
   await version.getByLabel("日期格式").fill("FY%y_%B");
   await expect(version).toContainText("日期格式只能用 %Y（四位年份）");
   await version.getByLabel("日期格式").fill("FY%y_%m_M");
@@ -140,21 +118,11 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
 
   await form.getByRole("button", { name: "建立项目" }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${id}$`));
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-    `页面测试 ${id}`,
-  );
-  await expect(page.getByRole("region", { name: "环境" })).toContainText(
-    "main.pt_dev",
-  );
-  await expect(page.getByRole("region", { name: "表登记" })).toContainText(
-    "Type = 'Vol.'",
-  );
-  await expect(page.getByRole("region", { name: "表登记" })).toContainText(
-    "pt_history",
-  );
-  await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
-    "统计月",
-  );
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(`页面测试 ${id}`);
+  await expect(page.getByRole("region", { name: "环境" })).toContainText("main.pt_dev");
+  await expect(page.getByRole("region", { name: "表登记" })).toContainText("Type = 'Vol.'");
+  await expect(page.getByRole("region", { name: "表登记" })).toContainText("pt_history");
+  await expect(page.getByRole("region", { name: "运行参数" })).toContainText("统计月");
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
     "文字，格式 FY\\d{2}_\\d{2}_M",
   );
@@ -165,22 +133,14 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
     "没写（上线时取不到，不能上线）",
   );
-  await expect(
-    page.getByRole("region", { name: "数据外发策略" }),
-  ).toContainText("只发统计");
-  await expect(page.getByRole("region", { name: "验收检查" })).toContainText(
-    "本月有结果",
-  );
-  await expect(page.getByRole("region", { name: "验收检查" })).toContainText(
-    "聚合值",
-  );
+  await expect(page.getByRole("region", { name: "数据外发策略" })).toContainText("只发统计");
+  await expect(page.getByRole("region", { name: "验收检查" })).toContainText("本月有结果");
+  await expect(page.getByRole("region", { name: "验收检查" })).toContainText("聚合值");
 
   // The same id cannot be used twice.
-  const {
-    created_at: _made,
-    updated_at: _changed,
-    ...saved
-  } = await (await page.request.get(`/api/projects/${id}`)).json();
+  const { created_at: _made, updated_at: _changed, ...saved } = await (
+    await page.request.get(`/api/projects/${id}`)
+  ).json();
   void [_made, _changed];
   const again = await page.request.post("/api/projects", {
     data: { ...saved, name: "别的" },
@@ -193,12 +153,8 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(edit.getByRole("button", { name: "保存" })).toBeDisabled();
   await edit.getByLabel("名称", { exact: true }).fill(`改过的 ${id}`);
   await edit.getByRole("button", { name: "保存" }).click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "已保存" }),
-  ).toBeVisible();
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-    `改过的 ${id}`,
-  );
+  await expect(page.getByRole("status").filter({ hasText: "已保存" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(`改过的 ${id}`);
 
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "删除", exact: true }).click();
@@ -206,27 +162,19 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(list.getByRole("link", { name: `改过的 ${id}` })).toHaveCount(0);
 });
 
-test("新建运行时选项目、环境并填参数，运行页显示项目和外发策略", async ({
-  page,
-  request,
-}) => {
+test("新建运行时选项目、环境并填参数，运行页显示项目和外发策略", async ({ page, request }) => {
   const app = await boundApp(request, "required");
   // The app needs a project; the API says which.
   const missing = await request.post("/api/runs", {
     data: { app, input: { question: "多少？" } },
   });
   expect(missing.status()).toBe(422);
-  expect((await missing.json()).detail).toBe(
-    "应用「绑定项目的应用」需要选择一个项目",
-  );
+  expect((await missing.json()).detail).toBe("应用「绑定项目的应用」需要选择一个项目");
   const unknown = await request.post("/api/runs", {
     data: {
       app,
       input: { question: "多少？" },
-      project: {
-        project_id: "sales-forecast",
-        params: { update_month: "2026-09", owner: "x" },
-      },
+      project: { project_id: "sales-forecast", params: { update_month: "2026-09", owner: "x" } },
     },
   });
   expect((await unknown.json()).detail).toBe("项目「销售预测」没有参数 owner");
@@ -258,43 +206,23 @@ test("新建运行时选项目、环境并填参数，运行页显示项目和�
   await expect(header).toContainText("只发统计（项目设置）");
 });
 
-test("文本参数可以限定格式，新建运行时填的值不符合就开始不了", async ({
-  page,
-  request,
-}) => {
+test("文本参数可以限定格式，新建运行时填的值不符合就开始不了", async ({ page, request }) => {
   const id = unique("fmt");
   const project = {
     project_id: id,
     name: `格式 ${id}`,
     table_prefix: "fm_",
-    environments: [
-      { key: "dev", label: "开发", catalog: "main", schema: "fm_dev" },
-    ],
+    environments: [{ key: "dev", label: "开发", catalog: "main", schema: "fm_dev" }],
     params: [
-      {
-        key: "update_month",
-        label: "统计月",
-        type: "month",
-        default: "2026-09",
-      },
-      {
-        key: "version_id",
-        label: "版本",
-        type: "text",
-        pattern: "FY\\d{2}_\\d{2}_M",
-      },
+      { key: "update_month", label: "统计月", type: "month", default: "2026-09" },
+      { key: "version_id", label: "版本", type: "text", pattern: "FY\\d{2}_\\d{2}_M" },
     ],
   };
   const notText = await request.post("/api/projects", {
-    data: {
-      ...project,
-      params: [{ key: "m", label: "月", type: "month", pattern: "x" }],
-    },
+    data: { ...project, params: [{ key: "m", label: "月", type: "month", pattern: "x" }] },
   });
   expect(notText.status()).toBe(422);
-  expect((await notText.json()).detail).toContain(
-    "参数「月」不是文本，不能写格式",
-  );
+  expect((await notText.json()).detail).toContain("参数「月」不是文本，不能写格式");
   const made = await request.post("/api/projects", { data: project });
   expect(made.status(), await made.text()).toBe(201);
 
@@ -307,17 +235,13 @@ test("文本参数可以限定格式，新建运行时填的值不符合就开�
     },
   });
   expect(wrong.status()).toBe(422);
-  expect((await wrong.json()).detail).toBe(
-    "参数「版本」要符合格式 FY\\d{2}_\\d{2}_M",
-  );
+  expect((await wrong.json()).detail).toBe("参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
 
   // The run form says the format and checks it before sending.
   await page.goto(`/runs/new?app=${app}`);
   const form = page.getByRole("form", { name: "新建运行" });
   await form.getByLabel("客户问题").fill("这个月的预测是多少？");
-  await form
-    .getByLabel("项目", { exact: true })
-    .selectOption({ label: `格式 ${id}` });
+  await form.getByLabel("项目", { exact: true }).selectOption({ label: `格式 ${id}` });
   const field = form.getByLabel("版本（选填）");
   await expect(form).toContainText("格式：FY\\d{2}_\\d{2}_M");
   await field.fill("FY26-06");
@@ -329,9 +253,7 @@ test("文本参数可以限定格式，新建运行时填的值不符合就开�
   await expect(page.getByRole("main")).toContainText("版本：FY26_06_M");
 });
 
-test("开始节点可以设使用项目；没设时引用项目和参数保存不了", async ({
-  request,
-}) => {
+test("开始节点可以设使用项目；没设时引用项目和参数保存不了", async ({ request }) => {
   const app = unique("refs");
   expect(
     (
@@ -340,33 +262,18 @@ test("开始节点可以设使用项目；没设时引用项目和参数保存�
       })
     ).status(),
   ).toBe(201);
-  const config: FlowConfig = (
-    await (await request.get(`/api/apps/${app}`)).json()
-  ).current.config;
+  const config: FlowConfig = (await (await request.get(`/api/apps/${app}`)).json()).current
+    .config;
   const answer = config.graph.nodes.find((node) => node.type === "llm")!;
-  if (answer.type === "llm")
-    answer.prompt = "{{param.update_month}} {{project.owner}}";
-  const unbound = await request.put(`/api/apps/${app}/draft`, {
-    data: { config },
-  });
+  if (answer.type === "llm") answer.prompt = "{{param.update_month}} {{project.owner}}";
+  const unbound = await request.put(`/api/apps/${app}/draft`, { data: { config } });
   expect(unbound.status()).toBe(422);
-  expect(await unbound.text()).toContain(
-    "开始节点没有设置使用项目，不能引用项目和运行参数",
-  );
+  expect(await unbound.text()).toContain("开始节点没有设置使用项目，不能引用项目和运行参数");
   const start = config.graph.nodes.find((node) => node.type === "start")!;
   if (start.type === "start") start.project = "optional";
-  const wrong = await request.put(`/api/apps/${app}/draft`, {
-    data: { config },
-  });
+  const wrong = await request.put(`/api/apps/${app}/draft`, { data: { config } });
   expect(await wrong.text()).toContain("项目没有 owner 这一项");
-  if (answer.type === "llm")
-    answer.prompt = "{{param.update_month}} {{project.brief}}";
-  expect(
-    (
-      await request.put(`/api/apps/${app}/draft`, { data: { config } })
-    ).status(),
-  ).toBe(200);
-  expect((await (await request.get(`/api/apps/${app}`)).json()).project).toBe(
-    null,
-  );
+  if (answer.type === "llm") answer.prompt = "{{param.update_month}} {{project.brief}}";
+  expect((await request.put(`/api/apps/${app}/draft`, { data: { config } })).status()).toBe(200);
+  expect((await (await request.get(`/api/apps/${app}`)).json()).project).toBe(null);
 });

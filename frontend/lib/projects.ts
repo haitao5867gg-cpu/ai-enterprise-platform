@@ -1,10 +1,4 @@
-import {
-  ApiError,
-  isRecord,
-  requestJson,
-  sampleLabels,
-  type SampleLevel,
-} from "./runs";
+import { ApiError, isRecord, requestJson, sampleLabels, type SampleLevel } from "./runs";
 
 // docs/api/projects.md is the source of truth for these wire types.
 export type Environment = {
@@ -20,13 +14,7 @@ export type Reference = {
   filter: string | null;
   description: string;
 };
-export type ParamType =
-  | "text"
-  | "number"
-  | "boolean"
-  | "date"
-  | "month"
-  | "select";
+export type ParamType = "text" | "number" | "boolean" | "date" | "month" | "select";
 export type Choice = { value: string; label: string | null };
 export type ParamValue = string | number | boolean | null;
 export type Param = {
@@ -62,13 +50,19 @@ export const scheduledUseLabels: Record<Scheduled["use"], string> = {
   date: "按运行那天推算日期",
 };
 const DATE_DIRECTIVES = ["%Y", "%y", "%m", "%d", "%%"];
+const DATE_NAMES: Record<string, string> = {
+  "%Y": "{yyyy}",
+  "%y": "{yy}",
+  "%m": "{MM}",
+  "%d": "{dd}",
+  "%%": "%",
+};
 // Why a text parameter's date format cannot be used, as the backend says it.
 export function dateFormatProblem(format: string): string | null {
   const directives = format.match(/%.?/g) ?? [];
   if (directives.some((d) => !DATE_DIRECTIVES.includes(d)))
     return "日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）";
-  if (!directives.some((d) => d !== "%%"))
-    return "日期格式里至少要有 %Y、%y、%m、%d 中的一个";
+  if (!directives.some((d) => d !== "%%")) return "日期格式里至少要有 %Y、%y、%m、%d 中的一个";
   return null;
 }
 export function monthsText(months: number): string {
@@ -83,34 +77,21 @@ export function scheduledText(
 ): string {
   const rule = param.scheduled;
   if (!rule) {
-    if (param.default !== null && param.default !== undefined)
-      return "用默认值";
+    if (param.default !== null && param.default !== undefined) return "用默认值";
     return param.required ? "没写（上线时取不到，不能上线）" : "不填（空值）";
   }
   if (rule.use !== "date") return scheduledUseLabels[rule.use];
   const format =
-    param.type === "date"
-      ? "%Y-%m-%d"
-      : param.type === "month"
-        ? "%Y-%m"
-        : (rule.format ?? "");
-  const withDay = format.includes("%d");
+    param.type === "date" ? "%Y-%m-%d" : param.type === "month" ? "%Y-%m" : (rule.format ?? "");
   const month = monthsText(rule.months);
-  const when = !withDay
+  const when = !format.includes("%d")
     ? month
     : rule.day
       ? `${month}${rule.day === "first" ? "第一天" : "最后一天"}`
       : rule.months === 0
         ? "运行当天"
         : `${month}的同一天（没有这一天时取月底）`;
-  const names: Record<string, string> = {
-    "%Y": "{yyyy}",
-    "%y": "{yy}",
-    "%m": "{MM}",
-    "%d": "{dd}",
-    "%%": "%",
-  };
-  return `按运行那天推算${when}，写成 ${format.replace(/%./g, (d) => names[d] ?? d)}`;
+  return `按运行那天推算${when}，写成 ${format.replace(/%./g, (d) => DATE_NAMES[d] ?? d)}`;
 }
 // The project's own setting; null parts follow the platform default.
 export type ProjectPolicy = {
@@ -251,11 +232,7 @@ function validDate(value: string, month: boolean) {
     ? /^(\d{4})-(\d{2})$/.exec(value)
     : /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return false;
-  const [year, mon, day] = [
-    Number(match[1]),
-    Number(match[2]),
-    Number(match[3] ?? 1),
-  ];
+  const [year, mon, day] = [Number(match[1]), Number(match[2]), Number(match[3] ?? 1)];
   const date = new Date(Date.UTC(year, mon - 1, day));
   return (
     year >= 1 &&
@@ -281,33 +258,17 @@ export function paramProblem(
   value: unknown,
 ): string | null {
   const { label, type } = param;
-  if (
-    type === "text" &&
-    !(typeof value === "string" && value.length >= 1 && value.length <= 500)
-  )
+  if (type === "text" && !(typeof value === "string" && value.length >= 1 && value.length <= 500))
     return `参数「${label}」要写 1–500 个字`;
-  if (
-    type === "text" &&
-    param.pattern &&
-    patternRegExp(param.pattern)?.test(String(value)) === false
-  )
+  if (type === "text" && param.pattern && patternRegExp(param.pattern)?.test(String(value)) === false)
     return `参数「${label}」要符合格式 ${param.pattern}`;
-  if (
-    type === "number" &&
-    !(typeof value === "number" && Number.isFinite(value))
-  )
+  if (type === "number" && !(typeof value === "number" && Number.isFinite(value)))
     return `参数「${label}」要是数字`;
   if (type === "boolean" && typeof value !== "boolean")
     return `参数「${label}」要是 true 或 false`;
-  if (
-    type === "date" &&
-    !(typeof value === "string" && validDate(value, false))
-  )
+  if (type === "date" && !(typeof value === "string" && validDate(value, false)))
     return `参数「${label}」要写成 YYYY-MM-DD`;
-  if (
-    type === "month" &&
-    !(typeof value === "string" && validDate(value, true))
-  )
+  if (type === "month" && !(typeof value === "string" && validDate(value, true)))
     return `参数「${label}」要写成 YYYY-MM`;
   if (type === "select") {
     const values = (param.choices ?? []).map((choice) => choice.value);
@@ -318,20 +279,14 @@ export function paramProblem(
 }
 
 // A parameter value as the run page and the form show it.
-export function paramText(
-  param: Pick<Param, "type" | "choices"> | undefined,
-  value: unknown,
-) {
+export function paramText(param: Pick<Param, "type" | "choices"> | undefined, value: unknown) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "是" : "否";
   const choice = param?.choices?.find((item) => item.value === value);
   return choice?.label ?? String(value);
 }
 
-export const samplesText = (
-  samples: SampleLevel | null,
-  defaults?: SampleLevel,
-) =>
+export const samplesText = (samples: SampleLevel | null, defaults?: SampleLevel) =>
   samples
     ? sampleLabels[samples]
     : `平台默认${defaults ? `（${sampleLabels[defaults]}）` : ""}`;
@@ -366,9 +321,7 @@ export function projectInput(project: Project): ProjectInput {
     adopted: [...project.adopted],
     params: project.params.map((param) => ({
       ...param,
-      choices: param.choices
-        ? param.choices.map((choice) => ({ ...choice }))
-        : null,
+      choices: param.choices ? param.choices.map((choice) => ({ ...choice })) : null,
     })),
     checks: (project.checks ?? []).map((check) => ({ ...check })),
     policy: {

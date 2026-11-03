@@ -18,12 +18,7 @@ import {
   type ProjectOptions,
   type Scheduled,
 } from "../projects";
-import {
-  isRecord,
-  type RunPolicy,
-  type RunProject,
-  type SampleLevel,
-} from "../runs";
+import { isRecord, type RunPolicy, type RunProject, type SampleLevel } from "../runs";
 import { mockError, mockJson, noContent, readBody } from "./mock-assets";
 import { mockModels } from "./mock-flow-apps";
 
@@ -133,9 +128,7 @@ const summary = (project: Project) => ({
 export const mockProject = (id: string) => store.get(id);
 
 function text(value: unknown, low: number, high: number) {
-  return typeof value === "string" &&
-    value.trim().length >= low &&
-    value.trim().length <= high
+  return typeof value === "string" && value.trim().length >= low && value.trim().length <= high
     ? value.trim()
     : null;
 }
@@ -161,8 +154,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
   if (extra) return `项目不接受「${extra}」这个设置`;
   if (typeof body.project_id !== "string" || !PROJECT_ID.test(body.project_id))
     return "「项目标识」的格式、长度或范围不正确";
-  if (body.project_id === "new")
-    return "项目标识不能是 new，页面地址 /projects/new 用了它";
+  if (body.project_id === "new") return "项目标识不能是 new，页面地址 /projects/new 用了它";
   const name = text(body.name, 1, 100);
   if (!name) return "「名称」的格式、长度或范围不正确";
   const description = body.description ?? "";
@@ -193,21 +185,11 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       env.cluster_id === null || env.cluster_id === undefined
         ? null
         : text(env.cluster_id, 1, 200);
-    if (env.cluster_id && !cluster)
-      return `「${at}的集群」的格式、长度或范围不正确`;
-    environments.push({
-      key: env.key,
-      label,
-      catalog,
-      schema,
-      cluster_id: cluster,
-    });
+    if (env.cluster_id && !cluster) return `「${at}的集群」的格式、长度或范围不正确`;
+    environments.push({ key: env.key, label, catalog, schema, cluster_id: cluster });
   }
   const references: ProjectInput["references"] = [];
-  for (const [i, ref] of (Array.isArray(body.references)
-    ? body.references
-    : []
-  ).entries()) {
+  for (const [i, ref] of (Array.isArray(body.references) ? body.references : []).entries()) {
     if (!isRecord(ref) || typeof ref.name !== "string")
       return `「引用表的第 ${i + 1} 项」的格式、长度或范围不正确`;
     const refName = ref.name.trim();
@@ -220,21 +202,16 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     if (problem) return `引用表 ${refName}：${problem}`;
     references.push({
       name: refName,
-      label:
-        (ref.label == null ? null : text(ref.label, 1, 50)) ??
-        refName.split(".")[2].slice(0, 50),
+      label: (ref.label == null ? null : text(ref.label, 1, 50)) ?? refName.split(".")[2].slice(0, 50),
       filter,
       description: typeof ref.description === "string" ? ref.description : "",
     });
   }
-  const adopted = (Array.isArray(body.adopted) ? body.adopted : []).map(
-    (item) => (typeof item === "string" ? item.trim() : ""),
+  const adopted = (Array.isArray(body.adopted) ? body.adopted : []).map((item) =>
+    typeof item === "string" ? item.trim() : "",
   );
   const params: Param[] = [];
-  for (const [i, param] of (Array.isArray(body.params)
-    ? body.params
-    : []
-  ).entries()) {
+  for (const [i, param] of (Array.isArray(body.params) ? body.params : []).entries()) {
     const at = `参数的第 ${i + 1} 项`;
     if (!isRecord(param)) return `「${at}」的格式、长度或范围不正确`;
     if (typeof param.key !== "string" || !KEY.test(param.key))
@@ -242,17 +219,12 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     const label = text(param.label, 1, 50);
     if (!label) return `「${at}的显示名」的格式、长度或范围不正确`;
     const type = param.type as Param["type"];
-    if (
-      !["text", "number", "boolean", "date", "month", "select"].includes(type)
-    )
+    if (!["text", "number", "boolean", "date", "month", "select"].includes(type))
       return `「${at}的类型」的取值不对`;
     const choices = Array.isArray(param.choices)
       ? param.choices.map((choice) =>
           isRecord(choice)
-            ? {
-                value: String(choice.value ?? "").trim(),
-                label: text(choice.label, 1, 50),
-              }
+            ? { value: String(choice.value ?? "").trim(), label: text(choice.label, 1, 50) }
             : { value: "", label: null },
         )
       : null;
@@ -263,34 +235,24 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
         return `「${at}的选项」的格式、长度或范围不正确`;
       if (repeated(choices.map((choice) => choice.value)).length)
         return `参数「${label}」的选项值重复`;
-    } else if (param.choices != null)
-      return `参数「${label}」不是选项，不能写 choices`;
+    } else if (param.choices != null) return `参数「${label}」不是选项，不能写 choices`;
     let pattern: string | null = null;
     if (param.pattern != null) {
-      if (
-        typeof param.pattern !== "string" ||
-        !param.pattern ||
-        param.pattern.length > 200
-      )
+      if (typeof param.pattern !== "string" || !param.pattern || param.pattern.length > 200)
         return `「${at}的格式」的格式、长度或范围不正确`;
       if (type !== "text") return `参数「${label}」不是文本，不能写格式`;
       // The backend reads it as RE2; JavaScript is close enough for the mock.
-      if (!patternRegExp(param.pattern))
-        return `参数「${label}」的格式不是有效的正则表达式`;
+      if (!patternRegExp(param.pattern)) return `参数「${label}」的格式不是有效的正则表达式`;
       pattern = param.pattern;
     }
     const value = (param.default ?? null) as ParamValue;
-    const problem =
-      value !== null && paramProblem({ label, type, choices, pattern }, value);
+    const problem = value !== null && paramProblem({ label, type, choices, pattern }, value);
     if (problem) return `默认值不对：${problem}`;
     // How scheduled runs fill it in: the shape is kept, the backend checks the rest.
     let scheduled: Scheduled | null = null;
     if (param.scheduled != null) {
       const rule = param.scheduled;
-      if (
-        !isRecord(rule) ||
-        !scheduledUses(type).includes(rule.use as Scheduled["use"])
-      )
+      if (!isRecord(rule) || !scheduledUses(type).includes(rule.use as Scheduled["use"]))
         return `参数「${label}」定时运行时的取法不对`;
       const use = rule.use as Scheduled["use"];
       if (use === "date" && type === "text" && typeof rule.format !== "string")
@@ -310,15 +272,13 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       default: value,
       choices: type === "select" ? choices : null,
       pattern,
-      description:
-        typeof param.description === "string" ? param.description : "",
+      description: typeof param.description === "string" ? param.description : "",
       scheduled,
     });
   }
   const policy = isRecord(body.policy) ? body.policy : {};
   const samples = (policy.samples ?? null) as SampleLevel | null;
-  if (samples !== null && !LEVELS.includes(samples))
-    return "「数据外发策略的样本级别」的取值不对";
+  if (samples !== null && !LEVELS.includes(samples)) return "「数据外发策略的样本级别」的取值不对";
   const models = policy.models ?? null;
   if (
     models !== null &&
@@ -347,10 +307,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
   if (
     !Array.isArray(checks) ||
     checks.length > 50 ||
-    !checks.every(
-      (item) =>
-        typeof item === "object" && item !== null && !Array.isArray(item),
-    )
+    !checks.every((item) => typeof item === "object" && item !== null && !Array.isArray(item))
   )
     return "「验收检查」的格式、长度或范围不正确";
   const missing = ((models as string[] | null) ?? []).filter(
@@ -374,8 +331,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
 export async function mockProjects(request: Request, path: string[]) {
   const { method } = request;
   if (path.length === 1) {
-    if (method === "GET")
-      return mockJson([...store.values()].sort(byName).map(summary));
+    if (method === "GET") return mockJson([...store.values()].sort(byName).map(summary));
     const body = await readBody(request);
     if (body instanceof Response) return body;
     const project = readProject(body);
@@ -416,11 +372,7 @@ export async function mockProjects(request: Request, path: string[]) {
   if (project.project_id !== path[1])
     return mockError("项目标识建好后不能改，要和地址里的一致", 422);
   if (!found) return mockError(`没有项目 ${path[1]}`, 404);
-  if (
-    [...store.values()].some(
-      (item) => item.name === project.name && item.project_id !== path[1],
-    )
-  )
+  if ([...store.values()].some((item) => item.name === project.name && item.project_id !== path[1]))
     return mockError(`已经有叫「${project.name}」的项目`, 409);
   const saved: Project = {
     ...project,
@@ -446,17 +398,13 @@ export function bindMockProject(
   choice: unknown,
   params: string[],
 ): ProjectSnapshot | null | string {
-  if (choice == null)
-    return uses === "required" ? `应用「${title}」需要选择一个项目` : null;
+  if (choice == null) return uses === "required" ? `应用「${title}」需要选择一个项目` : null;
   if (!uses) return `应用「${title}」不使用项目`;
-  if (!isRecord(choice) || typeof choice.project_id !== "string")
-    return "请选择项目";
+  if (!isRecord(choice) || typeof choice.project_id !== "string") return "请选择项目";
   const project = store.get(choice.project_id);
   if (!project) return `没有项目 ${choice.project_id}`;
   const key =
-    typeof choice.environment === "string"
-      ? choice.environment
-      : project.environments[0].key;
+    typeof choice.environment === "string" ? choice.environment : project.environments[0].key;
   const environment = project.environments.find((env) => env.key === key);
   if (!environment) return `项目「${project.name}」没有环境 ${key}`;
   const given = choice.params ?? {};
@@ -477,13 +425,8 @@ export function bindMockProject(
     values[param.key] = value;
   }
   const unknown = params.find((name) => !(name in values));
-  if (unknown)
-    return `应用用到了参数 ${unknown}，项目「${project.name}」没有定义它`;
-  return {
-    project: structuredClone(project),
-    environment: { ...environment },
-    values,
-  };
+  if (unknown) return `应用用到了参数 ${unknown}，项目「${project.name}」没有定义它`;
+  return { project: structuredClone(project), environment: { ...environment }, values };
 }
 
 export function projectPolicy(bound: ProjectSnapshot | null): RunPolicy {
@@ -510,9 +453,7 @@ export function runProject(bound: ProjectSnapshot | null): RunProject | null {
 }
 
 // `{{project.<field>}}` in a run bound to `bound`; null unbound (`brief` is "").
-export function projectValues(
-  bound: ProjectSnapshot | null,
-): Record<string, unknown> {
+export function projectValues(bound: ProjectSnapshot | null): Record<string, unknown> {
   if (!bound)
     return Object.fromEntries(
       PROJECT_FIELDS.map((field) => [
@@ -521,9 +462,9 @@ export function projectValues(
       ]),
     );
   const { project, environment, values } = bound;
+  // Releasing (docs/api/projects.md): the mock does not work out scheduled values.
   const canRelease =
-    project.environments.some((env) => env.key === "prod") &&
-    environment.key !== "prod";
+    project.environments.some((env) => env.key === "prod") && environment.key !== "prod";
   const params = project.params.map((param) => ({
     key: param.key,
     label: param.label,
@@ -552,13 +493,10 @@ export function projectValues(
     params,
     brief,
     checks: project.checks ?? [],
-    // Releasing (docs/api/projects.md): the mock does not work out scheduled values.
     can_release: canRelease,
     release_ready:
       canRelease &&
-      project.params.every(
-        (param) => param.scheduled || param.default !== null || !param.required,
-      ),
+      project.params.every((param) => param.scheduled || param.default !== null || !param.required),
     release_brief: canRelease
       ? `## 上线说明\n\n- 上线到项目「${project.name}」的 prod 环境。\n\n（本地模拟：定时运行时的参数表略）`
       : "",
