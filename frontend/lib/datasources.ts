@@ -1,4 +1,5 @@
 import type { DataSource } from "./etl";
+import { translate } from "./i18n/locale";
 import { isRecord, requestJson } from "./runs";
 
 // docs/api/datasources.md is the source of truth for these wire types.
@@ -149,8 +150,15 @@ export const CREDENTIALS_NOTE = "数据库账号密码配在连接器上，平�
 export const TOOL_SERVICE_NOTE = "其他账号和密钥也一样配在连接器上。";
 export const READ_ONLY_TAG = "只读（连接器自报）";
 export const UNDECLARED_TAG = "未声明只读";
-export const undeclaredNote = (count: number) =>
-  `有 ${count} 个工具没有声明只读。第一阶段平台只支持只读工具，请确认它们不会修改数据。`;
+// Helpers below take `t` from useT() for the reader's language; without it they
+// return Chinese.
+type Tr = (text: string, vars?: Record<string, string | number>) => string;
+const zh: Tr = (text, vars) => translate("zh", text, vars);
+export const undeclaredNote = (count: number, t: Tr = zh) =>
+  t(
+    "有 {n} 个工具没有声明只读。第一阶段平台只支持只读工具，请确认它们不会修改数据。",
+    { n: count },
+  );
 
 // What the 6 ETL tools of connectors/postgres (and the other database connectors) do.
 // Other tools keep the connector's own description.
@@ -171,12 +179,14 @@ const fileToolDescriptions: Record<string, string> = {
 export const toolDescription = (
   tool: Pick<ConnectorTool, "name" | "description">,
   kind: string,
-) =>
-  isToolService({ kind }) || isCodeRepo({ kind })
-    ? tool.description
-    : (kind === "file" && fileToolDescriptions[tool.name]) ||
-      etlToolDescriptions[tool.name] ||
-      tool.description;
+  t: Tr = zh,
+) => {
+  if (isToolService({ kind }) || isCodeRepo({ kind })) return tool.description;
+  const ours =
+    (kind === "file" && fileToolDescriptions[tool.name]) ||
+    etlToolDescriptions[tool.name];
+  return ours ? t(ours) : tool.description;
+};
 
 const typeWords: Record<string, string> = {
   string: "文字",
@@ -189,7 +199,7 @@ const typeWords: Record<string, string> = {
 // A schema value as a list: `type` may be one name or several.
 const listed = (value: unknown): unknown[] =>
   Array.isArray(value) ? value : [value];
-export function parameterType(parameter: ToolParameter): string {
+export function parameterType(parameter: ToolParameter, t: Tr = zh): string {
   const types = [
     ...listed(parameter.type),
     ...(Array.isArray(parameter.anyOf) ? parameter.anyOf : []).flatMap(
@@ -200,14 +210,14 @@ export function parameterType(parameter: ToolParameter): string {
       typeof type === "string" && Boolean(type) && type !== "null",
   );
   if (!types.length) return "—";
-  return Object.hasOwn(typeWords, types[0]) ? typeWords[types[0]] : types[0];
+  return Object.hasOwn(typeWords, types[0]) ? t(typeWords[types[0]]) : types[0];
 }
 const shown = (value: unknown) =>
   typeof value === "string" ? value : JSON.stringify(value);
 const numeric = (value: unknown) =>
   typeof value === "number" ? value : undefined;
 // The schema's description, else its default and range, e.g. 「默认 10，1～100」.
-export function parameterNote(parameter: ToolParameter): string {
+export function parameterNote(parameter: ToolParameter, t: Tr = zh): string {
   const description =
     typeof parameter.description === "string"
       ? parameter.description.trim()
@@ -216,18 +226,18 @@ export function parameterNote(parameter: ToolParameter): string {
   const [min, max] = [numeric(parameter.minimum), numeric(parameter.maximum)];
   const notes = [
     parameter.default !== undefined && parameter.default !== null
-      ? `默认 ${shown(parameter.default)}`
+      ? t("默认 {value}", { value: shown(parameter.default) })
       : "",
     min !== undefined && max !== undefined
       ? `${min}～${max}`
       : min !== undefined
-        ? `最小 ${min}`
+        ? t("最小 {n}", { n: min })
         : max !== undefined
-          ? `最大 ${max}`
+          ? t("最大 {n}", { n: max })
           : "",
     Array.isArray(parameter.enum) && parameter.enum.length
-      ? `可选：${parameter.enum.map(shown).join("、")}`
+      ? t("可选：{values}", { values: parameter.enum.map(shown).join(t("、")) })
       : "",
   ].filter(Boolean);
-  return notes.length ? notes.join("，") : "—";
+  return notes.length ? notes.join(t("，")) : "—";
 }

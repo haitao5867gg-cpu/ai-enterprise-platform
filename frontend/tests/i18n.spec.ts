@@ -21,7 +21,9 @@ test("switches the interface between Chinese and English", async ({
   await expect(
     enNav.getByRole("link", { name: "Data sources & tools" }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Notifications" }),
+  ).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page).toHaveTitle("Notifications · AEP");
   expect(
@@ -33,7 +35,9 @@ test("switches the interface between Chinese and English", async ({
   await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "New run" }).first()).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "New run" }).first(),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "English" })).toHaveAttribute(
     "aria-pressed",
     "true",
@@ -66,4 +70,37 @@ test("an unknown language in the cookie falls back to Chinese", async ({
   await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
   await expect(page.getByRole("heading", { name: "运行记录" })).toBeVisible();
+});
+
+test("resource lists read in English; one Chinese word can have two translations", async ({
+  page,
+  context,
+}) => {
+  await context.addCookies([
+    { name: "aep_locale", value: "en", url: "http://127.0.0.1:3100" },
+  ]);
+  await page.goto("/catalog");
+  await expect(
+    page.getByRole("heading", { name: "Asset catalog" }),
+  ).toBeVisible();
+  const kinds = page.getByRole("group", { name: "Filter by category" });
+  // 应用 is "Apps" in the filter and "App" as a row's category.
+  await expect(kinds.getByRole("button", { name: /^Apps \d+$/ })).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "Category" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "App", exact: true }).first(),
+  ).toBeVisible();
+
+  await page.goto("/models");
+  await expect(
+    page.getByRole("heading", { name: "Models", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add model" })).toBeVisible();
+  await expect(page.getByText("key: in the config file").first()).toBeVisible();
+
+  await page.goto("/runs/new");
+  await expect(page.getByRole("heading", { name: "New run" })).toBeVisible();
+  await expect(page.getByLabel("App", { exact: true })).toBeVisible();
 });

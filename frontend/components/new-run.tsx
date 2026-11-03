@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
@@ -11,10 +12,9 @@ import {
   readRun,
   requestJson,
   rerunRun,
-  runTitle,
-  versionLabel,
   type Run,
 } from "../lib/runs";
+import { runTitle, versionLabel } from "../lib/i18n/format";
 import { readDataSources, type DataSource, type EtlLanguage } from "../lib/etl";
 import { isEtlAppSource, kindLabel } from "../lib/datasources";
 import { Icon } from "./icons";
@@ -54,6 +54,7 @@ export function NewRun({
   from,
   locked,
 }: { from?: string; locked?: string } = {}) {
+  const t = useT();
   const router = useRouter();
   const [text, setText] = useState("");
   const [app, setApp] = useState("");
@@ -288,7 +289,7 @@ export function NewRun({
     }
   }
   if (locked && apps.length && !apps.some((item) => item.app === locked))
-    return <ErrorNotice message={`没有找到应用 ${locked}。`} />;
+    return <ErrorNotice message={t("没有找到应用 {locked}。", { locked })} />;
   return (
     <>
       {!locked && (
@@ -297,18 +298,18 @@ export function NewRun({
           href={from ? `/runs/${encodeURIComponent(from)}` : "/"}
         >
           <Icon name="back" size={16} />
-          {from ? "返回原运行" : "返回运行记录"}
+          {from ? t("返回原运行") : t("返回运行记录")}
         </Link>
       )}
       {!locked && (
         <div className="page-heading">
           <div>
-            <h1>{from ? "复制并重新发起" : "新建运行"}</h1>
-            <p>
-              {from
-                ? "需求已经照原运行填好，改完后重新发起，会是一次新的运行。"
-                : "告诉应用你想完成什么，接下来的过程在这里展开。"}
-            </p>
+            <h1>{from ? t("复制并重新发起") : t("新建运行")}</h1>
+            {from && (
+              <p>
+                {t("需求已经照原运行填好，改完后重新发起，会是一次新的运行。")}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -320,15 +321,19 @@ export function NewRun({
       )}
       {source && (
         <p className="copy-notice" role="status">
-          复制自
+          {t("复制自")}
           <Link href={`/runs/${encodeURIComponent(source.run_id)}`}>
-            「{runTitle(source)}」
+            {t("「{title}」", { title: runTitle(t, source) })}
           </Link>
           {source.actions?.rerun === false
-            ? "。这次运行用的应用或版本已经不在了，不能照原样重新发起，请新建运行。"
+            ? t(
+                "。这次运行用的应用或版本已经不在了，不能照原样重新发起，请新建运行。",
+              )
             : source.draft
-              ? "，沿用它试运行时的草稿配置。"
-              : `，沿用它的应用版本（${versionLabel(source) || "当前版本"}）。`}
+              ? t("，沿用它试运行时的草稿配置。")
+              : t("，沿用它的应用版本（{version}）。", {
+                  version: versionLabel(t, source) || t("当前版本"),
+                })}
         </p>
       )}
       <div className={locked ? "use-run" : "new-run-grid"}>
@@ -336,13 +341,16 @@ export function NewRun({
           className="panel new-run-form"
           onSubmit={submit}
           noValidate
-          aria-label="新建运行"
+          aria-label={t("新建运行")}
         >
           <div className="form-section" hidden={Boolean(locked)}>
-            <span className="step-label">
-              01<span>选择应用</span>
-            </span>
-            <label htmlFor="app">应用</label>
+            {/* Numbered steps only where there are several (the ETL app). */}
+            {app === "etl" && (
+              <span className="step-label">
+                01<span>{t("选择应用")}</span>
+              </span>
+            )}
+            <label htmlFor="app">{t("应用#字段")}</label>
             <select
               id="app"
               name="app"
@@ -359,26 +367,28 @@ export function NewRun({
               disabled={submitting || uploading || Boolean(from)}
               aria-describedby={from ? "app-locked" : undefined}
             >
-              {from && !source && <option value="">正在读取原运行…</option>}
+              {from && !source && (
+                <option value="">{t("正在读取原运行…")}</option>
+              )}
               {source && !apps.some((item) => item.app === source.app) && (
                 <option value={source.app}>
-                  {source.app} · {source.app_title ?? source.app}
+                  {source.app_title ?? source.app}
                 </option>
               )}
               {!apps.length && !from && (
                 <option value="">
-                  {appsError ? "应用加载失败" : "正在加载应用…"}
+                  {appsError ? t("应用加载失败") : t("正在加载应用…")}
                 </option>
               )}
               {apps.map((item) => (
                 <option key={item.app} value={item.app}>
-                  {item.app} · {item.title}
+                  {item.title}
                 </option>
               ))}
             </select>
             {from && (
               <p className="field-hint" id="app-locked">
-                复制的运行沿用原来的应用，想换应用请新建运行。
+                {t("复制的运行沿用原来的应用，想换应用请新建运行。")}
               </p>
             )}
             {/* What the app says it does, as its builder wrote it. */}
@@ -406,21 +416,25 @@ export function NewRun({
           )}
           {from && source?.project && (
             <div className="form-section">
-              <span>项目</span>
+              <span>{t("项目#字段")}</span>
               <p className="field-hint" role="status">
-                沿用原运行的项目「{source.project.name}」、环境「
-                {source.project.environment_label}
-                」和参数值；项目的其他设置按现在的。
+                {t(
+                  "沿用原运行的项目「{project}」、环境「{environment}」和参数值；项目的其他设置按现在的。",
+                  {
+                    project: source.project.name,
+                    environment: source.project.environment_label,
+                  },
+                )}
               </p>
             </div>
           )}
           {app === "etl" && (
             <div className="form-section">
               <span className="step-label">
-                02<span>选择数据源</span>
+                02<span>{t("选择数据源")}</span>
               </span>
               <div className="source-heading">
-                <label htmlFor="datasource">数据源</label>
+                <label htmlFor="datasource">{t("数据源")}</label>
                 <button
                   type="button"
                   className="text-button"
@@ -429,7 +443,7 @@ export function NewRun({
                   aria-controls="file-upload-panel"
                   onClick={() => setUploadOpen((value) => !value)}
                 >
-                  {uploadOpen ? "收起上传" : "上传文件"}
+                  {uploadOpen ? t("收起上传") : t("上传文件#按钮")}
                 </button>
               </div>
               <select
@@ -446,14 +460,14 @@ export function NewRun({
                 aria-describedby="datasource-hint"
               >
                 <option value="">
-                  {sourcesLoading ? "正在加载数据源…" : "请选择数据源"}
+                  {sourcesLoading ? t("正在加载数据源…") : t("请选择数据源")}
                 </option>
                 {etlSources.map((source) => (
                   <option
                     key={source.datasource_id}
                     value={source.datasource_id}
                   >
-                    {source.name} · {kindLabel(source.kind)}
+                    {source.name} · {t(kindLabel(source.kind))}
                   </option>
                 ))}
               </select>
@@ -479,7 +493,7 @@ export function NewRun({
               )}
               <p className="field-hint" id="datasource-hint">
                 {selectedSource?.description ||
-                  "从已登记的数据源中选择，连接器只读探查源数据。"}
+                  t("从已登记的数据源中选择，连接器只读探查源数据。")}
               </p>
               {sourcesError && (
                 <ErrorNotice
@@ -489,9 +503,10 @@ export function NewRun({
               )}
               {!sourcesLoading && !sourcesError && etlSources.length === 0 && (
                 <p className="field-hint" role="status">
-                  暂无可用数据源，请先在
-                  <Link href="/datasources">数据源与工具</Link>
-                  里登记后刷新。
+                  {t("暂无可用数据源，请先在")}
+                  <Link href="/datasources">{t("数据源与工具")}</Link>
+
+                  {t("里登记后刷新。")}
                 </p>
               )}
               {!sourcesLoading && !sourcesError && (
@@ -502,7 +517,8 @@ export function NewRun({
                   onClick={() => setSourcesRevision((value) => value + 1)}
                 >
                   <Icon name="refresh" size={14} />
-                  刷新数据源
+
+                  {t("刷新数据源")}
                 </button>
               )}
             </div>
@@ -529,9 +545,9 @@ export function NewRun({
                   }
                 >
                   <summary>
-                    高级选项
+                    {t("高级选项")}
                     <span className="muted">
-                      {advanced.length} 项，不改就按默认
+                      {t("{n} 项，不改就按默认", { n: advanced.length })}
                     </span>
                   </summary>
                   <InputFields
@@ -560,29 +576,32 @@ export function NewRun({
             <div className="form-section">
               <span className="step-label">
                 03
-                <span>描述需求</span>
+                <span>{t("描述需求")}</span>
               </span>
-              <label htmlFor="request">你想完成什么？</label>
+              <label htmlFor="request">{t("你想完成什么？")}</label>
               <textarea
                 id="request"
                 name="text"
                 required
                 rows={7}
-                placeholder="例如：请整理一份客户数据清洗方案，并在执行前让我确认。"
+                placeholder={t(
+                  "例如：请整理一份客户数据清洗方案，并在执行前让我确认。",
+                )}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 disabled={submitting || needsSource}
                 aria-describedby="request-hint"
               />
               <p className="field-hint" id="request-hint">
-                尽量说明目标与约束，帮助应用理解你的需求。
+                {t("尽量说明目标与约束，帮助应用理解你的需求。")}
               </p>
             </div>
           )}
           {app === "etl" && (
             <div className="form-section">
               <label htmlFor="language">
-                生成语言<span className="muted">（选填）</span>
+                {t("生成语言")}
+                <span className="muted">{t("（选填）")}</span>
               </label>
               <select
                 id="language"
@@ -592,19 +611,22 @@ export function NewRun({
                   setLanguage(event.target.value as EtlLanguage)
                 }
               >
-                <option value="pyspark">PySpark（默认）</option>
+                <option value="pyspark">{t("PySpark（默认）")}</option>
                 <option value="sql">SQL</option>
               </select>
             </div>
           )}
           {me ? (
             <p className="field-hint">
-              以「{me.display_name}」的身份发起，运行记录里会写这个名字。
+              {t("以「{name}」的身份发起，运行记录里会写这个名字。", {
+                name: me.display_name,
+              })}
             </p>
           ) : (
             <div className="form-section">
               <label htmlFor="requester">
-                你的名字<span className="muted">（选填）</span>
+                {t("你的名字")}
+                <span className="muted">{t("（选填）")}</span>
               </label>
               <input
                 id="requester"
@@ -616,13 +638,12 @@ export function NewRun({
                 aria-describedby="requester-hint"
               />
               <p className="field-hint" id="requester-hint">
-                会显示在运行记录里，方便大家知道这个需求是谁提的。
+                {t("会显示在运行记录里，方便大家知道这个需求是谁提的。")}
               </p>
             </div>
           )}
           {error && <ErrorNotice message={error} />}
           <div className="form-actions">
-            <span>运行过程与结果将自动记录</span>
             <button
               className="button primary"
               type="submit"
@@ -640,44 +661,18 @@ export function NewRun({
               {submitting ? (
                 <>
                   <span className="spinner" />
-                  正在创建…
+
+                  {t("正在创建…")}
                 </>
               ) : (
                 <>
-                  {from ? "重新发起" : "开始运行"}
+                  {from ? t("重新发起") : t("开始运行")}
                   <Icon name="arrow" size={17} />
                 </>
               )}
             </button>
           </div>
         </form>
-        {!locked && (
-          <aside className="guide-card">
-            <span className="guide-icon">
-              <Icon name="spark" size={24} />
-            </span>
-            <h2>让需求有迹可循</h2>
-            <p>每一次运行，都是一段完整的协作。</p>
-            <ol className="guide-steps">
-              <li>
-                <strong>描述目标</strong>
-                <span>用自然语言提出你的需求</span>
-              </li>
-              <li>
-                <strong>查看过程</strong>
-                <span>跟随应用消息，了解执行进展</span>
-              </li>
-              <li>
-                <strong>确认方向</strong>
-                <span>需要时确认继续，或写下修改意见</span>
-              </li>
-              <li>
-                <strong>获得结果</strong>
-                <span>随时回来查看本次运行</span>
-              </li>
-            </ol>
-          </aside>
-        )}
       </div>
     </>
   );

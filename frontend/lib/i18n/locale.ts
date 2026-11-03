@@ -21,9 +21,11 @@ export function htmlLang(locale: Locale): string {
 }
 
 // The Chinese text is the key; a missing translation shows the Chinese text.
-// `{name}` in the text is replaced by vars.name.
+// `{name}` in the text is replaced by vars.name. When one Chinese word needs two
+// translations, a context after `#` tells them apart: t("应用#字段") shows 应用 in
+// Chinese and has its own English entry.
 export function translate(locale: Locale, text: string, vars?: Vars): string {
-  const base = dictionaries[locale][text] ?? text;
+  const base = dictionaries[locale][text] ?? text.replace(/#[^#{}]*$/, "");
   if (!vars) return base;
   return base.replace(/\{(\w+)\}/g, (match, key: string) =>
     key in vars ? String(vars[key]) : match,

@@ -6383,3 +6383,226 @@ h1 {
     padding: 20px 16px 32px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   界面改版第 3 批: run list. Counts sit in the filter tabs; text is readable size;
+   on a phone each run is a small card instead of a wide table.
+   --------------------------------------------------------------------------- */
+.runs-panel .filter-tabs button {
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.filter-count {
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: #f1eff5;
+  color: #8a8594;
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.filter-count.attention {
+  background: #fbefd9;
+  color: #9a6a1c;
+}
+.runs-table th {
+  font-size: 12px;
+  padding: 10px 18px;
+}
+.runs-table td {
+  padding: 12px 18px;
+}
+.run-title {
+  font-size: 13px;
+}
+.run-cell,
+.app-tag {
+  font-size: 12px;
+}
+.runs-table .run-version,
+.runs-table .draft-tag,
+.run-step {
+  margin-top: 4px;
+  font-size: 11px;
+}
+.run-duration span {
+  display: inline;
+}
+.run-duration span + span {
+  margin-top: 0;
+}
+.run-duration span + span::before {
+  content: " · ";
+  color: #c4bfcc;
+}
+.table-footer {
+  font-size: 11px;
+  padding: 10px 18px;
+}
+@media (max-width: 600px) {
+  .runs-table {
+    min-width: 0;
+    table-layout: auto;
+  }
+  .runs-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+  .runs-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid #f0eef4;
+  }
+  .runs-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .runs-table td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  .runs-table td:first-child {
+    grid-column: 1 / -1;
+  }
+  .runs-table td:last-child {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .table-footer span:last-child {
+    display: inline;
+  }
+}
+/* New run: one column now that the side guide is gone. */
+.new-run-grid,
+.use-run {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 760px;
+}
+.new-run-form .form-actions {
+  justify-content: flex-end;
+}
+/* Asset catalog: five columns, one line of description, a real search box. */
+.catalog-search {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+}
+.catalog-search:focus {
+  outline: 2px solid #d8cdf3;
+  border-color: var(--purple);
+}
+.catalog-toolbar .filter-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mapping-table.catalog-table {
+  min-width: 760px;
+}
+.catalog-table th,
+.catalog-table td {
+  font-size: 12px;
+}
+.catalog-name {
+  max-width: 340px;
+}
+.catalog-name a {
+  font-size: 13px;
+}
+.catalog-version {
+  margin-left: 6px;
+  color: #8a8594;
+  font-size: 11px;
+}
+.catalog-table .catalog-name small {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+.catalog-actions a {
+  margin-left: 10px;
+  color: var(--purple);
+}
+/* Models: the key's source sits under the state instead of in its own column. */
+.model-state {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+.model-key {
+  font-size: 11px;
+}
+/* Data sources: description under the name, tools and apps in one usage cell. */
+.datasource-name small {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 420px;
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 400;
+}
+.datasource-usage span {
+  display: block;
+}
+.datasource-usage span + span {
+  margin-top: 2px;
+  font-size: 12px;
+}
+.heading-actions {
+  margin: 0;
+  flex-wrap: wrap;
+}
+/* Data source detail: info on the left, status and usage on the right. */
+.datasource-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: start;
+}
+.datasource-overview > section {
+  margin: 0;
+}
+.datasource-overview > section:first-child {
+  grid-row: span 2;
+}
+@media (max-width: 900px) {
+  .datasource-overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .datasource-overview > section:first-child {
+    grid-row: auto;
+  }
+}
+/* Skill cards: who uses it folds away. */
+details.skill-usage summary {
+  cursor: pointer;
+  color: var(--purple);
+  font-size: 12px;
+}
+p.skill-usage {
+  margin: 0;
+  font-size: 12px;
+}
+.project-id {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}

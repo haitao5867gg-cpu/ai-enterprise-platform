@@ -48,7 +48,9 @@ test("the catalog lists assets, keeps owners and tags and proposes them as PRs",
   await expect(mine).toContainText("v1");
   await expect(mine).toContainText("没有应用在用");
   await expect(mine).toContainText("暂无");
-  await expect(mine).toContainText("未提交");
+  await expect(
+    mine.getByRole("button", { name: `把「${skill}」提交到资产仓库` }),
+  ).toHaveText("提交");
 
   await mine.getByRole("button", { name: `编辑「${skill}」` }).click();
   const edit = page.getByRole("dialog", { name: `编辑「${skill}」` });

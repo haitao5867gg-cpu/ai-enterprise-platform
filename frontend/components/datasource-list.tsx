@@ -20,22 +20,23 @@ import { errorMessage } from "../lib/runs";
 import { AssetHeading, AssetLoading } from "./asset-ui";
 import { DatasourceDialog, DatasourceForm } from "./datasource-form";
 import { ErrorNotice } from "./ui";
+import { useT, type Translate } from "../lib/i18n/client";
 
 // Per row: missing while the request runs, "failed" when it did not answer.
 type Rows<T> = Record<string, T | "failed">;
 
 const dialogTitles: Record<string, string> = {
-  file: "上传文件",
+  file: "上传文件#按钮",
   mcp: "登记工具服务",
 };
-const healthText = (value: Health | "failed" | undefined) =>
+const healthText = (t: Translate, value: Health | "failed" | undefined) =>
   value === undefined
-    ? "检查中…"
+    ? t("检查中…")
     : value === "failed"
-      ? "没查到状态"
+      ? t("没查到状态")
       : value.ok
-        ? "正常"
-        : healthLabels[value.error ?? "other"];
+        ? t("正常")
+        : t(healthLabels[value.error ?? "other"]);
 
 function SourceTable({
   label,
@@ -54,23 +55,16 @@ function SourceTable({
   rechecked: string[];
   recheck: (source: Datasource) => void;
 }) {
+  const t = useT();
   return (
     <div className="table-scroll">
       <table className="mapping-table datasource-table" aria-label={label}>
         <thead>
           <tr>
-            {[
-              "名称",
-              "业务说明",
-              "类型",
-              "连通状态",
-              "工具数",
-              "被几个应用使用",
-            ].map((heading) => (
-              <th scope="col" key={heading}>
-                {heading}
-              </th>
-            ))}
+            <th scope="col">{t("名称")}</th>
+            <th scope="col">{t("类型")}</th>
+            <th scope="col">{t("连通状态")}</th>
+            <th scope="col">{t("用量")}</th>
           </tr>
         </thead>
         <tbody>
@@ -87,45 +81,52 @@ function SourceTable({
                   <Link href={`/datasources/${encodeURIComponent(id)}`}>
                     {source.name}
                   </Link>
-                </td>
-                <td className="datasource-description">
-                  {source.description || "—"}
+                  {source.description && (
+                    <small className="muted" title={source.description}>
+                      {source.description}
+                    </small>
+                  )}
                 </td>
                 <td className="datasource-kind">
                   <span className="datasource-tag">
-                    {kindLabel(source.kind)}
+                    {t(kindLabel(source.kind))}
                   </span>
                 </td>
                 <td className="datasource-health-cell" aria-busy={busy}>
                   <span
                     className={`datasource-health ${state === undefined ? "pending" : failing ? "error" : "ok"}`}
                   >
-                    {healthText(state)}
+                    {healthText(t, state)}
                   </span>
                   {state !== undefined &&
                     (failing || rechecked.includes(id)) && (
                       <button
                         type="button"
                         className="text-button"
-                        aria-label={`${checking[id] ? "检查中…" : "重新检查"}「${source.name}」`}
+                        aria-label={t(
+                          checking[id]
+                            ? t("检查中…「{name}」")
+                            : t("重新检查「{name}」"),
+                          { name: source.name },
+                        )}
                         aria-disabled={checking[id] || undefined}
                         onClick={() => recheck(source)}
                       >
-                        {checking[id] ? "检查中…" : "重新检查"}
+                        {checking[id] ? t("检查中…") : t("重新检查")}
                       </button>
                     )}
                 </td>
-                <td
-                  className={`datasource-count ${tools === null ? "unknown" : ""}`}
-                >
-                  {tools === null ? "—" : `${tools} 个工具`}
-                </td>
                 <td className="datasource-count datasource-usage">
-                  {used === undefined
-                    ? "统计中…"
-                    : used === "failed"
-                      ? "没统计到"
-                      : `${used.apps.length} 个应用`}
+                  <span className={tools === null ? "muted" : ""}>
+                    {tools === null ? "—" : t("{n} 个工具", { n: tools })}
+                  </span>
+                  <span className="muted">
+                    {used === undefined
+                      ? t("统计中…")
+                      : used === "failed"
+                        ? t("没统计到")
+                        : t("{n} 个应用在用", { n: used.apps.length })}
+                  </span>
                 </td>
               </tr>
             );
@@ -137,6 +138,7 @@ function SourceTable({
 }
 
 export function DatasourceList() {
+  const t = useT();
   const router = useRouter();
   const [items, setItems] = useState<Datasource[] | null>(null);
   const [error, setError] = useState("");
@@ -195,7 +197,9 @@ export function DatasourceList() {
     }
     setHealth((old) => ({ ...old, [id]: value }));
     setChecking((old) => ({ ...old, [id]: false }));
-    setAnnouncement(`${source.name}：${healthText(value)}`);
+    setAnnouncement(
+      t("{name}：{state}", { name: source.name, state: healthText(t, value) }),
+    );
   }
 
   const databases =
@@ -217,28 +221,31 @@ export function DatasourceList() {
   const open = (kind: DatasourceKind | "") => setDialogKind(kind);
   return (
     <div className="asset-page">
-      <AssetHeading title="数据源与工具">
-        数据和工具都通过连接器接入。连接器是数据团队部署的小服务（MCP
-        协议），平台只保存它的地址，数据库账号密码配在连接器上。数据源给 ETL
-        和「数据工程」类节点读数据；工具服务只提供工具，比如查工单、查
-        CRM，在编排应用的「调用工具」和「智能体」节点里使用。
+      <AssetHeading
+        title={t("数据源与工具")}
+        action={
+          <div className="asset-actions heading-actions">
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => open("file")}
+            >
+              {t("上传文件#按钮")}
+            </button>
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => open("")}
+            >
+              {t("登记数据源")}
+            </button>
+          </div>
+        }
+      >
+        {t(
+          "数据和工具都经连接器（MCP 服务）接入，平台只保存地址，账号密码留在连接器上。",
+        )}
       </AssetHeading>
-      <div className="asset-actions">
-        <button
-          type="button"
-          className="button primary"
-          onClick={() => open("")}
-        >
-          登记数据源
-        </button>
-        <button
-          type="button"
-          className="button secondary"
-          onClick={() => open("file")}
-        >
-          上传文件
-        </button>
-      </div>
       {error && (
         <ErrorNotice
           message={error}
@@ -252,11 +259,11 @@ export function DatasourceList() {
             className="panel asset-section datasource-section"
             aria-labelledby="datasource-group-sources"
           >
-            <h2 id="datasource-group-sources">数据源</h2>
+            <h2 id="datasource-group-sources">{t("数据源#分组")}</h2>
             {databases.length ? (
-              table("数据源", databases)
+              table(t("数据源#分组"), databases)
             ) : (
-              <p className="muted">还没有登记数据源。</p>
+              <p className="muted">{t("还没有登记数据源。")}</p>
             )}
           </section>
           <section
@@ -264,20 +271,22 @@ export function DatasourceList() {
             aria-labelledby="datasource-group-services"
           >
             <div className="asset-section-heading">
-              <h2 id="datasource-group-services">工具服务</h2>
+              <h2 id="datasource-group-services">{t("工具服务#分组")}</h2>
               <button
                 type="button"
                 className="button secondary"
                 onClick={() => open("mcp")}
               >
-                登记工具服务
+                {t("登记工具服务")}
               </button>
             </div>
             {services.length ? (
-              table("工具服务", services)
+              table(t("工具服务#分组"), services)
             ) : (
               <p className="muted">
-                还没有登记工具服务。工具服务只提供工具，比如查工单、查 CRM。
+                {t(
+                  "还没有登记工具服务。工具服务只提供工具，比如查工单、查 CRM。",
+                )}
               </p>
             )}
           </section>
@@ -286,27 +295,29 @@ export function DatasourceList() {
             aria-labelledby="datasource-group-repos"
           >
             <div className="asset-section-heading">
-              <h2 id="datasource-group-repos">代码仓库</h2>
+              <h2 id="datasource-group-repos">{t("代码仓库#分组")}</h2>
               <button
                 type="button"
                 className="button secondary"
                 onClick={() => open("git")}
               >
-                登记代码仓库
+                {t("登记代码仓库")}
               </button>
             </div>
             {repos.length ? (
-              table("代码仓库", repos)
+              table(t("代码仓库#分组"), repos)
             ) : (
               <p className="muted">
-                还没有登记代码仓库。代码仓库经 Git 连接器接入 GitHub 或
-                Bitbucket，「提交 PR」节点用它把代码以 PR 提交上去。
+                {t(
+                  "还没有登记代码仓库。代码仓库经 Git 连接器接入 GitHub 或 Bitbucket，「提交 PR」节点用它把代码以 PR 提交上去。",
+                )}
               </p>
             )}
           </section>
           <p className="field-hint">
-            连通状态在打开页面时检查，结果保留 60
-            秒；应用数按各应用当前版本的配置统计。
+            {t(
+              "连通状态在打开页面时检查，结果保留 60 秒；应用数按各应用当前版本的配置统计。",
+            )}
           </p>
         </>
       )}
@@ -316,7 +327,7 @@ export function DatasourceList() {
       {dialogKind !== null && (
         <DatasourceDialog
           ref={dialog}
-          title={dialogTitles[dialogKind] ?? "登记数据源"}
+          title={t(dialogTitles[dialogKind] ?? t("登记数据源"))}
           onClose={() => setDialogKind(null)}
         >
           <DatasourceForm

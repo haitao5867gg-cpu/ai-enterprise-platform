@@ -200,14 +200,18 @@ export const purposeLabels: Record<Purpose, string> = {
   embedding: "向量模型",
   rerank: "重排模型",
 };
-export const keyLabel = (key: KeyInfo) =>
+// Where a model's key comes from, in the reader's language (pass `t` from useT()).
+export const keyLabel = (
+  t: (text: string, vars?: Record<string, string>) => string,
+  key: KeyInfo,
+) =>
   key.source === "page"
-    ? "页面上填的"
+    ? t("页面上填的")
     : key.source === "env"
-      ? `环境变量 ${key.env ?? ""}`
+      ? t("环境变量 {name}", { name: key.env ?? "" })
       : key.source === "none"
-        ? "不用 key"
-        : "配置文件里";
+        ? t("不用 key")
+        : t("配置文件里");
 
 const base = (alias: string) => `/models/${encodeURIComponent(alias)}`;
 const json = (method: string, body?: unknown): RequestInit => ({

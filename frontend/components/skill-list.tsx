@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -19,6 +20,7 @@ import {
 import { EmptyState, ErrorNotice } from "./ui";
 
 export function SkillList() {
+  const t = useT();
   const router = useRouter();
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [error, setError] = useState("");
@@ -47,12 +49,12 @@ export function SkillList() {
   async function create() {
     if (!new RegExp(SKILL_NAME_PATTERN).test(name)) {
       setFormError(
-        "名称须以小写字母开头，包含 2~64 位小写字母、数字或短横线。",
+        t("名称须以小写字母开头，包含 2~64 位小写字母、数字或短横线。"),
       );
       return;
     }
     if (!description.trim()) {
-      setFormError("说明不能为空。");
+      setFormError(t("说明不能为空。"));
       return;
     }
     setBusy(true);
@@ -75,22 +77,22 @@ export function SkillList() {
   return (
     <div className="asset-page">
       <AssetHeading
-        title="Skill"
+        title={t("Skill")}
         action={
           <button
             type="button"
             className="button primary"
             onClick={() => setCreating(true)}
           >
-            新建 Skill
+            {t("新建 Skill")}
           </button>
         }
       >
-        把做法沉淀成可复用、可追溯版本的团队资产。
+        {t("把做法沉淀成可复用、可追溯版本的团队资产。")}
       </AssetHeading>
       {creating && (
-        <section className="panel asset-section" aria-label="新建 Skill">
-          <h2>新建 Skill</h2>
+        <section className="panel asset-section" aria-label={t("新建 Skill")}>
+          <h2>{t("新建 Skill")}</h2>
           <form
             className="asset-form"
             noValidate
@@ -101,9 +103,9 @@ export function SkillList() {
           >
             {formError && <ErrorNotice message={formError} />}
             <label className="asset-field">
-              名称
+              {t("名称")}
               <input
-                aria-label="名称"
+                aria-label={t("名称")}
                 aria-describedby="skill-name-help"
                 required
                 pattern={SKILL_NAME_PATTERN}
@@ -114,11 +116,11 @@ export function SkillList() {
                 placeholder="order-quality"
               />
               <small className="muted" id="skill-name-help">
-                2~64 位小写字母、数字或短横线，以小写字母开头。
+                {t("2~64 位小写字母、数字或短横线，以小写字母开头。")}
               </small>
             </label>
             <label className="asset-field">
-              说明
+              {t("说明")}
               <textarea
                 required
                 maxLength={500}
@@ -129,7 +131,7 @@ export function SkillList() {
               />
             </label>
             <label className="asset-field">
-              正文（Markdown）
+              {t("正文（Markdown）")}
               <textarea
                 maxLength={20_000}
                 rows={6}
@@ -140,7 +142,7 @@ export function SkillList() {
             </label>
             <div className="asset-actions">
               <button className="button primary" disabled={busy}>
-                创建草稿
+                {t("创建草稿")}
               </button>
               <button
                 type="button"
@@ -149,7 +151,7 @@ export function SkillList() {
                 onClick={() => {
                   if (
                     !(name || description || body) ||
-                    window.confirm("确定放弃新建 Skill 的内容吗？")
+                    window.confirm(t("确定放弃新建 Skill 的内容吗？"))
                   ) {
                     setCreating(false);
                     setName("");
@@ -159,7 +161,7 @@ export function SkillList() {
                   }
                 }}
               >
-                取消
+                {t("取消")}
               </button>
             </div>
           </form>
@@ -174,8 +176,8 @@ export function SkillList() {
         <AssetLoading />
       ) : !skills.length ? (
         <section className="panel">
-          <EmptyState title="还没有 Skill">
-            新建一份做法说明，发布后即可供应用节点引用。
+          <EmptyState title={t("还没有 Skill")}>
+            {t("新建一份做法说明，发布后即可供应用节点引用。")}
           </EmptyState>
         </section>
       ) : (
@@ -191,31 +193,39 @@ export function SkillList() {
               <div className="asset-tags">
                 <span>
                   {skill.published_version === null
-                    ? "尚未发布"
-                    : `最新 v${skill.published_version}`}
+                    ? t("尚未发布")
+                    : t("最新 v{version}", {
+                        version: skill.published_version,
+                      })}
                 </span>
-                <span className={skill.has_draft ? "draft-tag" : ""}>
-                  {skill.has_draft ? "有草稿" : "无草稿"}
-                </span>
+                {skill.has_draft && (
+                  <span className="draft-tag">{t("有草稿")}</span>
+                )}
               </div>
-              <div className="skill-usage">
-                <strong>used_by · 当前引用</strong>
-                {skill.used_by.length ? (
+              {skill.used_by.length ? (
+                <details className="skill-usage">
+                  <summary>
+                    {t("被 {n} 个应用节点引用", { n: skill.used_by.length })}
+                  </summary>
                   <ul>
                     {skill.used_by.map((usage) => (
                       <li key={`${usage.app}.${usage.node}`}>
                         <Link href={`/apps/${encodeURIComponent(usage.app)}`}>
-                          {usage.app} / {usage.node} · 应用 v{usage.version}
+                          {t("{app} / {node} · 应用 v{version}", {
+                            app: usage.app,
+                            node: usage.node,
+                            version: usage.version,
+                          })}
                         </Link>
                       </li>
                     ))}
                   </ul>
-                ) : (
-                  <p className="muted">暂无应用引用</p>
-                )}
-              </div>
+                </details>
+              ) : (
+                <p className="muted skill-usage">{t("暂无应用引用")}</p>
+              )}
               <small className="muted">
-                更新于 <AssetTime value={skill.updated_at} />
+                {t("更新于")} <AssetTime value={skill.updated_at} />
               </small>
             </article>
           ))}

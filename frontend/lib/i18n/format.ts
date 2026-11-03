@@ -41,8 +41,10 @@ export function timeAgo(locale: Locale, iso: string, now: number): string {
   if (Number.isNaN(seconds)) return "";
   if (seconds < 60) return t("刚刚");
   if (seconds < 3_600) return t("{n} 分钟前", { n: Math.floor(seconds / 60) });
-  if (seconds < 86_400) return t("{n} 小时前", { n: Math.floor(seconds / 3_600) });
-  if (seconds < 7 * 86_400) return t("{n} 天前", { n: Math.floor(seconds / 86_400) });
+  if (seconds < 86_400)
+    return t("{n} 小时前", { n: Math.floor(seconds / 3_600) });
+  if (seconds < 7 * 86_400)
+    return t("{n} 天前", { n: Math.floor(seconds / 86_400) });
   return formatTime(locale, iso);
 }
 
@@ -59,7 +61,9 @@ export function durationParts(t: T, run: RunSummary, now: number): string[] {
     ? Math.max(0, (end - Date.parse(run.waiting_since)) / 1000) || 0
     : 0;
   const waited = run.wait_seconds + current;
-  const machine = t("机器 {d}", { d: formatDuration(t, Math.max(0, total - waited)) });
+  const machine = t("机器 {d}", {
+    d: formatDuration(t, Math.max(0, total - waited)),
+  });
   return waited >= 1
     ? [machine, t("等人 {d}", { d: formatDuration(t, waited) })]
     : [machine];
@@ -94,4 +98,29 @@ export function versionLabel(t: T, run: RunSummary): string {
     : run.app_version
       ? `v${run.app_version}`
       : "";
+}
+
+export function formatNumber(locale: Locale, value: number): string {
+  return new Intl.NumberFormat(htmlLang(locale)).format(value);
+}
+
+// Large counts in short form: 13万 / 130K.
+export function formatCompact(locale: Locale, value: number): string {
+  return new Intl.NumberFormat(htmlLang(locale), {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+// Month, day and time, for "last called" style notes.
+export function formatShortTime(locale: Locale, iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleString(htmlLang(locale), {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
 }

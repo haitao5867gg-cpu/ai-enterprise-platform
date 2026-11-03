@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import type { Input } from "../lib/apps";
 import { isCodeRepo, isToolService, kindLabel } from "../lib/datasources";
 import type { FieldValues } from "../lib/input-fields";
@@ -9,6 +10,7 @@ type Source = { datasource_id: string; name: string; kind: string };
 // ETL step that gets one fails with a Chinese input error. Code repositories are only for
 // the 提交 PR node, never chosen at run time.
 function DatasourceOptions({ sources }: { sources: Source[] }) {
+  const t = useT();
   const databases = sources.filter(
     (source) => !isToolService(source) && !isCodeRepo(source),
   );
@@ -16,13 +18,13 @@ function DatasourceOptions({ sources }: { sources: Source[] }) {
   const options = (items: Source[], kind: boolean) =>
     items.map((source) => (
       <option key={source.datasource_id} value={source.datasource_id}>
-        {kind ? `${source.name} · ${kindLabel(source.kind)}` : source.name}
+        {kind ? `${source.name} · ${t(kindLabel(source.kind))}` : source.name}
       </option>
     ));
   return services.length ? (
     <>
-      <optgroup label="数据源">{options(databases, true)}</optgroup>
-      <optgroup label="工具服务">{options(services, false)}</optgroup>
+      <optgroup label={t("数据源#分组")}>{options(databases, true)}</optgroup>
+      <optgroup label={t("工具服务#分组")}>{options(services, false)}</optgroup>
     </>
   ) : (
     options(databases, true)
@@ -46,6 +48,7 @@ export function InputFields({
   prefix?: string;
   datasources?: Source[];
 }) {
+  const t = useT();
   return (
     <div className="input-fields">
       {fields.map((field) => {
@@ -63,7 +66,7 @@ export function InputFields({
           <div className="asset-field" key={field.key}>
             <label htmlFor={id}>
               {field.label}
-              {field.required && <span className="muted">（必填）</span>}
+              {field.required && <span className="muted">{t("（必填）")}</span>}
             </label>
             {field.type === "boolean" ? (
               <input
@@ -85,7 +88,9 @@ export function InputFields({
                 value={String(values[field.key] ?? "")}
                 onChange={(e) => change(e.target.value)}
               >
-                <option value="">请选择{field.label}</option>
+                <option value="">
+                  {t("请选择{label}", { label: field.label })}
+                </option>
                 {field.type === "datasource" ? (
                   <DatasourceOptions sources={datasources} />
                 ) : (
@@ -116,9 +121,9 @@ export function InputFields({
                 <div
                   className="input-examples"
                   role="group"
-                  aria-label="可以直接用的例子"
+                  aria-label={t("可以直接用的例子")}
                 >
-                  <span className="field-hint">点一下用这句：</span>
+                  <span className="field-hint">{t("点一下用这句：")}</span>
                   {field.examples!.map((example, i) => (
                     <button
                       key={i}
@@ -134,7 +139,9 @@ export function InputFields({
                 </div>
               )}
             {field.max_length !== undefined && (
-              <span className="field-hint">最多 {field.max_length} 个字符</span>
+              <span className="field-hint">
+                {t("最多 {n} 个字符", { n: field.max_length })}
+              </span>
             )}
             {errors[field.key] && (
               <p className="field-error" id={`${id}-error`} role="alert">

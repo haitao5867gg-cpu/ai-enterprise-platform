@@ -1,5 +1,6 @@
 "use client";
 
+import { useT, type Translate } from "../lib/i18n/client";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { savedActor } from "../lib/actor";
@@ -26,6 +27,10 @@ import { EmptyState, ErrorNotice } from "./ui";
 
 // docs/api/catalog.md: every platform asset in one list.
 
+// The singular name of a kind ("App"); the filter tabs use the plural.
+const kindName = (t: Translate, kind: CatalogKind) =>
+  t(`${kindLabel(kind)}#类别`); // i18n-ignore
+
 const key = (item: Pick<CatalogItem, "kind" | "id">) =>
   `${item.kind}:${item.id}`;
 
@@ -51,6 +56,7 @@ export function Dialog({
   close: () => void;
   children: React.ReactNode;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     ref.current?.showModal();
@@ -66,7 +72,7 @@ export function Dialog({
       <div className="asset-section-heading">
         <h2>{title}</h2>
         <button type="button" className="text-button" onClick={close}>
-          关闭
+          {t("关闭")}
         </button>
       </div>
       {children}
@@ -83,6 +89,7 @@ function EditDialog({
   close: () => void;
   saved: (item: CatalogItem) => void;
 }) {
+  const t = useT();
   const actor = useActor();
   const [owner, setOwner] = useState(item.owner_set ? (item.owner ?? "") : "");
   const [tags, setTags] = useState(item.tags.join("、"));
@@ -90,9 +97,10 @@ function EditDialog({
   const [error, setError] = useState("");
   async function save() {
     const parsed = parseTags(tags);
-    if (parsed.length > MAX_TAGS) return setError(`标签最多 ${MAX_TAGS} 个`);
+    if (parsed.length > MAX_TAGS)
+      return setError(t("标签最多 {MAX_TAGS} 个", { MAX_TAGS }));
     if (parsed.some((tag) => tag.length > MAX_TAG))
-      return setError(`每个标签 1–${MAX_TAG} 个字符`);
+      return setError(t("每个标签 1–{MAX_TAG} 个字符", { MAX_TAG }));
     setBusy(true);
     setError("");
     try {
@@ -103,7 +111,7 @@ function EditDialog({
     }
   }
   return (
-    <Dialog title={`编辑「${item.title}」`} close={close}>
+    <Dialog title={t("编辑「{title}」", { title: item.title })} close={close}>
       <form
         className="asset-form"
         noValidate
@@ -114,33 +122,36 @@ function EditDialog({
       >
         {error && <ErrorNotice message={error} />}
         <label className="asset-field">
-          负责人
+          {t("负责人")}
           <input
             maxLength={50}
             value={owner}
             disabled={busy}
             placeholder={
-              item.owner_set ? "" : (item.owner ?? "不填时为新建的人")
+              item.owner_set ? "" : (item.owner ?? t("不填时为新建的人"))
             }
             onChange={(event) => setOwner(event.target.value)}
           />
-          <small className="muted">不填时为新建的人。</small>
+          <small className="muted">{t("不填时为新建的人。")}</small>
         </label>
         <label className="asset-field">
-          标签
+          {t("标签")}
           <input
             value={tags}
             disabled={busy}
-            placeholder="零售、ETL"
+            placeholder={t("零售、ETL")}
             onChange={(event) => setTags(event.target.value)}
           />
           <small className="muted">
-            用顿号或逗号分开，最多 {MAX_TAGS} 个，每个最多 {MAX_TAG} 个字。
+            {t("用顿号或逗号分开，最多 {max} 个，每个最多 {chars} 个字。", {
+              max: MAX_TAGS,
+              chars: MAX_TAG,
+            })}
           </small>
         </label>
         <div className="asset-actions">
           <button className="button primary" disabled={busy}>
-            保存
+            {t("保存")}
           </button>
           <button
             type="button"
@@ -148,7 +159,7 @@ function EditDialog({
             disabled={busy}
             onClick={close}
           >
-            取消
+            {t("取消")}
           </button>
         </div>
       </form>
@@ -165,6 +176,7 @@ function ProposeDialog({
   close: () => void;
   proposed: (result: Proposed) => void;
 }) {
+  const t = useT();
   const actor = useActor();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -184,19 +196,26 @@ function ProposeDialog({
     }
   }
   return (
-    <Dialog title={`把「${item.title}」提交到资产仓库`} close={close}>
+    <Dialog
+      title={t("把「{title}」提交到资产仓库", { title: item.title })}
+      close={close}
+    >
       {result ? (
         <div className="catalog-result" role="status">
           <p>
-            {result.created ? "已开" : "已更新"} PR #{result.number}，改动{" "}
-            {result.changed.length} 个文件。
+            {t(
+              result.created
+                ? "已开 PR #{number}，改动 {n} 个文件。"
+                : "已更新 PR #{number}，改动 {n} 个文件。",
+              { number: result.number, n: result.changed.length },
+            )}
           </p>
           <a href={result.url} target="_blank" rel="noreferrer">
-            打开 PR #{result.number} ↗
+            {t("打开 PR #{number} ↗", { number: result.number })}
           </a>
           <div className="asset-actions">
             <button type="button" className="button primary" onClick={close}>
-              完成
+              {t("完成")}
             </button>
           </div>
         </div>
@@ -211,25 +230,27 @@ function ProposeDialog({
         >
           {error && <ErrorNotice message={error} />}
           <p className="muted">
-            {item.version !== null ? `提交当前版本 v${item.version}。` : ""}
+            {item.version !== null
+              ? t("提交当前版本 v{version}。", { version: item.version })
+              : ""}
             {item.repo
-              ? `会更新已有的 PR #${item.repo.number}。`
-              : "会在资产仓库开一个 PR，合不合并由仓库的人决定。"}
+              ? t("会更新已有的 PR #{number}。", { number: item.repo.number })
+              : t("会在资产仓库开一个 PR，合不合并由仓库的人决定。")}
           </p>
           <label className="asset-field">
-            说明
+            {t("说明")}
             <textarea
               rows={3}
               maxLength={500}
               value={note}
               disabled={busy}
-              placeholder="这次改了什么（写进 PR 说明，可不填）"
+              placeholder={t("这次改了什么（写进 PR 说明，可不填）")}
               onChange={(event) => setNote(event.target.value)}
             />
           </label>
           <div className="asset-actions">
             <button className="button primary" disabled={busy}>
-              {busy ? "提交中…" : "提交"}
+              {busy ? t("提交中…") : t("提交")}
             </button>
             <button
               type="button"
@@ -237,7 +258,7 @@ function ProposeDialog({
               disabled={busy}
               onClick={close}
             >
-              取消
+              {t("取消")}
             </button>
           </div>
         </form>
@@ -247,10 +268,12 @@ function ProposeDialog({
 }
 
 function UsedBy({ item }: { item: CatalogItem }) {
-  if (!item.used_by.length) return <span className="muted">没有应用在用</span>;
+  const t = useT();
+  if (!item.used_by.length)
+    return <span className="muted">{t("没有应用在用")}</span>;
   return (
     <details className="catalog-uses">
-      <summary>{item.used_by.length} 个应用</summary>
+      <summary>{t("{n} 个应用", { n: item.used_by.length })}</summary>
       <ul>
         {item.used_by.map((use) => (
           <li key={use.app}>
@@ -269,6 +292,7 @@ function UsedBy({ item }: { item: CatalogItem }) {
 }
 
 export function CatalogList() {
+  const t = useT();
   const [data, setData] = useState<CatalogList | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
@@ -310,8 +334,10 @@ export function CatalogList() {
   }
   return (
     <div className="asset-page">
-      <AssetHeading title="资产目录">
-        平台上的模板、应用、Skill、知识库、数据源和评测集，一处看负责人、谁在用和质量。
+      <AssetHeading title={t("资产目录")}>
+        {t(
+          "平台上的模板、应用、Skill、知识库、数据源和评测集，一处看负责人、谁在用和质量。",
+        )}
       </AssetHeading>
       {error ? (
         <ErrorNotice
@@ -321,10 +347,14 @@ export function CatalogList() {
       ) : !data ? (
         <AssetLoading />
       ) : (
-        <section className="panel catalog-panel" aria-label="资产">
+        <section className="panel catalog-panel" aria-label={t("资产")}>
           <div className="panel-toolbar catalog-toolbar">
-            <div className="filter-tabs" role="group" aria-label="筛选类别">
-              {[["all", "全部"] as const, ...catalogKinds].map(
+            <div
+              className="filter-tabs"
+              role="group"
+              aria-label={t("筛选类别")}
+            >
+              {[["all", t("全部")] as const, ...catalogKinds].map(
                 ([value, label]) => (
                   <button
                     key={value}
@@ -333,7 +363,8 @@ export function CatalogList() {
                     className={kind === value ? "selected" : ""}
                     onClick={() => setKind(value)}
                   >
-                    {label} {count(value)}
+                    {t(label)}{" "}
+                    <span className="filter-count">{count(value)}</span>
                   </button>
                 ),
               )}
@@ -341,15 +372,15 @@ export function CatalogList() {
             <input
               type="search"
               className="catalog-search"
-              aria-label="搜索资产"
-              placeholder="搜名称、说明、负责人或标签"
+              aria-label={t("搜索资产")}
+              placeholder={t("搜名称、说明、负责人或标签")}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
             <button
               type="button"
               className="icon-button"
-              aria-label="刷新资产目录"
+              aria-label={t("刷新资产目录")}
               onClick={() => setRevision((value) => value + 1)}
             >
               <Icon name="refresh" />
@@ -357,28 +388,28 @@ export function CatalogList() {
           </div>
           {!data.repo_ready && (
             <p className="muted catalog-note">
-              没配资产仓库，暂时不能把资产提交到资产仓库。
+              {t("没配资产仓库，暂时不能把资产提交到资产仓库。")}
             </p>
           )}
           {!shown.length ? (
-            <EmptyState title="没有找到资产">换个类别或搜索词试试。</EmptyState>
+            <EmptyState title={t("没有找到资产")}>
+              {t("换个类别或搜索词试试。")}
+            </EmptyState>
           ) : (
             <div className="table-scroll">
               <table
                 className="mapping-table catalog-table"
-                aria-label="资产列表"
+                aria-label={t("资产列表")}
               >
                 <thead>
                   <tr>
-                    <th scope="col">名称</th>
-                    <th scope="col">类别</th>
-                    <th scope="col">负责人</th>
-                    <th scope="col">版本</th>
-                    <th scope="col">被谁用</th>
-                    <th scope="col">质量分</th>
-                    <th scope="col">资产仓库</th>
+                    <th scope="col">{t("名称")}</th>
+                    <th scope="col">{t("类别")}</th>
+                    <th scope="col">{t("负责人")}</th>
+                    <th scope="col">{t("被谁用")}</th>
+                    <th scope="col">{t("质量分")}</th>
                     <th scope="col">
-                      <span className="sr-only">操作</span>
+                      <span className="sr-only">{t("操作")}</span>
                     </th>
                   </tr>
                 </thead>
@@ -387,8 +418,15 @@ export function CatalogList() {
                     <tr key={key(item)} aria-label={item.title}>
                       <td className="catalog-name">
                         <Link href={item.link}>{item.title}</Link>
+                        {item.version !== null && (
+                          <span className="catalog-version">
+                            v{item.version}
+                          </span>
+                        )}
                         {item.summary && (
-                          <small className="muted">{item.summary}</small>
+                          <small className="muted" title={item.summary}>
+                            {item.summary}
+                          </small>
                         )}
                         {item.tags.length > 0 && (
                           <span className="catalog-tags">
@@ -400,22 +438,45 @@ export function CatalogList() {
                           </span>
                         )}
                       </td>
-                      <td>{kindLabel(item.kind)}</td>
+                      <td>{kindName(t, item.kind)}</td>
                       <td className={item.owner_set ? "" : "muted"}>
-                        {item.owner ?? "未指定"}
-                      </td>
-                      <td>
-                        {item.version === null ? "—" : `v${item.version}`}
+                        {item.owner ?? t("未指定")}
                       </td>
                       <td>
                         <UsedBy item={item} />
                       </td>
                       <td title={item.quality.detail || undefined}>
-                        <strong>{percent(item.quality.score)}</strong>
+                        <strong>{t(percent(item.quality.score))}</strong>
                         <small className="muted">{item.quality.basis}</small>
                       </td>
-                      <td>
-                        {item.repo ? (
+                      <td className="catalog-actions">
+                        <button
+                          type="button"
+                          className="text-button"
+                          aria-label={t("编辑「{title}」", {
+                            title: item.title,
+                          })}
+                          onClick={() => setEditing(item)}
+                        >
+                          {t("编辑")}
+                        </button>
+                        {item.can_propose && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            aria-label={t("把「{title}」提交到资产仓库", {
+                              title: item.title,
+                            })}
+                            disabled={!data.repo_ready}
+                            title={
+                              data.repo_ready ? undefined : t("没配资产仓库")
+                            }
+                            onClick={() => setProposing(item)}
+                          >
+                            {item.repo ? t("更新 PR") : t("提交")}
+                          </button>
+                        )}
+                        {item.repo && (
                           <a
                             href={item.repo.url}
                             target="_blank"
@@ -423,32 +484,6 @@ export function CatalogList() {
                           >
                             PR #{item.repo.number} ↗
                           </a>
-                        ) : (
-                          <span className="muted">
-                            {item.can_propose ? "未提交" : "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td className="catalog-actions">
-                        <button
-                          type="button"
-                          className="text-button"
-                          aria-label={`编辑「${item.title}」`}
-                          onClick={() => setEditing(item)}
-                        >
-                          编辑
-                        </button>
-                        {item.can_propose && (
-                          <button
-                            type="button"
-                            className="text-button"
-                            aria-label={`把「${item.title}」提交到资产仓库`}
-                            disabled={!data.repo_ready}
-                            title={data.repo_ready ? undefined : "没配资产仓库"}
-                            onClick={() => setProposing(item)}
-                          >
-                            提交到资产仓库
-                          </button>
                         )}
                       </td>
                     </tr>

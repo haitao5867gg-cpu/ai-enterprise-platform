@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -23,6 +24,7 @@ function CreateDialog({
   close: () => void;
   created: (kb: KnowledgeBase) => void;
 }) {
+  const t = useT();
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     dialog.current?.showModal();
@@ -36,9 +38,9 @@ function CreateDialog({
       onClose={close}
     >
       <div className="asset-section-heading">
-        <h2 id="create-knowledge-title">新建知识库</h2>
+        <h2 id="create-knowledge-title">{t("新建知识库")}</h2>
         <button type="button" className="text-button" onClick={close}>
-          关闭
+          {t("关闭")}
         </button>
       </div>
       <KnowledgeForm
@@ -51,6 +53,7 @@ function CreateDialog({
   );
 }
 export function KnowledgeList() {
+  const t = useT();
   const [items, setItems] = useState<KnowledgeBase[] | null>(null);
   const [options, setOptions] = useState<KnowledgeOptions | null>(null);
   const [error, setError] = useState("");
@@ -77,18 +80,18 @@ export function KnowledgeList() {
   return (
     <>
       <AssetHeading
-        title="知识库"
+        title={t("知识库")}
         action={
           <button
             className="button primary"
             disabled={!options}
             onClick={() => setCreating(true)}
           >
-            新建知识库
+            {t("新建知识库")}
           </button>
         }
       >
-        上传企业资料，在应用中检索并引用可信的内容。
+        {t("上传企业资料，在应用中检索并引用可信的内容。")}
       </AssetHeading>
       {error && (
         <ErrorNotice
@@ -98,8 +101,8 @@ export function KnowledgeList() {
       )}
       {!items && !error && <AssetLoading />}
       {items?.length === 0 && (
-        <EmptyState title="还没有知识库">
-          创建知识库后，上传 PDF、Word、Markdown 或文本文件。
+        <EmptyState title={t("还没有知识库")}>
+          {t("创建知识库后，上传 PDF、Word、Markdown 或文本文件。")}
         </EmptyState>
       )}
       <div className="knowledge-cards">
@@ -111,22 +114,22 @@ export function KnowledgeList() {
           >
             <span className="app-tag">{kb.embedding_model}</span>
             <h2>{kb.name}</h2>
-            <p className="muted">{kb.description || "暂无说明"}</p>
+            <p className="muted">{kb.description || t("暂无说明")}</p>
             <dl className="knowledge-stats">
               <div>
-                <dt>文档</dt>
+                <dt>{t("文档")}</dt>
                 <dd>{kb.document_count}</dd>
               </div>
               <div>
-                <dt>片段</dt>
+                <dt>{t("片段")}</dt>
                 <dd>{kb.chunk_count}</dd>
               </div>
               <div>
-                <dt>处理中</dt>
+                <dt>{t("处理中")}</dt>
                 <dd>{kb.status_counts.queued + kb.status_counts.processing}</dd>
               </div>
             </dl>
-            <span className="text-button">查看知识库 →</span>
+            <span className="text-button">{t("查看知识库 →")}</span>
           </Link>
         ))}
       </div>
