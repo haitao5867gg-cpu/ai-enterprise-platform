@@ -1268,3 +1268,11 @@ def _apply(dev: DevRun, outcome: dict[str, Any]) -> None:
         if table.rows == 0:
             dev.warnings.append(f"{table.name} 结果是 0 行")
     dev.warnings += [f"代码告警：{w}" for w in outcome.get("warnings") or []]
+    # jadeflow retest S-16: the code cannot see what the platform's read filter left out.
+    filtered = outcome.get("filtered")
+    if isinstance(filtered, dict):
+        dev.warnings += [
+            f"读取筛选：{name} 按项目给它配置的筛选排除了 {count:,} 行"
+            for name, count in filtered.items()
+            if isinstance(count, int)
+        ]

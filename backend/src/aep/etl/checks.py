@@ -606,17 +606,44 @@ Call = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
 def result(check: dict[str, Any], status: str, message: str, **found: Any) -> dict[str, Any]:
-    return {
-        "id": check.get("id"),
-        "label": check.get("label"),
-        "kind": check.get("kind"),
-        "severity": check.get("severity", "error"),
-        "status": status,
-        "actual": found.get("actual"),
-        "expected": found.get("expected"),
-        "message": message,
-        "rows": found.get("rows") or [],
-    } | ({"known": found["known"]} if found.get("known") is not None else {})
+    rows = found.get("rows") or []
+    focus = focus_columns(check, rows) if rows else []
+    return (
+        {
+            "id": check.get("id"),
+            "label": check.get("label"),
+            "kind": check.get("kind"),
+            "severity": check.get("severity", "error"),
+            "status": status,
+            "actual": found.get("actual"),
+            "expected": found.get("expected"),
+            "message": message,
+            "rows": rows,
+        }
+        | ({"known": found["known"]} if found.get("known") is not None else {})
+        | ({"focus": focus} if focus else {})
+    )
+
+
+def focus_columns(check: dict[str, Any], rows: list[dict[str, Any]]) -> list[str]:
+    """The columns an example row is read by, shown before the others (jadeflow retest
+    S-15: the differing month was cut off after the first ten columns): a golden
+    difference's kind, key and differing columns; a rows check's lookup key and the
+    columns its condition names. Only columns the example rows have, as they spell them."""
+    kind = check.get("kind")
+    if kind == "golden":
+        keys = [k for r in rows if isinstance(r.get("key"), dict) for k in r["key"]]
+        differs = {str(c) for r in rows for c in r.get("differs") or []}
+        compared = [c for c in check.get("columns") or [] if c in differs]
+        named = [*compared, *sorted(differs - set(compared))]
+        return list(dict.fromkeys(["差异", *keys, *named])) if keys else []
+    if kind != "rows":
+        return []
+    present = {str(c).lower(): str(c) for r in rows for c in r}
+    lookup = check.get("lookup") if isinstance(check.get("lookup"), dict) else {}
+    on = lookup.get("on") if isinstance(lookup.get("on"), dict) else {}
+    named = [*on, *columns_named(check.get("where"))]
+    return list(dict.fromkeys(present[n.lower()] for n in named if n.lower() in present))
 
 
 async def run(
@@ -1421,28 +1448,41 @@ def _shown(r: dict[str, Any]) -> str:
     return text
 
 
+def cell_text(value: Any) -> Any:
+    """A value in an example row: numbers as they are, without thousands separators
+    (jadeflow retest S-15: the year 2026 read 2,026)."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return fmt(value).replace(",", "")
+    return value
+
+
 def _flat(row: dict[str, Any]) -> dict[str, Any]:
     """An example row as a table row: a golden difference gets its key and each column
     as "result / old system"."""
     if not (isinstance(row.get("key"), dict) and row.get("kind") in DIFFERENCE):
-        return row
+        return {c: cell_text(v) for c, v in row.items()}
     kind = row["kind"]
-    out: dict[str, Any] = {"差异": DIFFERENCE[kind], **row["key"]}
+    out: dict[str, Any] = {"差异": DIFFERENCE[kind]}
+    out |= {c: cell_text(v) for c, v in row["key"].items()}
     if kind == "duplicate":
         out["哪边"] = "结果表" if row.get("side") == "table" else "老系统"
         out["次数"] = row.get("count")
         return out
     mine, old = row.get("table") or {}, row.get("expected") or {}
     differs = set(row.get("differs") or [])
+
+    def said(value: Any) -> str:
+        return fmt(cell_text(value))
+
     for column in dict.fromkeys([*mine, *old]):
         if kind == "missing":
-            out[column] = f"— / {fmt(old.get(column))}"
+            out[column] = f"— / {said(old.get(column))}"
         elif kind == "extra":
-            out[column] = f"{fmt(mine.get(column))} / —"
+            out[column] = f"{said(mine.get(column))} / —"
         elif column in differs:
-            out[column] = f"{fmt(mine.get(column))} / {fmt(old.get(column))}"
+            out[column] = f"{said(mine.get(column))} / {said(old.get(column))}"
         else:
-            out[column] = fmt(mine.get(column))
+            out[column] = said(mine.get(column))
     return out
 
 
@@ -1460,11 +1500,14 @@ def report(results: list[dict[str, Any]]) -> str:
             continue
         rows = [_flat(row) for row in r["rows"]]
         columns = list(dict.fromkeys(c for row in rows for c in row))
-        shown = columns[:REPORT_COLUMNS]
+        first = [c for c in r.get("focus") or [] if c in columns]
+        rest = [c for c in columns if c not in first]
+        shown = first + rest[: max(0, REPORT_COLUMNS - len(first))]
         lines += ["", f"### {_shown(r)}：{r['label']}（{len(rows)} 行例子）", ""]
         if r["kind"] == "golden" and any("差异" in row for row in rows):
             lines += ["列里的值是“结果表 / 老系统”。", ""]
         lines += _md_table(shown, [[row.get(c) for c in shown] for row in rows])
         if len(columns) > len(shown):
-            lines += ["", f"共 {len(columns)} 列，只显示前 {REPORT_COLUMNS} 列。"]
+            why = "：先列对齐的键、不一致的列和检查条件用到的列" if first else ""
+            lines += ["", f"共 {len(columns)} 列，只显示 {len(shown)} 列{why}。"]
     return "\n".join(lines)

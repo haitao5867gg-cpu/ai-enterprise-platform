@@ -176,6 +176,8 @@ def render_pyspark(
         'PARAMS = json.loads(spark.conf.get("aep_params", "{}"))',
         "# What the code reports through warn(); the run report lists them.",
         "WARNINGS = []",
+        "# How many rows each read filter left out, by source table, for the run report.",
+        "FILTERED = {}",
         "",
         "",
         "def source(name: str):",
@@ -186,8 +188,22 @@ def render_pyspark(
         "        parts = [SOURCE_CATALOG, *parts]",
         '    table = spark.read.table(".".join(f"`{part}`" for part in parts))',
         "    if name in SOURCE_FILTERS:",
-        "        table = table.where(SOURCE_FILTERS[name])",
+        "        condition = SOURCE_FILTERS[name]",
+        "        if name not in FILTERED:",
+        "            FILTERED[name] = _left_out(table, condition)",
+        "        table = table.where(condition)",
         "    return table",
+        "",
+        "",
+        "def _left_out(table, condition: str):",
+        '    """How many rows a read filter leaves out; None when that cannot be counted."""',
+        "    try:",
+        "        row = table.selectExpr(",
+        '            "count(1) AS total", f"count_if(coalesce(({condition}), false)) AS kept"',
+        "        ).first()",
+        '        return int(row["total"]) - int(row["kept"])',
+        "    except Exception:  # noqa: BLE001",
+        "        return None",
         "",
         "",
         "def param(name: str):",
@@ -542,9 +558,9 @@ INSTEAD = {
 # and reads parameters and filtered sources only through param() and source().
 PLATFORM_NAMES = {
     "source", "param", "warn", "warn_rows", "spark", "json", "dp", "F", "Window",
-    "SOURCE_CATALOG", "SOURCE_FILTERS", "PARAMS", "WARNINGS",
+    "SOURCE_CATALOG", "SOURCE_FILTERS", "PARAMS", "WARNINGS", "FILTERED", "_left_out",
 }  # fmt: skip
-HIDDEN_NAMES = {"SOURCE_FILTERS", "PARAMS", "WARNINGS"}
+HIDDEN_NAMES = {"SOURCE_FILTERS", "PARAMS", "WARNINGS", "FILTERED", "_left_out"}
 # What a body may import: a few standard modules without side effects (``import re``,
 # ``from datetime import date``) and pyspark's column helpers (``from pyspark.sql import
 # types as T``, ``import pyspark.sql.types as T``).
@@ -629,9 +645,18 @@ def _check_pyspark_body(
                         "源表请用 source()"
                     )
     missing = _undefined(tree)
-    if missing:
+    # A module the body may import but did not (jadeflow retest I-18: "re is undefined,
+    # you may import re" read as a contradiction).
+    modules = [m for m in missing if m in STANDARD_IMPORTS]
+    if modules:
         problems.append(
-            f"{name}: 用了没有定义的名字 {'、'.join(missing)}"
+            f"{name}: 用了 {'、'.join(modules)} 但没有 import，"
+            f"在函数体里用之前要先写 {'；'.join(f'import {m}' for m in modules)}"
+        )
+    others = [m for m in missing if m not in STANDARD_IMPORTS]
+    if others:
+        problems.append(
+            f"{name}: 用了没有定义的名字 {'、'.join(others)}"
             f"（能 import 的只有 {IMPORTS_SAID}；告警用 warn()）"
         )
     return problems

@@ -6,6 +6,7 @@ import { formatTime } from "../lib/runs";
 import {
   checkKinds,
   checkSeverities,
+  metricColumns,
   type AnswerDesign,
   type Brief,
   type PlanTarget,
@@ -78,6 +79,11 @@ export function BriefView({
                   <td>
                     <strong>{metric.name}</strong>
                     <Uncited shown={missing.has(metric.id)} />
+                    {metricColumns(metric) && (
+                      <span className="muted metric-columns">
+                        结果列 {metricColumns(metric)}
+                      </span>
+                    )}
                   </td>
                   <td>{metric.unit ?? "—"}</td>
                   <td>

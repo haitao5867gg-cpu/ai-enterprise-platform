@@ -1,5 +1,6 @@
 """Both executors against fake REST endpoints, and the cluster program run locally."""
 
+import asyncio
 import contextlib
 import datetime
 import io
@@ -259,6 +260,59 @@ async def test_cluster_statements_run_in_one_reused_context():
     assert sent["language"] == "python" and sent["contextId"] == "ctx1"
     compile(sent["command"], "<program>", "exec")  # The statement is a literal, not code.
     assert json.dumps("SELECT 'it''s' AS n") in sent["command"]
+    await executor.close()
+
+
+async def test_cluster_statements_run_side_by_side_in_a_few_contexts():
+    """Up to AEP_DATABRICKS_READ_CONTEXTS statements at once, each in its own context
+    (jadeflow retest S-18: 48 checks one after another took 4 minutes)."""
+    cluster = Cluster(output=output([["n", "bigint"]], [[1]]))
+    busy: dict[str, int] = {}
+    seen: list[int] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        found = cluster(request)
+        if request.url.path == "/api/1.2/commands/execute":
+            context = json.loads(request.content)["contextId"]
+            busy[context] = busy.get(context, 0) + 1
+            seen.append(sum(busy.values()))
+            await asyncio.sleep(0.01)
+        elif request.url.path == "/api/1.2/commands/status":
+            context = request.url.params["contextId"]
+            busy[context] -= 1
+        return found
+
+    three = settings(
+        databricks_read_warehouse_id="", databricks_read_cluster_id="c1", databricks_read_contexts=3
+    )
+    executor = ClusterExecutor(three, client(handler))
+    found = await asyncio.gather(*(executor.query(f"SELECT {i} AS n") for i in range(7)))
+    assert found == [Result([("n", "bigint")], [[1]])] * 7
+    assert cluster.contexts == 3 and max(seen) == 3
+    assert all(n <= 1 for n in busy.values())  # one statement at a time in a context
+    # Idle contexts are reused.
+    await executor.query("SELECT 1 AS n")
+    assert cluster.contexts == 3
+    await executor.close()
+
+
+async def test_a_dropped_context_is_made_again_once():
+    cluster = Cluster(output=output([["n", "bigint"]], [[1]]))
+    gone = {"ctx1"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/1.2/commands/execute":
+            if json.loads(request.content)["contextId"] in gone:
+                return httpx.Response(400, json={"error": "Context ctx1 not found"})
+        return cluster(request)
+
+    executor = ClusterExecutor(
+        settings(databricks_read_warehouse_id="", databricks_read_cluster_id="c1"), client(handler)
+    )
+    assert await executor.query("SELECT 1 AS n") == Result([("n", "bigint")], [[1]])
+    assert cluster.contexts == 2
+    assert await executor.query("SELECT 1 AS n") == Result([("n", "bigint")], [[1]])
+    assert cluster.contexts == 2  # the new one is kept
     await executor.close()
 
 

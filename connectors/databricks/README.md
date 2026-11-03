@@ -26,6 +26,7 @@
 | `AEP_DATABRICKS_READ_WAREHOUSE_ID` / `AEP_DATABRICKS_READ_CLUSTER_ID` | 在哪里执行，二选一（都设时用 warehouse） |
 | `AEP_DATABRICKS_READ_CATALOGS` | 允许读的 catalog，JSON 列表，必填，比如 `["icsd-ace-dev"]` |
 | `AEP_DATABRICKS_READ_TIMEOUT_SECONDS` | 每条语句的超时，默认 150 |
+| `AEP_DATABRICKS_READ_CONTEXTS` | 用集群执行时最多同时跑几条语句（每条一个 Python 执行环境），默认 4，1–8 |
 | `AEP_DATABRICKS_READ_STATS_SAMPLE` | `table_stats` 的样本行数，默认 1000 |
 | `AEP_DATABRICKS_MCP_HOST`、`AEP_DATABRICKS_MCP_PORT`、`AEP_DATABRICKS_MCP_ALLOWED_HOSTS` | MCP 服务 |
 

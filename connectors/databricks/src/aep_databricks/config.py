@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # The catalogs the tools may read (JSON list). Empty: every tool refuses.
     databricks_read_catalogs: list[str] = []
     databricks_read_timeout_seconds: int = Field(default=150, ge=5, le=3600)
+    # On a cluster: how many statements may run at once, each in its own Python context
+    # (a context runs one command at a time). A SQL warehouse queues them itself.
+    databricks_read_contexts: int = Field(default=4, ge=1, le=8)
     databricks_read_stats_sample: int = Field(default=1000, ge=1, le=10000)
     databricks_mcp_host: str = "127.0.0.1"
     databricks_mcp_port: int = Field(default=8005, ge=1, le=65535)

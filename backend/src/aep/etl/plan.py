@@ -415,11 +415,24 @@ class _Item(BaseModel):
     _at: str = PrivateAttr("")
 
 
+MAX_METRIC_COLUMNS = 60
+
+
 class Metric(_Item):
     name: str
     unit: str | None = None
     definition: str
     column: str | None = None
+    # A metric over several result columns (the 12 month columns, jadeflow retest S-17);
+    # left out of its dump when it has none, so plans written before read as they did.
+    columns: list[str] | None = None
+
+    @model_serializer(mode="wrap")
+    def _without_blank_columns(self, handler: SerializerFunctionWrapHandler) -> Any:
+        found = handler(self)
+        if isinstance(found, dict) and found.get("columns") is None:
+            found.pop("columns", None)
+        return found
 
 
 class Dimension(_Item):
@@ -858,8 +871,11 @@ def _fill_labels(plan: EtlPlanV2, cleaned: list[str]) -> None:
             if d.column is not None:
                 named[d.column] = d.name
         for m in reversed(plan.brief.metrics):
+            label = f"{m.name}（{m.unit}）" if not _blank(m.unit) else m.name
+            for column in m.columns or []:
+                named[column] = f"{label} · {column}"
             if m.column is not None:
-                named[m.column] = f"{m.name}（{m.unit}）" if not _blank(m.unit) else m.name
+                named[m.column] = label if not m.columns else f"{label} · {m.column}"
     result = _result(plan)
     for target in plan.targets:
         filled = 0
@@ -1058,6 +1074,24 @@ def _tidy_examples(plan: EtlPlanV2, seen: Seen, cleaned: list[str]) -> None:
             kept = kept[:MAX_EXAMPLES]
             cleaned.append(f"维度“{d.name}”的例子只留前 {MAX_EXAMPLES} 个")
         d.examples = kept
+
+
+def _metric_columns_problems(metric: Metric, names: Collection[str], table: str) -> list[str]:
+    """A metric over several columns lists 2–60 distinct columns of the result table."""
+    if metric.columns is None:
+        return []
+    where = f"{metric._at}.columns"
+    if not 2 <= len(metric.columns) <= MAX_METRIC_COLUMNS:
+        return [
+            f"{where} 要列出 2–{MAX_METRIC_COLUMNS} 列；只有一列时写在 column 里，columns 写 null"
+        ]
+    problems = [
+        f"{where} 里的 {c} 不是结果表 {table} 的列" for c in metric.columns if c not in names
+    ]
+    repeated = sorted({c for c in metric.columns if metric.columns.count(c) > 1})
+    if repeated:
+        problems.append(f"{where} 里的 {'、'.join(repeated)} 写了两次")
+    return problems
 
 
 def _generate_answer(plan: EtlPlanV2, cleaned: list[str]) -> None:
@@ -1325,6 +1359,8 @@ def _version_two_checks(plan: EtlPlanV2, model_answer: bool = True) -> list[str]
         for where, column in columns:
             if column is not None and column not in names:
                 problems.append(f"{where} {column} 不是结果表 {result.name} 的列")
+        for m in brief.metrics:
+            problems += _metric_columns_problems(m, names, result.name)
     places: dict[str, list[str]] = {}
     for _, _, items in _categories(plan):
         for item in items:
@@ -1491,7 +1527,8 @@ OUTPUT_FORMAT_V2 = """只输出一个 JSON 对象，不要输出其他文字，�
     "goal": "要统计什么，一两句话",
     "grain": "结果表一行是什么，如“每个统计月 × 城市一行”",
     "metrics": [{"id": "m1", "name": "指标名称", "unit": "单位，没有时为 null",
-                 "definition": "怎么算，用文字写", "column": "结果表里的列名"}],
+                 "definition": "怎么算，用文字写", "column": "结果表里的列名",
+                 "columns": null}],
     "dimensions": [{"id": "d1", "name": "维度名称", "definition": "取自哪里、怎么归一",
                     "column": "结果表里的列名", "examples": ["数据里真有的取值，最多 5 个"]}],
     "filters": [{"id": "f1", "text": "筛选条件"}],
@@ -1522,7 +1559,9 @@ OUTPUT_FORMAT_V2 = """只输出一个 JSON 对象，不要输出其他文字，�
              "chart": {"type": "bar、line 或 none", "label": ["分组列"], "value": "指标列"},
              "add_up": ["可以跨行相加、但不是 sum 或 count 算出来的指标列，没有就给空数组"]}
 }
-不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。"""
+不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。
+一个指标落在结果表的多列上（如按月的 12 列）时，columns 列出这些列，column 写其中一列或 null；
+只有一列时 columns 写 null。"""
 
 
 # 方案第 3 版: format 3 of the flow node etl_plan_check (docs/api/data-nodes.md, 第三批).
@@ -2010,7 +2049,8 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
     "goal": "要统计什么，一两句话",
     "grain": "结果表一行是什么，如“每个统计月 × 城市一行”",
     "metrics": [{"id": "m1", "name": "指标名称", "unit": "单位，没有时为 null",
-                 "definition": "怎么算，用文字写", "column": "结果表里的列名"}],
+                 "definition": "怎么算，用文字写", "column": "结果表里的列名",
+                 "columns": null}],
     "dimensions": [{"id": "d1", "name": "维度名称", "definition": "取自哪里、怎么归一",
                     "column": "结果表里的列名", "examples": ["数据里真有的取值，最多 5 个"]}],
     "filters": [{"id": "f1", "text": "筛选条件"}],
@@ -2048,6 +2088,8 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
               "severity": "warn、error 或 info，不写时是 warn", "其余字段": "按检查的种类，见下"}]
 }
 不限时间时 time_range 给 null；没有要问的 questions 给空数组，最多 5 题，每题 2–6 个选项。
+一个指标落在结果表的多列上（如按月的 12 列）时，columns 列出这些列，column 写其中一列或 null；
+只有一列时 columns 写 null。
 load.mode：overwrite 整表覆盖；replace_where 只替换满足 where 的行（如一个月、一个版本）；
 append 追加；merge 按键合并（有的更新，没有的插入）。
 列的 type 可以不写；给已有的表新加的列必须写，确认方案时人看到的就是它，代码产出的类型不一样时

@@ -240,8 +240,10 @@ def parse_output(text: str) -> Result:
 
 
 class ClusterExecutor:
-    """Statements on an existing cluster, in one Python context reused across calls.
-    The connector starts a stopped cluster only when AEP_DATABRICKS_READ_START_CLUSTER is on."""
+    """Statements on an existing cluster, in Python contexts reused across calls: up to
+    AEP_DATABRICKS_READ_CONTEXTS of them, one statement at a time each, so that many
+    checks run side by side. The connector starts a stopped cluster only when
+    AEP_DATABRICKS_READ_START_CLUSTER is on."""
 
     def __init__(
         self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None
@@ -249,8 +251,10 @@ class ClusterExecutor:
         self._rest = _Rest(settings, transport)
         self._cluster = settings.databricks_read_cluster_id
         self._start = settings.databricks_read_start_cluster
-        self._context: str | None = None
-        self._lock = asyncio.Lock()
+        # Contexts made and not gone, and those of them no statement is using.
+        self._contexts: list[str] = []
+        self._free: list[str] = []
+        self._slots = asyncio.Semaphore(settings.databricks_read_contexts)
         # One caller starts the cluster; the others wait for it with that caller.
         self._starting = asyncio.Lock()
 
@@ -290,37 +294,44 @@ class ClusterExecutor:
                 )
             await asyncio.sleep(START_POLL_SECONDS)
 
-    async def _context_id(self, deadline: float) -> str:
-        async with self._lock:
-            if self._context is None:
-                made = await self._rest.request(
-                    "POST",
-                    "/api/1.2/contexts/create",
-                    json={"clusterId": self._cluster, "language": "python"},
-                )
-                ids = {"clusterId": self._cluster, "contextId": made["id"]}
-                while True:
-                    status = await self._rest.request("GET", "/api/1.2/contexts/status", params=ids)
-                    if status.get("status") == "Running":
-                        break
-                    if status.get("status") == "Error" or time.monotonic() > deadline:
-                        raise ConnectorError("集群上的执行环境没有就绪")
-                    await asyncio.sleep(POLL_SECONDS)
-                self._context = made["id"]
-            return self._context
+    async def _take(self, deadline: float) -> str:
+        """An idle context, or a new one (the slots keep them within the setting)."""
+        if self._free:
+            return self._free.pop()
+        made = await self._rest.request(
+            "POST",
+            "/api/1.2/contexts/create",
+            json={"clusterId": self._cluster, "language": "python"},
+        )
+        ids = {"clusterId": self._cluster, "contextId": made["id"]}
+        self._contexts.append(made["id"])
+        while True:
+            status = await self._rest.request("GET", "/api/1.2/contexts/status", params=ids)
+            if status.get("status") == "Running":
+                return str(made["id"])
+            if status.get("status") == "Error" or time.monotonic() > deadline:
+                self._contexts.remove(made["id"])
+                raise ConnectorError("集群上的执行环境没有就绪")
+            await asyncio.sleep(POLL_SECONDS)
 
     async def query(self, statement: str) -> Result:
         await self._running()
         deadline = time.monotonic() + self._rest.timeout
-        try:
-            return await self._execute(statement, deadline)
-        except _ContextGone:
-            # The cluster restarted or dropped the context: make a new one, once.
-            self._context = None
-            return await self._execute(statement, deadline)
+        async with self._slots:
+            context = await self._take(deadline)
+            try:
+                try:
+                    return await self._execute(context, statement, deadline)
+                except _ContextGone:
+                    # The cluster restarted or dropped the context: make a new one, once.
+                    self._contexts.remove(context)
+                    context = await self._take(deadline)
+                    return await self._execute(context, statement, deadline)
+            finally:
+                if context in self._contexts:
+                    self._free.append(context)
 
-    async def _execute(self, statement: str, deadline: float) -> Result:
-        context = await self._context_id(deadline)
+    async def _execute(self, context: str, statement: str, deadline: float) -> Result:
         ids = {"clusterId": self._cluster, "contextId": context}
         try:
             command = await self._rest.request(
@@ -351,16 +362,16 @@ class ClusterExecutor:
         return parse_output(str(results.get("data") or ""))
 
     async def close(self) -> None:
-        if self._context is not None:
+        for context in self._contexts:
             try:
                 await self._rest.request(
                     "POST",
                     "/api/1.2/contexts/destroy",
-                    json={"clusterId": self._cluster, "contextId": self._context},
+                    json={"clusterId": self._cluster, "contextId": context},
                 )
             except ConnectorError:
                 pass
-            self._context = None
+        self._contexts, self._free = [], []
         await self._rest.close()
 
 
