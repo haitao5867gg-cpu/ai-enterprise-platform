@@ -20,9 +20,20 @@ test("new run → approval → done, then reject with a comment", async ({
     if (request.resourceType() === "fetch")
       origins.add(new URL(request.url()).origin);
   });
+  // Starting waits for the app's settings: hold them back to see the button wait,
+  // instead of racing a fast load.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/apps/hello", async (route) => {
+    await held;
+    await route.continue();
+  });
   await page.goto("/runs/new");
   const create = page.getByRole("button", { name: "开始运行" });
   await expect(create).toBeDisabled();
+  release();
+  await expect(create).toBeEnabled();
+  await page.unroute("**/api/apps/hello");
   await page
     .getByLabel("你想完成什么？")
     .fill("请整理一份客户数据清洗方案，并在执行前让我确认。");
@@ -304,7 +315,9 @@ test("not found and failed runs have useful states; terminal polling stops", asy
     });
   });
   await page.goto("/runs/failed-run");
-  await expect(page.getByRole("heading", { name: "运行失败", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "运行失败", exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("模拟执行失败，请检查输入。")).toBeVisible();
   const completedReads = reads;
   await page.waitForTimeout(2_300);
