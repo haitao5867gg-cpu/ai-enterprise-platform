@@ -9,12 +9,14 @@ import {
   filterProblem,
   paramProblem,
   patternRegExp,
+  scheduledUses,
   type Environment,
   type Param,
   type ParamValue,
   type Project,
   type ProjectInput,
   type ProjectOptions,
+  type Scheduled,
 } from "../projects";
 import { isRecord, type RunPolicy, type RunProject, type SampleLevel } from "../runs";
 import { mockError, mockJson, noContent, readBody } from "./mock-assets";
@@ -246,6 +248,22 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     const value = (param.default ?? null) as ParamValue;
     const problem = value !== null && paramProblem({ label, type, choices, pattern }, value);
     if (problem) return `默认值不对：${problem}`;
+    // How scheduled runs fill it in: the shape is kept, the backend checks the rest.
+    let scheduled: Scheduled | null = null;
+    if (param.scheduled != null) {
+      const rule = param.scheduled;
+      if (!isRecord(rule) || !scheduledUses(type).includes(rule.use as Scheduled["use"]))
+        return `参数「${label}」定时运行时的取法不对`;
+      const use = rule.use as Scheduled["use"];
+      if (use === "date" && type === "text" && typeof rule.format !== "string")
+        return `参数「${label}」定时运行时的取法不对：文本参数要写日期格式 format，如 FY%y_%m_M`;
+      scheduled = {
+        use,
+        format: typeof rule.format === "string" ? rule.format : null,
+        months: typeof rule.months === "number" ? rule.months : 0,
+        day: rule.day === "first" || rule.day === "last" ? rule.day : null,
+      };
+    }
     params.push({
       key: param.key,
       label,
@@ -255,6 +273,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       choices: type === "select" ? choices : null,
       pattern,
       description: typeof param.description === "string" ? param.description : "",
+      scheduled,
     });
   }
   const policy = isRecord(body.policy) ? body.policy : {};
@@ -437,9 +456,15 @@ export function runProject(bound: ProjectSnapshot | null): RunProject | null {
 export function projectValues(bound: ProjectSnapshot | null): Record<string, unknown> {
   if (!bound)
     return Object.fromEntries(
-      PROJECT_FIELDS.map((field) => [field, field === "brief" ? "" : null]),
+      PROJECT_FIELDS.map((field) => [
+        field,
+        field === "brief" || field === "release_brief" ? "" : null,
+      ]),
     );
   const { project, environment, values } = bound;
+  // Releasing (docs/api/projects.md): the mock does not work out scheduled values.
+  const canRelease =
+    project.environments.some((env) => env.key === "prod") && environment.key !== "prod";
   const params = project.params.map((param) => ({
     key: param.key,
     label: param.label,
@@ -467,5 +492,13 @@ export function projectValues(bound: ProjectSnapshot | null): Record<string, unk
     references: project.references,
     params,
     brief,
+    checks: project.checks ?? [],
+    can_release: canRelease,
+    release_ready:
+      canRelease &&
+      project.params.every((param) => param.scheduled || param.default !== null || !param.required),
+    release_brief: canRelease
+      ? `## 上线说明\n\n- 上线到项目「${project.name}」的 prod 环境。\n\n（本地模拟：定时运行时的参数表略）`
+      : "",
   };
 }

@@ -7,6 +7,7 @@ import {
   isFinished,
   isRecord,
   jsonObject,
+  questionsFor,
   type Decision,
   type Message,
   type Run,
@@ -1405,8 +1406,11 @@ export async function mockRuns(request: Request, path: string[]) {
     return json({ detail: "内容已经更新，请刷新后再处理" }, 409);
   if (!run.pending?.options.includes(body.decision))
     return json({ detail: `这一步现在不能选「${body.decision}」` }, 422);
+  // Questions only for other options are not answered (flow-apps.md, only_for).
   const asked =
-    run.pending.kind === "approval" ? (run.pending.fields ?? []) : [];
+    run.pending.kind === "approval"
+      ? questionsFor(run.pending.fields ?? [], String(body.decision))
+      : [];
   const answers = isRecord(body.values) ? body.values : {};
   if (asked.length) {
     const issues = validateFields(asked, answers, "values");

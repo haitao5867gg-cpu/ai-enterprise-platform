@@ -15,12 +15,13 @@ and branches are documented in docs/api/data-nodes.md.
 import hashlib
 import json
 import re
-from dataclasses import fields
+from dataclasses import fields, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
 
-from aep import llm, policy
+from aep import llm, policy, schedules
 from aep.databricks import (
     PROD,
     DatabricksError,
@@ -69,6 +70,7 @@ from aep.etl.profile import (
 )
 from aep.knowledge.citations import IndexedHit
 from aep.projects import KEY as ENVIRONMENT_KEY
+from aep.projects import Scheduling, scheduled_values
 from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
     INPUT_ERROR,
@@ -1650,10 +1652,17 @@ class _Refused(Exception):
 
 
 def _release_placement(
-    state: dict[str, Any], settings: dict[str, Any], environment: str, deploy_mode: str
-) -> Placement | None:
+    state: dict[str, Any],
+    bundle: dict[str, Any],
+    settings: dict[str, Any],
+    environment: str,
+    deploy_mode: str,
+    timezone: str,
+) -> tuple[Placement, Scheduling] | None:
     """Where a run bound to a project releases to: the project's ``environment`` (None
-    unbound), checked before anything is deployed; raises ``_Refused``."""
+    unbound), and how the released job fills in the run parameters at each scheduled
+    run (docs/api/projects.md, "定时运行时参数怎么取"), checked before anything is
+    deployed; raises ``_Refused``."""
     project = state.get("project")
     if not project:
         return None
@@ -1671,7 +1680,22 @@ def _release_placement(
         _check_prefix(project, list(settings.get("loads") or {}))
     except NodeFailure as exc:
         raise _Refused(exc.message) from exc
-    return Placement.of({**project, "environment": found}, state.get("run_id") or "")
+    scheduling = scheduled_values(project, timezone)
+    if scheduling.problems:
+        raise _Refused("；".join(scheduling.problems))
+    if scheduling.rules and "${var.param_rules}" not in str(
+        (bundle.get("files") or {}).get("databricks.yml", "")
+    ):
+        raise _Refused(
+            "这次运行的代码是平台升级前生成的，定时运行时没法按项目的规则算参数，请重新发起运行"
+        )
+    placement = Placement.of({**project, "environment": found}, state.get("run_id") or "")
+    rules = {"timezone": scheduling.timezone, "params": scheduling.rules}
+    values = placement.values | {
+        "params": json.dumps(scheduling.fixed, ensure_ascii=False),
+        "param_rules": json.dumps(rules, ensure_ascii=False),
+    }
+    return replace(placement, values=values), scheduling
 
 
 def _where(release: Release) -> str:
@@ -1680,8 +1704,27 @@ def _where(release: Release) -> str:
     return "（未配置）"
 
 
-def release_report(release: Release, environment: str, job_name: str, said: str) -> str:
-    """The release as a person reads it (Markdown)."""
+def _next_run(release: Release) -> datetime | None:
+    cron = schedules.quartz_cron(release.schedule)
+    if cron is None:
+        return None
+    try:
+        return cron.next_after(datetime.now(UTC), schedules.zone(release.timezone))
+    except schedules.CronError:
+        return None
+
+
+def release_report(
+    release: Release,
+    environment: str,
+    job_name: str,
+    said: str,
+    scheduling: Scheduling | None = None,
+    project: dict[str, Any] | None = None,
+) -> str:
+    """The release as a person reads it (Markdown); a deployed release of a run bound to
+    ``project`` also says the parameters of the job's next run (``scheduling``) and how
+    to take the release back."""
     head = "## 已上线" if release.status == "deployed" else "## 上线失败"
     lines = [head, ""]
     lines.append(f"- 环境：{environment}")
@@ -1694,12 +1737,39 @@ def release_report(release: Release, environment: str, job_name: str, said: str)
     lines.append(f"- 定时：{said}")
     if release.url:
         lines.append(f"- Databricks 上的 Job：[打开]({release.url})")
+    deployed = release.status == "deployed"
+    at = _next_run(release) if deployed else None
+    if at is not None:
+        lines.append(f"- 下一次运行：{schedules.local_text(at, release.timezone)}")
+    if deployed and scheduling is not None and project is not None and scheduling.lines:
+        upcoming = scheduled_values(project, scheduling.timezone, at) if at else scheduling
+        lines += [
+            "",
+            f"### 定时运行时的参数（按 {upcoming.today} 算）",
+            "",
+            "| 参数 | 定时运行时怎么取 | 值 |",
+            "| --- | --- | --- |",
+        ]
+        for line in upcoming.lines:
+            value = "—" if line["value"] is None else str(line["value"]).replace("|", "\\|")
+            if line["warning"]:
+                value += f"（{line['warning']}）"
+            lines.append(f"| {line['label']}（`{line['key']}`） | {line['how']} | {value} |")
     if release.steps:
         lines += ["", "### 步骤", ""]
         lines += [f"- {step.name}：{'成功' if step.ok else '失败'}" for step in release.steps]
     if release.errors:
         lines += ["", "### 原因", ""]
         lines += [f"- {e[:500]}" for e in release.errors]
+    if deployed and release.mode == "job":
+        lines += [
+            "",
+            "### 怎么撤销",
+            "",
+            f"- 在 Databricks 的 Jobs 里删掉「{job_name}」，或者暂停它的定时，以后就不再自动运行。",
+            "- 已经写进表里的数据不会跟着撤销；Delta 表可以用 `RESTORE TABLE … TO VERSION AS OF …`"
+            " 恢复到写之前的版本。",
+        ]
     return "\n".join(lines)
 
 
@@ -1711,17 +1781,27 @@ async def run_release(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
     bound = bool(state.get("project"))
     environment = (node.get("environment") or PROD) if bound else PROD
     s = databricks.settings
+    scheduling: Scheduling | None = None
+    placement: Placement | None = None
     try:
-        placement = _release_placement(state, settings, environment, s.databricks_deploy_mode)
+        placed = _release_placement(
+            state,
+            bundle,
+            settings,
+            environment,
+            s.databricks_deploy_mode,
+            s.databricks_prod_timezone,
+        )
     except _Refused as exc:
         # Nothing deployed: a person decides what next (the failed branch), as when the
         # platform cannot release at all.
-        placement = None
         mode = "job" if s.databricks_deploy_mode == "job" else "pipeline"
         schedule = schedule or s.databricks_prod_schedule
         release = Release("failed", mode, "", "", schedule, s.databricks_prod_timezone)
         release.errors = [str(exc)]
     else:
+        if placed is not None:
+            placement, scheduling = placed
         try:
             release = await databricks.release(
                 codegen.Bundle(bundle["name"], bundle["files"], settings),
@@ -1750,7 +1830,9 @@ async def run_release(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
         "schedule_text": said,
         "errors": "\n".join(errors),
         "summary": summary,
-        "report": release_report(release, environment, job_name, said),
+        "report": release_report(
+            release, environment, job_name, said, scheduling, state.get("project")
+        ),
     }
     return Outcome(
         outputs,

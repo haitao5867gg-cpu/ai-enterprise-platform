@@ -23,10 +23,12 @@ with the project (table property ``aep.project``) or adopted by it. The run para
 reach PySpark code as ``spark.conf.get("aep_params")`` and SQL as ``${param.<key>}``.
 """
 
+import calendar
 import json
 import re
 import sys
 import types
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 MARKER = "AEP_RESULT "
@@ -810,6 +812,74 @@ def _answer(df: Any, design: dict[str, Any]) -> dict[str, Any]:
 # --- End of the part both programs carry.
 
 
+# How a released job works out a run parameter each time it runs on its schedule
+# (docs/api/projects.md, "定时运行时参数怎么取"): the date formats of a text parameter.
+DATE_DIRECTIVES = ("%Y", "%y", "%m", "%d", "%%")
+FIXED_FORMATS = {"date": "%Y-%m-%d", "month": "%Y-%m"}
+
+
+def shift_months(day: date, months: int, which: str | None = None) -> date:
+    """``day`` moved by ``months``: the same day (the month's last when it has no such
+    day), or its ``first`` or ``last`` day."""
+    index = day.year * 12 + day.month - 1 + months
+    year, month = divmod(index, 12)
+    last = calendar.monthrange(year, month + 1)[1]
+    number = 1 if which == "first" else last if which == "last" else min(day.day, last)
+    return date(year, month + 1, number)
+
+
+def rule_value(rule: dict[str, Any], today: date, run_id: str) -> str:
+    """The value a parameter's rule gives on ``today``: the job run's id, or a date."""
+    if rule["use"] == "run_id":
+        return run_id
+    form = FIXED_FORMATS.get(rule.get("type") or "") or rule["format"]
+    day = shift_months(today, int(rule.get("months") or 0), rule.get("day"))
+    return day.strftime(form)
+
+
+def _zone(name: str) -> Any:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - no such zone: UTC, said in the values' message
+        return timezone(timedelta(0))
+
+
+def scheduled_params(
+    params: dict[str, Any], rules: dict[str, Any], run_id: str, now: datetime | None = None
+) -> dict[str, Any]:
+    """The run parameters of a released job's run: ``params`` as they were fixed at the
+    release, with each of ``rules["params"]`` worked out for this run on the day in
+    ``rules["timezone"]``. A value that does not match its parameter's ``pattern``
+    raises ``ValueError``, so nothing is written."""
+    found = rules.get("params") or []
+    if not found:
+        return params
+    today = (now or datetime.now(_zone(rules.get("timezone") or "UTC"))).date()
+    values = dict(params)
+    for rule in found:
+        value = rule_value(rule, today, run_id)
+        if rule["use"] == "run_id" and not value:
+            raise ValueError(
+                f"定时运行拿不到作业运行的 ID，参数「{rule['label']}」没有值，这次不运行"
+            )
+        pattern = rule.get("pattern")
+        if pattern:
+            try:
+                fits = re.fullmatch(pattern, value) is not None
+            except re.error:
+                fits = True  # checked when the project was saved (RE2); Python reads it otherwise
+            if not fits:
+                described = (rule.get("description") or "").strip() or f"要整段符合 {pattern}"
+                raise ValueError(
+                    f"定时运行在 {today.isoformat()} 算出参数「{rule['label']}」= {value}，"
+                    f"不符合它的格式（{described}），这次不运行，没有写表"
+                )
+        values[rule["key"]] = value
+    return values
+
+
 def run_notebook(
     spark: Any, dbutils: Any, library: str, settings: dict[str, Any] | None = None
 ) -> None:
@@ -817,7 +887,9 @@ def run_notebook(
 
     The notebook's widgets name the source catalog and where the tables go, and for a
     run bound to a project the project (``project``, ``project_name``, ``table_prefix``,
-    ``adopted``), the run parameters (``params``) and the run (``run_id``). ``settings``
+    ``adopted``), the run parameters (``params``), how a released job works out some of
+    them at each run (``param_rules``, see ``scheduled_params``) and the run
+    (``run_id``). ``settings``
     are what the bundle fixed: each table's write mode (``loads``) and the parameters'
     types (``param_types``). A failed table fails the run, with the outcome in the
     error message.
@@ -836,7 +908,11 @@ def run_notebook(
         "write": {"catalog": arg("catalog"), "schema": arg("schema")},
         "loads": (settings or {}).get("loads") or {},
         "param_types": (settings or {}).get("param_types") or {},
-        "params": json.loads(arg("params") or "{}"),
+        "params": scheduled_params(
+            json.loads(arg("params") or "{}"),
+            json.loads(arg("param_rules") or "{}"),
+            arg("run_id"),
+        ),
         "run_id": arg("run_id"),
     }
     if arg("project"):

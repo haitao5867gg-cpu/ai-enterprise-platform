@@ -150,6 +150,44 @@ def _number(text: str, where: str, low: int, high: int) -> int:
     return value
 
 
+_QUARTZ_DAYS = {"SUN": 0, "MON": 1, "TUE": 2, "WED": 3, "THU": 4, "FRI": 5, "SAT": 6}
+
+
+def _quartz_weekday(part: str) -> str | None:
+    """A Quartz day of the week (1–7 from Sunday, or MON…SUN) as cron's (0–6)."""
+    if part.upper() in _QUARTZ_DAYS:
+        return str(_QUARTZ_DAYS[part.upper()])
+    if part.isdigit() and 1 <= int(part) <= 7:
+        return str(int(part) - 1)
+    return None
+
+
+def quartz_cron(text: str) -> Cron | None:
+    """A Databricks job's Quartz cron expression (seconds first, ``?`` for no day) as a
+    five-field ``Cron``, or None when it uses what cron cannot say (seconds, years,
+    ``L``, ``W``, ``#``)."""
+    parts = text.split()
+    if len(parts) not in (6, 7) or parts[0] != "0" or parts[6:] not in ([], ["*"]):
+        return None
+    _, minute, hour, day, month, week = parts[:6]
+    day = "*" if day == "?" else day
+    if week in ("?", "*"):
+        week = "*"
+    else:
+        items = []
+        for item in week.split(","):
+            ends = item.split("-")
+            found = [_quartz_weekday(end) for end in ends]
+            if len(ends) > 2 or any(f is None for f in found):
+                return None
+            items.append("-".join(f for f in found if f is not None))
+        week = ",".join(items)
+    try:
+        return Cron.parse(" ".join((minute, hour, day, month, week)))
+    except CronError:
+        return None
+
+
 def zone(name: str) -> ZoneInfo:
     try:
         return ZoneInfo(name)

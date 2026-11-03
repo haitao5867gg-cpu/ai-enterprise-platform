@@ -674,6 +674,8 @@ def _etl_lakehouse() -> dict[str, Any]:
                         {"value": "0 0 2 1 * ?", "label": "每月 1 日 02:00"},
                     ],
                     "suggested": "0 0 2 * * ?",
+                    # Only asked of someone releasing (jadeflow retest I-19).
+                    "only_for": ["release"],
                 }
             ],
             "options": [
@@ -896,6 +898,44 @@ def _etl_lakehouse_project() -> dict[str, Any]:
     review["options"][0]["requires"] = ["{{dev_run.ok}}", "{{checks.ok}}"]
     for end in (found["end"], found["stopped"]):
         end["outputs"].append({"key": "checks", "from": ["{{checks.report}}"]})
+    # Releasing (jadeflow retest I-19): only asked when the project has a prod environment
+    # the run is not in; it says where it goes, the parameters of the scheduled runs and
+    # how to take it back, and is offered only when every parameter can be filled in.
+    can_release = {
+        "id": "can_release",
+        "type": "condition",
+        "title": "能不能上线",
+        "note": "项目配了 prod 环境、这次不是在 prod 里试算时，才请人决定要不要上线；"
+        "否则直接交付开发环境的结果。",
+        "rules": [
+            {
+                "key": "yes",
+                "label": "项目有 prod 环境",
+                "match": "all",
+                "conditions": [{"left": "{{project.can_release}}", "op": "eq", "right": True}],
+            }
+        ],
+    }
+    nodes.insert(nodes.index(found["release_review"]), can_release)
+    release_review = found["release_review"]
+    release_review["note"] = (
+        "人工审批点：试算结果审核通过、项目有 prod 环境时，决定要不要上线到项目的 prod 环境，"
+        "以及多久自动刷新一次（只在选上线时要答）。上线说明写明去哪、定时运行时的参数怎么取、"
+        "怎么撤销；有参数取不到时不能上线。上线失败时回到这里，看了原因再试，或者先不上线。"
+    )
+    release_review["prompt"] = (
+        "试算结果已审核通过。请看上线说明：上线后 prod 按选的时间自动运行，每次的参数按说明里的"
+        "规则取；先不上线就只交付开发环境的结果，不用选刷新时间。"
+    )
+    release_review["show"] = (
+        "{{check_code.summary}}\n\n{{project.release_brief}}\n\n{{release.report}}"
+    )
+    release_review["options"][0]["requires"] = "{{project.release_ready}}"
+    found["release"]["note"] = (
+        "把审核过的 bundle 部署成项目 prod 环境上的 Job，按上线审批选的时间由 Databricks 自动"
+        "运行，不会马上运行；每次运行的参数按项目写的定时取法算，算出的值不符合参数格式时"
+        "那次不运行。"
+    )
     # The dev run goes on to the checks, which go on to the review, in reading order.
     edges: list[dict[str, Any]] = []
     for edge in config["graph"]["edges"]:
@@ -906,6 +946,12 @@ def _etl_lakehouse_project() -> dict[str, Any]:
                     {"from": "checks", "to": "data_review", "branch": "passed"},
                     {"from": "checks", "to": "data_review", "branch": "failed"},
                 ]
+        elif edge["from"] == "data_review" and edge["to"] == "release_review":
+            edges += [
+                edge | {"to": "can_release"},
+                {"from": "can_release", "to": "release_review", "branch": "yes"},
+                {"from": "can_release", "to": "end", "branch": "else"},
+            ]
         else:
             edges.append(edge)
     config["graph"]["edges"] = edges

@@ -28,7 +28,71 @@ export type Param = {
   // projects saved before it have no such key).
   pattern?: string | null;
   description: string;
+  // How a released job's scheduled runs fill it in (docs/api/projects.md, "定时运行时参数
+  // 怎么取"); null or absent: its default, else empty.
+  scheduled?: Scheduled | null;
 };
+export type Scheduled = {
+  use: "this_run" | "run_id" | "date";
+  format: string | null;
+  months: number;
+  day: "first" | "last" | null;
+};
+// The ways a parameter of this type can be filled in by scheduled runs.
+export function scheduledUses(type: ParamType): Scheduled["use"][] {
+  if (type === "text") return ["this_run", "run_id", "date"];
+  if (type === "date" || type === "month") return ["this_run", "date"];
+  return ["this_run"];
+}
+export const scheduledUseLabels: Record<Scheduled["use"], string> = {
+  this_run: "一直用上线那次运行的值",
+  run_id: "每次用 Databricks 作业运行的 ID",
+  date: "按运行那天推算日期",
+};
+const DATE_DIRECTIVES = ["%Y", "%y", "%m", "%d", "%%"];
+const DATE_NAMES: Record<string, string> = {
+  "%Y": "{yyyy}",
+  "%y": "{yy}",
+  "%m": "{MM}",
+  "%d": "{dd}",
+  "%%": "%",
+};
+// Why a text parameter's date format cannot be used, as the backend says it.
+export function dateFormatProblem(format: string): string | null {
+  const directives = format.match(/%.?/g) ?? [];
+  if (directives.some((d) => !DATE_DIRECTIVES.includes(d)))
+    return "日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）";
+  if (!directives.some((d) => d !== "%%")) return "日期格式里至少要有 %Y、%y、%m、%d 中的一个";
+  return null;
+}
+export function monthsText(months: number): string {
+  if (months === -1) return "上个月";
+  if (months === 0) return "当月";
+  if (months === 1) return "下个月";
+  return `${Math.abs(months)} 个月${months < 0 ? "前" : "后"}`;
+}
+// How a parameter is filled in by scheduled runs, in words (as the release brief says it).
+export function scheduledText(
+  param: Pick<Param, "type" | "default" | "required" | "scheduled">,
+): string {
+  const rule = param.scheduled;
+  if (!rule) {
+    if (param.default !== null && param.default !== undefined) return "用默认值";
+    return param.required ? "没写（上线时取不到，不能上线）" : "不填（空值）";
+  }
+  if (rule.use !== "date") return scheduledUseLabels[rule.use];
+  const format =
+    param.type === "date" ? "%Y-%m-%d" : param.type === "month" ? "%Y-%m" : (rule.format ?? "");
+  const month = monthsText(rule.months);
+  const when = !format.includes("%d")
+    ? month
+    : rule.day
+      ? `${month}${rule.day === "first" ? "第一天" : "最后一天"}`
+      : rule.months === 0
+        ? "运行当天"
+        : `${month}的同一天（没有这一天时取月底）`;
+  return `按运行那天推算${when}，写成 ${format.replace(/%./g, (d) => DATE_NAMES[d] ?? d)}`;
+}
 // The project's own setting; null parts follow the platform default.
 export type ProjectPolicy = {
   samples: SampleLevel | null;
@@ -87,6 +151,9 @@ export const PROJECT_FIELDS = [
   "params",
   "checks",
   "brief",
+  "can_release",
+  "release_ready",
+  "release_brief",
 ];
 
 export const paramTypeLabels: Record<ParamType, string> = {

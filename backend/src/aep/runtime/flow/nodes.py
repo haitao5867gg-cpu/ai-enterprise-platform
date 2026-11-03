@@ -196,7 +196,8 @@ class Runtime:
             if node == refs.PARAM:
                 return ((project or {}).get("values") or {}).get(name)
             if node == refs.PROJECT:
-                return project_value(project, name)
+                # Released jobs run on the prod schedule's time zone.
+                return project_value(project, name, self.settings.databricks_prod_timezone)
             return (values.get(node) or {}).get(name)
 
         return get
@@ -924,10 +925,14 @@ def _extended(node: dict[str, Any]) -> bool:
     return _set(node, "view") or _set(node, "data") or (approval and _set(node, "fields"))
 
 
-def question_problems(f: Any) -> list[tuple[Loc, str]]:
+MAX_ONLY_FOR = 5
+
+
+def question_problems(f: Any, options: list[str] | None = None) -> list[tuple[Loc, str]]:
     """What is wrong with one of an approval's questions (flow-apps.md, 确认模式的题),
     located inside it; a ``default`` is reported, ``required`` is taken as true. A
-    ``suggested``, ``why`` or ``affects`` that is null counts as not written."""
+    ``suggested``, ``why``, ``affects`` or ``only_for`` that is null counts as not
+    written; ``only_for`` must name some of ``options`` (when they are given)."""
     if not isinstance(f, dict):
         return [((), "每道题必须是对象")]
     found: list[tuple[Loc, str]] = []
@@ -952,14 +957,33 @@ def question_problems(f: Any) -> list[tuple[Loc, str]]:
         or any(not isinstance(a, str) or len(a) > 64 for a in affects)
     ):
         found.append((("affects",), "影响的条目最多 20 个，每个是最多 64 个字符的文字"))
+    only_for = f.get("only_for")
+    if only_for is not None:
+        if (
+            not isinstance(only_for, list)
+            or not 1 <= len(only_for) <= MAX_ONLY_FOR
+            or any(not isinstance(k, str) for k in only_for)
+        ):
+            found.append((("only_for",), f"only_for 要列出 1–{MAX_ONLY_FOR} 个选项的标识"))
+        elif options is not None and (unknown := [k for k in only_for if k not in options]):
+            found.append((("only_for",), f"only_for 里的 {unknown[0]} 不是这一步的选项"))
     return found
 
 
-def questions(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def for_decision(asked: list[dict[str, Any]], decision: str | None) -> list[dict[str, Any]]:
+    """The questions that go with ``decision``: those without ``only_for`` and those
+    whose ``only_for`` names it (the option a person clicked)."""
+    return [q for q in asked if not q.get("only_for") or decision in q["only_for"]]
+
+
+def questions(
+    value: Any, options: list[str] | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The questions an approval asks when it pauses, from its ``fields`` (a list, or
     what a reference to one gave), and those dropped: ``index``, ``key`` and
     ``problem``. A question loses its ``default``, gets ``required: true`` and keeps
-    ``suggested``, ``why`` and ``affects`` when they are not null."""
+    ``suggested``, ``why``, ``affects`` and ``only_for`` (some of ``options``) when they
+    are not null."""
     if value is None or value == "":
         return [], []
     if not isinstance(value, list):
@@ -972,7 +996,7 @@ def questions(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         # A default and ``required`` are put right, not held against the question.
         if isinstance(f, dict):
             f = {k: v for k, v in f.items() if k != "default"} | {"required": True}
-        found = question_problems(f)
+        found = question_problems(f, options)
         if i >= MAX_QUESTIONS:
             problem = f"最多 {MAX_QUESTIONS} 题，从第 {MAX_QUESTIONS + 1} 题起不问"
         elif found:
@@ -984,7 +1008,7 @@ def questions(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                 {
                     k: v
                     for k, v in f.items()
-                    if not (k in ("suggested", "why", "affects") and v is None)
+                    if not (k in ("suggested", "why", "affects", "only_for") and v is None)
                 }
             )
             continue
@@ -992,7 +1016,7 @@ def questions(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return asked, dropped
 
 
-def _check_questions(node: dict[str, Any], p: Problems) -> None:
+def _check_questions(node: dict[str, Any], p: Problems, options: list[str]) -> None:
     value = node.get("fields")
     if value is None:
         return
@@ -1007,7 +1031,7 @@ def _check_questions(node: dict[str, Any], p: Problems) -> None:
         p.add(("fields",), f"最多 {MAX_QUESTIONS} 题")
     keys: set[str] = set()
     for i, f in enumerate(value):
-        found = question_problems(f)
+        found = question_problems(f, options)
         for where, message in found:
             p.add(("fields", i, *where), message)
         key = f.get("key") if isinstance(f, dict) else None
@@ -1078,7 +1102,7 @@ async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
                 p.add(("changed_branch",), "按意见处理的选项要在选项里")
             elif branch in guarded:
                 p.add(("changed_branch",), "按意见处理的选项不能设 requires")
-        _check_questions(node, p)
+        _check_questions(node, p, keys)
     elif mode == "form":
         check_fields(node, "fields", p, QUESTION_TYPES)
         if node.get("changed_branch") is not None:
@@ -1112,7 +1136,8 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     if extended:
         dropped: list[dict[str, Any]] = []
         if not form and _set(node, "fields"):
-            asked, dropped = questions(refs.resolve(node["fields"], get))
+            options = [o["key"] for o in node["options"]]
+            asked, dropped = questions(refs.resolve(node["fields"], get), options)
         details |= {
             "view": node.get("view"),
             "data": refs.resolve(node.get("data") or {}, get),
@@ -1136,6 +1161,12 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         return Outcome(outputs, messages=[said])
     labels = {o["key"]: o.get("label", o["key"]) for o in node["options"]}
     shown = [o["key"] for o in node["options"] if _shown(o, get)]
+    # A question only for options not offered now is not asked (flow-apps.md, only_for).
+    asked = [
+        q if not q.get("only_for") else q | {"only_for": [k for k in q["only_for"] if k in shown]}
+        for q in asked
+        if not q.get("only_for") or any(k in shown for k in q["only_for"])
+    ]
     answer = human.ask(
         prompt,
         details,
@@ -1190,9 +1221,11 @@ def _decided(
     decision = answer.get("decision")
     comment = answer.get("comment")
     actor = answer.get("actor")
+    submitted = answer.get("submitted")
+    # Only the questions of the option clicked were answered (only_for).
+    asked = for_decision(asked, submitted or decision)
     values = (answer.get("values") or {}) if asked else {}
     notes = list(answer.get("notes") or [])
-    submitted = answer.get("submitted")
     answers = []
     for q in asked:
         value, suggested = values.get(q["key"]), q.get("suggested")

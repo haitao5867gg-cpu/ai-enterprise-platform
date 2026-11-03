@@ -199,3 +199,89 @@ test("the run page shows the released job, or why nothing was released", async (
   await expect(why).toHaveClass(/failed/);
   await expect(why.getByRole("link")).toHaveCount(0);
 });
+
+test("the refresh time is asked only of someone releasing", async ({
+  page,
+}) => {
+  // jadeflow retest I-19: 先不上线 was refused for want of a refresh time.
+  const runId = id("release-review");
+  const waiting = {
+    run_id: runId,
+    app: "t2-forecast",
+    status: "waiting",
+    step: { node: "release_review", title: "上线审批" },
+    messages: [{ role: "assistant", content: "试算结果已审核通过" }],
+    pending: {
+      kind: "approval",
+      prompt: "试算结果已审核通过。请看上线说明。",
+      options: ["release", "skip"],
+      option_labels: { release: "上线到 prod", skip: "先不上线，交付" },
+      comment_required: [],
+      changed_branch: null,
+      fields: [
+        {
+          key: "schedule",
+          label: "上线后什么时候自动刷新？",
+          type: "select",
+          required: true,
+          choices: [
+            { value: "0 0 2 * * ?", label: "每天 02:00" },
+            { value: "0 0 2 1 * ?", label: "每月 1 日 02:00" },
+          ],
+          suggested: "0 0 2 * * ?",
+          only_for: ["release"],
+        },
+      ],
+      details: {
+        type: "flow_human",
+        node: "release_review",
+        show: "## 上线说明\n\n- 上线到项目「T2」的 生产 环境（prod）",
+        view: null,
+        data: {},
+        round: 1,
+        seen: "sha256:1",
+        dropped_fields: [],
+      },
+    },
+    result: null,
+    error: null,
+  };
+  await page.route(`**/api/runs/${runId}`, (route) =>
+    route.fulfill({ json: waiting }),
+  );
+  const posted: unknown[] = [];
+  await page.route(`**/api/runs/${runId}/resume`, (route) => {
+    posted.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 202,
+      json: { run_id: runId, status: "running" },
+    });
+  });
+  await page.goto(`/runs/${runId}`);
+  const question = page.getByRole("group", {
+    name: "1. 上线后什么时候自动刷新？",
+  });
+  await expect(question).toContainText(
+    "只在选「上线到 prod」时要答，选别的不用答",
+  );
+  await page.getByLabel("你的名字").fill("韩梅梅");
+
+  // Releasing needs it.
+  await page.getByRole("button", { name: "上线到 prod", exact: true }).click();
+  await expect(page.locator("#question-schedule-error")).toHaveText(
+    "请选一个答案",
+  );
+  expect(posted).toEqual([]);
+
+  // Not releasing does not, and sends no answer.
+  await page
+    .getByRole("button", { name: "先不上线，交付", exact: true })
+    .click();
+  await expect.poll(() => posted.length).toBe(1);
+  expect(posted[0]).toEqual({
+    decision: "skip",
+    comment: "",
+    actor: "韩梅梅",
+    seen: "sha256:1",
+  });
+});

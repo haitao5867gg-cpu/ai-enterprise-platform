@@ -1098,12 +1098,14 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 执行：
 
 - 不绑定项目：同代码应用 `etl` 的上线，`DevTarget.release(bundle, schedule)`，写到 `AEP_DATABRICKS_PROD_CATALOG`.`AEP_DATABRICKS_PROD_SCHEMA`，集群用 `AEP_DATABRICKS_PROD_CLUSTER_ID`（空时用 `AEP_DATABRICKS_CLUSTER_ID`）。
-- 绑定项目：上线到项目里 key 为 `environment` 的环境，写到它的 catalog 和 schema，集群用它的 `cluster_id`（空时同上）；不看 `AEP_DATABRICKS_PROD_CATALOG`、`_SCHEMA`。Job 的项目变量（`project`、`table_prefix`、`adopted`、`params`）取这次运行的快照，所以 prod 上每次刷新都用这次运行的参数值；`run_id` 是 Job 运行自己的 id。目标表名和试算一样要以项目的表名前缀开头。下面这些情况不部署，走 `failed` 分支，`errors` 写明原因（让人改了项目再试，或者先不上线；不让整次运行失败）：
+- 绑定项目：上线到项目里 key 为 `environment` 的环境，写到它的 catalog 和 schema，集群用它的 `cluster_id`（空时同上）；不看 `AEP_DATABRICKS_PROD_CATALOG`、`_SCHEMA`。Job 的项目变量（`project`、`table_prefix`、`adopted`）取这次运行的快照；运行参数按项目参数的 `scheduled` 定（jadeflow 复测 I-19 后改，见 projects.md 的“定时运行时参数怎么取”）：不用每次算的值（默认值、空值、沿用这次运行的值）写进 `params`，每次运行要算的（按日期推算、作业运行的 ID）写进 `param_rules`，由集群上的程序在每次运行时算出来；以前是一直用这次运行的值，每月换一次的版本号会被每天重算。`run_id` 是 Job 运行自己的 id。目标表名和试算一样要以项目的表名前缀开头。下面这些情况不部署，走 `failed` 分支，`errors` 写明原因（让人改了项目再试，或者先不上线；不让整次运行失败）：
   - 运行方式是 `pipeline`：“绑定项目的运行请用 job 方式上线（AEP_DATABRICKS_DEPLOY）”。
   - 项目没有这个环境：“项目「…」没有环境 prod”。
   - 这个环境就是这次运行试算用的环境：“上线的环境 dev 就是这次试算的环境，请选别的环境”。
   - 目标表不以前缀开头：同 `databricks_dev_run`。
-  - 以前的运行快照里没有项目的全部环境：“这次运行绑定项目时还没有记下项目的全部环境，请重新发起运行”。为此，运行快照（projects.md）新增 `environments`：项目当时的全部环境，原样照抄；`environment` 照旧是选中的那个。
+  - 以前的运行快照里没有项目的全部环境：“这次运行绑定项目时还没有记下项目的全部环境，请重新发起运行”。
+  - 有必填参数既没写定时运行时怎么取、也没有默认值（jadeflow 复测后新增）：“参数「运行批次」没有写定时运行时怎么取，也没有默认值：在项目的运行参数里给它写上定时运行时的取法（或者默认值），再重新发起运行”，几个时用“；”连起来。
+  - 有要每次算的参数，但 bundle 是平台升级前生成的（`databricks.yml` 里没有 `${var.param_rules}`）：“这次运行的代码是平台升级前生成的，定时运行时没法按项目的规则算参数，请重新发起运行”。为此，运行快照（projects.md）新增 `environments`：项目当时的全部环境，原样照抄；`environment` 照旧是选中的那个。
 - 绑定项目的 Job 名是“`<bundle 名>`（`<项目 id>`/`<环境 key>`）”，标签另加 `aep_project`、`aep_environment`，文件放在 `.bundle/<bundle 名>/<环境 key>/releases/…`：同一个项目的不同环境、不同项目的同名 bundle 各是各的 Job。不绑定项目时 Job 名、标签和文件位置都同代码应用 `etl`。
 - 同一个 Job 再上线是更新它（换文件、换定时），不新建；上线失败时正在跑的 Job 不变（同 `etl`）。
 - 没配置 Databricks 工作区时以 `databricks_error` 失败。工作区配了但上不了线（`cluster` 运行方式；不绑定项目时没配 prod 目标）不算出错，走 `failed` 分支，`errors` 写明原因，让人决定先不上线还是找管理员。部署时 Databricks 接口报错也走 `failed`。
@@ -1121,7 +1123,7 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 | `schedule_text` | 定时的中文说法：常见写法（每天、每小时、每周几、每月几号的几点几分）写成“每天 02:00（Asia/Shanghai）”这样，其他写成“按 Quartz cron 0 15 10 ? * 6L（Asia/Shanghai）” |
 | `errors` | 失败时的原因，一条一行；成功时为 `""` |
 | `summary` | 一句话，如“已上线到 prod：Job 100，每天 02:00（Asia/Shanghai）刷新 `icsd-ace-prod`.sales_mart” |
-| `report` | Markdown 报告：成功或失败、环境、写到哪个 catalog 和 schema、集群、定时、Job 链接、每一步的结果、失败原因 |
+| `report` | Markdown 报告：成功或失败、环境、写到哪个 catalog 和 schema、集群、定时、Job 链接、每一步的结果、失败原因。上线成功时另有（jadeflow 复测后新增）：定时能换成五段 cron 时（没有 `L`、`W`、`#`、秒和年）写“下一次运行：2026-12-01 02:00（Asia/Shanghai）”；绑定项目、有运行参数时列一张“定时运行时的参数”表，按下一次运行那天（算不出时按今天）写每个参数怎么取、是什么值；Job 方式时最后写怎么撤销（删掉或暂停这个 Job；写进表的数据不跟着撤销，Delta 表可以 `RESTORE TABLE … TO VERSION AS OF …`） |
 
 分支：`deployed`（已上线）、`failed`（失败）。运行过程里的那句话是 `summary`。
 
@@ -1138,7 +1140,8 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
                          {"value": "0 0 * * * ?", "label": "每小时整点"},
                          {"value": "0 0 2 ? * MON", "label": "每周一 02:00"},
                          {"value": "0 0 2 1 * ?", "label": "每月 1 日 02:00"}],
-             "suggested": "0 0 2 * * ?"}],
+             "suggested": "0 0 2 * * ?",
+             "only_for": ["release"]}],
  "options": [{"key": "release", "label": "上线到 prod"}, {"key": "skip", "label": "先不上线，交付"}],
  "max_visits": 3}
 
@@ -1147,10 +1150,15 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 ```
 
 - 第一次到上线审批时 `release.report` 还是空的，`show` 只有检查并打包的一句话。
+- 刷新时间这题带 `only_for: ["release"]`（jadeflow 复测 I-19 后新增，flow-apps.md）：只在选“上线到 prod”时要答，选“先不上线，交付”时不用答。
 - 连线：“审核试算结果”的 `approve` 改到 `release_review`；`release_review` 的 `release` 到 `release`，`skip` 到 `end`；`release` 的 `deployed` 到 `end`，`failed` 回到 `release_review`（`show` 里能看到失败原因，再试或先不上线）。
 - 上线审批是确认模式的人工节点，要审批者处理（auth.md）。
 - 交付的结果加 `release`（`{{release.summary}}`，没上线时为空）和 `release_url`（`{{release.url}}`）；交付节点的说明改成“……选了上线时代码已部署到 prod，按选的时间自动刷新；没选时数据还在开发环境。”
 - 应用说明书、画布和运行页的流程视图照常显示这两个节点。
+- `etl-lakehouse-project` 另有（jadeflow 复测 I-19 后新增）：
+  - “审核试算结果”的 `approve` 先到条件判断节点 `can_release`（“能不能上线”，规则 `yes`：`{{project.can_release}}` 等于 true），`yes` 到 `release_review`，`else` 直接到 `end`：项目没有 prod 环境、或者这次就在 prod 里试算时，不出现上线审批。
+  - `release_review` 的 `show` 是 `"{{check_code.summary}}\n\n{{project.release_brief}}\n\n{{release.report}}"`（上线说明见 projects.md）；“上线到 prod”加 `requires: "{{project.release_ready}}"`：有参数在定时运行时取不到时只能选“先不上线，交付”，刷新时间这题也跟着不问；`prompt` 改成“试算结果已审核通过。请看上线说明：上线后 prod 按选的时间自动运行，每次的参数按说明里的规则取；先不上线就只交付开发环境的结果，不用选刷新时间。”。
+  - `etl-lakehouse` 没绑定项目，不加 `can_release`，上线说明也没有。
 - 两个模板的说明末尾“审核通过后交付。”改成“审核通过后可以上线到 prod 定时刷新。”。
 
 ### 前端
@@ -1187,3 +1195,9 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
   - 运行快照多了 `environments`。
   - 两个模板用假模型和假 Databricks 跑通：审核通过后上线审批选“上线到 prod”交付、选“先不上线”交付、上线失败回到上线审批。
   - 前端：上线节点的表单和保存检查、运行页的 Job 链接（Playwright，mock）。
+- jadeflow 复测第 3 批（I-19）另加：
+  - 人工节点的 `only_for`：保存检查的几种报错；暂停时不问只属于没显示的选项的题；选别的选项时不用答、答了也不记；改了答案照样转成 `changed_branch`。
+  - 项目参数的 `scheduled`：保存检查的几种报错；`scheduled_values` 的固定值、规则、每行说明、取不到时的原因、按时区算的“今天”、不符合格式时的提醒；`can_release`、`release_ready`、`release_brief` 在没有 prod、就在 prod、旧快照、没绑定项目时的值。
+  - `databricks_release`：Job 的 `params` 和 `param_rules`、报告里的下一次运行和参数表、怎么撤销；取不到参数和旧 bundle 时走 `failed`、不部署。
+  - 集群程序：按月推算（月底、跨年、第一天和最后一天）、三种参数类型的写法、不符合格式时报错不写表、拿不到作业运行 ID 时报错；`run_notebook` 读 `param_rules`。
+  - 模板第 3 版：上线审批显示上线说明、刷新时间带 `only_for`；项目只有 dev 时审核通过就交付；参数取不到时只有“先不上线，交付”，不填刷新时间就能交付。

@@ -10,6 +10,7 @@ import {
   getProjectOptions,
   paramText,
   paramTypeLabels,
+  scheduledText,
   projectInput,
   samplesText,
   type Project,
@@ -181,7 +182,7 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
         <h2 id="project-params">运行参数</h2>
         {project.params.length ? (
           <Rows
-            headings={["标识", "显示名", "类型", "必填", "默认值", "说明"]}
+            headings={["标识", "显示名", "类型", "必填", "默认值", "上线后定时运行时", "说明"]}
             rows={project.params.map((param) => [
               param.key,
               param.label,
@@ -192,6 +193,7 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
                   : paramTypeLabels[param.type],
               param.required ? "是" : "否",
               paramText(param, param.default),
+              scheduledText(param),
               param.description,
             ])}
           />

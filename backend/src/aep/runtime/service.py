@@ -962,7 +962,8 @@ class RunService:
             _notes(pending, notes)
             answer["values"] = checked
         else:
-            asked = pending.get("fields") or []
+            # Questions only for other options are neither required nor kept (only_for).
+            asked = flownodes.for_decision(pending.get("fields") or [], decision)
             checked, problems = flownodes.answers(asked, values or {}) if asked else ({}, {})
             if problems:
                 raise InvalidValues(problems)

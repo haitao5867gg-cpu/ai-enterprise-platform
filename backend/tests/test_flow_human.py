@@ -610,3 +610,55 @@ def test_a_note_finds_its_item_in_a_fixed_order():
     assert label(None, "metric:m3") is None
     for item in ("m3", ":m3", "Metric:m3", "metric:", "metric:" + "m" * 201):
         assert label(data, item) is None, item
+
+
+async def test_a_question_only_for_some_options_is_answered_only_with_them():
+    # jadeflow retest I-19: "先不上线" needed a refresh time asked only of releasing.
+    at = ("config", "graph", "nodes", "review", "fields")
+    for wrong, message in (
+        ([], "only_for 要列出 1–5 个选项的标识"),
+        (["approve"] * 6, "only_for 要列出 1–5 个选项的标识"),
+        ("approve", "only_for 要列出 1–5 个选项的标识"),
+        (["approve", "later"], "only_for 里的 later 不是这一步的选项"),
+    ):
+        config = reviewed(fields=[{**Q1, "only_for": wrong}, Q2])
+        assert await problems(config) == {(*at, 0, "only_for"): message}
+
+    only_approve = {**Q1, "only_for": ["approve"]}
+    hidden = {**Q2, "key": "q3", "only_for": ["pass"]}
+    config = reviewed(fields=[only_approve, Q2, hidden], data={"brief": "{{ask.brief}}"})
+    node(config, "ask")["output"]["fields"][0]["type"] = "string"
+    async with Platform([reply(questions="不看")] * 3) as p:
+        await p.new_app("plan", config)
+        run = await p.run("plan", {"question": "统计客单价"})
+        # A question only for options not offered now ("pass" needs {{ask.ok}}) is not asked.
+        assert run["pending"]["fields"] == [
+            {**only_approve, "required": True},
+            {**Q2, "required": True},
+        ]
+        # Stopping does not need the time range; what was given for it is not kept.
+        status, detail = await refused(p, run, decision="stop", comment="不做了", values={})
+        assert (status, detail) == (422, {("body", "values", "q2"): "要不要去掉测试订单？不能为空"})
+        run = await p.resume(
+            run, decision="stop", comment="不做了", values={"q1": "y2026", "q2": True}
+        )
+        assert run["outcome"] == "stopped"
+        last = await review_output(p, run)
+        assert [a["key"] for a in last["record"]["answers"]] == ["q2"]
+        assert (last["values"], last["changed"]) == ({"q2": True}, False)
+
+        # Approving needs it, and a changed answer still turns the decision.
+        run = await p.run("plan", {"question": "统计客单价"})
+        status, detail = await refused(p, run, decision="approve", values={"q2": True})
+        assert (status, detail) == (422, {("body", "values", "q1"): "统计哪段时间？不能为空"})
+        run = await p.resume(run, decision="approve", values={"q1": "y2026", "q2": True})
+        assert run["status"] == "waiting"
+        record = (await review_output(p, run))["record"]
+        assert (record["decision"], record["submitted"]) == ("revise", "approve")
+        assert [a["key"] for a in record["answers"]] == ["q1", "q2"]
+
+
+async def review_output(p: Platform, run: dict) -> dict:
+    steps = (await p.api.get(f"/runs/{run['run_id']}/flow")).json()["steps"]
+    done = [s for s in steps if s["node"] == "review" and s["output"]]
+    return done[-1]["output"]["vars"]["review"]

@@ -89,6 +89,14 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(version).toContainText("默认值不对：参数「版本」要符合格式 FY\\d{2}_\\d{2}_M");
   await version.getByLabel("默认值（选填）").fill("FY26_06_M");
   await expect(version).not.toContainText("默认值不对");
+  // How the scheduled runs of a released job fill it in (jadeflow retest I-19).
+  await version.getByLabel("上线后定时运行时").selectOption({ label: "按运行那天推算日期" });
+  await expect(version.getByLabel("推算到哪个月")).toHaveValue("-1");
+  await expect(version).toContainText("定时运行时的取法不对：文本参数要写日期格式，如 FY%y_%m_M");
+  await version.getByLabel("日期格式").fill("FY%y_%B");
+  await expect(version).toContainText("日期格式只能用 %Y（四位年份）");
+  await version.getByLabel("日期格式").fill("FY%y_%m_M");
+  await expect(version).not.toContainText("定时运行时的取法不对");
   await form.getByLabel("发给模型的数据").selectOption({ label: "只发统计" });
   await expect(form).toContainText("不发样本行和取值分布");
 
@@ -117,6 +125,13 @@ test("项目页面：新建时先在页面上查出问题，保存后能查看�
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText("统计月");
   await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
     "文字，格式 FY\\d{2}_\\d{2}_M",
+  );
+  await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
+    "按运行那天推算上个月，写成 FY{yy}_{MM}_M",
+  );
+  // 统计月 is required with no default and no rule: a release could not fill it in.
+  await expect(page.getByRole("region", { name: "运行参数" })).toContainText(
+    "没写（上线时取不到，不能上线）",
   );
   await expect(page.getByRole("region", { name: "数据外发策略" })).toContainText("只发统计");
   await expect(page.getByRole("region", { name: "验收检查" })).toContainText("本月有结果");

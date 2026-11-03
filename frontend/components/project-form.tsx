@@ -8,10 +8,14 @@ import {
   TABLE,
   THREE_PART,
   createProject,
+  dateFormatProblem,
   filterProblem,
+  monthsText,
   paramProblem,
   paramTypeLabels,
   replaceProject,
+  scheduledUseLabels,
+  scheduledUses,
   type Choice,
   type Environment,
   type Param,
@@ -21,6 +25,7 @@ import {
   type ProjectInput,
   type ProjectOptions,
   type Reference,
+  type Scheduled,
 } from "../lib/projects";
 import { ApiError, errorMessage, type SampleLevel } from "../lib/runs";
 import { useUnsavedWarning } from "./asset-ui";
@@ -89,12 +94,26 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
           : null,
       pattern: param.type === "text" && param.pattern ? param.pattern : null,
       description: param.description,
+      scheduled: scheduledBody(param),
     })),
     checks: input.checks,
     policy: {
       samples: input.policy.samples,
       models: input.policy.models?.length ? input.policy.models : null,
     },
+  };
+}
+
+// How scheduled runs fill a parameter in, with only what its way of filling in uses.
+function scheduledBody(param: Param): Scheduled | null {
+  const rule = param.scheduled;
+  if (!rule || !scheduledUses(param.type).includes(rule.use)) return null;
+  if (rule.use !== "date") return { use: rule.use, format: null, months: 0, day: null };
+  return {
+    use: "date",
+    format: param.type === "text" ? (rule.format ?? "").trim() || null : null,
+    months: rule.months,
+    day: param.type === "month" ? null : rule.day,
   };
 }
 
@@ -155,8 +174,96 @@ function check(body: ProjectInput): Issues {
       const problem = paramProblem(param, param.default);
       if (problem) add(issues, at, `默认值不对：${problem}`);
     }
+    const rule = param.scheduled;
+    if (rule?.use === "date" && param.type === "text") {
+      const problem = rule.format
+        ? dateFormatProblem(rule.format)
+        : "文本参数要写日期格式，如 FY%y_%m_M";
+      if (problem) add(issues, at, `定时运行时的取法不对：${problem}`);
+    }
   });
   return issues;
+}
+
+const MONTHS = Array.from({ length: 49 }, (_, i) => i - 24);
+const SCHEDULED_HELP =
+  "上线到 prod 后，Databricks 按定时运行时这个参数怎么取。不写时用默认值；必填又没有默认值的" +
+  "参数取不到，不能上线。";
+const DATE_FORMAT_HELP =
+  "只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日），比如 FY%y_%m_M 写出 FY26_10_M。";
+
+// How a released job's scheduled runs fill the parameter in (docs/api/projects.md).
+function ScheduledField({
+  param,
+  onChange,
+}: {
+  param: Param;
+  onChange: (scheduled: Scheduled | null) => void;
+}) {
+  const uses = scheduledUses(param.type);
+  const rule = param.scheduled && uses.includes(param.scheduled.use) ? param.scheduled : null;
+  const fallback =
+    param.default !== null
+      ? "用默认值"
+      : param.required
+        ? "没写：上线时取不到，不能上线"
+        : "不填（空值）";
+  return (
+    <>
+      <SelectField
+        label="上线后定时运行时"
+        value={rule?.use ?? ""}
+        help={SCHEDULED_HELP}
+        choices={[
+          { value: "", label: `不写（${fallback}）` },
+          ...uses.map((use) => ({ value: use, label: scheduledUseLabels[use] })),
+        ]}
+        onChange={(use) =>
+          onChange(
+            use
+              ? {
+                  use: use as Scheduled["use"],
+                  format: use === "date" && param.type === "text" ? (rule?.format ?? "") : null,
+                  months: use === "date" ? (rule?.months ?? -1) : 0,
+                  day: null,
+                }
+              : null,
+          )
+        }
+      />
+      {rule?.use === "date" && (
+        <>
+          <SelectField
+            label="推算到哪个月"
+            value={String(rule.months)}
+            choices={MONTHS.map((months) => ({ value: String(months), label: monthsText(months) }))}
+            onChange={(months) => onChange({ ...rule, months: Number(months) })}
+          />
+          {param.type !== "month" && (
+            <SelectField
+              label="哪一天"
+              value={rule.day ?? ""}
+              choices={[
+                { value: "", label: "同一天（没有这一天时取月底）" },
+                { value: "first", label: "第一天" },
+                { value: "last", label: "最后一天" },
+              ]}
+              onChange={(day) => onChange({ ...rule, day: (day || null) as Scheduled["day"] })}
+            />
+          )}
+          {param.type === "text" && (
+            <TextField
+              label="日期格式"
+              value={rule.format ?? ""}
+              maxLength={50}
+              help={DATE_FORMAT_HELP}
+              onChange={(format) => onChange({ ...rule, format })}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
 }
 
 // The default-value control for one parameter type; empty means no default.
@@ -510,6 +617,10 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
               <DefaultField
                 param={param}
                 onChange={(value) => update({ ...param, default: value })}
+              />
+              <ScheduledField
+                param={param}
+                onChange={(scheduled) => update({ ...param, scheduled })}
               />
               <CheckField
                 label="必填"
