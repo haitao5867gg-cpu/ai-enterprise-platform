@@ -5960,6 +5960,8 @@ fieldset.project-form-section > legend + * {
 .brief-table .metric-columns {
   display: block;
   font-size: 0.85em;
+}
+
 /* Interface language switch (中 / EN) in the top bar and on the sign-in page. */
 .locale-switch {
   display: inline-flex;
