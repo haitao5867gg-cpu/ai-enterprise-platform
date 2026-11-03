@@ -602,7 +602,10 @@ async def test_what_a_plan_lost_after_it_was_sent_back_is_said():
     first = await run(node, attempt(written(checks=[asked, {"id": "c8_fixed"}])), rt)
     assert first.branch == "retry"
     held = first.private["rejected"]
-    assert {"check": ["k1", "子查询检查"], "text": "检查「子查询检查」"} in held
+    (item,) = [i for i in held if "check" in i and i["check"] == ["k1", "子查询检查"]]
+    assert item["text"] == "检查「子查询检查」"
+    said = "table city_totals，where city NOT IN (SELECT city FROM order_facts)"
+    assert item["said"] == said
 
     # The model drops the check and a column instead of saying so: the person is told.
     passing = written(checks=[])
@@ -610,17 +613,38 @@ async def test_what_a_plan_lost_after_it_was_sent_back_is_said():
     passing["targets"][1]["columns"].pop()
     out = await run(node, attempt(passing, first.private), rt)
     assert out.branch == "ok", out.outputs["problems"]
-    assert out.outputs["dropped"] == ["检查「子查询检查」", "city_totals 的列 avg_quantity"]
+    assert out.outputs["dropped"] == [
+        f"去掉了检查「子查询检查」（{said}）",
+        "去掉了 city_totals 的列 avg_quantity",
+    ]
     assert out.outputs["message"].startswith(
-        "> 注意：方案被平台校验退回后，这一版去掉了检查「子查询检查」、city_totals 的列 "
-        "avg_quantity。请对照需求确认还要不要"
+        "> 注意：方案被平台校验退回后，这一版和退回的那版不一样：去掉了检查「子查询检查」"
+        f"（{said}）；去掉了 city_totals 的列 avg_quantity。请对照需求确认还要不要"
     )
     assert "rejected" not in out.private
 
-    # Kept under another id, or said nothing about: nothing to say.
-    renamed = written(checks=[asked | {"id": "k2", "where": "city IS NULL"}])
-    out = await run(node, attempt(renamed, first.private), rt)
+    # jadeflow retest I-15: the same check under another id and label is no loss.
+    good = asked | {"where": "city IS NULL"}
+    second = await run(node, attempt(written(checks=[good, {"id": "c8_fixed"}])), rt)
+    renamed = written(checks=[good | {"id": "k2", "label": "城市不为空"}])
+    out = await run(node, attempt(renamed, second.private), rt)
     assert out.branch == "ok" and out.outputs["dropped"] == []
     assert not out.outputs["message"].startswith("> 注意")
+    # Kept by its label but checking something else: before and after.
+    out = await run(node, attempt(written(checks=[asked | {"id": "k2", "where": "city IS NULL"}]),
+                                  first.private), rt)  # fmt: skip
+    assert out.outputs["dropped"] == [
+        f"检查「子查询检查」改了写法：原来是“{said}”，现在是“city_totals 里没有满足 "
+        "city IS NULL 的行”，请确认是不是一个意思"
+    ]
+    # Dropped, and another check added: is it a replacement?
+    other = {"id": "k3", "label": "城市在订单里", "kind": "rows", "table": "city_totals",
+             "where": "city = ''"}  # fmt: skip
+    out = await run(node, attempt(written(checks=[other]), first.private), rt)
+    assert out.outputs["dropped"] == [
+        f"去掉了检查「子查询检查」（{said}）",
+        "新加了检查「城市在订单里」（city_totals 里没有满足 city = '' 的行）："
+        "请确认它是不是替代去掉的那条、够不够",
+    ]
     out = await run(node, attempt(written(checks=[])), rt)
     assert out.outputs["dropped"] == []

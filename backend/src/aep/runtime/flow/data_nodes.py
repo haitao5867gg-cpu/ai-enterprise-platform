@@ -707,9 +707,52 @@ def _no_plan() -> dict[str, Any]:
     }
 
 
+# What a check is, whatever it is called: its kind, tables, expressions and conditions.
+_NOT_WHAT = {"id", "label", "severity", "known", "note"}
+
+
+def _check_signature(check: dict[str, Any]) -> str:
+    """A check as compared across versions of a plan (jadeflow retest I-15: two checks only
+    renamed were reported dropped): what it checks, without its id, label, severity and
+    known differences, words lowercased and spaces collapsed."""
+
+    def tidy(value: Any) -> Any:
+        if isinstance(value, str):
+            return " ".join(value.lower().split())
+        if isinstance(value, dict):
+            return {k: tidy(v) for k, v in sorted(value.items()) if v is not None}
+        if isinstance(value, list):
+            return [tidy(v) for v in value]
+        return value
+
+    what = {k: v for k, v in check.items() if k not in _NOT_WHAT}
+    return json.dumps(tidy(what), ensure_ascii=False, sort_keys=True)
+
+
+def _check_said(check: dict[str, Any]) -> str:
+    """What a check checks in a sentence; one the platform did not take, as written."""
+    if not checks.problems(check):
+        try:
+            # Plain text: the review page lists these lines as they are.
+            return checks.describe(check).replace("`", "")
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+    parts = [
+        f"{key} {_shown_value(check[key])}"
+        for key in ("table", "expr", "where", "group_by", "columns", "left", "right", "lookup")
+        if check.get(key) not in (None, "", [])
+    ]
+    return "，".join(parts)
+
+
+def _shown_value(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
 def _asked(raw: Any) -> list[dict[str, Any]]:
     """What a plan reply holds that a person may have asked for (jadeflow I-15): its
-    checks (known by id or label) and its target tables' columns."""
+    checks (known by id or label, and by what they check) and its target tables'
+    columns."""
     items: list[dict[str, Any]] = []
     if not isinstance(raw, dict):
         return items
@@ -720,7 +763,14 @@ def _asked(raw: Any) -> list[dict[str, Any]]:
         keys = [str(check.get(k) or "").strip() for k in ("id", "label")]
         keys = [k for k in keys if k]
         if keys:
-            items.append({"check": keys, "text": f"检查「{keys[-1]}」"})
+            items.append(
+                {
+                    "check": keys,
+                    "text": f"检查「{keys[-1]}」",
+                    "signature": _check_signature(check),
+                    "said": _check_said(check),
+                }
+            )
     targets = raw.get("targets")
     for target in targets if isinstance(targets, list) else []:
         if not isinstance(target, dict) or not isinstance(target.get("name"), str):
@@ -742,33 +792,70 @@ def _asked(raw: Any) -> list[dict[str, Any]]:
 def _dropped(
     rejected: list[dict[str, Any]], plan: EtlPlan, project: dict[str, Any] | None
 ) -> list[str]:
-    """What a version the platform sent back had and the plan that passed has not: a
-    check (by id or label; the project's own acceptance checks run anyway) or a column of
-    a table the plan still writes. A model may drop what the platform does not support
-    instead of saying so (jadeflow I-15); the person confirming the plan is told."""
-    kept: set[str] = set()
-    for check in plan.checks if isinstance(plan, EtlPlanV3) else []:
-        kept |= {str(check.get(k) or "").strip().lower() for k in ("id", "label")}
+    """What a version the platform sent back had and the plan that passed has not, one
+    line each: a check, or a column of a table the plan still writes. A model may drop
+    what the platform does not support instead of saying so (jadeflow I-15); the person
+    confirming the plan is told. A check that checks the same thing under another name is
+    kept; one kept by id or label that now checks something else "改了写法", before and
+    after; and when a check was dropped, the checks this version added are listed, to
+    tell whether one replaces it (jadeflow retest I-15). The project's own acceptance
+    checks run anyway."""
+    now = list(plan.checks) if isinstance(plan, EtlPlanV3) else []
+    by_key: dict[str, dict[str, Any]] = {}
+    for check in now:
+        for k in ("id", "label"):
+            if key := str(check.get(k) or "").strip().lower():
+                by_key.setdefault(key, check)
+    signatures = {_check_signature(c) for c in now}
     owned = (project or {}).get("checks") or []
-    kept |= {str(c.get("id") or "").lower() for c in owned if isinstance(c, dict)}
-    kept.discard("")
+    owned_ids = {str(c.get("id") or "").lower() for c in owned if isinstance(c, dict)}
     columns = {t.name.lower(): {c.name.lower() for c in t.columns} for t in plan.targets}
     gone: list[str] = []
+    lost_check = False
+    asked_keys: set[str] = set()
+    asked_signatures: set[str] = set()
     for item in rejected:
-        if "check" in item:
-            if {str(k).lower() for k in item["check"]} & kept:
-                continue
-        else:
+        if "check" not in item:
             have = columns.get(str(item.get("table")).lower())
             if have is None or str(item.get("column")).lower() in have:
                 continue  # a table renamed or dropped altogether is not a lost column
-        gone.append(str(item["text"]))
+            gone.append(f"去掉了 {item['text']}")
+            continue
+        keys = {str(k).lower() for k in item["check"]}
+        asked_keys |= keys
+        signature = item.get("signature")
+        if signature:
+            asked_signatures.add(signature)
+        if (signature and signature in signatures) or keys & owned_ids:
+            continue
+        same = next((by_key[k] for k in item["check"] if str(k).lower() in by_key), None)
+        said = item.get("said")
+        if same is None:
+            gone.append(f"去掉了{item['text']}" + (f"（{said}）" if said else ""))
+            lost_check = True
+        elif signature and _check_signature(same) != signature:
+            new = _check_said(same)
+            gone.append(
+                f"{item['text']}改了写法：原来是“{said}”，现在是“{new}”，请确认是不是一个意思"
+            )
+    if lost_check:
+        for check in now:
+            keys = {str(check.get(k) or "").strip().lower() for k in ("id", "label")} - {""}
+            if keys & asked_keys or _check_signature(check) in asked_signatures:
+                continue
+            label = str(check.get("label") or check.get("id"))
+            said = _check_said(check)
+            gone.append(
+                f"新加了检查「{label}」"
+                + (f"（{said}）" if said else "")
+                + "：请确认它是不是替代去掉的那条、够不够"
+            )
     return list(dict.fromkeys(gone))
 
 
 def _dropped_text(dropped: list[str]) -> str:
     return (
-        f"> 注意：方案被平台校验退回后，这一版去掉了{'、'.join(dropped)}。"
+        f"> 注意：方案被平台校验退回后，这一版和退回的那版不一样：{'；'.join(dropped)}。"
         "请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法，或者在问题里说明。"
     )
 

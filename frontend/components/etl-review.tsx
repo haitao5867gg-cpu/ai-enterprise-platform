@@ -197,11 +197,11 @@ export function EtlPlanReview({
           <div
             className="review-returned"
             role="note"
-            aria-label="校验退回后去掉的内容"
+            aria-label="校验退回后改动的内容"
           >
             <h3>
               <Icon name="alert" size={16} />
-              方案被平台校验退回后，这一版去掉了一些内容
+              方案被平台校验退回后，这一版和退回的那版不一样
             </h3>
             <p>
               请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法。

@@ -44,7 +44,7 @@ test("plan review: the brief, questions on the page, notes on items turn the dec
   await expect(review.getByText("我们理解你要的是")).toBeVisible();
   // Nothing was dropped after a rejection: no word on it.
   await expect(
-    review.getByRole("note", { name: "校验退回后去掉的内容" }),
+    review.getByRole("note", { name: "校验退回后改动的内容" }),
   ).toHaveCount(0);
   await expect(review.locator(".brief-goal")).toHaveText(
     "按月、按城市、按会员等级统计有效订单的 4 个指标",
@@ -373,7 +373,7 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   ).toHaveCount(0);
   // A check the model dropped after the platform sent the plan back is said at the top.
   await expect(
-    review.getByRole("note", { name: "校验退回后去掉的内容" }),
+    review.getByRole("note", { name: "校验退回后改动的内容" }),
   ).toContainText("检查「和上月环比不超过 30%」");
   const proposed = review.getByRole("region", { name: "建议的数据检查" });
   await expect(proposed).toContainText("每月每个城市每个等级一行");
