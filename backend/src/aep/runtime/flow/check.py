@@ -27,7 +27,9 @@ MAX_EDGES = 200
 MAX_VARS = 50
 MAX_SECRETS = 20
 DEFAULT_MAX_VISITS = 3
-MAX_VISITS = 10
+# 20 since loops got review nodes (llm_review): a rewrite for a reviewer is one more
+# visit of the step it goes back to.
+MAX_VISITS = 20
 VAR_TYPES = {"string": str, "number": (int, float), "boolean": bool}
 # Settings that hold no references.
 NOT_SETTINGS = {"id", "type", "title", "note", "ui", "on_error", "max_visits"}

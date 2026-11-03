@@ -64,6 +64,70 @@ const strings = (value: unknown) =>
     ? value.filter((item): item is string => typeof item === "string")
     : [];
 
+// A problem a review node (llm_review) found and the model did not fix: the node's
+// `findings` (docs/api/flow-apps.md, "llm_review 模型审查").
+export type Finding = {
+  title: string;
+  where: string;
+  problem: string;
+  fix: string;
+  quote: string;
+};
+export function readFindings(value: unknown): Finding[] {
+  if (!Array.isArray(value)) return [];
+  const text = (item: Record<string, unknown>, key: string) =>
+    typeof item[key] === "string" ? (item[key] as string) : "";
+  return value.filter(isRecord).flatMap((item) =>
+    text(item, "problem")
+      ? [
+          {
+            title: text(item, "title") || text(item, "rule"),
+            where: text(item, "where"),
+            problem: text(item, "problem"),
+            fix: text(item, "fix"),
+            quote: text(item, "quote"),
+          },
+        ]
+      : [],
+  );
+}
+
+// What the model reviewer still found after the model's rewrites, for the person to weigh.
+export function ReviewFindings({
+  findings,
+  what,
+}: {
+  findings: Finding[];
+  what: string;
+}) {
+  if (!findings.length) return null;
+  return (
+    <div
+      className="review-returned"
+      role="note"
+      aria-label={`模型审查${what}没改过来的问题`}
+    >
+      <h3>
+        <Icon name="alert" size={16} />
+        模型审查{what}时发现的问题，模型重写后还没改过来（{findings.length} 处）
+      </h3>
+      <p>请逐条看一下；需要改的话写意见，模型会按意见重写。</p>
+      <ul>
+        {findings.map((item, i) => (
+          <li key={i}>
+            <strong>{item.title}</strong>
+            {item.where && `（${item.where}）`}：{item.problem}
+            {item.fix && ` 建议：${item.fix}`}
+            {item.quote && (
+              <span className="muted">（依据：{item.quote}）</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export type PlanReview = {
   brief: Brief;
   plan: PlanV2;
@@ -72,6 +136,8 @@ export type PlanReview = {
   cleaned: string[];
   // What the plan lost after the platform sent a version back (checks, columns).
   dropped: string[];
+  // What the model reviewer still found (the template's review_plan); [] without one.
+  review: Finding[];
   returned: ReviewRecord | null;
   previous: ReviewRecord | null;
 };
@@ -90,6 +156,7 @@ export function readPlanReview(data: unknown): PlanReview | null {
     uncited: strings(data.uncited),
     cleaned: strings(data.cleaned),
     dropped: strings(data.dropped),
+    review: readFindings(data.review),
     returned: readRecord(data.returned),
     previous: readRecord(data.previous),
   };
@@ -110,6 +177,8 @@ export type DevReview = {
   files: string[];
   // The data checks after the dev run; null for a template without them.
   checks: DataChecks | null;
+  // What the model reviewer still found in the code (review_code); [] without one.
+  codeReview: Finding[];
 };
 
 // What 审核试算结果 (view etl_dev_review) was given; null when it is not what the view reads.
@@ -130,6 +199,7 @@ export function readDevReview(data: unknown): DevReview | null {
     errors: typeof data.errors === "string" ? data.errors : "",
     files: strings(data.files),
     checks: readDataChecks(data.checks, data.checks_summary),
+    codeReview: readFindings(data.code_review),
   };
 }
 
@@ -214,6 +284,7 @@ export function EtlPlanReview({
             </ul>
           </div>
         )}
+        <ReviewFindings findings={review.review} what="方案" />
         <div className="review-body">
           <BriefView brief={brief} uncited={review.uncited} notes />
           {design && <AnswerShape design={design} brief={brief} />}
@@ -625,6 +696,7 @@ export function EtlDevReview({
           </h2>
           {round !== null && <span className="app-tag">第 {round} 轮</span>}
         </div>
+        <ReviewFindings findings={review.codeReview} what="代码" />
         <div
           className="filter-tabs review-tabs"
           role="tablist"

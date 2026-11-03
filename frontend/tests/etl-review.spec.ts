@@ -382,6 +382,15 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   await expect(
     review.getByRole("note", { name: "校验退回后改动的内容" }),
   ).toContainText("检查「和上月环比不超过 30%」");
+  // So is what the model reviewer still found after the model's rewrites (llm_review).
+  const planReview = review.getByRole("note", {
+    name: "模型审查方案没改过来的问题",
+  });
+  await expect(planReview).toContainText("（1 处）");
+  await expect(planReview).toContainText(
+    "资料写明还没定的事要写成问题（规则 r3）：资料说退货中心的冲红单怎么算还没定，方案直接按负数记了 建议：写成一个问题",
+  );
+  await expect(planReview).toContainText("依据：冲红单的口径待财务确认");
   const proposed = review.getByRole("region", { name: "建议的数据检查" });
   await expect(proposed).toContainText("每月每个城市每个等级一行");
   await expect(proposed).toContainText(
@@ -407,6 +416,9 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
 
   // The dev run passed, the repeated key failed a check: no 通过.
   await expect(review.getByText("开发环境试算通过")).toBeVisible();
+  await expect(
+    review.getByRole("note", { name: "模型审查代码没改过来的问题" }),
+  ).toContainText("读预测表的地方都先按版本筛选");
   await expect(review.getByRole("alert")).toContainText("数据检查没通过");
   const checks = review.getByRole("region", { name: "数据检查", exact: true });
   await expect(checks).toContainText("3 项检查：2 项通过，1 项不通过");
@@ -445,6 +457,9 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
 
   // Round 2: the checks pass, 通过 is back, and the result has the check report.
   await expect(review.getByText("第 2 轮")).toBeVisible();
+  await expect(
+    review.getByRole("note", { name: "模型审查代码没改过来的问题" }),
+  ).toHaveCount(0);
   await expect(checks).toContainText("3 项检查：3 项通过");
   await expect(review.getByRole("alert")).toHaveCount(0);
   await page

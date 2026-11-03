@@ -1034,6 +1034,22 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
         // Template v3: a check the model dropped after the platform sent the plan back.
         dropped:
           state.checks !== "none" ? ["去掉了检查「和上月环比不超过 30%」"] : [],
+        // Template v3: what the model reviewer still found after two rewrites (first
+        // round only).
+        review:
+          state.checks !== "none" && state.rounds.review === 1
+            ? [
+                {
+                  rule: "open_items",
+                  title: "资料写明还没定的事要写成问题",
+                  where: "规则 r3",
+                  problem:
+                    "资料说退货中心的冲红单怎么算还没定，方案直接按负数记了",
+                  quote: "冲红单的口径待财务确认",
+                  fix: "写成一个问题",
+                },
+              ]
+            : [],
         returned: state.reviewed,
         previous: state.confirmed,
       },
@@ -1086,6 +1102,19 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
         ...(checked
           ? { checks: checked.results, checks_summary: checked.summary }
           : {}),
+        code_review:
+          state.checks === "fail" && state.rounds.data_review === 1
+            ? [
+                {
+                  rule: "by_version",
+                  title: "读预测表的地方都先按版本筛选",
+                  where: "ads_sales_city_member_m 读 dwd_sales_order_line 那句",
+                  problem: "读源表时没有按版本筛选",
+                  quote: "",
+                  fix: "先按 version_id 筛选再汇总",
+                },
+              ]
+            : [],
       },
       state.rounds.data_review,
       [],

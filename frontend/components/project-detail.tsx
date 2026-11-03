@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  conventionStageLabels,
   deleteProject,
   emptyProject,
   getProject,
@@ -215,6 +216,22 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
           />
         ) : (
           <p className="muted">没有。绑定这个项目的运行只跑方案建议的检查。</p>
+        )}
+      </section>
+      <section className="panel asset-section" aria-labelledby="project-conventions">
+        <h2 id="project-conventions">约定</h2>
+        {project.conventions?.length ? (
+          <Rows
+            headings={["标识", "约定", "什么时候遵守", "说明"]}
+            rows={project.conventions.map((item) => [
+              item.key,
+              item.title,
+              conventionStageLabels[item.applies_to] ?? item.applies_to,
+              item.text,
+            ])}
+          />
+        ) : (
+          <p className="muted">没有。模型审查节点只按模板自带的清单审查。</p>
         )}
       </section>
       <section className="panel asset-section" aria-labelledby="project-policy">

@@ -86,6 +86,22 @@ export type ClassifierNode = NodeBase &
     instruction?: string;
     classes: { key: string; label: string; description?: string }[];
   };
+// One item of a review node's checklist, or a reference to a list of them such as
+// {{project.code_rules}} (docs/api/flow-apps.md, "llm_review 模型审查").
+export type ReviewRule =
+  | { key: string; title: string; instruction?: string }
+  | string;
+export type ReviewNode = NodeBase &
+  ModelSettings &
+  Fallible & {
+    type: "llm_review";
+    subject: string;
+    context?: string;
+    instruction?: string;
+    rules: ReviewRule[];
+    max_attempts?: number;
+    on_stuck?: "pass" | "branch" | "fail";
+  };
 export type Condition = {
   left: unknown;
   op:
@@ -286,6 +302,7 @@ export type FlowNode =
   | StartNode
   | LlmNode
   | ClassifierNode
+  | ReviewNode
   | ConditionNode
   | ToolNode
   | KnowledgeNode

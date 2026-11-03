@@ -9,7 +9,9 @@ import {
   filterProblem,
   paramProblem,
   patternRegExp,
+  conventionStageLabels,
   scheduledUses,
+  type Convention,
   type Environment,
   type Param,
   type ParamValue,
@@ -109,6 +111,14 @@ const store = (globalStore.aepMockProjects ??= new Map(
           value: 0,
         },
       ],
+      conventions: [
+        {
+          key: "by_version",
+          title: "读预测表的地方都先按版本筛选",
+          text: "上一期预测表里有多个版本的数据，不筛选会重复计算。",
+          applies_to: "code",
+        },
+      ],
       policy: { samples: "stats", models: null },
       created_at: CREATED,
       updated_at: CREATED,
@@ -148,6 +158,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     "adopted",
     "params",
     "checks",
+    "conventions",
     "policy",
   ];
   const extra = Object.keys(body).find((key) => !allowed.includes(key));
@@ -310,6 +321,23 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     !checks.every((item) => typeof item === "object" && item !== null && !Array.isArray(item))
   )
     return "「验收检查」的格式、长度或范围不正确";
+  const conventions = body.conventions ?? [];
+  if (
+    !Array.isArray(conventions) ||
+    conventions.length > 30 ||
+    !conventions.every(
+      (item) =>
+        isRecord(item) &&
+        typeof item.key === "string" &&
+        KEY.test(item.key) &&
+        text(item.title, 1, 100) !== null &&
+        (item.text === undefined || (typeof item.text === "string" && item.text.length <= 2000)) &&
+        [undefined, "plan", "code", "both"].includes(item.applies_to as string | undefined),
+    )
+  )
+    return "「约定」的格式、长度或范围不正确";
+  const conventionsTwice = repeated(conventions.map((item) => item.key as string)).sort();
+  if (conventionsTwice.length) return `约定 ${conventionsTwice.join("、")} 重复`;
   const missing = ((models as string[] | null) ?? []).filter(
     (model) => !mockModels.includes(model) && !LOCAL_MODELS.includes(model),
   );
@@ -324,6 +352,14 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
     adopted,
     params,
     checks: checks as Record<string, unknown>[],
+    conventions: conventions.map(
+      (item): Convention => ({
+        key: item.key as string,
+        title: text(item.title, 1, 100)!,
+        text: (item.text as string | undefined) ?? "",
+        applies_to: (item.applies_to as Convention["applies_to"] | undefined) ?? "both",
+      }),
+    ),
     policy: { samples, models: models as string[] | null },
   };
 }
@@ -458,13 +494,18 @@ export function projectValues(bound: ProjectSnapshot | null): Record<string, unk
     return Object.fromEntries(
       PROJECT_FIELDS.map((field) => [
         field,
-        field === "brief" || field === "release_brief" ? "" : null,
+        field === "brief" || field === "release_brief"
+          ? ""
+          : ["conventions", "plan_rules", "code_rules"].includes(field)
+            ? []
+            : null,
       ]),
     );
   const { project, environment, values } = bound;
   // Releasing (docs/api/projects.md): the mock does not work out scheduled values.
   const canRelease =
     project.environments.some((env) => env.key === "prod") && environment.key !== "prod";
+  const conventions = project.conventions ?? [];
   const params = project.params.map((param) => ({
     key: param.key,
     label: param.label,
@@ -478,9 +519,23 @@ export function projectValues(bound: ProjectSnapshot | null): Record<string, unk
     `写到 \`${environment.catalog}.${environment.schema}\`，表名前缀 \`${project.table_prefix}\`；只能写以前缀开头、属于本项目的表。`,
     "（本地模拟：引用表和运行参数的表格略）",
     '生成的代码用 `param("标识")` 读参数，方案和检查里的条件用 `${param.标识}` 写。',
+    conventions.length
+      ? [
+          "### 约定（必须遵守，平台会按它们审查）",
+          ...conventions.map(
+            (item) =>
+              `- **${item.title}**（${conventionStageLabels[item.applies_to]}）${item.text ? `：${item.text}` : ""}`,
+          ),
+        ].join("\n")
+      : "",
   ]
     .filter(Boolean)
     .join("\n\n");
+  // A review node's checklist: the conventions for that stage (docs/api/projects.md).
+  const rules = (stage: "plan" | "code") =>
+    conventions
+      .filter((item) => item.applies_to === stage || item.applies_to === "both")
+      .map((item) => ({ key: item.key, title: item.title, instruction: item.text }));
   return {
     project_id: project.project_id,
     name: project.name,
@@ -493,6 +548,9 @@ export function projectValues(bound: ProjectSnapshot | null): Record<string, unk
     params,
     brief,
     checks: project.checks ?? [],
+    conventions,
+    plan_rules: rules("plan"),
+    code_rules: rules("code"),
     can_release: canRelease,
     release_ready:
       canRelease &&

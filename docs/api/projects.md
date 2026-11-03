@@ -32,6 +32,7 @@
   "adopted": ["ibf_table1_cw"],           // 0–200 个表名（不含 catalog、schema），都要以 table_prefix 开头，不重复
   "params": [Param],                      // 0–20 个，key 不重复
   "checks": [Check],                      // 0–50 个验收检查，Check 同 data_check 节点；可以不写，默认 []
+  "conventions": [Convention],            // 0–30 条约定，key 不重复；可以不写，默认 []（jadeflow 第 4 轮复测后新增）
   "policy": Policy,                       // 见“数据外发策略”
   "created_at": "……",
   "updated_at": "……"
@@ -75,6 +76,14 @@
   "day": "first" | "last" | null          // 只用于 date：取那个月的第一天、最后一天，null 是同一天（没有这一天时取月底）
 }
 
+// Convention（jadeflow 第 4 轮复测后新增）：这个项目的运行要遵守的规则
+{
+  "key": "by_version",                    // 规则同 Environment.key
+  "title": "读 table1 的地方都先按 version_id 筛选",   // 1–100 字符，去掉首尾空白
+  "text": "table1 里有多个版本的数据……",     // 可选，补充说明和怎么判断，最多 2000 字符，默认 ""
+  "applies_to": "plan" | "code" | "both"  // 写方案时、写代码时还是都要遵守，默认 both
+}
+
 // Policy
 {
   "samples": "full" | "masked" | "stats" | "schema" | null,   // null：用平台默认
@@ -88,6 +97,7 @@
 - 参数值：`text` 1–500 字符；`number` 是 JSON 数字；`boolean` 是 true 或 false；`date` 是 `YYYY-MM-DD`；`month` 是 `YYYY-MM`；`select` 是 `choices` 里的某个 `value`。
 - `pattern`（试点后新增）：`text` 参数的值要整个符合它（相当于前后加了 `^`、`$`），不符合时“参数「版本」要符合格式 FY\d{2}_\d{2}_M”，默认值和新建运行时填的值都查。语法是 RE2（Python 的 `re` 的常用写法都能用，不支持反向引用和环视）：匹配时间和值的长度成正比，项目写什么样的格式都不会让接口卡住。别的类型写了它报“参数「统计月」不是文本，不能写格式”；写错了报“参数「版本」的格式不是有效的正则表达式（missing ): (a）”，括号里是 RE2 的原话。以前保存的参数没有这个键，等于没有格式。
 - `scheduled`：`use` 是 `run_id` 或 `this_run` 时不能写 `format`、`months`、`day`（“只有按日期推算（date）才写 format、months、day”）；`run_id` 只能用在 `text` 参数上；`date` 只能用在 `text`、`date`、`month` 参数上，`text` 参数要写 `format`（“文本参数要写日期格式 format，如 FY%y_%m_M”），`date` 和 `month` 参数的格式固定是 `YYYY-MM-DD`、`YYYY-MM`，不能写 `format`，`month` 参数不能写 `day`；`format` 里有别的 `%` 写法报“日期格式只能用 %Y（四位年份）、%y（两位年份）、%m（月）、%d（日）”，一个都没有报“日期格式里至少要有 %Y、%y、%m、%d 中的一个”。报错写成“参数「版本」定时运行时的取法不对：……”。以前保存的参数没有这个键，等于 null。
+- `conventions`：约定会出现在两个地方：给模型看的项目说明（`brief`）里有一节“约定”，写方案和写代码的模型都能看到；模型审查节点（`llm_review`）用 `{{project.plan_rules}}`、`{{project.code_rules}}` 把它们当审查清单，审查出没遵守的就让那一步重写（见 flow-apps.md“llm_review 模型审查”）。key 重复报“约定 by_version 重复”。保存以前建的项目没有这个键，读出来是 `[]`。约定是项目的通用写法要求（数据怎么读、口径怎么算），不要写成某次需求的答案。
 - `models` 里的别名必须在模型网关上（同编排应用保存检查用的模型清单）；网关读不到清单时不检查。
 - `checks`：每条按 `data_check` 的规则检查（`aep.etl.checks.problems`），报第一个问题，写成“验收检查 c1（where）：条件不能为空”（没有 id 时“第 2 条验收检查：…”）；另外 id 不能重复（“验收检查 id c1 重复”）、不能用 `golden`（“验收检查的 id 不能用 golden，它留给数据检查节点和老系统的对比”）；条件和表达式里的 `${param.<key>}` 要是本项目的参数（“验收检查 c1（where）用的运行参数 ${param.month} 不是本项目定义的参数”）；不带点的表名是这次运行在环境里写的表，要以表名前缀开头（“验收检查 c1（table）：不带 catalog、schema 的 t2 是本项目在运行环境里的表，要以表名前缀 ibf_ 开头”）。保存以前建的项目没有这个键，读出来是 `[]`。
 
@@ -141,7 +151,7 @@
   2. 项目不存在：“没有项目 …”；环境不存在：“项目「…」没有环境 …”。
   3. 参数：多出来的键“项目「…」没有参数 …”；必填参数没值也没默认值“请填写参数「统计月」”；值不合类型“参数「统计月」要写成 YYYY-MM”（各类型的提示同取值规则）。
   4. 应用引用的 `{{param.<key>}}` 项目里没有：“应用用到了参数 version_id，项目「…」没有定义它”。
-  5. 模型：有效策略（见“数据外发策略”）限定了模型时，应用里每个调模型的节点（`llm`、`classifier`、`agent`，以及知识检索所用知识库的向量模型和检索设置里的重排模型；只用关键词检索时不调向量模型，不算它）的模型都要在清单里，节点没写模型时按平台默认模型算；平台自己算的 `mock-embed`、`mock-rerank` 不出平台，不受清单限制：“项目「…」只允许用模型 company，节点「出方案」用的是 deepseek”；没绑定项目、由平台默认限定时写“平台只允许用模型 …”。这一步对所有运行都做，不绑定项目的运行和代码应用（`etl` 按它的节点设置）也一样。
+  5. 模型：有效策略（见“数据外发策略”）限定了模型时，应用里每个调模型的节点（`llm`、`classifier`、`agent`、`llm_review`，以及知识检索所用知识库的向量模型和检索设置里的重排模型；只用关键词检索时不调向量模型，不算它）的模型都要在清单里，节点没写模型时按平台默认模型算；平台自己算的 `mock-embed`、`mock-rerank` 不出平台，不受清单限制：“项目「…」只允许用模型 company，节点「出方案」用的是 deepseek”；没绑定项目、由平台默认限定时写“平台只允许用模型 …”。这一步对所有运行都做，不绑定项目的运行和代码应用（`etl` 按它的节点设置）也一样。
 - 通过后，运行保存一份项目快照：项目的 `name`、`table_prefix`、选中的环境、`references`、`adopted`、参数定义、填好的参数值（默认值已补上）、验收检查和有效策略。第五批起另存项目当时的全部环境（`environments`），上线节点 `databricks_release` 按它找上线的环境（data-nodes.md）；以前的运行快照里没有。之后改项目或删项目都不影响这次运行；运行的“重试”沿用快照，“重新运行”（rerun）按快照里的 `project_id`、环境和参数值重新绑定当前的项目（项目已删除时 422“项目 … 已经删除，不能重新运行”）。
 
 ### 运行记录
@@ -177,9 +187,11 @@
 | `can_release` | 能不能上线（jadeflow 复测后新增）：项目有 key 为 `prod` 的环境，而且这次运行不在 `prod` 里时为 true；快照里没有 `environments`（第五批以前的运行）时为 false |
 | `release_ready` | `can_release` 为 true，而且每个参数在定时运行时都取得到（见下一节）时为 true |
 | `release_brief` | `can_release` 为 true 时，给人看的上线说明（Markdown），否则 `""`：上线到哪个环境、写到哪个 `catalog.schema`、只写前缀开头的本项目表；平台在 Databricks 上建（或更新）一个 notebook Job，按选的时间运行，上线时不马上运行；有参数时列一张表：每个参数定时运行时怎么取、按今天（`AEP_DATABRICKS_PROD_TIMEZONE` 的日期）运行的话是什么值，算出的值不符合参数格式时注明“这样的日子定时运行会报错、不写表”；有参数取不到时写“现在不能上线”和原因；最后是怎么撤销（删掉或暂停 Job；写进表的数据不跟着撤销，Delta 表可以 `RESTORE TABLE … TO VERSION AS OF …`） |
-| `brief` | 给模型看的一段 Markdown，由平台按快照写：项目名称和说明；写到哪里（`catalog.schema`）和表名前缀；“只能写以前缀开头、属于本项目的表”；引用表（全名、名称、读取筛选、说明）；运行参数（标识、名称、类型（有格式时写成“text，格式 `…`”）、这次的值、说明），以及生成的代码用 `param("标识")` 读、方案和检查里的条件用 `${param.标识}` 写；有验收检查时再列一张表（id、名称、级别、检查什么），并说“方案里建议的数据检查不要重复这些，id 也不能和它们相同” |
+| `conventions` | 项目的约定（同项目的 `conventions`）；快照里没有时（加这个字段以前的运行）是 `[]` |
+| `plan_rules`、`code_rules` | 给模型审查节点当清单用：`applies_to` 是 `plan`（或 `code`）和 `both` 的约定，写成 `[{"key", "title", "instruction"}]`，`instruction` 是约定的 `text`；没有时是 `[]` |
+| `brief` | 给模型看的一段 Markdown，由平台按快照写：项目名称和说明；写到哪里（`catalog.schema`）和表名前缀；“只能写以前缀开头、属于本项目的表”；引用表（全名、名称、读取筛选、说明）；运行参数（标识、名称、类型（有格式时写成“text，格式 `…`”）、这次的值、说明），以及生成的代码用 `param("标识")` 读、方案和检查里的条件用 `${param.标识}` 写；有验收检查时再列一张表（id、名称、级别、检查什么），并说“方案里建议的数据检查不要重复这些，id 也不能和它们相同”；有约定时最后加一节“约定（必须遵守，平台会按它们审查）”，每条写名称、什么时候遵守（写方案时、写代码时、写方案和写代码时）和说明 |
 
-- 没绑定项目的运行里（只有 `optional` 的应用会这样）两种引用都是 null，`brief` 和 `release_brief` 是 `""`，节点要自己处理空值。
+- 没绑定项目的运行里（只有 `optional` 的应用会这样）两种引用都是 null，`brief` 和 `release_brief` 是 `""`，`conventions`、`plan_rules`、`code_rules` 是 `[]`（模型审查节点因此没有清单、直接跳过），节点要自己处理空值。
 - 单节点试跑（`POST /apps/{app}/nodes/{node}/test`）的测试值可以给 `param.<key>`、`project.<字段>`，没给的按没绑定项目算。
 - 这些都是人配的项目信息，不算数据值，不受数据外发策略的样本级别影响。
 

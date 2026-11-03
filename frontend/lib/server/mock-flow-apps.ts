@@ -559,6 +559,19 @@ const defaults: FlowNode[] = [
     args: {},
   },
   {
+    id: "llm_review",
+    type: "llm_review",
+    title: "模型审查",
+    model: null,
+    skills: [],
+    subject: "",
+    context: "",
+    instruction: "",
+    rules: [{ key: "rule_1", title: "", instruction: "" }],
+    max_attempts: 2,
+    on_stuck: "pass",
+  },
+  {
     id: "agent",
     type: "agent",
     title: "智能体",
@@ -712,7 +725,9 @@ export function flowView(
               ? node.task
               : node.type === "classifier"
                 ? node.text
-                : null,
+                : node.type === "llm_review"
+                  ? node.subject
+                  : null,
         knowledge: null,
         checks: null,
         retry: null,
@@ -810,6 +825,63 @@ function startInputIssues(
   return issues;
 }
 
+// The save checks of llm_review (docs/api/flow-apps.md, "llm_review 模型审查").
+function reviewIssues(
+  node: Extract<FlowNode, { type: "llm_review" }>,
+  loc: (string | number)[],
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  if (typeof node.subject !== "string" || !node.subject.trim())
+    issues.push({ loc: [...loc, "subject"], msg: "要审查的内容不能为空" });
+  if (
+    !Array.isArray(node.rules) ||
+    node.rules.length < 1 ||
+    node.rules.length > 20
+  )
+    issues.push({ loc: [...loc, "rules"], msg: "审查清单要有 1–20 条" });
+  else {
+    const seen = new Set<string>();
+    node.rules.forEach((rule, i) => {
+      if (typeof rule === "string") {
+        if (!rule.match(REF_PATTERN))
+          issues.push({
+            loc: [...loc, "rules", i],
+            msg: "清单里的文字要引用一组规则，比如 {{project.code_rules}}",
+          });
+        return;
+      }
+      if (!NODE_ID_PATTERN.test(rule.key))
+        issues.push({
+          loc: [...loc, "rules", i, "key"],
+          msg: "标识只能用小写字母开头，小写字母、数字和下划线",
+        });
+      else if (seen.has(rule.key))
+        issues.push({
+          loc: [...loc, "rules", i, "key"],
+          msg: `标识 ${rule.key} 重复`,
+        });
+      seen.add(rule.key);
+      if (!rule.title?.trim())
+        issues.push({
+          loc: [...loc, "rules", i, "title"],
+          msg: "规则名称不能为空",
+        });
+    });
+  }
+  const attempts = node.max_attempts ?? 2;
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 5)
+    issues.push({
+      loc: [...loc, "max_attempts"],
+      msg: "连续几次没改过来 max_attempts 要在 1–5 之间",
+    });
+  if (!["pass", "branch", "fail"].includes(node.on_stuck ?? "pass"))
+    issues.push({
+      loc: [...loc, "on_stuck"],
+      msg: "没改过来之后 on_stuck 只能是 pass、branch 或 fail",
+    });
+  return issues;
+}
+
 export function validateFlow(config: unknown): ValidationIssue[] {
   const root = ["body", "config", "graph"];
   if (
@@ -896,6 +968,7 @@ export function validateFlow(config: unknown): ValidationIssue[] {
         loc: [...loc, "quiet"],
         msg: "quiet 必须是 true 或 false",
       });
+    if (node.type === "llm_review") issues.push(...reviewIssues(node, loc));
     if (
       node.type === "agent" &&
       (node.tools.length > 10 ||
@@ -1209,6 +1282,17 @@ export function simulateNode(
       output.steps.push(step);
     }
     outputs = output;
+  }
+  // The mock reviewer finds nothing (docs/api/flow-apps.md, "llm_review 模型审查").
+  if (node.type === "llm_review") {
+    branch = "ok";
+    outputs = {
+      ok: true,
+      findings: [],
+      problems: "",
+      report: "",
+      summary: `${node.title}：按 ${node.rules.length} 条清单审查，没有发现问题`,
+    };
   }
   if (node.type === "classifier") {
     branch = node.classes[0]?.key ?? "other";

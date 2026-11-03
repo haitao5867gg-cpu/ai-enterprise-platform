@@ -93,6 +93,20 @@ export function scheduledText(
         : `${month}的同一天（没有这一天时取月底）`;
   return `按运行那天推算${when}，写成 ${format.replace(/%./g, (d) => DATE_NAMES[d] ?? d)}`;
 }
+// A rule the project's runs follow: told to the model that writes the plan or the code and
+// reviewed against by review nodes ({{project.plan_rules}}, {{project.code_rules}}).
+export type ConventionStage = "plan" | "code" | "both";
+export type Convention = {
+  key: string;
+  title: string;
+  text: string;
+  applies_to: ConventionStage;
+};
+export const conventionStageLabels: Record<ConventionStage, string> = {
+  plan: "写方案时",
+  code: "写代码时",
+  both: "写方案和写代码时",
+};
 // The project's own setting; null parts follow the platform default.
 export type ProjectPolicy = {
   samples: SampleLevel | null;
@@ -109,6 +123,8 @@ export type ProjectInput = {
   params: Param[];
   // Acceptance checks, written like the data check node's (docs/api/data-nodes.md).
   checks: Record<string, unknown>[];
+  // Projects saved before conventions have none (read as []).
+  conventions?: Convention[];
   policy: ProjectPolicy;
 };
 export type Project = ProjectInput & { created_at: string; updated_at: string };
@@ -154,6 +170,9 @@ export const PROJECT_FIELDS = [
   "can_release",
   "release_ready",
   "release_brief",
+  "conventions",
+  "plan_rules",
+  "code_rules",
 ];
 
 export const paramTypeLabels: Record<ParamType, string> = {
@@ -305,6 +324,7 @@ export function emptyProject(): ProjectInput {
     adopted: [],
     params: [],
     checks: [],
+    conventions: [],
     policy: { samples: null, models: null },
   };
 }
@@ -324,6 +344,7 @@ export function projectInput(project: Project): ProjectInput {
       choices: param.choices ? param.choices.map((choice) => ({ ...choice })) : null,
     })),
     checks: (project.checks ?? []).map((check) => ({ ...check })),
+    conventions: (project.conventions ?? []).map((item) => ({ ...item })),
     policy: {
       samples: project.policy.samples ?? null,
       models: project.policy.models ? [...project.policy.models] : null,

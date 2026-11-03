@@ -2219,9 +2219,10 @@ TYPES: dict[str, NodeType] = {
 }
 
 # The data-engineering types use the helpers above; they register themselves here.
-from aep.runtime.flow import app_node, data_check, data_nodes, git_node  # noqa: E402
+from aep.runtime.flow import app_node, data_check, data_nodes, git_node, review  # noqa: E402
 
 TYPES.update(data_nodes.TYPES)
 TYPES.update(data_check.TYPES)
 TYPES.update(app_node.TYPES)
 TYPES.update(git_node.TYPES)
+TYPES.update(review.TYPES)

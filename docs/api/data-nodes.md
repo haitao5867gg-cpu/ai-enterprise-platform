@@ -660,7 +660,7 @@ dev_run      passed → data_review   | failed → data_review | retry → codeg
 data_review  approve → end          | fix_code → codegen   | fix_plan → plan | stop → stopped
 ```
 
-- 次数上限：`plan_stuck`、`code_stuck` 各 3 次；`review` 5 次（最多改 4 轮方案）；`data_review` 4 次（最多退回 3 次）；`ingest` 6 次（每次确认方案后经过一次）；`dev_run` 一次运行总共最多 9 次（每轮最多 3 次）：前几轮用得多时，后面的轮可能一次都跑不了，运行失败；`plan`、`check_plan`、`codegen`、`check_code` 照旧 10 次（`max_visits` 的上限）。到上限时运行失败，不能重试（见 flow-apps.md 的公共字段）。
+- 次数上限：`plan_stuck`、`code_stuck` 各 3 次；`review` 5 次（最多改 4 轮方案）；`data_review` 4 次（最多退回 3 次）；`ingest` 6 次（每次确认方案后经过一次）；`dev_run` 一次运行总共最多 9 次（每轮最多 3 次）：前几轮用得多时，后面的轮可能一次都跑不了，运行失败；`plan`、`check_plan`、`codegen`、`check_code` 照旧 10 次（当时 `max_visits` 的上限，第 3 版改成 20 次，见“模型审查方案和代码”）。到上限时运行失败，不能重试（见 flow-apps.md 的公共字段）。
 - 循环里的引用（第一次跑时为空）：出方案的提示词读 `{{plan_stuck.feedback}}`、`{{review.feedback}}`、`{{data_review.feedback}}`；写代码的提示词读 `{{code_stuck.feedback}}`、`{{data_review.feedback}}`；`check_plan.answered` 读 `{{review.record}}`（只有最近一次的答案，以前读到的由校验方案节点自己记着）；`review.data` 读 `{{data_review.record}}` 和它自己的 `{{review.record}}`。
 - 意见怎么传：两个人工节点选“确认方案，开始做”或“通过”时 `feedback` 清空，所以旧意见不会被反复发给模型。选“按我的意见修改方案”或“改方案”时，`plan` 带着意见重写方案，回到“确认方案”再确认一次；选“改代码”时 `codegen` 带着意见改代码，重新检查、试算，再回到“审核试算结果”；选“终止”时运行停在 `stopped`，`reason` 是意见。
 - 选“改方案”后再次确认，要的表上次都抽取过时 `ingest` 不再复制数据（见 databricks_ingest）。`dev_run` 每进来一轮都从第 1 次数起。
@@ -1167,6 +1167,40 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 - 运行页：节点详情里上线成功时显示 Job 链接和定时的中文说法；失败时显示原因。
 - mock：`databricks_release` 按设置模拟成功（Job 100，写到 `demo_prod`.retail_mart）；bundle 名里含 `fail` 时模拟失败（没配 prod 目标）。mock 里的演示应用 `retail-etl-v2` 是以前录好的流程，不加这两个节点。
 
+## jadeflow 第 4 轮复测后：模型审查方案和代码
+
+第 4 轮复测里，模型没把资料写明还没定的事写成问题（I-12、S-22），第一次写的代码总漏掉按版本筛选（I-18）。这些规则都写在提示词里，长提示词里的一条规则模型容易忽略。改法落在平台上，模板只是接上：
+
+| 改动 | 层 |
+| --- | --- |
+| 新节点 `llm_review`（模型审查），见 flow-apps.md | 平台：节点类型 |
+| 项目的约定 `conventions`，`{{project.conventions}}`、`{{project.plan_rules}}`、`{{project.code_rules}}`，项目说明 `brief` 里的“约定”一节，见 projects.md | 平台：项目资源 |
+| `max_visits` 的上限从 10 放宽到 20 | 平台：编排规则 |
+| 模板 `etl-lakehouse-project` 接上两个审查节点 | 应用：模板 |
+
+### 模板 `etl-lakehouse-project` 加两个审查节点
+
+第 2 版模板 `etl-lakehouse` 不变。已经从模板建好的应用不变，新建的应用和按模板重新生成配置的应用才有（jadeflow 试点的 T2 应用每次升级都按模板重新生成）。
+
+- `review_plan`（`llm_review`，“审查方案”），在校验方案之后：
+  - `subject: "{{check_plan.plan}}"`；`context` 是需求、`{{project.brief}}`、公司数据口径 `{{glossary.context}}` 和源表 `{{profile.description}}`；
+  - `rules` 是平台定的三条加上项目写方案时的约定 `{{project.plan_rules}}`：
+    - `open_items` 资料写明还没定的事要写成问题：资料里写明还没定、暂不实现、试点不做、要另行确认的事，方案替它做了决定，`questions` 里却没有对应的问题；
+    - `data_rules` 按数据自己加的处理规则要写成问题：依据是 `data`、会删行改值或改口径、资料和需求都没要求、又没写成问题的规则；
+    - `checks_hold` 建议的检查在结果正确时要能通过：资料写明的例外没排除、两边按资料本来就不相等、标题和条件对不上的检查；
+  - `max_attempts: 2`、`on_stuck: "pass"`、`max_visits: 20`，出错重试 1 次；
+  - 连线：`check_plan` `ok` → `review_plan`；`review_plan` `ok` → `review`（确认方案），`retry` → `plan`。
+- `review_code`（`llm_review`，“审查代码”），在检查并打包之后：
+  - `subject: "{{check_code.code}}"`（每张表的代码按表名分段）；`context` 是已确认的方案和 `{{project.brief}}`；
+  - `rules: ["{{project.code_rules}}"]`：只按项目写代码时的约定审查，项目没写约定时跳过，不调模型；
+  - 其余设置同 `review_plan`；连线：`check_code` `ok` → `review_code`；`review_code` `ok` → `dev_run`，`retry` → `codegen`。
+- 出方案的提示词在“平台校验发现的问题”后面加一行“模型审查发现的问题（为空时忽略；要逐条改掉，要写成问题的写进 questions）：{{review_plan.problems}}”；写代码的提示词在“静态检查发现的问题”后面加“模型审查发现的问题（为空时忽略，要逐条改掉）：{{review_code.problems}}”。两处的项目说明标题都加上“约定”。
+- 确认方案：`show` 前面加 `{{review_plan.report}}`（没改过来的问题，平时为空），`data` 加 `review: "{{review_plan.findings}}"`。审核试算结果：`show` 前面加 `{{review_code.report}}`，`data` 加 `code_review: "{{review_code.findings}}"`（共 15 个键）。
+- `plan`、`check_plan`、`codegen`、`check_code` 的 `max_visits` 改成 20：每次审查让模型重写，都要多跑一次出方案（或写代码）和校验。
+- 两个审查节点都在模型调用前后照常受数据外发策略约束（参考资料里的样本按级别外发）。
+
+约定写法的例子（项目配置，不是平台内置）：`{"key": "by_version", "title": "读 table1 的地方都先按 version_id 筛选", "applies_to": "code"}`。约定写的是项目的通用要求，不写某次需求的答案。
+
 ## 测试
 
 - 后端：5 种节点各自的单元测试（假连接器、假 `DevTarget`、`FakeGateway`）；模板 `etl-lakehouse` 用假模型从头跑到 `end`（含一次方案驳回、一次代码检查不过、一次可修的 dev 报错）；循环规则；说明书接口（编排应用和 `etl`）；`read_rows` 分页和权限（三个连接器）；`aep.demo` 用假 API 测幂等。
@@ -1198,6 +1232,10 @@ jadeflow 验收时发现：结果表已经存在、方案多了一列时，集�
 - jadeflow 复测第 3 批（I-19）另加：
   - 人工节点的 `only_for`：保存检查的几种报错；暂停时不问只属于没显示的选项的题；选别的选项时不用答、答了也不记；改了答案照样转成 `changed_branch`。
   - 项目参数的 `scheduled`：保存检查的几种报错；`scheduled_values` 的固定值、规则、每行说明、取不到时的原因、按时区算的“今天”、不符合格式时的提醒；`can_release`、`release_ready`、`release_brief` 在没有 prod、就在 prod、旧快照、没绑定项目时的值。
+- jadeflow 第 4 轮复测第 1 批另加：
+  - `llm_review`：清单由节点的规则和引用展开（重复的标识改名、没绑定项目时没有项目约定）；要审查的内容的排版；没问题走 `ok`、请求里的清单、参考资料和内容；有问题走 `retry`，到 `max_attempts` 时 `pass`（`report` 有值、`problems` 清空、计数归零）、`branch`、`fail`；清单为空时不调模型；回答里的 `rule` 不在清单里时再问一次；保存检查的各种报错。
+  - 项目约定：保存检查（重复的 key）、`brief` 里的“约定”一节、`plan_rules` 和 `code_rules` 按 `applies_to` 分、旧快照和没绑定项目时为 `[]`。
+  - 模板第 3 版：审查节点的位置、设置和连线；审查方案发现问题后模型重写、再审查通过后到确认方案；项目写代码的约定进审查代码的清单。
   - `databricks_release`：Job 的 `params` 和 `param_rules`、报告里的下一次运行和参数表、怎么撤销；取不到参数和旧 bundle 时走 `failed`、不部署。
   - 集群程序：按月推算（月底、跨年、第一天和最后一天）、三种参数类型的写法、不符合格式时报错不写表、拿不到作业运行 ID 时报错；`run_notebook` 读 `param_rules`。
   - 模板第 3 版：上线审批显示上线说明、刷新时间带 `only_for`；项目只有 dev 时审核通过就交付；参数取不到时只有“先不上线，交付”，不填刷新时间就能交付。

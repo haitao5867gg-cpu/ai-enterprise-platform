@@ -1095,7 +1095,7 @@ setMockRunCase((id): MockRunCase | null => {
 });
 
 // The developer view's numbers: a mock step takes no time, so it gets made-up ones.
-const MODEL_TYPES = new Set(["llm", "classifier", "agent"]);
+const MODEL_TYPES = new Set(["llm", "classifier", "agent", "llm_review"]);
 function timed(entry: StoredRun, steps: MockSteps): MockSteps {
   const types = new Map(
     (entry.flow?.config.graph.nodes ?? []).map((node) => [node.id, node.type]),

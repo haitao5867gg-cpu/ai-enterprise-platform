@@ -605,7 +605,7 @@ class RunService:
             return used
         for node in flowgraph.nodes(config):
             title = node.get("title") or node["id"]
-            if node["type"] in ("llm", "classifier", "agent"):
+            if node["type"] in ("llm", "classifier", "agent", "llm_review"):
                 used.append((node.get("model") or fallback, title))
             search = node if node["type"] == "knowledge" else None
             if node["type"] == "agent" and isinstance(node.get("knowledge"), dict):
