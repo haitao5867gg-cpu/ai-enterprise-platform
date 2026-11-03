@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { runTab } from "./run-page";
 
 // The result page of the ETL template's second version (docs/api/data-nodes.md, "结果页"),
 // on runs of the mock app retail-etl-v2 driven through the API.
@@ -93,11 +94,8 @@ test("a delivered run: the answer first, then the plan with its records, the cod
   await expect(card.locator(".answer-note")).toHaveText(
     "合计里的「—」：下单客户数不能把各组直接相加。",
   );
-  // The side says what the run came to, without the result's JSON.
-  await expect(page.locator(".run-sidebar .result-card")).toContainText(
-    "已交付",
-  );
-  await expect(page.locator(".run-sidebar .result-json")).toHaveCount(0);
+  // The answer says what the run came to: no second summary card under it.
+  await expect(page.locator("#run-panel-main .result-card")).toHaveCount(0);
 
   await tabs.getByRole("tab", { name: "方案" }).click();
   await expect(result.locator(".brief-goal")).toHaveText(
@@ -133,7 +131,12 @@ test("a delivered run: the answer first, then the plan with its records, the cod
   await tabs.getByRole("tab", { name: "开发者视图" }).click();
   await expect(result.locator(".result-developer")).toContainText(id);
   await expect(result.locator(".result-json")).toContainText('"dev_url"');
-  await expect(result.getByRole("heading", { name: "工作流程" })).toBeVisible();
+  // How it ran is under 过程, the same as for any run.
+  await expect(result.getByRole("heading", { name: "工作流程" })).toHaveCount(
+    0,
+  );
+  await runTab(page, "过程");
+  await expect(page.getByRole("heading", { name: "工作流程" })).toBeVisible();
 });
 
 test("a stopped run says why, with no answer and no code", async ({

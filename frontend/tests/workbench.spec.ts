@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { runTab } from "./run-page";
 import { mkdir } from "node:fs/promises";
 
 async function capture(page: Page, name: string) {
@@ -62,9 +63,14 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(
     page.getByRole("status").filter({ hasText: "应用已暂停，等待人工确认" }),
   ).toHaveCount(1);
+  // It is under 过程; the page opens on 待处理.
   await expect(
     page.getByText("运行过程 · 2 条消息", { exact: true }),
-  ).toBeVisible();
+  ).toBeAttached();
+  await expect(page.getByRole("tab", { name: "待处理" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   const id = new URL(page.url()).pathname.split("/").at(-1)!;
   const invalidDecision = await request.post(`/api/runs/${id}/resume`, {
     data: { decision: ["approve"], comment: "" },
@@ -80,6 +86,7 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(
     page.locator("details.conversation-history"),
   ).not.toHaveAttribute("open");
+  await runTab(page, "过程");
   await page.getByText(/^运行过程 · \d+ 条消息$/).click();
   await expect(
     page.getByRole("list", { name: "消息记录" }).getByRole("listitem"),
@@ -111,6 +118,8 @@ test("new run → approval → done, then reject with a comment", async ({
   });
   // Waiting again with the new draft shown above, 运行过程 is folded.
   const summary = page.getByText("运行过程 · 4 条消息", { exact: true });
+  await expect(summary).toBeAttached();
+  await runTab(page, "过程");
   await expect(summary).toBeVisible();
   await expect(
     page.locator("details.conversation-history"),
@@ -125,6 +134,7 @@ test("new run → approval → done, then reject with a comment", async ({
   await expect(rejected).toContainText(
     "选了「驳回」，意见：请先补充空值与重复数据的处理规则。",
   );
+  await runTab(page, "待处理");
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
   ).toBeVisible();
@@ -487,6 +497,7 @@ test("a waiting run is cancelled after a confirmation, then copied and sent agai
   await expect(page.getByRole("heading", { level: 1 })).toContainText(
     "统计上个月各品类的退货率",
   );
+  await runTab(page, "详情");
   await page.getByRole("link", { name: "查看原运行" }).click();
   await expect(page).toHaveURL(`/runs/${id}`);
   await expect(page.locator(".failure-card")).toContainText("已取消");
@@ -694,6 +705,7 @@ test("conversation renders replies as Markdown, keeps typed text as is and folds
     }),
   );
   await page.goto("/runs/chat-run");
+  await runTab(page, "过程");
   const chat = page.getByRole("list", { name: "消息记录" });
   await expect(chat.locator(":scope > li")).toHaveCount(4);
   await expect(chat.getByText("按月统计 **销售额**")).toBeVisible();
@@ -794,6 +806,7 @@ test("运行过程标明步骤和说话人，有结果后默认收起", async ({
   await expect(result.locator(".citation-marker")).toHaveText("[1]");
   const history = page.locator("details.conversation-history");
   await expect(history).not.toHaveAttribute("open");
+  await runTab(page, "过程");
   await page.getByText("运行过程 · 5 条消息", { exact: true }).click();
   await expect(history).toHaveAttribute("open", "");
   const chat = page.getByRole("list", { name: "消息记录" });
@@ -812,12 +825,14 @@ test("运行过程标明步骤和说话人，有结果后默认收起", async ({
     "2026-10-29T08:00:01.123456+00:00",
   );
   await expect(chat).toContainText("选了「驳回」，意见：先做全量");
+  await runTab(page, "结果");
   const developer = result.locator(".developer-view");
   await expect(developer).not.toHaveAttribute("open");
   await expect(developer.locator(".result-json")).toContainText('"answer"');
   await expect(
     result.getByText("另有 1 条检索到但未引用", { exact: true }),
   ).toBeVisible();
+  await runTab(page, "过程");
   await page.getByText("运行过程 · 5 条消息", { exact: true }).click();
   await expect(history).not.toHaveAttribute("open");
 });
@@ -965,7 +980,12 @@ test("what a person is asked to check reads as Markdown, and its tags open the s
   // The content is shown above, so how the run went starts folded.
   const history = page.locator("details.conversation-history");
   await expect(history).not.toHaveAttribute("open");
+  // The source is under 过程: the tag opens that tab and the source in it.
   await shown.getByRole("link", { name: "引用来源 2", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "过程" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(history).toHaveAttribute("open", "");
   await expect(page.locator("details.uncited-sources")).toHaveAttribute(
     "open",
@@ -978,6 +998,7 @@ test("what a person is asked to check reads as Markdown, and its tags open the s
   await page.getByText(/^运行过程 · \d+ 条消息$/).click();
   await expect(history).not.toHaveAttribute("open");
   // On a phone the decision comes after the page; a link leads there.
+  await runTab(page, "待处理");
   await page.setViewportSize({ width: 390, height: 840 });
   await shown.getByRole("link", { name: "去确认" }).click();
   await expect(page).toHaveURL(/#approval$/);

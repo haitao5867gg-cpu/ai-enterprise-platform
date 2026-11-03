@@ -1,10 +1,12 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import { useState, type ReactNode } from "react";
 import { answerCsv, shown, type Answer } from "../lib/etl-v2";
 import { Icon } from "./icons";
 
 export function CopyButton({ text, label }: { text: string; label: string }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -17,7 +19,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
         });
       }}
     >
-      {copied ? "已复制" : label}
+      {copied ? t("已复制") : label}
     </button>
   );
 }
@@ -27,11 +29,12 @@ const WIDTH = 640;
 // line through the points. The table under it is the full view; each mark names its
 // value on hover.
 function AnswerChart({ answer }: { answer: Answer }) {
+  const t = useT();
   const { chart } = answer;
   const measure = answer.columns.find((column) => column.name === chart.value);
   if (chart.type === "none" || !measure || !answer.rows.length) return null;
   const named = (names: string[]) => (row: Record<string, unknown>) =>
-    names.map((name) => shown(row[name])).join(" · ") || "合计";
+    names.map((name) => shown(row[name])).join(" · ") || t("合计");
   // Each mark names its own group: when the design's label columns leave two groups
   // alike (the city without the member level), every dimension is named.
   let label = named(chart.label);
@@ -55,7 +58,9 @@ function AnswerChart({ answer }: { answer: Answer }) {
   const low = Math.min(0, ...values);
   const high = Math.max(0, ...values);
   const span = high - low || 1;
-  const title = `${measure.label}，按${chart.label.length ? "各组" : "合计"}`;
+  const title = chart.label.length
+    ? t("{measure}，按各组", { measure: measure.label })
+    : t("{measure}，按合计", { measure: measure.label });
   if (chart.type === "line") {
     const height = 220;
     const left = 16;
@@ -79,7 +84,7 @@ function AnswerChart({ answer }: { answer: Answer }) {
         <svg
           viewBox={`0 0 ${WIDTH} ${height}`}
           role="img"
-          aria-label={`折线图：${title}`}
+          aria-label={t("折线图：{title}", { title })}
         >
           <line
             className="chart-axis"
@@ -98,7 +103,12 @@ function AnswerChart({ answer }: { answer: Answer }) {
                 cy={y(point.value)}
                 r={4}
               >
-                <title>{`${point.label}：${shown(point.value, measure.format)}`}</title>
+                <title>
+                  {t("{label}：{value}", {
+                    label: point.label,
+                    value: shown(point.value, measure.format),
+                  })}
+                </title>
               </circle>
             ),
           )}
@@ -132,7 +142,7 @@ function AnswerChart({ answer }: { answer: Answer }) {
       <svg
         viewBox={`0 0 ${WIDTH} ${height}`}
         role="img"
-        aria-label={`柱状图：${title}`}
+        aria-label={t("柱状图：{title}", { title })}
       >
         {points.map((point, i) => {
           const middle = i * row + row / 2 + 4;
@@ -159,7 +169,12 @@ function AnswerChart({ answer }: { answer: Answer }) {
                   height={16}
                   rx={4}
                 >
-                  <title>{`${point.label}：${shown(point.value, measure.format)}`}</title>
+                  <title>
+                    {t("{label}：{value}", {
+                      label: point.label,
+                      value: shown(point.value, measure.format),
+                    })}
+                  </title>
                 </rect>
               )}
               {(point.value === best || point.value === null) && (
@@ -189,21 +204,26 @@ export function AnswerCard({
   heading?: ReactNode;
   file: string;
 }) {
+  const t = useT();
   const dimensions = answer.columns.filter(
     (column) => column.role === "dimension",
   );
-  const totalLabel = answer.period ? `${answer.period} 合计` : "合计";
+  const totalLabel = answer.period
+    ? t("{period} 合计", { period: answer.period })
+    : t("合计");
   // The measures the total cannot add up, said once under the table.
   const unsummed = answer.columns.filter(
     (column) => column.role === "metric" && column.agg === "none",
   );
   return (
-    <section className="answer-card" aria-label="答案">
+    <section className="answer-card" aria-label={t("答案")}>
       {heading && <p className="answer-heading">{heading}</p>}
       {answer.status === "error" ? (
         <p className="answer-error" role="alert">
           <Icon name="alert" size={16} />
-          答案没算出来：{answer.error || "没有说明原因"}
+          {t("答案没算出来：{error}", {
+            error: answer.error || t("没有说明原因"),
+          })}
         </p>
       ) : (
         <>
@@ -212,7 +232,7 @@ export function AnswerCard({
             <div className="table-scroll">
               <table
                 className="mapping-table answer-table"
-                aria-label="答案表格"
+                aria-label={t("答案表格")}
               >
                 <thead>
                   <tr>
@@ -277,21 +297,26 @@ export function AnswerCard({
             dimensions.length > 0 &&
             unsummed.length > 0 && (
               <p className="muted answer-note">
-                合计里的「—」：
-                {unsummed.map((column) => column.label).join("、")}
-                不能把各组直接相加。
+                {t("合计里的「—」：{columns}不能把各组直接相加。", {
+                  columns: unsummed.map((column) => column.label).join(t("、")),
+                })}
               </p>
             )}
           {answer.truncated && answer.groups !== null && (
             <p className="muted">
-              共 {answer.groups} 组，显示前 {answer.rows.length}
+              {t("共 {groups} 组，显示前 {rows}", {
+                groups: answer.groups,
+                rows: answer.rows.length,
+              })}
             </p>
           )}
           <AnswerChart answer={answer} />
         </>
       )}
       {answer.quality && (
-        <p className="answer-quality">质量：{answer.quality.text}</p>
+        <p className="answer-quality">
+          {t("质量：{text}", { text: answer.quality.text })}
+        </p>
       )}
       <div className="answer-actions">
         {answer.status === "ok" && answer.rows.length > 0 && (
@@ -311,18 +336,19 @@ export function AnswerCard({
             }}
           >
             <Icon name="download" size={15} />
-            下载 CSV
+
+            {t("下载 CSV")}
           </button>
         )}
       </div>
       <details className="answer-details">
-        <summary>技术细节</summary>
+        <summary>{t("技术细节")}</summary>
         <dl className="plan-facts">
           <div>
-            <dt>表的位置</dt>
+            <dt>{t("表的位置")}</dt>
             <dd>
               <code>{answer.target}</code>
-              <CopyButton text={answer.target} label="复制" />
+              <CopyButton text={answer.target} label={t("复制")} />
             </dd>
           </div>
           {answer.url && (
@@ -330,18 +356,20 @@ export function AnswerCard({
               <dt>Databricks</dt>
               <dd>
                 <a href={answer.url} target="_blank" rel="noopener noreferrer">
-                  在 Databricks 中查看这次试算
+                  {t("在 Databricks 中查看这次试算")}
                 </a>
               </dd>
             </div>
           )}
           {answer.sql && (
             <div>
-              <dt>查询</dt>
+              <dt>{t("查询")}</dt>
               <dd>
-                <p className="muted">等价的查询，只展示，平台不会执行它。</p>
+                <p className="muted">
+                  {t("等价的查询，只展示，平台不会执行它。")}
+                </p>
                 <pre className="answer-sql">{answer.sql}</pre>
-                <CopyButton text={answer.sql} label="复制查询" />
+                <CopyButton text={answer.sql} label={t("复制查询")} />
               </dd>
             </div>
           )}

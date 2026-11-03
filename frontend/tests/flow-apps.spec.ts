@@ -4,6 +4,7 @@ import {
   type APIRequestContext,
   type Page,
 } from "@playwright/test";
+import { runTab } from "./run-page";
 import type { AppDetail, FlowConfig } from "../lib/apps";
 
 const id = (prefix: string) =>
@@ -165,6 +166,7 @@ test("form human node requires order ID, maps server validation to its field, su
   await expect(page.locator(".result-json")).toContainText(
     '"order_id": "A2002"',
   );
+  await runTab(page, "过程");
   await page.getByText(/^运行过程 · \d+ 条消息$/).click();
   const answered = page
     .getByRole("list", { name: "消息记录" })

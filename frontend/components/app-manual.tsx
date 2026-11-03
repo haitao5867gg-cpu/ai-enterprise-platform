@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { getManual, type AppManual, type ManualNode } from "../lib/app-manual";
@@ -38,10 +39,11 @@ export function useManual(path: string, revision = "") {
 }
 
 export function UsesTags({ uses, limit }: { uses: string[]; limit?: number }) {
+  const t = useT();
   if (!uses.length) return null;
   const visible = limit === undefined ? uses : uses.slice(0, limit);
   return (
-    <span className="uses-tags" aria-label="使用的资源">
+    <span className="uses-tags" aria-label={t("使用的资源")}>
       {visible.map((use, i) => (
         <span className="uses-tag" key={`${use}-${i}`} title={use}>
           {use}
@@ -60,9 +62,12 @@ export function UsesTags({ uses, limit }: { uses: string[]; limit?: number }) {
 }
 
 function UsedBy({ nodes }: { nodes: ManualNode[] }) {
+  const t = useT();
   return nodes.length ? (
     <p className="muted manual-used-by">
-      用于：{nodes.map((node) => node.title).join("、")}
+      {t("用于：{nodes}", {
+        nodes: nodes.map((node) => node.title).join(t("、")),
+      })}
     </p>
   ) : null;
 }
@@ -79,47 +84,51 @@ export function AppManualPanel({
   resource,
   defaultOpen = true,
   controls,
-  versionLabel = "生效版本",
+  versionLabel,
 }: {
   resource: ReturnType<typeof useManual>;
   defaultOpen?: boolean;
   controls?: ReactNode;
   versionLabel?: string;
 }) {
+  const t = useT();
   const { manual, error, reload } = resource;
   return (
     <details
       className="panel app-manual"
       open={defaultOpen}
-      aria-label="应用说明书"
+      aria-label={t("应用说明书")}
     >
       <summary>
-        <strong>应用说明书</strong>
-        <span className="muted">了解流程与使用的资源</span>
+        <strong>{t("应用说明书")}</strong>
+        <span className="muted">{t("了解流程与使用的资源")}</span>
       </summary>
       <div className="manual-content">
         {controls}
         {error ? (
           <p className="muted">
-            暂时无法加载应用说明书：{error}{" "}
+            {t("暂时无法加载应用说明书：{error}", { error })}{" "}
             <button type="button" className="text-button" onClick={reload}>
-              重新加载说明书
+              {t("重新加载说明书")}
             </button>
           </p>
         ) : !manual ? (
           <p role="status" className="muted">
-            正在加载应用说明书…
+            {t("正在加载应用说明书…")}
           </p>
         ) : (
           <>
             <p className="manual-summary">{manual.summary}</p>
             <span className="app-tag">
               {manual.version === null
-                ? "草稿"
-                : `${versionLabel} v${manual.version}`}
+                ? t("草稿")
+                : t("{label} v{version}", {
+                    label: versionLabel ?? t("生效版本"),
+                    version: manual.version,
+                  })}
             </span>
             {manual.steps.length > 0 && (
-              <Group title="节点讲解">
+              <Group title={t("节点讲解")}>
                 <ol className="manual-steps">
                   {manual.steps.map((step) => (
                     <li key={step.id}>
@@ -149,19 +158,21 @@ export function AppManualPanel({
               </Group>
             )}
             {manual.knowledge_bases.length > 0 && (
-              <Group title="知识库">
+              <Group title={t("知识库")}>
                 <ul className="manual-resources">
                   {manual.knowledge_bases.map((kb) => (
                     <li key={kb.kb_id}>
                       <Link href={`/knowledge/${encodeURIComponent(kb.kb_id)}`}>
                         {kb.name}
                       </Link>{" "}
-                      <span className="muted">{kb.document_count} 篇文档</span>
+                      <span className="muted">
+                        {t("{count} 篇文档", { count: kb.document_count })}
+                      </span>
                       <p>{kb.description}</p>
                       <UsedBy nodes={kb.nodes} />
                       {kb.documents.length > 0 && (
                         <details className="manual-documents">
-                          <summary>文档文件名列表</summary>
+                          <summary>{t("文档文件名列表")}</summary>
                           <ul>
                             {kb.documents.map((doc) => (
                               <li key={doc.document_id}>{doc.filename}</li>
@@ -175,7 +186,7 @@ export function AppManualPanel({
               </Group>
             )}
             {manual.datasources.length > 0 && (
-              <Group title="数据源">
+              <Group title={t("数据源")}>
                 <ul className="manual-resources">
                   {manual.datasources.map((source, i) => (
                     <li key={source.datasource_id ?? i}>
@@ -192,7 +203,7 @@ export function AppManualPanel({
               </Group>
             )}
             {manual.models.length > 0 && (
-              <Group title="模型">
+              <Group title={t("模型")}>
                 <ul className="manual-resources">
                   {manual.models.map((model) => (
                     <li key={model.alias}>
@@ -204,7 +215,7 @@ export function AppManualPanel({
               </Group>
             )}
             {manual.systems.length > 0 && (
-              <Group title="外部系统">
+              <Group title={t("外部系统")}>
                 <ul className="manual-resources">
                   {manual.systems.map((system) => (
                     <li key={system.key}>
@@ -217,7 +228,7 @@ export function AppManualPanel({
               </Group>
             )}
             {manual.human.length > 0 && (
-              <Group title="人工确认点">
+              <Group title={t("人工确认点")}>
                 <ul className="manual-resources">
                   {manual.human.map((human) => (
                     <li key={human.id}>
@@ -236,12 +247,13 @@ export function AppManualPanel({
 }
 
 export function RunManual({ runId }: { runId: string }) {
+  const t = useT();
   const resource = useManual(`/runs/${encodeURIComponent(runId)}/manual`);
   return (
     <AppManualPanel
       resource={resource}
       defaultOpen={false}
-      versionLabel="运行版本"
+      versionLabel={t("运行版本")}
     />
   );
 }

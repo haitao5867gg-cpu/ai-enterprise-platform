@@ -1,5 +1,6 @@
 "use client";
 
+import { useT, type Translate } from "../lib/i18n/client";
 import { CitedText, SourceList } from "./citations";
 import { NoteButton } from "./review-notes";
 import { formatTime } from "../lib/runs";
@@ -32,7 +33,8 @@ const UNCITED = "没找到口径文档，按需求理解";
 export const uncite = (text: string) => text.replace(/\s*\[\d+\]/g, "");
 
 function Uncited({ shown }: { shown: boolean }) {
-  return shown ? <span className="uncited-tag">{UNCITED}</span> : null;
+  const t = useT();
+  return shown ? <span className="uncited-tag">{t(UNCITED)}</span> : null;
 }
 
 // 我们理解你要的是: the business brief, in the words of the business. `notes` lets a
@@ -46,28 +48,29 @@ export function BriefView({
   uncited: string[];
   notes?: boolean;
 }) {
+  const t = useT();
   const missing = new Set(uncited);
   return (
     <section className="etl-brief" aria-labelledby="brief-title">
-      <h3 id="brief-title">我们理解你要的是</h3>
+      <h3 id="brief-title">{t("我们理解你要的是")}</h3>
       <p className="brief-goal">
         <CitedText>{brief.goal}</CitedText>
       </p>
       {brief.grain && (
         <p className="brief-grain">
-          <span>粒度</span>
+          <span>{t("粒度")}</span>
           <CitedText>{brief.grain}</CitedText>
         </p>
       )}
-      <h4>指标</h4>
+      <h4>{t("指标")}</h4>
       {brief.metrics.length ? (
         <div className="table-scroll">
-          <table className="mapping-table brief-table" aria-label="指标">
+          <table className="mapping-table brief-table" aria-label={t("指标")}>
             <thead>
               <tr>
-                <th scope="col">名称</th>
-                <th scope="col">单位</th>
-                <th scope="col">怎么算</th>
+                <th scope="col">{t("名称")}</th>
+                <th scope="col">{t("单位")}</th>
+                <th scope="col">{t("怎么算")}</th>
               </tr>
             </thead>
             <tbody>
@@ -81,7 +84,9 @@ export function BriefView({
                     <Uncited shown={missing.has(metric.id)} />
                     {metricColumns(metric) && (
                       <span className="muted metric-columns">
-                        结果列 {metricColumns(metric)}
+                        {t("结果列 {columns}", {
+                          columns: metricColumns(metric),
+                        })}
                       </span>
                     )}
                   </td>
@@ -101,11 +106,11 @@ export function BriefView({
           </table>
         </div>
       ) : (
-        <p className="muted">方案里没有指标。</p>
+        <p className="muted">{t("方案里没有指标。")}</p>
       )}
       {brief.dimensions.length > 0 && (
         <>
-          <h4>维度</h4>
+          <h4>{t("维度")}</h4>
           <ul className="brief-list">
             {brief.dimensions.map((dimension) => (
               <li
@@ -119,7 +124,9 @@ export function BriefView({
                 </span>
                 {dimension.examples.length > 0 && (
                   <span className="muted">
-                    例如：{dimension.examples.join("、")}
+                    {t("例如：{examples}", {
+                      examples: dimension.examples.join(t("、")),
+                    })}
                   </span>
                 )}
                 {notes && (
@@ -133,7 +140,7 @@ export function BriefView({
           </ul>
         </>
       )}
-      <h4>筛选</h4>
+      <h4>{t("筛选")}</h4>
       {brief.filters.length ? (
         <ul className="brief-list">
           {brief.filters.map((filter) => (
@@ -155,14 +162,14 @@ export function BriefView({
           ))}
         </ul>
       ) : (
-        <p className="muted">不筛选，用全部数据。</p>
+        <p className="muted">{t("不筛选，用全部数据。")}</p>
       )}
-      <h4>时间范围</h4>
+      <h4>{t("时间范围")}</h4>
       <p>
         {brief.time_range ? (
           <CitedText>{brief.time_range.text}</CitedText>
         ) : (
-          <span className="muted">需求没限定时间范围。</span>
+          <span className="muted">{t("需求没限定时间范围。")}</span>
         )}
       </p>
     </section>
@@ -178,16 +185,17 @@ export function AnswerShape({
   design: AnswerDesign;
   brief: Brief;
 }) {
+  const t = useT();
   const examples = (column: string) =>
     brief.dimensions.find((dimension) => dimension.column === column)
       ?.examples ?? [];
   return (
     <section className="etl-answer-shape" aria-labelledby="answer-shape-title">
-      <h3 id="answer-shape-title">最后给你的答案</h3>
+      <h3 id="answer-shape-title">{t("最后给你的答案")}</h3>
       <p>{design.text}</p>
-      <h4>结果表长这样</h4>
+      <h4>{t("结果表长这样")}</h4>
       <div className="table-scroll">
-        <table className="mapping-table" aria-label="结果表长这样">
+        <table className="mapping-table" aria-label={t("结果表长这样")}>
           <thead>
             <tr>
               {design.columns.map((column) => (
@@ -204,7 +212,7 @@ export function AnswerShape({
                   {column.role === "dimension" ? (
                     examples(column.name).join("、") || "—"
                   ) : (
-                    <span className="muted">运行后得出</span>
+                    <span className="muted">{t("运行后得出")}</span>
                   )}
                 </td>
               ))}
@@ -221,21 +229,23 @@ export function AnswerShape({
 // `ruleNotes` say what a person may hang a remark on here.
 // How a target table is written: versions 1 and 2 say 全量 or 增量, version 3 one of
 // its four ways (docs/api/data-nodes.md, 写表方式).
-function loadLabel(target: PlanTarget): string {
+function loadLabel(t: Translate, target: PlanTarget): string {
   const load = target.load;
   switch (load.mode) {
     case "incremental":
-      return `增量加载 · ${load.key ?? "未设增量键"}`;
+      return t("增量加载 · {key}", { key: load.key ?? t("未设增量键") });
     case "overwrite":
-      return "整表覆盖";
+      return t("整表覆盖");
     case "replace_where":
-      return `按条件替换 · ${load.where ?? ""}`;
+      return t("按条件替换 · {where}", { where: load.where ?? "" });
     case "append":
-      return "追加";
+      return t("追加");
     case "merge":
-      return `按键合并 · ${(load.keys.length ? load.keys : target.primary_key).join("、")}`;
+      return t("按键合并 · {keys}", {
+        keys: (load.keys.length ? load.keys : target.primary_key).join(t("、")),
+      });
     default:
-      return "全量加载";
+      return t("全量加载");
   }
 }
 
@@ -252,30 +262,31 @@ export function TechPlanView({
   ruleNotes?: boolean;
   checkNotes?: boolean;
 }) {
+  const t = useT();
   // A model's error-level check blocks delivery when it fails (jadeflow retest I-10).
   const blocking = plan.checks.filter(
     (check) => check.severity === "error",
   ).length;
   return (
     <section className="etl-tech-plan" aria-labelledby="tech-plan-title">
-      <h3 id="tech-plan-title">技术方案</h3>
+      <h3 id="tech-plan-title">{t("技术方案")}</h3>
       {plan.summary && (
         <p className="target-description">
           <CitedText>{plan.summary}</CitedText>
         </p>
       )}
       <div className="plan-targets">
-        {plan.targets.map((target) => (
+        {plan.targets.map((target, i) => (
           <article
             key={target.name}
             className="plan-target"
-            aria-label={`目标表 ${target.name}`}
+            aria-label={t("目标表 {name}", { name: target.name })}
           >
             <div className="target-heading">
               <h4>
                 <code>{target.name}</code>
               </h4>
-              <span className="load-badge">{loadLabel(target)}</span>
+              <span className="load-badge">{loadLabel(t, target)}</span>
             </div>
             {target.description && (
               <p className="target-description">
@@ -285,7 +296,7 @@ export function TechPlanView({
             <dl className="plan-facts">
               {target.sources.length > 0 && (
                 <div>
-                  <dt>来源</dt>
+                  <dt>{t("来源")}</dt>
                   <dd className="source-tags">
                     {target.sources.map((source) => (
                       <code key={source}>{source}</code>
@@ -295,27 +306,28 @@ export function TechPlanView({
               )}
               {target.logic && (
                 <div>
-                  <dt>做法</dt>
+                  <dt>{t("做法")}</dt>
                   <dd>
                     <CitedText>{target.logic}</CitedText>
                   </dd>
                 </div>
               )}
               <div>
-                <dt>主键</dt>
+                <dt>{t("主键")}</dt>
                 <dd>
-                  <code>{target.primary_key.join(", ") || "未设置"}</code>
+                  <code>{target.primary_key.join(", ") || t("未设置")}</code>
                 </dd>
               </div>
               {target.load.add_columns.length > 0 && (
                 <div>
-                  <dt>加列</dt>
+                  <dt>{t("加列")}</dt>
                   <dd>
-                    表已经存在，确认方案后在表里加{" "}
-                    {target.load.add_columns.length} 列：
+                    {t("表已经存在，确认方案后在表里加 {n} 列：", {
+                      n: target.load.add_columns.length,
+                    })}
                     {target.load.add_columns.map((column, i) => (
                       <span key={column.name}>
-                        {i > 0 && "；"}
+                        {i > 0 && t("；")}
                         <code>{column.name}</code>
                         {column.type && (
                           <>
@@ -323,13 +335,14 @@ export function TechPlanView({
                             <code>{column.type.toUpperCase()}</code>
                           </>
                         )}
-                        ，可为空
+                        {t("，可为空")}
                         {column.after ? (
                           <>
-                            （放在 <code>{column.after}</code> 后面）
+                            {t("（放在")} <code>{column.after}</code>{" "}
+                            {t("后面）")}
                           </>
                         ) : (
-                          "（放在最前面）"
+                          t("（放在最前面）")
                         )}
                       </span>
                     ))}
@@ -337,91 +350,119 @@ export function TechPlanView({
                 </div>
               )}
             </dl>
-            <div className="table-scroll">
-              <table
-                className="mapping-table"
-                aria-label={`${target.name} 的列`}
-              >
-                <thead>
-                  <tr>
-                    <th scope="col">中文名</th>
-                    <th scope="col">列名</th>
-                    <th scope="col">Spark 表达式</th>
-                    <th scope="col">说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {target.columns.map((column) => (
-                    <tr key={column.name}>
-                      <td>{column.label || "—"}</td>
-                      <td className="column-name">
-                        <code>{column.name}</code>
-                        {column.type && (
-                          <span className="column-type">
-                            {column.type.toUpperCase()}
-                          </span>
-                        )}
-                        {target.load.add_columns.some(
-                          (added) => added.name === column.name,
-                        ) && <span className="column-added">新加</span>}
-                      </td>
-                      <td>
-                        <code>{column.source}</code>
-                      </td>
-                      <td>
-                        <CitedText>{column.description || "—"}</CitedText>
-                        {columnNotes && (
-                          <NoteButton
-                            item={`column:${target.name}.${column.name}`}
-                            label={column.label || column.name}
-                          />
-                        )}
-                      </td>
+            {/* With several tables the steps on the way fold their columns and rules,
+                so the tables can be scanned first. The last table (the one the run
+                ends with) and a table that gains columns stay open. */}
+            <details
+              className="plan-target-more"
+              open={
+                i === plan.targets.length - 1 ||
+                target.load.add_columns.length > 0
+              }
+            >
+              <summary>
+                {t("列和质量规则")}
+                <span className="muted">
+                  {" "}
+                  ·{" "}
+                  {t("{columns} 列，{rules} 条规则", {
+                    columns: target.columns.length,
+                    rules: target.quality_rules.length,
+                  })}
+                </span>
+              </summary>
+              <div className="table-scroll">
+                <table
+                  className="mapping-table"
+                  aria-label={t("{name} 的列", { name: target.name })}
+                >
+                  <thead>
+                    <tr>
+                      <th scope="col">{t("中文名")}</th>
+                      <th scope="col">{t("列名")}</th>
+                      <th scope="col">{t("Spark 表达式")}</th>
+                      <th scope="col">{t("说明")}</th>
                     </tr>
+                  </thead>
+                  <tbody>
+                    {target.columns.map((column) => (
+                      <tr key={column.name}>
+                        <td>{column.label || "—"}</td>
+                        <td className="column-name">
+                          <code>{column.name}</code>
+                          {column.type && (
+                            <span className="column-type">
+                              {column.type.toUpperCase()}
+                            </span>
+                          )}
+                          {target.load.add_columns.some(
+                            (added) => added.name === column.name,
+                          ) && (
+                            <span className="column-added">{t("新加")}</span>
+                          )}
+                        </td>
+                        <td>
+                          <code>{column.source}</code>
+                        </td>
+                        <td>
+                          <CitedText>{column.description || "—"}</CitedText>
+                          {columnNotes && (
+                            <NoteButton
+                              item={`column:${target.name}.${column.name}`}
+                              label={column.label || column.name}
+                            />
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <h5>{t("质量规则")}</h5>
+              {target.quality_rules.length ? (
+                <ul className="quality-rules">
+                  {target.quality_rules.map((rule) => (
+                    <li key={rule.name}>
+                      <div>
+                        <code>{rule.name}</code>
+                        <span>
+                          {t("不满足时：{action}", {
+                            action: t(
+                              violationLabels[rule.on_violation] ??
+                                rule.on_violation,
+                            ),
+                          })}
+                        </span>
+                      </div>
+                      <code className="rule-condition">{rule.condition}</code>
+                      {qualityNotes && (
+                        <NoteButton
+                          item={`quality:${target.name}.${rule.name}`}
+                          label={rule.name}
+                        />
+                      )}
+                    </li>
                   ))}
-                </tbody>
-              </table>
-            </div>
-            <h5>质量规则</h5>
-            {target.quality_rules.length ? (
-              <ul className="quality-rules">
-                {target.quality_rules.map((rule) => (
-                  <li key={rule.name}>
-                    <div>
-                      <code>{rule.name}</code>
-                      <span>
-                        不满足时：
-                        {violationLabels[rule.on_violation] ??
-                          rule.on_violation}
-                      </span>
-                    </div>
-                    <code className="rule-condition">{rule.condition}</code>
-                    {qualityNotes && (
-                      <NoteButton
-                        item={`quality:${target.name}.${rule.name}`}
-                        label={rule.name}
-                      />
-                    )}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="muted">没有质量规则。</p>
-            )}
+                </ul>
+              ) : (
+                <p className="muted">{t("没有质量规则。")}</p>
+              )}
+            </details>
           </article>
         ))}
       </div>
       {plan.checks.length > 0 && (
-        <section className="plan-checks" aria-label="建议的数据检查">
-          <h4>数据检查</h4>
+        <section className="plan-checks" aria-label={t("建议的数据检查")}>
+          <h4>{t("数据检查")}</h4>
           <p className="muted">
-            开发环境试算之后检查；填了老系统结果表时另加一条逐行对比。
+            {t("开发环境试算之后检查；填了老系统结果表时另加一条逐行对比。")}
           </p>
           {blocking > 0 && (
             <p className="check-blocking-note" role="note">
-              其中 {blocking}{" "}
-              条是错误级，会挡住交付：不通过就不能选“通过”。这些检查是模型建议的，
-              请核对条件和方向写得对；拿不准的写意见改成警告。
+              {t(
+                "其中 {n} 条是错误级，会挡住交付：不通过就不能选“通过”。这些检查是模型建议的，请核对条件和方向写得对；拿不准的写意见改成警告。",
+                { n: blocking },
+              )}
             </p>
           )}
           <ul className="quality-rules">
@@ -435,10 +476,10 @@ export function TechPlanView({
                 <div>
                   <strong>{check.label}</strong>
                   <span>
-                    {checkKinds[check.kind] ?? check.kind}
+                    {t(checkKinds[check.kind] ?? check.kind)}
                     {check.severity === "error"
-                      ? " · 错误：会挡住交付"
-                      : ` · ${checkSeverities[check.severity] ?? check.severity}`}
+                      ? t(" · 错误：会挡住交付")
+                      : ` · ${t(checkSeverities[check.severity] ?? check.severity)}`}
                   </span>
                 </div>
                 <p className="check-text">{check.text}</p>
@@ -452,7 +493,9 @@ export function TechPlanView({
       )}
       {plan.rules.length > 0 && (
         <details className="plan-rules">
-          <summary>已按口径处理（{plan.rules.length} 条）</summary>
+          <summary>
+            {t("已按口径处理（{n} 条）", { n: plan.rules.length })}
+          </summary>
           {basisLabels.map(([basis, label]) => {
             const rules = plan.rules.filter(
               (rule) =>
@@ -462,7 +505,7 @@ export function TechPlanView({
             );
             return rules.length ? (
               <div key={basis}>
-                <h5>{label}</h5>
+                <h5>{t(label)}</h5>
                 <ul className="brief-list">
                   {rules.map((rule) => (
                     <li key={rule.id}>
@@ -483,7 +526,7 @@ export function TechPlanView({
           })}
         </details>
       )}
-      <SourceList title="依据的资料" />
+      <SourceList title={t("依据的资料")} />
     </section>
   );
 }
@@ -497,15 +540,19 @@ export function RecordView({
   record: ReviewRecord;
   title: string;
 }) {
+  const t = useT();
   return (
     <section className="etl-record" aria-label={title}>
       <h3>{title}</h3>
       <p>
-        {record.actor ?? "未署名"}
-        {record.at ? ` · ${formatTime(record.at)}` : ""} · 第 {record.round} 轮
-        · 选了「{record.decision_label}」
+        {record.actor ?? t("未署名")}
+        {record.at ? ` · ${formatTime(record.at)}` : ""} ·{" "}
+        {t("第 {round} 轮 · 选了「{decision}」", {
+          round: record.round,
+          decision: record.decision_label,
+        })}
         {record.submitted && record.submitted !== record.decision
-          ? "（点的是另一个选项，因为改了答案或写了意见）"
+          ? t("（点的是另一个选项，因为改了答案或写了意见）")
           : ""}
       </p>
       {record.answers.length > 0 && (
@@ -515,11 +562,13 @@ export function RecordView({
               <span>{answer.label}</span>
               <strong>{answer.value_label}</strong>
               {answer.picked_suggested === true && (
-                <span className="suggested-tag">选了建议</span>
+                <span className="suggested-tag">{t("选了建议")}</span>
               )}
               {answer.picked_suggested === false && (
                 <span className="changed-tag">
-                  改选（建议是「{answer.suggested_label}」）
+                  {t("改选（建议是「{label}」）", {
+                    label: answer.suggested_label ?? "—",
+                  })}
                 </span>
               )}
             </li>
@@ -527,7 +576,9 @@ export function RecordView({
         </ul>
       )}
       {record.comment && (
-        <p className="record-comment">意见：{record.comment}</p>
+        <p className="record-comment">
+          {t("意见：{comment}", { comment: record.comment })}
+        </p>
       )}
       {record.notes.length > 0 && (
         <ul className="record-notes">
@@ -540,7 +591,8 @@ export function RecordView({
       )}
       {record.seen && (
         <p className="muted record-seen">
-          确认时所见内容的指纹：<code>{record.seen}</code>
+          {t("确认时所见内容的指纹：")}
+          <code>{record.seen}</code>
         </p>
       )}
     </section>

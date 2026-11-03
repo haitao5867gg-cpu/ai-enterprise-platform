@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { runTab } from "./run-page";
 import type { FlowConfig } from "../lib/apps";
 
 // Projects (docs/api/projects.md): the pages, choosing one for a new run, and what the
@@ -213,6 +214,8 @@ test("新建运行时选项目、环境并填参数，运行页显示项目和�
   await form.getByRole("button", { name: "开始运行" }).click();
 
   await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}$/);
+  // The project, its environment and parameters are among the run's facts, under 详情.
+  await runTab(page, "详情");
   const header = page.getByRole("main");
   await expect(header.getByRole("link", { name: "销售预测" })).toBeVisible();
   await expect(header).toContainText("环境：生产");

@@ -4,6 +4,7 @@ import {
   type APIRequestContext,
   type Page,
 } from "@playwright/test";
+import { runTab } from "./run-page";
 import type { AppDetail, FlowConfig } from "../lib/apps";
 
 // docs/api/git.md: code repositories on the data sources page and the 提交 PR node.
@@ -202,6 +203,7 @@ test("the 提交 PR node picks a repository, is saved and its run links the PR",
     )
     .toBe("done");
   await page.goto(`/runs/${run_id}`);
+  await runTab(page, "过程");
   await page
     .getByRole("region", { name: "工作流程" })
     .getByRole("list", { name: "本次运行的步骤" })

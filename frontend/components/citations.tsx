@@ -10,11 +10,16 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useT } from "../lib/i18n/client";
 import Markdown from "react-markdown";
 import { remarkBreaks } from "../lib/markdown-breaks";
 import { remarkTables } from "../lib/markdown-tables";
 import type { Reference, RunSource } from "../lib/knowledge";
 import { documentFileUrl } from "../lib/knowledge";
+
+// Sent from a source a citation leads to; a page that hides the source in a tab listens
+// for it and shows that tab.
+export const REVEAL = "aep:reveal-source";
 
 const Citations = createContext<{
   sources: (Reference | RunSource)[];
@@ -42,6 +47,7 @@ export function CitationScope({
 // text inside links/code remain untouched; React escapes all source text.
 export function CitedText({ children }: { children: ReactNode }) {
   const { sources, prefix, select } = useContext(Citations);
+  const t = useT();
   const numbers = new Set(sources.map((source) => source.index));
   function enhance(value: ReactNode): ReactNode {
     return Children.map(value, (child) => {
@@ -55,11 +61,15 @@ export function CitedText({ children }: { children: ReactNode }) {
             <span className="citation-marker" key={i}>
               <a
                 href={`#${target}`}
-                aria-label={`引用来源 ${index}`}
+                aria-label={t("引用来源 {index}", { index })}
                 onClick={(event) => {
                   event.preventDefault();
                   select(index);
                   const element = document.getElementById(target);
+                  // A page that hides the source in a tab shows that tab first.
+                  element?.dispatchEvent(
+                    new CustomEvent(REVEAL, { bubbles: true }),
+                  );
                   // The source itself, and any group it is folded into.
                   for (
                     let details = element?.closest("details") ?? null;
@@ -98,6 +108,7 @@ export function CitedMarkdown({
   text: string;
   breaks?: boolean;
 }) {
+  const t = useT();
   return (
     <div className="markdown-content">
       <Markdown
@@ -106,7 +117,7 @@ export function CitedMarkdown({
           img: ({ src, alt }) =>
             typeof src === "string" ? (
               <a href={src} target="_blank" rel="noopener noreferrer">
-                图片：{alt || src}
+                {t("图片：{name}", { name: alt || src })}
               </a>
             ) : null,
           table: ({ children }) => (
@@ -173,6 +184,7 @@ export function CitedMarkdown({
 }
 function SourceItem({ source }: { source: Reference | RunSource }) {
   const { prefix, active } = useContext(Citations);
+  const t = useT();
   return (
     <details
       id={`source-${prefix}-${source.index}`}
@@ -184,10 +196,16 @@ function SourceItem({ source }: { source: Reference | RunSource }) {
           [{source.index}] {source.document_name}
         </strong>
         <span className="citation-meta">
-          {"node_title" in source && <span>节点：{source.node_title} · </span>}
-          {source.heading || "无标题路径"}
-          {source.page !== null && ` · 第 ${source.page} 页`} · 分数{" "}
-          {source.score.toFixed(2)}
+          {"node_title" in source && (
+            <span>{t("节点：{title}", { title: source.node_title })} · </span>
+          )}
+          {[
+            source.heading || t("无标题路径"),
+            ...(source.page !== null
+              ? [t("第 {page} 页", { page: source.page })]
+              : []),
+            t("分数 {score}", { score: source.score.toFixed(2) }),
+          ].join(" · ")}
         </span>
       </summary>
       <p className="knowledge-text">{source.text}</p>
@@ -196,15 +214,17 @@ function SourceItem({ source }: { source: Reference | RunSource }) {
         href={documentFileUrl(source.kb_id, source.document_id)}
         download
       >
-        下载原文件
+        {t("下载原文件")}
       </a>
     </details>
   );
 }
 // Sources the shown text cites by [n] are listed; the rest of what was
 // retrieved is folded away. A list without `cited` counts as all cited.
-export function SourceList({ title = "引用来源" }: { title?: string }) {
+export function SourceList({ title }: { title?: string }) {
   const { sources } = useContext(Citations);
+  const t = useT();
+  const heading = title ?? t("引用来源");
   if (!sources.length) return null;
   const sorted = [...sources].sort((a, b) => a.index - b.index);
   const shown = sorted.filter(
@@ -212,17 +232,19 @@ export function SourceList({ title = "引用来源" }: { title?: string }) {
   );
   const rest = sorted.filter((source) => !shown.includes(source));
   return (
-    <section className="citation-sources" aria-label={title}>
-      <h3>{title}</h3>
+    <section className="citation-sources" aria-label={heading}>
+      <h3>{heading}</h3>
       {shown.length === 0 && (
-        <p className="muted">目前显示的内容没有引用检索到的资料。</p>
+        <p className="muted">{t("目前显示的内容没有引用检索到的资料。")}</p>
       )}
       {shown.map((source) => (
         <SourceItem key={source.index} source={source} />
       ))}
       {rest.length > 0 && (
         <details className="uncited-sources">
-          <summary>另有 {rest.length} 条检索到但未引用</summary>
+          <summary>
+            {t("另有 {count} 条检索到但未引用", { count: rest.length })}
+          </summary>
           {rest.map((source) => (
             <SourceItem key={source.index} source={source} />
           ))}

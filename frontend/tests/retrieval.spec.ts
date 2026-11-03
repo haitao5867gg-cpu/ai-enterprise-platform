@@ -4,6 +4,7 @@ import {
   type APIRequestContext,
   type Page,
 } from "@playwright/test";
+import { runTab } from "./run-page";
 import { mkdir } from "node:fs/promises";
 import type {
   AgentNode,
@@ -598,6 +599,7 @@ test("运行详情：智能体检索步骤、统一引用来源和检索失败�
     [1, "agent"],
     [2, "agent"],
   ]);
+  await runTab(page, "过程");
   await page
     .getByRole("list", { name: "本次运行的步骤" })
     .getByRole("button", { name: /知识库智能体/ })
@@ -605,6 +607,7 @@ test("运行详情：智能体检索步骤、统一引用来源和检索失败�
   await expect(page.getByRole("list", { name: "智能体步骤" })).toHaveText(
     "检索知识库：退换货期限（命中 2 条）",
   );
+  await runTab(page, "结果");
   await page
     .locator(".result-card")
     .getByRole("link", { name: "引用来源 2", exact: true })
@@ -629,6 +632,7 @@ test("运行详情：智能体检索步骤、统一引用来源和检索失败�
   const failedId = (await failed.json()).run_id;
   await page.goto(`/runs/${failedId}`);
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
+  await runTab(page, "过程");
   await page
     .getByRole("list", { name: "本次运行的步骤" })
     .getByRole("button", { name: /知识库智能体/ })

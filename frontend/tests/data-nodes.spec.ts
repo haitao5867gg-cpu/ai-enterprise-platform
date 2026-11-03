@@ -6,6 +6,7 @@ import {
   type TestInfo,
 } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
+import { runTab } from "./run-page";
 import type { AppDetail, FlowConfig, NodeType } from "../lib/apps";
 import type { AppManual } from "../lib/app-manual";
 
@@ -288,6 +289,7 @@ test("note is limited to 500 characters, stays literal through renames and appea
   });
   const { run_id } = await created.json();
   await page.goto(`/runs/${run_id}`);
+  await runTab(page, "过程");
   const flow = page.getByRole("region", { name: "工作流程" });
   await flow
     .getByRole("group", { name: "流程图", exact: true })
@@ -401,6 +403,7 @@ test("run manual starts collapsed, links to resources and stays pinned to its ve
   request,
 }, info) => {
   await page.goto("/runs/retail-etl-demo");
+  await runTab(page, "详情");
   const book = manual(page);
   await expect(book).not.toHaveAttribute("open");
   await book.locator(":scope > summary").click();
@@ -411,6 +414,7 @@ test("run manual starts collapsed, links to resources and stays pinned to its ve
   await book.getByRole("link", { name: "etl-codegen", exact: true }).click();
   await expect(page).toHaveURL("/skills/etl-codegen");
   await page.goto("/runs/retail-etl-demo");
+  await runTab(page, "详情");
   await manual(page).locator(":scope > summary").click();
   await manual(page)
     .getByRole("link", { name: "数仓开发规范", exact: true })
@@ -439,7 +443,9 @@ test("Markdown report renders real tables with citations, and dev output has per
   await page.goto("/runs/retail-etl-demo");
   const result = page.getByRole("region", { name: "运行结果", exact: true });
   expect(
-    await result.evaluate((element) => Boolean(element.closest(".run-main"))),
+    await result.evaluate((element) =>
+      Boolean(element.closest("#run-panel-main")),
+    ),
   ).toBe(true);
   await expect(result.getByRole("table")).toHaveCount(3);
   await expect(
@@ -448,10 +454,12 @@ test("Markdown report renders real tables with citations, and dev output has per
   await expect(
     result.getByRole("cell", { name: "128560.50", exact: true }),
   ).toBeVisible();
-  // The plan the result carries is read in the main column, not as JSON paths.
+  // The plan the result carries is read with the result, not as JSON paths.
   const plan = page.getByRole("region", { name: "ETL 方案", exact: true });
   expect(
-    await plan.evaluate((element) => Boolean(element.closest(".run-main"))),
+    await plan.evaluate((element) =>
+      Boolean(element.closest("#run-panel-main")),
+    ),
   ).toBe(true);
   await expect(
     result.getByRole("region", { name: "ETL 方案", exact: true }),
@@ -474,6 +482,7 @@ test("Markdown report renders real tables with citations, and dev output has per
   await expect(
     page.locator("details.conversation-history"),
   ).not.toHaveAttribute("open");
+  await runTab(page, "过程");
   await page.getByText(/^运行过程 · \d+ 条消息$/).click();
   const chat = page.getByRole("list", { name: "消息记录" });
   // The plan and the code are checked and said in a sentence, not as JSON.
@@ -494,6 +503,7 @@ test("Markdown report renders real tables with citations, and dev output has per
     "dev 运行通过：写出 2 张表共 1296 行",
   );
   await page.getByText(/^运行过程 · \d+ 条消息$/).click();
+  await runTab(page, "结果");
   const uncited = result
     .locator("summary")
     .filter({ hasText: /^另有 \d+ 条检索到但未引用$/ });
@@ -515,6 +525,7 @@ test("Markdown report renders real tables with citations, and dev output has per
     ),
   ).toBe(true);
   await page.setViewportSize({ width: 1360, height: 960 });
+  await runTab(page, "过程");
   const flow = page.getByRole("region", { name: "工作流程", exact: true });
   await flow
     .getByRole("group", { name: "流程图", exact: true })
@@ -666,6 +677,7 @@ test("numeric limits, no-preview output and Markdown code/links retain their beh
     '"report": "**嵌套报告**"',
   );
   expect(await page.evaluate(() => "untrusted" in window)).toBe(false);
+  await runTab(page, "过程");
   const flow = page.getByRole("region", { name: "工作流程", exact: true });
   await flow
     .getByRole("list", { name: "本次运行的步骤" })

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { runTab } from "./run-page";
 
 for (const traceId of ["trace/with space", null]) {
   test(`Langfuse runtime configuration with ${traceId ? "a trace" : "no trace"}`, async ({
@@ -24,6 +25,7 @@ for (const traceId of ["trace/with space", null]) {
     const link = page.getByRole("link", { name: "在 Langfuse 中查看" });
     // Wait for the run to load before checking that a link is absent.
     await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
+    await runTab(page, "详情");
     if (baseUrl && traceId) {
       await expect(link).toHaveAttribute(
         "href",

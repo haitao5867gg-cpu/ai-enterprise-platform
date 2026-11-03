@@ -134,28 +134,6 @@ export const sampleLabels: Record<SampleLevel, string> = {
   schema: "只发结构",
 };
 
-// One line on what of the data goes to models, or null when the policy is the
-// default one (everything, any model). Each part says whether the run's project or the
-// platform set it.
-export function policyText(
-  policy: RunPolicy | undefined,
-  project?: RunProject | null,
-): string | null {
-  if (!policy) return null;
-  const parts: [string, string][] = [];
-  const origin = (own: unknown) => (own != null ? "项目设置" : "平台设置");
-  if (policy.samples !== "full")
-    parts.push([sampleLabels[policy.samples], origin(project?.policy.samples)]);
-  if (policy.models?.length)
-    parts.push([
-      `只用模型 ${policy.models.join("、")}`,
-      origin(project?.policy.models),
-    ]);
-  if (!parts.length) return null;
-  return parts.every(([, from]) => from === parts[0][1])
-    ? `${parts.map(([text]) => text).join("；")}（${parts[0][1]}）`
-    : parts.map(([text, from]) => `${text}（${from}）`).join("；");
-}
 export type RunFailure = {
   node: string | null;
   title: string | null;
@@ -205,30 +183,6 @@ export function statusText(
 // A run in one of these has ended and is not polled any more.
 export const isFinished = (status: RunStatus) =>
   status === "done" || status === "error" || status === "cancelled";
-
-// What went wrong, for the people who asked for the run.
-const failureReasons: Record<string, string> = {
-  timeout: "等外部服务超时了",
-  model_error: "模型服务出错了",
-  tool_error: "调用工具时出错了",
-  knowledge_error: "检索知识库时出错了",
-  databricks_error: "Databricks 出错了",
-  sandbox_unavailable: "代码沙箱暂时不可用",
-  output_format: "模型几次给出的结果都不符合要求的格式",
-  code_error: "代码节点里的程序报错了",
-  step_limit: "智能体用完了允许的步数，还没有得出结果",
-  max_visits: "流程在同一步来回的次数到了上限",
-  max_steps: "流程走的总步数到了上限",
-  input_error: "运行的输入或节点设置有问题",
-};
-
-export function failureText(failure: RunFailure): string {
-  const where = failure.title ? `在「${failure.title}」这一步，` : "";
-  const reason = failureReasons[failure.error_type ?? ""] ?? "运行出错了";
-  return failure.retryable
-    ? `${where}${reason}。这类问题多半是暂时的，可以从这一步重试。`
-    : `${where}${reason}，重试多半还是一样。可以复制这次运行，把需求写得更具体后重新发起。`;
-}
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -340,32 +294,6 @@ export function formatTime(iso: string): string {
         minute: "2-digit",
         hour12: false,
       });
-}
-
-// The time of day, for messages of a run that are mostly from the same day.
-export function clockTime(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleTimeString("zh-CN", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      });
-}
-
-// A message's time; with its date when the day changed since the one before.
-export function messageTime(iso: string, previous?: string | null): string {
-  const date = new Date(iso);
-  const before = previous ? new Date(previous) : null;
-  if (
-    Number.isNaN(date.getTime()) ||
-    !before ||
-    Number.isNaN(before.getTime()) ||
-    before.toDateString() === date.toDateString()
-  )
-    return clockTime(iso);
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${clockTime(iso)}`;
 }
 
 export function timeAgo(iso: string, now: number): string {

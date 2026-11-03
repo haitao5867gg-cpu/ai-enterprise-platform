@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import { useEffect, useState } from "react";
 import { CitationScope } from "./citations";
 import { ApprovalQuestions } from "./approval-questions";
@@ -73,6 +74,8 @@ export type Finding = {
   fix: string;
   quote: string;
 };
+const NO_CODE = "这次运行的步骤里没有找到代码";
+
 export function readFindings(value: unknown): Finding[] {
   if (!Array.isArray(value)) return [];
   const text = (item: Record<string, unknown>, key: string) =>
@@ -100,26 +103,33 @@ export function ReviewFindings({
   findings: Finding[];
   what: string;
 }) {
+  const t = useT();
   if (!findings.length) return null;
   return (
     <div
       className="review-returned"
       role="note"
-      aria-label={`模型审查${what}没改过来的问题`}
+      aria-label={t("模型审查{what}没改过来的问题", { what })}
     >
       <h3>
         <Icon name="alert" size={16} />
-        模型审查{what}时发现的问题，模型重写后还没改过来（{findings.length} 处）
+        {t("模型审查{what}时发现的问题，模型重写后还没改过来（{n} 处）", {
+          what,
+          n: findings.length,
+        })}
       </h3>
-      <p>请逐条看一下；需要改的话写意见，模型会按意见重写。</p>
+      <p>{t("请逐条看一下；需要改的话写意见，模型会按意见重写。")}</p>
       <ul>
         {findings.map((item, i) => (
           <li key={i}>
             <strong>{item.title}</strong>
-            {item.where && `（${item.where}）`}：{item.problem}
-            {item.fix && ` 建议：${item.fix}`}
+            {item.where && t("（{where}）", { where: item.where })}
+            {t("：{problem}", { problem: item.problem })}
+            {item.fix && t(" 建议：{fix}", { fix: item.fix })}
             {item.quote && (
-              <span className="muted">（依据：{item.quote}）</span>
+              <span className="muted">
+                {t("（依据：{quote}）", { quote: item.quote })}
+              </span>
             )}
           </li>
         ))}
@@ -233,6 +243,7 @@ export function EtlPlanReview({
   errors: Record<string, string>;
   disabled: boolean;
 }) {
+  const t = useT();
   const { brief, plan, design, returned } = review;
   return (
     <CitationScope sources={plan.references}>
@@ -242,17 +253,25 @@ export function EtlPlanReview({
             <Icon name="grid" />
             {title}
           </h2>
-          {round !== null && <span className="app-tag">第 {round} 轮</span>}
+          {round !== null && (
+            <span className="app-tag">{t("第 {round} 轮", { round })}</span>
+          )}
         </div>
         {returned && returnedForPlan(returned, review.previous) && (
           <div className="review-returned" role="note">
             <h3>
               <Icon name="alert" size={16} />
-              审核要求改方案，请再确认一次
+
+              {t("审核要求改方案，请再确认一次")}
             </h3>
             <p>
-              {returned.actor ?? "审核人"}在审核试算结果时选了「
-              {returned.decision_label}」，方案已经按意见改过：
+              {t(
+                "{actor}在审核试算结果时选了「{decision}」，方案已经按意见改过：",
+                {
+                  actor: returned.actor ?? t("审核人"),
+                  decision: returned.decision_label,
+                },
+              )}
             </p>
             <ul>
               {returned.comment && <li>{returned.comment}</li>}
@@ -268,14 +287,17 @@ export function EtlPlanReview({
           <div
             className="review-returned"
             role="note"
-            aria-label="校验退回后改动的内容"
+            aria-label={t("校验退回后改动的内容")}
           >
             <h3>
               <Icon name="alert" size={16} />
-              方案被平台校验退回后，这一版和退回的那版不一样
+
+              {t("方案被平台校验退回后，这一版和退回的那版不一样")}
             </h3>
             <p>
-              请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法。
+              {t(
+                "请对照需求确认还要不要；要的话写意见，让模型换一种平台支持的做法。",
+              )}
             </p>
             <ul>
               {review.dropped.map((line) => (
@@ -284,7 +306,7 @@ export function EtlPlanReview({
             </ul>
           </div>
         )}
-        <ReviewFindings findings={review.review} what="方案" />
+        <ReviewFindings findings={review.review} what={t("方案")} />
         <div className="review-body">
           <BriefView brief={brief} uncited={review.uncited} notes />
           {design && <AnswerShape design={design} brief={brief} />}
@@ -294,9 +316,11 @@ export function EtlPlanReview({
               className="review-questions"
               aria-labelledby="questions-title"
             >
-              <h3 id="questions-title">请回答这些问题</h3>
+              <h3 id="questions-title">{t("请回答这些问题")}</h3>
               <p className="muted">
-                每题都要选。标“建议”的是方案现在的做法；改选或写了意见，方案会按你的意见重写，再请你确认一次。
+                {t(
+                  "每题都要选。标“建议”的是方案现在的做法；改选或写了意见，方案会按你的意见重写，再请你确认一次。",
+                )}
               </p>
               <ApprovalQuestions
                 questions={questions}
@@ -308,7 +332,7 @@ export function EtlPlanReview({
                   <>
                     {question.affects?.length ? (
                       <p className="question-why">
-                        <span>影响：</span>
+                        <span>{t("影响：")}</span>
                         {affected(review, question.affects).join("、")}
                       </p>
                     ) : null}
@@ -325,7 +349,9 @@ export function EtlPlanReview({
           {review.cleaned.length > 0 && (
             <details className="review-cleaned">
               <summary>
-                平台自动整理过的地方（{review.cleaned.length} 处）
+                {t("平台自动整理过的地方（{n} 处）", {
+                  n: review.cleaned.length,
+                })}
               </summary>
               <ul>
                 {review.cleaned.map((line, i) => (
@@ -336,7 +362,7 @@ export function EtlPlanReview({
           )}
         </div>
         <a className="jump-to-decision" href="#approval">
-          去确认
+          {t("去确认")}
           <Icon name="arrow" size={14} />
         </a>
       </section>
@@ -347,6 +373,7 @@ export function EtlPlanReview({
 // The code the dev run ran: the files of the last code check's bundle, read from the
 // run's steps (the same rule files.zip follows).
 function CodeTab({ runId, files }: { runId: string; files: string[] }) {
+  const t = useT();
   const [bundle, setBundle] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -372,7 +399,7 @@ function CodeTab({ runId, files }: { runId: string; files: string[] }) {
             return;
           }
         }
-        setError("这次运行的步骤里没有找到代码");
+        setError(NO_CODE);
       })
       .catch((err) => {
         if (!controller.signal.aborted) setError(errorMessage(err));
@@ -383,8 +410,8 @@ function CodeTab({ runId, files }: { runId: string; files: string[] }) {
     <div className="review-code">
       <div className="review-code-heading">
         <p>
-          {files.length} 个文件
-          {files.length > 0 && "，意见可以挂在打开的文件上"}
+          {t("{n} 个文件", { n: files.length })}
+          {files.length > 0 && t("，意见可以挂在打开的文件上")}
         </p>
         <a
           className="button secondary"
@@ -392,7 +419,8 @@ function CodeTab({ runId, files }: { runId: string; files: string[] }) {
           download
         >
           <Icon name="download" size={15} />
-          下载 ZIP
+
+          {t("下载 ZIP")}
         </a>
       </div>
       {bundle ? (
@@ -400,7 +428,7 @@ function CodeTab({ runId, files }: { runId: string; files: string[] }) {
           files={bundle}
           toolbar={(path) => (
             <>
-              <CopyButton text={bundle[path]} label="复制" />
+              <CopyButton text={bundle[path]} label={t("复制")} />
               <NoteButton item={`file:${path}`} label={path} />
             </>
           )}
@@ -409,11 +437,13 @@ function CodeTab({ runId, files }: { runId: string; files: string[] }) {
         <>
           {error ? (
             <p className="muted" role="status">
-              代码内容取不到：{error}。可以下载 ZIP 查看。
+              {t("代码内容取不到：{error}。可以下载 ZIP 查看。", {
+                error: error === NO_CODE ? t(NO_CODE) : error,
+              })}
             </p>
           ) : (
             <p className="muted" role="status">
-              正在读取代码…
+              {t("正在读取代码…")}
             </p>
           )}
           <ul className="brief-list">
@@ -431,19 +461,26 @@ function CodeTab({ runId, files }: { runId: string; files: string[] }) {
 }
 
 function PreviewTable({ preview }: { preview: DevPreview }) {
+  const t = useT();
   return (
     <div className="table-preview">
       <h5>{preview.table}</h5>
       <p className="muted">
-        {preview.target && `${preview.target} · `}前 {preview.rows.length} 行
+        {preview.target && `${preview.target} · `}
+        {t("前 {n} 行", { n: preview.rows.length })}
         {preview.sorted_by === null
           ? ""
           : preview.sorted_by.length
-            ? `，按 ${preview.sorted_by.join("、")} 从小到大排`
-            : "，没有排序"}
+            ? t("，按 {columns} 从小到大排", {
+                columns: preview.sorted_by.join(t("、")),
+              })
+            : t("，没有排序")}
       </p>
       <div className="table-scroll">
-        <table className="mapping-table" aria-label={`${preview.table} 预览`}>
+        <table
+          className="mapping-table"
+          aria-label={t("{table} 预览", { table: preview.table })}
+        >
           <thead>
             <tr>
               {preview.columns.map((column) => (
@@ -485,9 +522,10 @@ function handling(review: DevReview, table: string, rule: string): string {
 // The data checks after the dev run: each with its result, what it found and a place for
 // a note; failed ones show their example rows.
 function ChecksSection({ checks }: { checks: DataChecks }) {
+  const t = useT();
   return (
-    <section aria-label="数据检查">
-      <h4>数据检查</h4>
+    <section aria-label={t("数据检查")}>
+      <h4>{t("数据检查")}</h4>
       <p className="muted">{checks.summary}</p>
       {checks.results.length > 0 && (
         <ul className="quality-rules data-checks">
@@ -500,20 +538,27 @@ function ChecksSection({ checks }: { checks: DataChecks }) {
                 <div>
                   <strong>{check.label}</strong>
                   <span className={bad ? "rule-failed" : "rule-passed"}>
-                    {checkStatuses[check.status] ?? check.status}
+                    {t(checkStatuses[check.status] ?? check.status)}
                     {bad &&
                       check.severity !== "error" &&
-                      `（${checkSeverities[check.severity] ?? check.severity}）`}
+                      t("（{severity}）", {
+                        severity: t(
+                          checkSeverities[check.severity] ?? check.severity,
+                        ),
+                      })}
                   </span>
                 </div>
                 <p className="check-text">
-                  {checkKinds[check.kind] ?? check.kind}：{check.message}
+                  {t("{kind}：{message}", {
+                    kind: t(checkKinds[check.kind] ?? check.kind),
+                    message: check.message,
+                  })}
                 </p>
                 {rows.length > 0 && (
                   <div className="table-scroll">
                     <table
                       className="mapping-table"
-                      aria-label={`${check.label} 的例子`}
+                      aria-label={t("{label} 的例子", { label: check.label })}
                     >
                       <thead>
                         <tr>
@@ -547,23 +592,25 @@ function ChecksSection({ checks }: { checks: DataChecks }) {
 }
 
 function ResultTab({ review }: { review: DevReview }) {
+  const t = useT();
   return (
     <div className="review-result">
       {review.status === "failed" ? (
         <div className="checks-failed" role="alert">
           <h3>
             <Icon name="alert" />
-            试算没通过
+
+            {t("试算没通过")}
           </h3>
-          <p>没通过的试算不能交付。可以改代码、改方案，或者终止。</p>
+          <p>{t("没通过的试算不能交付。可以改代码、改方案，或者终止。")}</p>
         </div>
       ) : (
         <p className="checks-passed">
           <Icon name="check" size={16} />
-          开发环境试算通过
+          {t("开发环境试算通过")}
           {review.url && (
             <a href={review.url} target="_blank" rel="noopener noreferrer">
-              在 Databricks 中查看
+              {t("在 Databricks 中查看")}
             </a>
           )}
         </p>
@@ -574,16 +621,19 @@ function ResultTab({ review }: { review: DevReview }) {
           <div className="checks-failed" role="alert">
             <h3>
               <Icon name="alert" />
-              数据检查没通过
+
+              {t("数据检查没通过")}
             </h3>
             <p>
-              有严重级别为“错误”的检查没通过或出错，不能交付。可以改代码、改方案，或者终止。
+              {t(
+                "有严重级别为“错误”的检查没通过或出错，不能交付。可以改代码、改方案，或者终止。",
+              )}
             </p>
           </div>
         )}
       {review.tables.length > 0 && (
-        <section aria-label="结果表">
-          <h4>结果表</h4>
+        <section aria-label={t("结果表")}>
+          <h4>{t("结果表")}</h4>
           <ul className="review-tables">
             {review.tables.map((table) => (
               <li key={table.name}>
@@ -591,10 +641,14 @@ function ResultTab({ review }: { review: DevReview }) {
                   <code>{table.name}</code>
                   <span>
                     {table.rows === null
-                      ? "行数未知"
-                      : `${table.rows.toLocaleString("en-US")} 行`}
+                      ? t("行数未知")
+                      : t("{n} 行", {
+                          n: table.rows.toLocaleString("en-US"),
+                        })}
                     {table.dropped > 0 &&
-                      `，质量规则丢弃 ${table.dropped.toLocaleString("en-US")} 行`}
+                      t("，质量规则丢弃 {n} 行", {
+                        n: table.dropped.toLocaleString("en-US"),
+                      })}
                   </span>
                 </div>
                 {table.expectations.length > 0 && (
@@ -609,12 +663,15 @@ function ResultTab({ review }: { review: DevReview }) {
                             }
                           >
                             {rule.failed
-                              ? `${rule.failed.toLocaleString("en-US")} 行不通过${
-                                  handlings[
-                                    handling(review, table.name, rule.name)
-                                  ] ?? ""
-                                }`
-                              : "全部通过"}
+                              ? t("{n} 行不通过{handling}", {
+                                  n: rule.failed.toLocaleString("en-US"),
+                                  handling: t(
+                                    handlings[
+                                      handling(review, table.name, rule.name)
+                                    ] ?? "",
+                                  ),
+                                })
+                              : t("全部通过")}
                           </span>
                         </div>
                         <NoteButton
@@ -633,8 +690,8 @@ function ResultTab({ review }: { review: DevReview }) {
       )}
       {review.checks && <ChecksSection checks={review.checks} />}
       {review.answer && (
-        <section aria-label="答案预览">
-          <h4>答案预览</h4>
+        <section aria-label={t("答案预览")}>
+          <h4>{t("答案预览")}</h4>
           <AnswerCard
             answer={review.answer}
             file={
@@ -645,22 +702,22 @@ function ResultTab({ review }: { review: DevReview }) {
         </section>
       )}
       {review.preview.length > 0 && (
-        <section aria-label="结果表预览">
-          <h4>结果表预览</h4>
+        <section aria-label={t("结果表预览")}>
+          <h4>{t("结果表预览")}</h4>
           {review.preview.map((preview) => (
             <PreviewTable key={preview.table} preview={preview} />
           ))}
         </section>
       )}
       {review.errors && (
-        <section aria-label="报错">
-          <h4>报错原文</h4>
+        <section aria-label={t("报错")}>
+          <h4>{t("报错原文")}</h4>
           <pre className="review-errors">{review.errors}</pre>
         </section>
       )}
       {review.status === "failed" && review.url && (
         <a href={review.url} target="_blank" rel="noopener noreferrer">
-          在 Databricks 中查看这次试算
+          {t("在 Databricks 中查看这次试算")}
         </a>
       )}
     </div>
@@ -685,6 +742,7 @@ export function EtlDevReview({
   round: number | null;
   runId: string;
 }) {
+  const t = useT();
   const [tab, setTab] = useState<(typeof devTabs)[number][0]>("result");
   return (
     <CitationScope sources={review.plan?.references ?? []}>
@@ -694,9 +752,11 @@ export function EtlDevReview({
             <Icon name="grid" />
             {title}
           </h2>
-          {round !== null && <span className="app-tag">第 {round} 轮</span>}
+          {round !== null && (
+            <span className="app-tag">{t("第 {round} 轮", { round })}</span>
+          )}
         </div>
-        <ReviewFindings findings={review.codeReview} what="代码" />
+        <ReviewFindings findings={review.codeReview} what={t("代码")} />
         <div
           className="filter-tabs review-tabs"
           role="tablist"
@@ -713,7 +773,7 @@ export function EtlDevReview({
               className={tab === key ? "selected" : ""}
               onClick={() => setTab(key)}
             >
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
@@ -737,13 +797,16 @@ export function EtlDevReview({
           {tab === "result" && <ResultTab review={review} />}
           {tab === "confirmed" &&
             (review.confirmed ? (
-              <RecordView record={review.confirmed} title="确认方案的记录" />
+              <RecordView
+                record={review.confirmed}
+                title={t("确认方案的记录")}
+              />
             ) : (
-              <p className="muted">还没有确认方案的记录。</p>
+              <p className="muted">{t("还没有确认方案的记录。")}</p>
             ))}
         </div>
         <a className="jump-to-decision" href="#approval">
-          去审核
+          {t("去审核")}
           <Icon name="arrow" size={14} />
         </a>
       </section>

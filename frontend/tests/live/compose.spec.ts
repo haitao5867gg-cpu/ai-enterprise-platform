@@ -74,12 +74,13 @@ test("Compose: reject with feedback → revised answer → approve → done", as
   testInfo.annotations.push({ type: "run_id", description: id });
   await page.getByLabel("修改意见").fill(comment);
   await page.getByRole("button", { name: "驳回", exact: true }).click();
-  // Waiting again with the new draft shown above, 运行过程 is folded.
-  const summary = page.getByText("运行过程 · 4 条消息", { exact: true });
-  await expect(summary).toBeVisible();
+  // Waiting again with the new draft on 待处理; the conversation is folded under 过程.
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
   ).toBeVisible();
+  await page.getByRole("tab", { name: "过程", exact: true }).click();
+  const summary = page.getByText("运行过程 · 4 条消息", { exact: true });
+  await expect(summary).toBeVisible();
   await expect(
     page.locator("details.conversation-history"),
   ).not.toHaveAttribute("open");

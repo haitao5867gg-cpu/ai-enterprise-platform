@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useMemo } from "react";
+import { useT } from "../lib/i18n/client";
 import {
   kindLabels,
   type Flow,
@@ -148,6 +149,7 @@ export function FlowDiagram({
   const graph = useMemo(() => withoutGraphEnds(flow), [flow]);
   const shape = useMemo(() => layout(graph), [graph]);
   const arrowId = useId();
+  const t = useT();
   return (
     <div className="flow-canvas">
       <svg
@@ -155,7 +157,7 @@ export function FlowDiagram({
         height={shape.height}
         viewBox={`0 0 ${shape.width} ${shape.height}`}
         role="group"
-        aria-label="流程图"
+        aria-label={t("流程图")}
       >
         <defs>
           <marker
@@ -240,9 +242,12 @@ export function FlowDiagram({
               transform={`translate(${box.x} ${box.y})`}
               role="button"
               tabIndex={0}
-              aria-label={`${node.title}${node.kind !== "terminal" ? `，${kindLabels[node.kind]}` : ""}${
-                count > 0 ? `，执行 ${count} 次` : ""
-              }${invalid.has(node.id) ? "，有问题" : ""}`}
+              aria-label={[
+                node.title,
+                ...(node.kind !== "terminal" ? [t(kindLabels[node.kind])] : []),
+                ...(count > 0 ? [t("执行 {count} 次", { count })] : []),
+                ...(invalid.has(node.id) ? [t("有问题")] : []),
+              ].join(t("，#连接"))}
               aria-pressed={node.id === selectedId}
               onClick={() => select(node.id)}
               onKeyDown={(e) => {
@@ -273,7 +278,7 @@ export function FlowDiagram({
                     {node.title}
                   </text>
                   <text className="flow-sub" x={16} y={36}>
-                    {kindLabels[node.kind]}
+                    {t(kindLabels[node.kind])}
                     {node.model ? ` · ${node.model}` : ""}
                   </text>
                   {count > 1 && (
@@ -292,16 +297,16 @@ export function FlowDiagram({
           );
         })}
       </svg>
-      <ul className="flow-legend" aria-label="图例">
+      <ul className="flow-legend" aria-label={t("图例")}>
         {(["tool", "model", "human", "code"] as const).map((kind) => (
           <li key={kind}>
             <span className={`flow-swatch ${kind}`} />
-            {kindLabels[kind]}
+            {t(kindLabels[kind])}
           </li>
         ))}
         <li>
           <span className="flow-swatch dashed" />
-          按条件走
+          {t("按条件走")}
         </li>
       </ul>
     </div>
