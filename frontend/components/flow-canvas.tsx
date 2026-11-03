@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import {
   useEffect,
   useImperativeHandle,
@@ -7,6 +8,7 @@ import {
   useState,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from "react";
 import {
   Background,
@@ -19,6 +21,8 @@ import {
   ReactFlow,
   getBezierPath,
   getSmoothStepPath,
+  useNodesInitialized,
+  useReactFlow,
   useUpdateNodeInternals,
   type Edge,
   type EdgeProps,
@@ -68,6 +72,7 @@ type CanvasEdge = Edge<
 >;
 
 function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
+  const t = useT();
   const { node, invalid } = data;
   const updateNodeInternals = useUpdateNodeInternals();
   const branches = branchesOf(node);
@@ -89,30 +94,33 @@ function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
           style={{ top: CARD_HEADING_HEIGHT / 2 }}
           isConnectable={isConnectable}
           data-testid={`canvas-in-${node.id}`}
-          aria-label={`${node.title}的入口`}
+          aria-label={t("{title}的入口", { title: node.title })}
         />
       )}
       <div className="canvas-node-heading">
         <span className={`node-type-badge ${node.type}`}>
-          {typeLabels[node.type]}
+          {t(typeLabels[node.type])}
         </span>
         <strong>{node.title}</strong>
         <UsesTags uses={data.uses} limit={3} />
         <code>
           {node.id}
-          {invalid ? " · 有问题" : ""}
+          {invalid ? t(" · 有问题") : ""}
         </code>
       </div>
       {branches.map((branch) => (
         <div className="canvas-branch" key={branch}>
-          <span>{branchLabel(node, branch)}</span>
+          <span>{branchLabel(node, branch, t)}</span>
           <Handle
             type="source"
             position={Position.Right}
             id={`out:${branch}`}
             isConnectable={isConnectable}
             data-testid={`canvas-out-${node.id}-${branch || "next"}`}
-            aria-label={`${node.title}的${branchLabel(node, branch)}出口`}
+            aria-label={t("{title}的{branch}出口", {
+              title: node.title,
+              branch: branchLabel(node, branch, t),
+            })}
           />
         </div>
       ))}
@@ -121,6 +129,7 @@ function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
 }
 
 function BranchEdge(props: EdgeProps<CanvasEdge>) {
+  const t = useT();
   const loop = props.data?.loop;
   const midpointY = (props.sourceY + props.targetY) / 2;
   const [path, x, y] = loop
@@ -155,7 +164,7 @@ function BranchEdge(props: EdgeProps<CanvasEdge>) {
               <button
                 type="button"
                 disabled={props.data?.disabled}
-                aria-label="删除选中连线"
+                aria-label={t("删除选中连线")}
                 onClick={(event) => {
                   event.stopPropagation();
                   props.data?.remove();
@@ -175,10 +184,57 @@ const nodeTypes = { flow: NodeCard };
 const edgeTypes = { flow: BranchEdge };
 const edgeId = (from: string, branch: string) => `${from}:${branch}`;
 // Reserve space below the graph so the minimap does not cover its outlets.
-const FIT_OPTIONS = {
-  padding: { top: "40px", right: "40px", bottom: "132px", left: "40px" },
-  maxZoom: 1,
-} as const;
+const FIT_PADDING = { top: 32, right: 40, bottom: 112, left: 40 };
+// Below this, node titles get too small to read: a large graph is panned instead.
+const READABLE_ZOOM = 0.6;
+
+// Shows the whole graph when it fits at a readable size; otherwise shows it at the
+// readable size from its start (top left), and the rest is reached by panning.
+function fitReadable(
+  flow: Pick<
+    ReactFlowInstance<CanvasNode, CanvasEdge>,
+    "getNodes" | "getNodesBounds" | "setViewport"
+  >,
+  stage: HTMLElement | null,
+) {
+  const nodes = flow.getNodes();
+  if (!stage || !nodes.length) return;
+  const bounds = flow.getNodesBounds(nodes);
+  const { width, height } = stage.getBoundingClientRect();
+  const room = {
+    width: width - FIT_PADDING.left - FIT_PADDING.right,
+    height: height - FIT_PADDING.top - FIT_PADDING.bottom,
+  };
+  const zoom = Math.min(
+    1,
+    Math.max(
+      READABLE_ZOOM,
+      Math.min(room.width / bounds.width, room.height / bounds.height),
+    ),
+  );
+  const offset = (start: number, size: number, space: number, pad: number) =>
+    size * zoom <= space
+      ? pad + (space - size * zoom) / 2 - start * zoom
+      : pad - start * zoom;
+  void flow.setViewport({
+    x: offset(bounds.x, bounds.width, room.width, FIT_PADDING.left),
+    y: offset(bounds.y, bounds.height, room.height, FIT_PADDING.top),
+    zoom,
+  });
+}
+
+// Fits once, when the nodes have been measured.
+function InitialFit({ stage }: { stage: RefObject<HTMLDivElement | null> }) {
+  const flow = useReactFlow<CanvasNode, CanvasEdge>();
+  const ready = useNodesInitialized();
+  const done = useRef(false);
+  useEffect(() => {
+    if (!ready || done.current) return;
+    done.current = true;
+    fitReadable(flow, stage.current);
+  }, [ready, flow, stage]);
+  return null;
+}
 
 export function FlowCanvas({
   ref,
@@ -207,6 +263,7 @@ export function FlowCanvas({
   menu?: ReactNode;
   manual: AppManual | null;
 }) {
+  const t = useT();
   const stage = useRef<HTMLDivElement>(null);
   const [instance, setInstance] = useState<ReactFlowInstance<
     CanvasNode,
@@ -295,7 +352,13 @@ export function FlowCanvas({
       ),
     },
     selected: !selectedEdge && node.id === selectedId,
-    ariaLabel: `${node.title}（${node.id}）${invalid.has(node.id) ? "，有问题" : ""}`,
+    ariaLabel: t(
+      invalid.has(node.id) ? "{title}（{id}），有问题" : "{title}（{id}）",
+      {
+        title: node.title,
+        id: node.id,
+      },
+    ),
     ariaRole: "button",
   }));
   const byId = new Map(config.graph.nodes.map((node) => [node.id, node]));
@@ -333,7 +396,11 @@ export function FlowCanvas({
       sourceHandle: `out:${branch}`,
       targetHandle: "in",
       selected: selectedEdge === id,
-      ariaLabel: `${byId.get(edge.from)?.title ?? edge.from} → ${byId.get(edge.to)?.title ?? edge.to}，${branchLabel(byId.get(edge.from), branch)}`,
+      ariaLabel: t("{from} → {to}，{branch}", {
+        from: byId.get(edge.from)?.title ?? edge.from,
+        to: byId.get(edge.to)?.title ?? edge.to,
+        branch: branchLabel(byId.get(edge.from), branch, t),
+      }),
       ariaRole: "button",
       style: {
         stroke: selectedEdge === id ? "#7152a3" : "#9385ab",
@@ -342,7 +409,7 @@ export function FlowCanvas({
       },
       markerEnd: { type: MarkerType.ArrowClosed, color: "#9385ab" },
       data: {
-        text: branch ? branchLabel(byId.get(edge.from), branch) : "",
+        text: branch ? branchLabel(byId.get(edge.from), branch, t) : "",
         loop,
         disabled,
         remove: () => clearEdge(edge.from, branch),
@@ -351,14 +418,14 @@ export function FlowCanvas({
   });
   return (
     <div className="flow-canvas-editor">
-      <div className="canvas-toolbar" role="toolbar" aria-label="画布工具">
+      <div className="canvas-toolbar" role="toolbar" aria-label={t("画布工具")}>
         <button
           type="button"
           className="button secondary"
           disabled={disabled || !canAdd || !instance}
           onClick={() => openAdd({ menu: { x: 16, y: 16 }, pending: null })}
         >
-          添加节点
+          {t("添加节点")}
         </button>
         <button
           type="button"
@@ -378,12 +445,12 @@ export function FlowCanvas({
             });
           }}
         >
-          自动整理
+          {t("自动整理")}
         </button>
         <button
           type="button"
           className="text-button"
-          aria-label="缩小"
+          aria-label={t("缩小")}
           onClick={() => void instance?.zoomOut()}
         >
           −
@@ -391,7 +458,7 @@ export function FlowCanvas({
         <button
           type="button"
           className="text-button"
-          aria-label="放大"
+          aria-label={t("放大")}
           onClick={() => void instance?.zoomIn()}
         >
           ＋
@@ -399,16 +466,16 @@ export function FlowCanvas({
         <button
           type="button"
           className="text-button"
-          onClick={() => void instance?.fitView(FIT_OPTIONS)}
+          onClick={() => instance && fitReadable(instance, stage.current)}
         >
-          适应画布
+          {t("适应画布")}
         </button>
       </div>
       <div
         className="canvas-stage"
         ref={stage}
         role="group"
-        aria-label="编排画布"
+        aria-label={t("编排画布")}
       >
         <ReactFlow<CanvasNode, CanvasEdge>
           nodes={nodes}
@@ -416,8 +483,6 @@ export function FlowCanvas({
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           onInit={setInstance}
-          fitView
-          fitViewOptions={FIT_OPTIONS}
           minZoom={0.15}
           maxZoom={2}
           deleteKeyCode={null}
@@ -536,13 +601,15 @@ export function FlowCanvas({
             });
           }}
           ariaLabelConfig={{
-            "node.a11yDescription.default":
+            "node.a11yDescription.default": t(
               "按 Enter 打开节点设置，按 Delete 删除节点。",
-            "edge.a11yDescription.default": "按 Delete 删除连线。",
-            "minimap.ariaLabel": "画布小地图",
+            ),
+            "edge.a11yDescription.default": t("按 Delete 删除连线。"),
+            "minimap.ariaLabel": t("画布小地图"),
           }}
         >
           <Background gap={20} color="#ded8e8" />
+          <InitialFit stage={stage} />
           <MiniMap
             position="bottom-right"
             pannable

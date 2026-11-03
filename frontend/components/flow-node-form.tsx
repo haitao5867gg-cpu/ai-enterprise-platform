@@ -1,5 +1,6 @@
 "use client";
 
+import { useT, type Translate } from "../lib/i18n/client";
 import { KnowledgePicker } from "./knowledge-form";
 import { RetrievalFields } from "./retrieval-fields";
 import { ChecksField } from "./checks-field";
@@ -69,8 +70,13 @@ type Tool = {
   read_only?: boolean;
 };
 // Phase 1 supports read-only tools only; a tool that does not say so is marked.
-const toolLabel = (tool: Tool) =>
-  tool.read_only === false ? `${tool.name}（未声明只读）` : tool.name;
+const toolLabel = (t: Translate, tool: Tool) =>
+  tool.read_only === false
+    ? t("{name}（未声明只读）", { name: tool.name })
+    : tool.name;
+// Option lists below keep Chinese labels; show them through `translated`.
+const translated = <T extends { label: string }>(t: Translate, items: T[]) =>
+  items.map((item) => ({ ...item, label: t(item.label) }));
 
 const valueTypes: { value: ValueType; label: string }[] = [
   { value: "string", label: "文字" },
@@ -131,6 +137,7 @@ function useTools(datasource: string) {
 
 // `etlOnly`: the data nodes read data, so tool services are left out.
 function datasourceChoices(
+  t: Translate,
   config: FlowConfig,
   options: Options,
   etlOnly = false,
@@ -144,13 +151,16 @@ function datasourceChoices(
       .filter((item) => !databricksOnly || item.kind === "databricks")
       .map((item) => ({
         value: item.datasource_id,
-        label: `${item.name} · ${kindLabel(item.kind)}`,
+        label: `${item.name} · ${t(kindLabel(item.kind))}`,
       })),
     ...(start?.type === "start" ? start.inputs : [])
       .filter((input) => input.type === "datasource")
       .map((input) => ({
         value: `{{start.${input.key}}}`,
-        label: `运行时选择：${input.label}（{{start.${input.key}}}）`,
+        label: t("运行时选择：{label}（{ref}）", {
+          label: input.label,
+          ref: `{{start.${input.key}}}`,
+        }),
       })),
   ];
 }
@@ -173,18 +183,25 @@ function DatasourceField({
   // Data checks read through a Databricks data source only.
   databricksOnly?: boolean;
 }) {
-  const choices = datasourceChoices(config, options, etlOnly, databricksOnly);
+  const t = useT();
+  const choices = datasourceChoices(
+    t,
+    config,
+    options,
+    etlOnly,
+    databricksOnly,
+  );
   const registered = options.datasources.find(
     (item) => item.datasource_id === value,
   );
   return (
     <SelectField
-      label="数据源"
+      label={t("数据源")}
       value={value}
       onChange={onChange}
       issues={issuesUnder(issues, "datasource")}
       choices={[
-        { value: "", label: "请选择数据源" },
+        { value: "", label: t("请选择数据源") },
         ...choices,
         ...(value && !choices.some((item) => item.value === value)
           ? [
@@ -193,8 +210,13 @@ function DatasourceField({
                 label: value.includes("{{")
                   ? value
                   : registered
-                    ? `${registered.name} · ${isToolService(registered) ? "工具服务" : kindLabel(registered.kind)}（这里不能用）`
-                    : `${value}（未登记）`,
+                    ? t("{name} · {kind}（这里不能用）", {
+                        name: registered.name,
+                        kind: isToolService(registered)
+                          ? t("工具服务")
+                          : t(kindLabel(registered.kind)),
+                      })
+                    : t("{value}（未登记）", { value }),
               },
             ]
           : []),
@@ -214,15 +236,21 @@ function ModelFields({
   change: Change;
   issues: Issues;
 }) {
+  const t = useT();
   return (
     <>
       <SelectField
-        label="模型"
+        label={t("模型#字段")}
         value={node.model ?? ""}
         issues={issuesUnder(issues, "model")}
         onChange={(model) => change({ ...node, model: model || null })}
         choices={[
-          { value: "", label: `平台默认（${options.default_model}）` },
+          {
+            value: "",
+            label: t("平台默认（{default_model}）", {
+              default_model: options.default_model,
+            }),
+          },
           ...chatModelChoices(options, node.model),
         ]}
       />
@@ -258,6 +286,7 @@ function OutputFields({
   prefix: string;
   describe?: boolean;
 }) {
+  const t = useT();
   return (
     <ListEditor
       label={label}
@@ -272,19 +301,19 @@ function OutputFields({
       render={(field, _i, update) => (
         <>
           <TextField
-            label="字段名"
+            label={t("字段名")}
             value={field.key}
             onChange={(key) => update({ ...field, key })}
           />
           <SelectField
-            label="类型"
+            label={t("类型")}
             value={field.type}
-            choices={valueTypes}
+            choices={translated(t, valueTypes)}
             onChange={(type) => update({ ...field, type: type as ValueType })}
           />
           {describe && (
             <TextField
-              label="说明"
+              label={t("说明")}
               value={field.description ?? ""}
               onChange={(description) => update({ ...field, description })}
             />
@@ -313,6 +342,7 @@ function InputList<T extends Input>({
   // A start node's inputs also say how the new-run page shows them.
   start?: boolean;
 }) {
+  const t = useT();
   return (
     <ListEditor
       label={label}
@@ -322,7 +352,7 @@ function InputList<T extends Input>({
       make={() =>
         ({
           key: `field_${inputs.length + 1}`,
-          label: "新字段",
+          label: t("新字段"),
           type: "text",
           required: false,
         }) as T
@@ -331,25 +361,28 @@ function InputList<T extends Input>({
       render={(input, _i, update) => (
         <>
           <TextField
-            label="字段名"
+            label={t("字段名")}
             value={input.key}
             onChange={(key) => update({ ...input, key })}
           />
           <TextField
-            label="显示名称"
+            label={t("显示名称")}
             value={input.label}
             onChange={(value) => update({ ...input, label: value })}
           />
           <SelectField
-            label="类型"
+            label={t("类型")}
             value={input.type}
-            choices={inputTypes.filter(
-              (item) => allowDatasource || item.value !== "datasource",
+            choices={translated(
+              t,
+              inputTypes.filter(
+                (item) => allowDatasource || item.value !== "datasource",
+              ),
             )}
             onChange={(type) => {
               const next = { ...input, type: type as InputType };
               if (type !== "select") delete next.choices;
-              else next.choices ??= [{ value: "a", label: "选项 A" }];
+              else next.choices ??= [{ value: "a", label: t("选项 A") }];
               // Examples only fit text: dropped here, not left to fail the save unseen.
               if (type !== "text" && type !== "textarea") {
                 delete next.max_length;
@@ -359,13 +392,13 @@ function InputList<T extends Input>({
             }}
           />
           <CheckField
-            label="必填"
+            label={t("必填")}
             checked={Boolean(input.required)}
             onChange={(required) => update({ ...input, required })}
           />
           {start && (
             <CheckField
-              label="收进高级选项"
+              label={t("收进高级选项")}
               checked={input.advanced === true}
               onChange={(advanced) => {
                 const next: T = { ...input };
@@ -377,7 +410,7 @@ function InputList<T extends Input>({
           )}
           {(input.type === "text" || input.type === "textarea") && (
             <NumberField
-              label="最多字数"
+              label={t("最多字数")}
               min={1}
               max={20000}
               value={input.max_length}
@@ -386,7 +419,7 @@ function InputList<T extends Input>({
           )}
           {start && (input.type === "text" || input.type === "textarea") && (
             <ListEditor
-              label="例子"
+              label={t("例子")}
               items={input.examples ?? []}
               max={5}
               make={() => ""}
@@ -397,29 +430,29 @@ function InputList<T extends Input>({
                 update(next);
               }}
               render={(example, _j, set) => (
-                <TextField label="例子" value={example} onChange={set} />
+                <TextField label={t("例子")} value={example} onChange={set} />
               )}
             />
           )}
           {input.type === "select" && (
             <ListEditor
-              label="选项"
+              label={t("选项")}
               items={input.choices ?? []}
               min={1}
               make={() => ({
                 value: `option_${(input.choices?.length ?? 0) + 1}`,
-                label: "新选项",
+                label: t("新选项"),
               })}
               onChange={(choices) => update({ ...input, choices })}
               render={(choice, _j, set) => (
                 <>
                   <TextField
-                    label="值"
+                    label={t("值")}
                     value={choice.value}
                     onChange={(value) => set({ ...choice, value })}
                   />
                   <TextField
-                    label="显示文字"
+                    label={t("显示文字")}
                     value={choice.label}
                     onChange={(value) => set({ ...choice, label: value })}
                   />
@@ -448,6 +481,7 @@ function ToolFields({
   issues: Issues;
   variables: Variable[];
 }) {
+  const t = useT();
   const { tools, error, loading } = useTools(node.datasource);
   const tool = tools?.find((item) => item.name === node.tool);
   const properties = tool?.input_schema?.properties ?? {};
@@ -480,7 +514,7 @@ function ToolFields({
       />
       {tools ? (
         <SelectField
-          label="工具"
+          label={t("工具")}
           value={node.tool}
           issues={issuesUnder(issues, "tool")}
           onChange={(name) => change({ ...node, tool: name, args: {} })}
@@ -495,40 +529,45 @@ function ToolFields({
               : undefined
           }
           choices={[
-            { value: "", label: "请选择工具" },
+            { value: "", label: t("请选择工具") },
             ...tools.map((item) => ({
               value: item.name,
-              label: toolLabel(item),
+              label: toolLabel(t, item),
             })),
             ...(node.tool && !tool
-              ? [{ value: node.tool, label: `${node.tool}（数据源上没有）` }]
+              ? [
+                  {
+                    value: node.tool,
+                    label: t("{tool}（数据源上没有）", { tool: node.tool }),
+                  },
+                ]
               : []),
           ]}
         />
       ) : (
         <TextField
-          label="工具"
+          label={t("工具")}
           value={node.tool}
           issues={issuesUnder(issues, "tool")}
           help={
             loading
-              ? "正在读取这个数据源的工具…"
+              ? t("正在读取这个数据源的工具…")
               : error
-                ? `读取工具失败：${error}`
+                ? t("读取工具失败：{error}", { error })
                 : node.datasource
-                  ? "数据源在运行时选择，请填写工具名。"
-                  : "先选择数据源。"
+                  ? t("数据源在运行时选择，请填写工具名。")
+                  : t("先选择数据源。")
           }
           onChange={(name) => change({ ...node, tool: name })}
         />
       )}
       {keys.length > 0 && (
         <fieldset className="list-editor">
-          <legend>参数</legend>
+          <legend>{t("参数")}</legend>
           {keys.map((key) => (
             <RefField
               key={key}
-              label={`${key}${required.includes(key) ? "（必填）" : ""}`}
+              label={required.includes(key) ? t("{key}（必填）", { key }) : key}
               value={text(node.args[key])}
               variables={variables}
               help={properties[key]?.description ?? properties[key]?.title}
@@ -539,11 +578,11 @@ function ToolFields({
         </fieldset>
       )}
       {tools && tool && !keys.length && (
-        <p className="muted">这个工具没有参数。</p>
+        <p className="muted">{t("这个工具没有参数。")}</p>
       )}
       {!tools && !loading && (
         <AddKey
-          label="参数名"
+          label={t("参数名")}
           onAdd={(key) =>
             change({ ...node, args: { ...node.args, [key]: "" } })
           }
@@ -560,6 +599,7 @@ function AddKey({
   label: string;
   onAdd: (key: string) => void;
 }) {
+  const t = useT();
   const [key, setKey] = useState("");
   return (
     <div className="add-key">
@@ -573,7 +613,7 @@ function AddKey({
           setKey("");
         }}
       >
-        添加参数
+        {t("添加参数")}
       </button>
     </div>
   );
@@ -590,7 +630,8 @@ function AgentTools({
   options: Options;
   change: Change;
 }) {
-  const known = datasourceChoices(config, options);
+  const t = useT();
+  const known = datasourceChoices(t, config, options);
   // Entries for data sources that are not offered (unset or not registered) stay visible
   // so they can be unticked.
   const choices = [
@@ -602,14 +643,16 @@ function AgentTools({
       .map((item) => ({
         value: item.datasource,
         label: item.datasource
-          ? `${item.datasource}（未登记）`
-          : "未选择的数据源",
+          ? t("{datasource}（未登记）", { datasource: item.datasource })
+          : t("未选择的数据源"),
       })),
   ];
   return (
     <fieldset className="list-editor">
-      <legend>允许使用的工具</legend>
-      {!choices.length && <p className="muted">平台上还没有登记数据源。</p>}
+      <legend>{t("允许使用的工具")}</legend>
+      {!choices.length && (
+        <p className="muted">{t("平台上还没有登记数据源。")}</p>
+      )}
       {choices.map((choice) => {
         const entry = node.tools.find(
           (item) => item.datasource === choice.value,
@@ -667,11 +710,12 @@ function AgentToolPicker({
   value: string[] | null;
   onChange: (value: string[] | null) => void;
 }) {
+  const t = useT();
   const { tools, loading, error } = useTools(datasource);
   return (
     <>
       <CheckField
-        label="只允许部分工具"
+        label={t("只允许部分工具")}
         checked={value !== null}
         onChange={(some) => onChange(some ? [] : null)}
       />
@@ -681,7 +725,7 @@ function AgentToolPicker({
             {tools.map((tool) => (
               <CheckField
                 key={tool.name}
-                label={toolLabel(tool)}
+                label={toolLabel(t, tool)}
                 checked={value.includes(tool.name)}
                 onChange={(on) =>
                   onChange(
@@ -695,9 +739,9 @@ function AgentToolPicker({
           </div>
         ) : (
           <TextField
-            label="工具名（用逗号分隔）"
+            label={t("工具名（用逗号分隔）")}
             value={value.join(",")}
-            help={loading ? "正在读取工具…" : error}
+            help={loading ? t("正在读取工具…") : error}
             onChange={(names) =>
               onChange(
                 names
@@ -721,23 +765,24 @@ function ClassifierFields({
   change: Change;
   issues: Issues;
 }) {
+  const t = useT();
   return (
     <ListEditor
-      label="类别"
+      label={t("类别")}
       items={node.classes}
       min={1}
       max={10}
       onChange={(classes) => change({ ...node, classes })}
       make={() => ({
         key: `class_${node.classes.length + 1}`,
-        label: "新类别",
+        label: t("新类别"),
         description: "",
       })}
       issues={(i) => issuesUnder(issues, `classes.${i}`)}
       render={(item, i) => (
         <>
           <TextField
-            label="标识"
+            label={t("标识")}
             value={item.key}
             onChange={(key) =>
               change(
@@ -752,7 +797,7 @@ function ClassifierFields({
             }
           />
           <TextField
-            label="名称"
+            label={t("名称")}
             value={item.label}
             onChange={(label) =>
               change({
@@ -764,7 +809,7 @@ function ClassifierFields({
             }
           />
           <TextField
-            label="说明"
+            label={t("说明")}
             value={item.description ?? ""}
             onChange={(description) =>
               change({
@@ -794,6 +839,7 @@ function ReviewRules({
   issues: Issues;
   variables: Variable[];
 }) {
+  const t = useT();
   const set = (i: number, rule: ReviewRule) =>
     change({
       ...node,
@@ -801,7 +847,7 @@ function ReviewRules({
     });
   return (
     <ListEditor
-      label="审查清单"
+      label={t("审查清单")}
       items={node.rules}
       min={1}
       max={20}
@@ -815,7 +861,7 @@ function ReviewRules({
       render={(item, i) => (
         <>
           <SelectField
-            label="这一项"
+            label={t("这一项")}
             value={typeof item === "string" ? "ref" : "rule"}
             onChange={(kind) =>
               set(
@@ -826,32 +872,34 @@ function ReviewRules({
               )
             }
             choices={[
-              { value: "rule", label: "一条规则" },
-              { value: "ref", label: "引用一组规则" },
+              { value: "rule", label: t("一条规则") },
+              { value: "ref", label: t("引用一组规则") },
             ]}
           />
           {typeof item === "string" ? (
             <RefField
-              label="规则的引用"
+              label={t("规则的引用")}
               value={item}
               variables={variables}
-              help="比如项目的约定 {{project.plan_rules}}、{{project.code_rules}}；没有规则时这一项不算。"
+              help={t(
+                "比如项目的约定 {{project.plan_rules}}、{{project.code_rules}}；没有规则时这一项不算。",
+              )}
               onChange={(value) => set(i, value)}
             />
           ) : (
             <>
               <TextField
-                label="标识"
+                label={t("标识")}
                 value={item.key}
                 onChange={(key) => set(i, { ...item, key })}
               />
               <TextField
-                label="规则名称"
+                label={t("规则名称")}
                 value={item.title}
                 onChange={(title) => set(i, { ...item, title })}
               />
               <TextField
-                label="怎么判断"
+                label={t("怎么判断")}
                 value={item.instruction ?? ""}
                 onChange={(instruction) => set(i, { ...item, instruction })}
               />
@@ -874,6 +922,7 @@ function ConditionFields({
   issues: Issues;
   variables: Variable[];
 }) {
+  const t = useT();
   const setRule = (
     i: number,
     rule: ConditionNode["rules"][number],
@@ -887,14 +936,14 @@ function ConditionFields({
     );
   return (
     <ListEditor
-      label="规则"
+      label={t("规则")}
       items={node.rules}
       min={1}
       max={10}
       onChange={(rules) => change({ ...node, rules })}
       make={(): ConditionNode["rules"][number] => ({
         key: `rule_${node.rules.length + 1}`,
-        label: "新规则",
+        label: t("新规则"),
         match: "all",
         conditions: [{ left: "", op: "not_empty" }],
       })}
@@ -902,28 +951,28 @@ function ConditionFields({
       render={(rule, i) => (
         <>
           <TextField
-            label="标识"
+            label={t("标识")}
             value={rule.key}
             onChange={(key) => setRule(i, { ...rule, key }, key)}
           />
           <TextField
-            label="名称"
+            label={t("名称")}
             value={rule.label}
             onChange={(label) => setRule(i, { ...rule, label })}
           />
           <SelectField
-            label="满足"
+            label={t("满足")}
             value={rule.match}
             choices={[
-              { value: "all", label: "全部条件" },
-              { value: "any", label: "任一条件" },
+              { value: "all", label: t("全部条件") },
+              { value: "any", label: t("任一条件") },
             ]}
             onChange={(match) =>
               setRule(i, { ...rule, match: match as "all" | "any" })
             }
           />
           <ListEditor
-            label="条件"
+            label={t("条件")}
             items={rule.conditions}
             min={1}
             max={10}
@@ -932,15 +981,15 @@ function ConditionFields({
             render={(condition, _j, update) => (
               <>
                 <RefField
-                  label="左边"
+                  label={t("左边")}
                   value={text(condition.left)}
                   variables={variables}
                   onChange={(left) => update({ ...condition, left })}
                 />
                 <SelectField
-                  label="比较"
+                  label={t("比较")}
                   value={condition.op}
-                  choices={operators}
+                  choices={translated(t, operators)}
                   onChange={(op) => {
                     const next: Condition = {
                       ...condition,
@@ -953,7 +1002,7 @@ function ConditionFields({
                 />
                 {condition.op !== "empty" && condition.op !== "not_empty" && (
                   <RefField
-                    label="右边"
+                    label={t("右边")}
                     value={text(condition.right)}
                     variables={variables}
                     onChange={(right) => update({ ...condition, right })}
@@ -979,6 +1028,7 @@ function HumanFields({
   issues: Issues;
   variables: Variable[];
 }) {
+  const t = useT();
   const base = {
     id: node.id,
     type: node.type,
@@ -992,11 +1042,11 @@ function HumanFields({
   return (
     <>
       <SelectField
-        label="处理方式"
+        label={t("处理方式")}
         value={node.mode}
         choices={[
-          { value: "approval", label: "确认：选一个选项" },
-          { value: "form", label: "填写：填一张表" },
+          { value: "approval", label: t("确认：选一个选项") },
+          { value: "form", label: t("填写：填一张表") },
         ]}
         onChange={(mode) =>
           change(
@@ -1007,7 +1057,7 @@ function HumanFields({
                   fields: [
                     {
                       key: "value",
-                      label: "内容",
+                      label: t("内容"),
                       type: "text",
                       required: true,
                     },
@@ -1017,8 +1067,8 @@ function HumanFields({
                   ...base,
                   mode: "approval",
                   options: [
-                    { key: "approve", label: "确认" },
-                    { key: "reject", label: "驳回" },
+                    { key: "approve", label: t("确认") },
+                    { key: "reject", label: t("驳回") },
                   ],
                   comment_required: [],
                 },
@@ -1026,24 +1076,24 @@ function HumanFields({
         }
       />
       <RefField
-        label="提示"
+        label={t("提示")}
         value={node.prompt}
         variables={variables}
         issues={issuesUnder(issues, "prompt")}
         onChange={(prompt) => change({ ...node, prompt })}
       />
       <RefField
-        label="给处理人看的内容"
+        label={t("给处理人看的内容")}
         multiline
         value={node.show ?? ""}
         variables={variables}
         issues={issuesUnder(issues, "show")}
-        help="按 Markdown 显示，可选。"
+        help={t("按 Markdown 显示，可选。")}
         onChange={(show) => change({ ...node, show })}
       />
       {node.mode === "approval" ? (
         <ListEditor<HumanOption>
-          label="选项"
+          label={t("选项")}
           items={node.options}
           min={2}
           max={5}
@@ -1065,7 +1115,7 @@ function HumanFields({
           }
           make={() => ({
             key: `option_${node.options.length + 1}`,
-            label: "新选项",
+            label: t("新选项"),
           })}
           issues={(i) => issuesUnder(issues, `options.${i}`)}
           render={(option, i) => {
@@ -1073,7 +1123,7 @@ function HumanFields({
             return (
               <>
                 <TextField
-                  label="标识"
+                  label={t("标识")}
                   value={option.key}
                   onChange={(key) =>
                     change(
@@ -1096,7 +1146,7 @@ function HumanFields({
                   }
                 />
                 <TextField
-                  label="按钮文字"
+                  label={t("按钮文字")}
                   value={option.label}
                   onChange={(label) =>
                     change({
@@ -1109,21 +1159,21 @@ function HumanFields({
                 />
                 {option.requires != null && option.requires !== "" && (
                   <ReadOnlySetting
-                    label="显示条件"
+                    label={t("显示条件")}
                     issues={issuesUnder(issues, `options.${i}.requires`)}
                   >
                     {Array.isArray(option.requires)
-                      ? option.requires.map(settingText).join("、")
+                      ? option.requires.map(settingText).join(t("、"))
                       : settingText(option.requires)}
                     <span className="muted">
                       {Array.isArray(option.requires)
-                        ? "（都成立时才显示这个选项）"
-                        : "（成立时才显示这个选项）"}
+                        ? t("（都成立时才显示这个选项）")
+                        : t("（成立时才显示这个选项）")}
                     </span>
                   </ReadOnlySetting>
                 )}
                 <CheckField
-                  label="必须写意见"
+                  label={t("必须写意见")}
                   checked={required.includes(option.key)}
                   onChange={(on) =>
                     change({
@@ -1140,7 +1190,7 @@ function HumanFields({
         />
       ) : (
         <InputList<FormField>
-          label="表单字段"
+          label={t("表单字段")}
           inputs={node.fields}
           prefix="fields"
           issues={issues}
@@ -1191,6 +1241,7 @@ function ReadOnlySetting({
 // The extended settings written in a template or an imported file: shown, not edited,
 // and saved as they are.
 function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
+  const t = useT();
   const fields = node.mode === "approval" ? node.fields : null;
   const data = node.data && Object.entries(node.data);
   const asked =
@@ -1205,7 +1256,7 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
                 ? String(field.label)
                 : settingText(field),
             )
-            .join("、")
+            .join(t("、"))
         : "";
   const changed =
     node.mode === "approval" && node.changed_branch
@@ -1214,25 +1265,34 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
       : "";
   const compared =
     node.mode === "approval" && node.changes
-      ? `${settingText(node.changes.of)} 里的${(node.changes.lists ?? [])
-          .map((item) => item.name || item.path)
-          .join("、")}`
+      ? t("{source} 里的{lists}", {
+          source: settingText(node.changes.of),
+          lists: (node.changes.lists ?? [])
+            .map((item) => item.name || item.path)
+            .join(t("、")),
+        })
       : "";
   if (!node.view && !data?.length && !asked && !changed && !compared)
     return null;
   return (
-    <section className="human-extras" aria-label="扩展设置">
-      <h4>扩展设置</h4>
+    <section className="human-extras" aria-label={t("扩展设置")}>
+      <h4>{t("扩展设置")}</h4>
       <p className="muted">
-        写在模板或导入的文件里，这里只能查看，保存时原样保留。
+        {t("写在模板或导入的文件里，这里只能查看，保存时原样保留。")}
       </p>
       {node.view && (
-        <ReadOnlySetting label="页面样式" issues={issuesUnder(issues, "view")}>
+        <ReadOnlySetting
+          label={t("页面样式")}
+          issues={issuesUnder(issues, "view")}
+        >
           <code>{node.view}</code>
         </ReadOnlySetting>
       )}
       {data && data.length > 0 && (
-        <ReadOnlySetting label="页面数据" issues={issuesUnder(issues, "data")}>
+        <ReadOnlySetting
+          label={t("页面数据")}
+          issues={issuesUnder(issues, "data")}
+        >
           <ul>
             {data.map(([key, value]) => (
               <li key={key}>
@@ -1244,7 +1304,7 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
       )}
       {asked && (
         <ReadOnlySetting
-          label="要回答的题"
+          label={t("要回答的题")}
           issues={issuesUnder(issues, "fields")}
         >
           {asked}
@@ -1252,15 +1312,15 @@ function HumanExtras({ node, issues }: { node: HumanNode; issues: Issues }) {
       )}
       {changed && (
         <ReadOnlySetting
-          label="改了建议答案或写了意见时按"
+          label={t("改了建议答案或写了意见时按")}
           issues={issuesUnder(issues, "changed_branch")}
         >
-          「{changed}」处理
+          {t("「{branch}」处理", { branch: changed })}
         </ReadOnlySetting>
       )}
       {compared && (
         <ReadOnlySetting
-          label="和上次看到的比改了什么"
+          label={t("和上次看到的比改了什么")}
           issues={issuesUnder(issues, "changes")}
         >
           {compared}
@@ -1283,6 +1343,7 @@ function DataCheckFields({
   change: Change;
   issues: Issues;
 }) {
+  const t = useT();
   const variables = variablesFor(config, node.id);
   const at = (path: string) => issuesUnder(issues, path);
   const golden = node.golden ?? {};
@@ -1325,7 +1386,7 @@ function DataCheckFields({
         onChange={(checks) => change({ ...node, checks })}
       />
       <ListEditor
-        label="引用的检查"
+        label={t("引用的检查")}
         items={node.include ?? []}
         max={5}
         make={() => ""}
@@ -1333,10 +1394,10 @@ function DataCheckFields({
         onChange={(include) => change({ ...node, include })}
         render={(value, _i, update) => (
           <RefField
-            label="检查列表"
+            label={t("检查列表")}
             value={value}
             variables={variables}
-            help="引用一个检查列表，比如方案里的 {{check_plan.checks}}。"
+            help={t("引用一个检查列表，比如方案里的 {{check_plan.checks}}。")}
             onChange={update}
           />
         )}
@@ -1346,49 +1407,53 @@ function DataCheckFields({
           {msg}
         </p>
       ))}
-      <fieldset className="list-editor" aria-label="和老系统对比">
-        <legend>和老系统对比</legend>
+      <fieldset className="list-editor" aria-label={t("和老系统对比")}>
+        <legend>{t("和老系统对比")}</legend>
         <small className="muted">
-          填了老系统结果表时，自动加一条按主键逐行对比的检查；运行时值为空就不加。
+          {t(
+            "填了老系统结果表时，自动加一条按主键逐行对比的检查；运行时值为空就不加。",
+          )}
         </small>
         <RefField
-          label="老系统结果表"
+          label={t("老系统结果表")}
           value={golden.expected ?? ""}
           variables={variables}
           issues={at("golden.expected")}
-          help="catalog.schema.table，或引用开始节点的输入。"
+          help={t("catalog.schema.table，或引用开始节点的输入。")}
           onChange={(value) => setGolden("expected", value)}
         />
         <RefField
-          label="结果表"
+          label={t("结果表")}
           value={golden.table ?? ""}
           variables={variables}
           issues={at("golden.table")}
           onChange={(value) => setGolden("table", value)}
         />
         <RefField
-          label="主键"
+          label={t("主键")}
           value={keys}
           variables={variables}
           issues={at("golden.keys")}
-          help="列名用逗号分隔，或引用一个列名列表。"
+          help={t("列名用逗号分隔，或引用一个列名列表。")}
           onChange={(value) => setGolden("keys", value)}
         />
         <RefField
-          label="容差（选填）"
+          label={t("容差（选填）")}
           value={golden.tolerance === undefined ? "" : String(golden.tolerance)}
           variables={variables}
           issues={at("golden.tolerance")}
-          help="数字列差的绝对值不超过它算一致，比如 0.001；留空时要完全相等。"
+          help={t(
+            "数字列差的绝对值不超过它算一致，比如 0.001；留空时要完全相等。",
+          )}
           onChange={(value) => setGolden("tolerance", value)}
         />
         <SelectField
-          label="不一致时"
+          label={t("不一致时")}
           value={golden.severity ?? ""}
           choices={[
-            { value: "", label: "算错误（检查不通过）" },
-            { value: "warn", label: "只警告" },
-            { value: "info", label: "只提示" },
+            { value: "", label: t("算错误（检查不通过）") },
+            { value: "warn", label: t("只警告") },
+            { value: "info", label: t("只提示") },
           ]}
           onChange={(value) => setGolden("severity", value)}
         />
@@ -1399,11 +1464,13 @@ function DataCheckFields({
         ))}
       </fieldset>
       <RefField
-        label="只在这个值为 true 时检查"
+        label={t("只在这个值为 true 时检查")}
         value={node.only_if ?? ""}
         variables={variables}
         issues={at("only_if")}
-        help="通常引用试算是否通过；不为 true 时不读表，直接走“不通过”。留空时总是检查。"
+        help={t(
+          "通常引用试算是否通过；不为 true 时不读表，直接走“不通过”。留空时总是检查。",
+        )}
         onChange={(value) => {
           const rest = { ...node };
           delete rest.only_if;
@@ -1427,6 +1494,7 @@ function AppCallFields({
   issues: Issues;
   change: Change;
 }) {
+  const t = useT();
   const at = (path: string) => issuesUnder(issues, path);
   const [apps, setApps] = useState<AppSummary[] | null>(null);
   const [called, setCalled] = useState<AppDetail | null>(null);
@@ -1465,27 +1533,34 @@ function AppCallFields({
   return (
     <>
       <SelectField
-        label="调用哪个应用"
+        label={t("调用哪个应用")}
         value={node.app}
         choices={[
-          { value: "", label: apps === null ? "正在加载应用…" : "请选择应用" },
+          {
+            value: "",
+            label: apps === null ? t("正在加载应用…") : t("请选择应用"),
+          },
           ...(apps ?? []).map((item) => ({
             value: item.app,
-            label: `${item.title}（${item.app}）`,
+            label: t("{title}（{id}）", { title: item.title, id: item.app }),
           })),
           ...(node.app && apps && !apps.some((item) => item.app === node.app)
             ? [{ value: node.app, label: node.app }]
             : []),
         ]}
         issues={at("app")}
-        help="只能调用编排应用，用它当时的生效版本；它不能有人工确认的步骤。"
+        help={t(
+          "只能调用编排应用，用它当时的生效版本；它不能有人工确认的步骤。",
+        )}
         onChange={(app) => change({ ...node, app, input: {}, outputs: [] })}
       />
       {error && <p className="field-error">{error}</p>}
       {inputs.map((field) => (
         <RefField
           key={field.key}
-          label={`输入：${field.label}${field.required ? "（必填）" : ""}`}
+          label={t(field.required ? "输入：{label}（必填）" : "输入：{label}", {
+            label: field.label,
+          })}
           value={
             typeof node.input[field.key] === "string"
               ? (node.input[field.key] as string)
@@ -1505,7 +1580,7 @@ function AppCallFields({
       ))}
       {shown && (
         <fieldset className="list-editor">
-          <legend>取出的结果字段</legend>
+          <legend>{t("取出的结果字段")}</legend>
           {results.length ? (
             results.map((key) => (
               <CheckField
@@ -1523,12 +1598,13 @@ function AppCallFields({
               />
             ))
           ) : (
-            <p className="muted">这个应用的结束节点没有结果字段。</p>
+            <p className="muted">{t("这个应用的结束节点没有结果字段。")}</p>
           )}
           <small className="muted">
-            勾上的字段可以在后面用 {"{{"}
-            {node.id}.字段{"}}"} 引用；整个结果是 {"{{"}
-            {node.id}.result{"}}"}。
+            {t("勾上的字段可以在后面用 {field} 引用；整个结果是 {result}。", {
+              field: "{{" + node.id + "." + t("字段#变量名") + "}}",
+              result: `{{${node.id}.result}}`,
+            })}
           </small>
           <FieldIssues
             id={`${node.id}-outputs-issues`}
@@ -1537,12 +1613,12 @@ function AppCallFields({
         </fieldset>
       )}
       <NumberField
-        label="最长等待（秒）"
+        label={t("最长等待（秒）")}
         value={node.timeout_seconds ?? 600}
         min={10}
         max={3600}
         issues={at("timeout_seconds")}
-        help="超过这个时间还没结束，就取消它，这一步按超时失败。"
+        help={t("超过这个时间还没结束，就取消它，这一步按超时失败。")}
         onChange={(timeout_seconds) => change({ ...node, timeout_seconds })}
       />
     </>
@@ -1564,6 +1640,7 @@ function GitPrFields({
   issues: Issues;
   change: Change;
 }) {
+  const t = useT();
   const at = (path: string) => issuesUnder(issues, path);
   const sources = options.datasources.filter(isCodeRepo);
   const [repos, setRepos] = useState<CodeRepos | null>(null);
@@ -1592,14 +1669,14 @@ function GitPrFields({
   return (
     <>
       <SelectField
-        label="代码仓库"
+        label={t("代码仓库")}
         value={node.datasource}
         choices={[
           {
             value: "",
             label: sources.length
-              ? "请选择代码仓库"
-              : "还没有登记代码仓库（在「数据源与工具」页登记）",
+              ? t("请选择代码仓库")
+              : t("还没有登记代码仓库（在「数据源与工具」页登记）"),
           },
           ...sources.map((item) => ({
             value: item.datasource_id,
@@ -1610,13 +1687,17 @@ function GitPrFields({
             ? [
                 {
                   value: node.datasource,
-                  label: `${node.datasource}（不是代码仓库）`,
+                  label: t("{datasource}（不是代码仓库）", {
+                    datasource: node.datasource,
+                  }),
                 },
               ]
             : []),
         ]}
         issues={at("datasource")}
-        help="经 Git 连接器接入的 GitHub 或 Bitbucket。平台只在自己的 aep/ 分支上提交，合不合并由人决定。"
+        help={t(
+          "经 Git 连接器接入的 GitHub 或 Bitbucket。平台只在自己的 aep/ 分支上提交，合不合并由人决定。",
+        )}
         onChange={(datasource) => {
           setRepos(null);
           change({ ...node, datasource });
@@ -1625,13 +1706,16 @@ function GitPrFields({
       {error && <p className="field-error">{error}</p>}
       {shown && shown.repos.length ? (
         <SelectField
-          label="仓库"
+          label={t("仓库")}
           value={node.repo}
           choices={[
-            { value: "", label: "请选择仓库" },
+            { value: "", label: t("请选择仓库") },
             ...shown.repos.map((item) => ({
               value: item.repo,
-              label: `${item.repo}（默认分支 ${item.default_branch}）`,
+              label: t("{repo}（默认分支 {default_branch}）", {
+                repo: item.repo,
+                default_branch: item.default_branch,
+              }),
             })),
             ...(node.repo &&
             !shown.repos.some((item) => item.repo === node.repo)
@@ -1643,71 +1727,83 @@ function GitPrFields({
         />
       ) : (
         <TextField
-          label="仓库"
+          label={t("仓库")}
           value={node.repo}
           issues={at("repo")}
-          help="GitHub 写 owner/仓库，Bitbucket 写 PROJECT/仓库。"
+          help={t("GitHub 写 owner/仓库，Bitbucket 写 PROJECT/仓库。")}
           onChange={set("repo")}
         />
       )}
       <RefField
-        label="要提交的文件"
+        label={t("要提交的文件")}
         value={node.files}
         variables={variables}
         issues={at("files")}
-        help="引用一个「路径: 文本」对象，比如检查并打包节点的 {{check_code.bundle.files}}；值为 null 的路径会被删除。"
+        help={t(
+          "引用一个「路径: 文本」对象，比如检查并打包节点的 {{check_code.bundle.files}}；值为 null 的路径会被删除。",
+        )}
         onChange={set("files")}
       />
       <RefField
-        label="放在哪个目录"
+        label={t("放在哪个目录")}
         value={node.directory ?? ""}
         variables={variables}
         issues={at("directory")}
-        help="文件放在仓库的这个目录下，比如 pipelines/{{check_code.bundle.name}}；空着是仓库根目录。"
+        help={t(
+          "文件放在仓库的这个目录下，比如 pipelines/{{check_code.bundle.name}}；空着是仓库根目录。",
+        )}
         onChange={set("directory")}
       />
       <CheckField
-        label="用这些文件替换整个目录（删掉目录里没有提交的旧文件）"
+        label={t("用这些文件替换整个目录（删掉目录里没有提交的旧文件）")}
         checked={node.replace_directory ?? false}
         onChange={(replace_directory) => change({ ...node, replace_directory })}
       />
       <RefField
-        label="PR 标题"
+        label={t("PR 标题")}
         value={node.pr_title}
         variables={variables}
         issues={at("pr_title")}
         onChange={set("pr_title")}
       />
       <RefField
-        label="PR 说明"
+        label={t("PR 说明")}
         value={node.body ?? ""}
         variables={variables}
         issues={at("body")}
         multiline
-        help="空着时写上运行的链接。"
+        help={t("空着时写上运行的链接。")}
         onChange={set("body")}
       />
       <RefField
-        label="提交信息"
+        label={t("提交信息")}
         value={node.message ?? ""}
         variables={variables}
         issues={at("message")}
-        help="可以带工单号，比如 {{start.ticket}} 新增管道；空着用 PR 标题。"
+        help={t(
+          "可以带工单号，比如 {{start.ticket}} 新增管道；空着用 PR 标题。",
+        )}
         onChange={set("message")}
       />
       <TextField
-        label="目标分支"
+        label={t("目标分支")}
         value={node.base ?? ""}
         issues={at("base")}
-        help="PR 合到哪个分支，空着用仓库的默认分支。"
+        help={t("PR 合到哪个分支，空着用仓库的默认分支。")}
         onChange={set("base")}
       />
       <RefField
-        label="提交到的分支"
+        label={t("提交到的分支")}
         value={node.branch ?? ""}
         variables={variables}
         issues={at("branch")}
-        help={`空着时平台按运行起名：${shown?.branch_prefix ?? "aep/"}runs/<运行>/${node.id}。要以 ${shown?.branch_prefix ?? "aep/"} 开头；同一个分支再提交会更新原来的 PR。`}
+        help={t(
+          "空着时平台按运行起名：{prefix}runs/<运行>/{id}。要以 {prefix} 开头；同一个分支再提交会更新原来的 PR。",
+          {
+            prefix: shown?.branch_prefix ?? "aep/",
+            id: node.id,
+          },
+        )}
         onChange={set("branch")}
       />
     </>
@@ -1727,6 +1823,7 @@ export function NodeSettings({
   issues: Issues;
   change: Change;
 }) {
+  const t = useT();
   const variables = variablesFor(config, node.id);
   const at = (path: string) => issuesUnder(issues, path);
   switch (node.type) {
@@ -1743,7 +1840,7 @@ export function NodeSettings({
             onChange={(datasource) => change({ ...node, datasource })}
           />
           <RefField
-            label={node.type === "etl_profile" ? "表范围" : "表"}
+            label={node.type === "etl_profile" ? t("表范围") : t("表")}
             multiline
             value={
               Array.isArray(node.tables) ? node.tables.join("\n") : node.tables
@@ -1752,14 +1849,14 @@ export function NodeSettings({
             issues={at("tables")}
             help={
               node.type === "etl_profile"
-                ? "schema.table 或 schema.*，逗号或换行分隔；留空为全部"
-                : "引用源表列表，或填写 schema.table，逗号或换行分隔。"
+                ? t("schema.table 或 schema.*，逗号或换行分隔；留空为全部")
+                : t("引用源表列表，或填写 schema.table，逗号或换行分隔。")
             }
             onChange={(tables) => change({ ...node, tables })}
           />
           {node.type === "etl_profile" ? (
             <NumberField
-              label="样本行数"
+              label={t("样本行数")}
               value={node.sample_rows}
               min={1}
               max={20}
@@ -1768,7 +1865,7 @@ export function NodeSettings({
             />
           ) : (
             <NumberField
-              label="每表最多行数"
+              label={t("每表最多行数")}
               value={node.max_rows}
               min={1}
               max={1_000_000}
@@ -1782,21 +1879,21 @@ export function NodeSettings({
       return (
         <>
           <RefField
-            label="模型回答"
+            label={t("模型回答")}
             value={node.reply}
             variables={variables}
             issues={at("reply")}
             onChange={(reply) => change({ ...node, reply })}
           />
           <RefField
-            label="探查结果"
+            label={t("探查结果")}
             value={node.profile}
             variables={variables}
             issues={at("profile")}
             onChange={(profile) => change({ ...node, profile })}
           />
           <ListEditor
-            label="知识库命中"
+            label={t("知识库命中")}
             items={node.hits}
             max={5}
             make={() => ""}
@@ -1804,7 +1901,7 @@ export function NodeSettings({
             onChange={(hits) => change({ ...node, hits })}
             render={(value, _i, update) => (
               <RefField
-                label="命中引用"
+                label={t("命中引用")}
                 value={value}
                 variables={variables}
                 onChange={update}
@@ -1817,15 +1914,15 @@ export function NodeSettings({
             </p>
           ))}
           <RefField
-            label="代码语言"
+            label={t("代码语言")}
             value={node.language ?? ""}
             variables={variables}
             issues={at("language")}
-            help="可引用 pyspark 或 sql；留空时使用方案里的语言。"
+            help={t("可引用 pyspark 或 sql；留空时使用方案里的语言。")}
             onChange={(language) => change({ ...node, language })}
           />
           <NumberField
-            label="最多连续重写次数"
+            label={t("最多连续重写次数")}
             value={node.max_attempts}
             min={1}
             max={5}
@@ -1844,10 +1941,10 @@ export function NodeSettings({
         <>
           {(
             [
-              ["reply", "模型回答"],
-              ["plan", "方案"],
-              ["source_name", "数据源名称"],
-              ["name", "bundle 名"],
+              ["reply", t("模型回答")],
+              ["plan", t("方案")],
+              ["source_name", t("数据源名称")],
+              ["name", t("bundle 名")],
             ] as const
           ).map(([key, label]) => (
             <RefField
@@ -1860,7 +1957,7 @@ export function NodeSettings({
             />
           ))}
           <NumberField
-            label="最多连续重写次数"
+            label={t("最多连续重写次数")}
             value={node.max_attempts}
             min={1}
             max={5}
@@ -1895,7 +1992,7 @@ export function NodeSettings({
             onChange={(bundle) => change({ ...node, bundle })}
           />
           <NumberField
-            label="最多运行次数"
+            label={t("最多运行次数")}
             value={node.max_runs}
             min={1}
             max={3}
@@ -1903,12 +2000,12 @@ export function NodeSettings({
             onChange={(max_runs) => change({ ...node, max_runs })}
           />
           <NumberField
-            label="预览行数"
+            label={t("预览行数")}
             value={node.preview_rows}
             min={0}
             max={100}
             issues={at("preview_rows")}
-            help="0 表示不预览。"
+            help={t("0 表示不预览。")}
             onChange={(preview_rows) => change({ ...node, preview_rows })}
           />
         </>
@@ -1943,18 +2040,22 @@ export function NodeSettings({
             onChange={(bundle) => change({ ...node, bundle })}
           />
           <RefField
-            label="定时（Quartz cron）"
+            label={t("定时（Quartz cron）")}
             value={node.schedule ?? ""}
             variables={variables}
             issues={at("schedule")}
-            help="如每天 2 点：0 0 2 * * ?。可以引用上线审批的回答（如 {{release_review.values}}，取其中的 schedule）；空着用平台默认的定时。"
+            help={t(
+              "如每天 2 点：0 0 2 * * ?。可以引用上线审批的回答（如 {{release_review.values}}，取其中的 schedule）；空着用平台默认的定时。",
+            )}
             onChange={(schedule) => change({ ...node, schedule })}
           />
           <TextField
-            label="上线环境"
+            label={t("上线环境")}
             value={node.environment ?? "prod"}
             issues={at("environment")}
-            help="只对绑定项目的运行有用：上线到项目的哪个环境。不绑定项目时上线到平台的 prod。"
+            help={t(
+              "只对绑定项目的运行有用：上线到项目的哪个环境。不绑定项目时上线到平台的 prod。",
+            )}
             onChange={(environment) => change({ ...node, environment })}
           />
         </>
@@ -1963,15 +2064,17 @@ export function NodeSettings({
       return (
         <>
           <SelectField
-            label="使用项目"
+            label={t("使用项目")}
             value={node.project ?? ""}
             choices={[
-              { value: "", label: "不用项目" },
-              { value: "optional", label: "可以选项目（选填）" },
-              { value: "required", label: "必须选一个项目" },
+              { value: "", label: t("不用项目") },
+              { value: "optional", label: t("可以选项目（选填）") },
+              { value: "required", label: t("必须选一个项目") },
             ]}
             issues={at("project")}
-            help="用项目时，新建运行要选项目、环境并填运行参数；节点里可以引用 {{project.字段}} 和 {{param.参数标识}}。"
+            help={t(
+              "用项目时，新建运行要选项目、环境并填运行参数；节点里可以引用 {{project.字段}} 和 {{param.参数标识}}。",
+            )}
             onChange={(value) => {
               const { project: _old, ...rest } = node;
               void _old;
@@ -1983,7 +2086,7 @@ export function NodeSettings({
             }}
           />
           <InputList
-            label="输入字段"
+            label={t("输入字段")}
             inputs={node.inputs}
             prefix="inputs"
             issues={issues}
@@ -1997,7 +2100,7 @@ export function NodeSettings({
       return (
         <>
           <fieldset className="list-editor">
-            <legend>知识库（1–5 个）</legend>
+            <legend>{t("知识库（1–5 个）")}</legend>
             <KnowledgePicker
               options={options.knowledge_bases ?? []}
               value={node.knowledge_bases}
@@ -2013,14 +2116,16 @@ export function NodeSettings({
             ))}
           </fieldset>
           <SelectField
-            label="取资料的方式"
+            label={t("取资料的方式")}
             value={node.mode ?? "search"}
             choices={[
-              { value: "search", label: "检索相关片段" },
-              { value: "full", label: "整篇放进去" },
+              { value: "search", label: t("检索相关片段") },
+              { value: "full", label: t("整篇放进去") },
             ]}
             issues={at("mode")}
-            help="资料是一份要从头到尾照着做的短说明时用整篇：不检索，知识库里所有文档的全部片段按顺序放进 context，超过字数上限时节点报错，不截断。"
+            help={t(
+              "资料是一份要从头到尾照着做的短说明时用整篇：不检索，知识库里所有文档的全部片段按顺序放进 context，超过字数上限时节点报错，不截断。",
+            )}
             onChange={(mode) => {
               const next = { ...node };
               if (mode === "full") {
@@ -2035,23 +2140,23 @@ export function NodeSettings({
           />
           {node.mode === "full" ? (
             <NumberField
-              label="字数上限"
+              label={t("字数上限")}
               value={node.max_chars ?? 40000}
               min={1000}
               max={120000}
               issues={at("max_chars")}
-              help="1000–120000 个字符；知识库的正文超过它时节点报错。"
+              help={t("1000–120000 个字符；知识库的正文超过它时节点报错。")}
               onChange={(max_chars) => change({ ...node, max_chars })}
             />
           ) : (
             <>
               <RefField
-                label="检索问题"
+                label={t("检索问题")}
                 value={node.query}
                 multiline
                 variables={variables}
                 issues={at("query")}
-                help="最多 2000 字符，可引用前面节点的变量。"
+                help={t("最多 2000 字符，可引用前面节点的变量。")}
                 onChange={(query) => change({ ...node, query })}
               />
               <NumberField
@@ -2101,16 +2206,16 @@ export function NodeSettings({
             issues={issues}
           />
           <RefField
-            label="系统提示词"
+            label={t("系统提示词")}
             multiline
             value={node.system ?? ""}
             variables={variables}
             issues={at("system")}
-            help="可选，拼在 Skill 正文后面。"
+            help={t("可选，拼在 Skill 正文后面。")}
             onChange={(system) => change({ ...node, system })}
           />
           <RefField
-            label="提示词"
+            label={t("提示词")}
             multiline
             rows={6}
             value={node.prompt}
@@ -2119,11 +2224,11 @@ export function NodeSettings({
             onChange={(prompt) => change({ ...node, prompt })}
           />
           <SelectField
-            label="输出方式"
+            label={t("输出方式")}
             value={node.output.kind}
             choices={[
-              { value: "text", label: "一段文字" },
-              { value: "json", label: "几个字段（JSON）" },
+              { value: "text", label: t("一段文字") },
+              { value: "json", label: t("几个字段（JSON）") },
             ]}
             onChange={(kind) =>
               change({
@@ -2142,14 +2247,14 @@ export function NodeSettings({
           />
           {node.output.kind === "text" && (
             <CheckField
-              label="回答不写进运行过程"
+              label={t("回答不写进运行过程")}
               checked={Boolean(node.quiet)}
               onChange={(quiet) => change({ ...node, quiet })}
             />
           )}
           {node.output.kind === "json" && (
             <OutputFields
-              label="输出字段"
+              label={t("输出字段")}
               fields={node.output.fields}
               prefix="output.fields"
               issues={issues}
@@ -2171,14 +2276,14 @@ export function NodeSettings({
             issues={issues}
           />
           <RefField
-            label="要分类的文本"
+            label={t("要分类的文本")}
             value={node.text}
             variables={variables}
             issues={at("text")}
             onChange={(value) => change({ ...node, text: value })}
           />
           <RefField
-            label="补充说明"
+            label={t("补充说明")}
             multiline
             value={node.instruction ?? ""}
             variables={variables}
@@ -2186,7 +2291,7 @@ export function NodeSettings({
             onChange={(instruction) => change({ ...node, instruction })}
           />
           <ClassifierFields node={node} change={change} issues={issues} />
-          <p className="muted">都不匹配时走“都不是”。</p>
+          <p className="muted">{t("都不匹配时走“都不是”。")}</p>
         </>
       );
     case "llm_review":
@@ -2199,24 +2304,24 @@ export function NodeSettings({
             issues={issues}
           />
           <RefField
-            label="要审查的内容"
+            label={t("要审查的内容")}
             value={node.subject}
             variables={variables}
             issues={at("subject")}
-            help="一般引用前一步的产出，比如 {{check_plan.plan}}。"
+            help={t("一般引用前一步的产出，比如 {{check_plan.plan}}。")}
             onChange={(subject) => change({ ...node, subject })}
           />
           <RefField
-            label="参考资料"
+            label={t("参考资料")}
             multiline
             value={node.context ?? ""}
             variables={variables}
             issues={at("context")}
-            help="审查员按它判断，比如需求、知识库、项目说明。"
+            help={t("审查员按它判断，比如需求、知识库、项目说明。")}
             onChange={(context) => change({ ...node, context })}
           />
           <RefField
-            label="补充说明"
+            label={t("补充说明")}
             multiline
             value={node.instruction ?? ""}
             variables={variables}
@@ -2235,7 +2340,7 @@ export function NodeSettings({
             </p>
           ))}
           <NumberField
-            label="连续几次没改过来就停"
+            label={t("连续几次没改过来就停")}
             value={node.max_attempts ?? 2}
             min={1}
             max={5}
@@ -2243,10 +2348,10 @@ export function NodeSettings({
             onChange={(max_attempts) => change({ ...node, max_attempts })}
           />
           <SelectField
-            label="没改过来之后"
+            label={t("没改过来之后")}
             value={node.on_stuck ?? "pass"}
             issues={at("on_stuck")}
-            help="交给人时多一个分支「交给人」，一般连到人工节点。"
+            help={t("交给人时多一个分支「交给人」，一般连到人工节点。")}
             onChange={(next) =>
               change({
                 ...node,
@@ -2254,14 +2359,16 @@ export function NodeSettings({
               })
             }
             choices={[
-              { value: "pass", label: "放行，把问题交给后面确认的人" },
-              { value: "branch", label: "交给人决定" },
-              { value: "fail", label: "报错停下" },
+              { value: "pass", label: t("放行，把问题交给后面确认的人") },
+              { value: "branch", label: t("交给人决定") },
+              { value: "fail", label: t("报错停下") },
             ]}
           />
           <p className="muted">
-            有问题时走“重写”，一般连回写这份内容的那一步，并在它的提示词里引用{" "}
-            <code>{`{{${node.id}.problems}}`}</code>。
+            {t(
+              "有问题时走“重写”，一般连回写这份内容的那一步，并在它的提示词里引用 {ref}。",
+              { ref: `{{${node.id}.problems}}` },
+            )}
           </p>
         </>
       );
@@ -2275,7 +2382,7 @@ export function NodeSettings({
             variables={variables}
           />
           <p className="muted">
-            按顺序判断，第一条成立的规则决定下一步；都不成立时走“否则”。
+            {t("按顺序判断，第一条成立的规则决定下一步；都不成立时走“否则”。")}
           </p>
         </>
       );
@@ -2300,7 +2407,7 @@ export function NodeSettings({
             issues={issues}
           />
           <RefField
-            label="任务说明"
+            label={t("任务说明")}
             multiline
             rows={5}
             value={node.task}
@@ -2319,8 +2426,8 @@ export function NodeSettings({
               {msg}
             </p>
           ))}
-          <fieldset className="list-editor" aria-label="知识库">
-            <legend>知识库</legend>
+          <fieldset className="list-editor" aria-label={t("知识库")}>
+            <legend>{t("知识库")}</legend>
             <label className="asset-field retrieval-switch">
               <input
                 type="checkbox"
@@ -2344,7 +2451,8 @@ export function NodeSettings({
                   })
                 }
               />
-              让智能体检索知识库
+
+              {t("让智能体检索知识库")}
             </label>
             {node.knowledge && (
               <>
@@ -2422,16 +2530,16 @@ export function NodeSettings({
           </fieldset>
           {!node.tools.length && !node.knowledge && (
             <p className="field-error" role="alert">
-              至少选一个数据源工具或知识库
+              {t("至少选一个数据源工具或知识库")}
             </p>
           )}
           <NumberField
-            label="最多步数"
+            label={t("最多步数")}
             min={1}
             max={20}
             value={node.max_steps}
             issues={at("max_steps")}
-            help="一次工具调用算一步。"
+            help={t("一次工具调用算一步。")}
             onChange={(max_steps) => change({ ...node, max_steps })}
           />
         </>
@@ -2448,7 +2556,7 @@ export function NodeSettings({
     case "template":
       return (
         <RefField
-          label="模板"
+          label={t("模板")}
           multiline
           rows={6}
           value={node.template}
@@ -2462,7 +2570,7 @@ export function NodeSettings({
       return (
         <>
           <div className="asset-field">
-            <label htmlFor={`code-${node.id}`}>代码</label>
+            <label htmlFor={`code-${node.id}`}>{t("代码")}</label>
             <textarea
               id={`code-${node.id}`}
               className="code-input"
@@ -2475,8 +2583,9 @@ export function NodeSettings({
               }
             />
             <small className="muted">
-              定义 main(inputs) 并返回包含下面返回字段的
-              dict。可用标准库、pandas、numpy，没有网络。
+              {t(
+                "定义 main(inputs) 并返回包含下面返回字段的 dict。可用标准库、pandas、numpy，没有网络。",
+              )}
             </small>
             {at("code").map((msg) => (
               <p className="field-error" key={msg}>
@@ -2485,7 +2594,7 @@ export function NodeSettings({
             ))}
           </div>
           <ListEditor
-            label="输入"
+            label={t("输入")}
             items={entries}
             make={() =>
               [`input_${entries.length + 1}`, ""] as [string, unknown]
@@ -2497,12 +2606,12 @@ export function NodeSettings({
             render={([key, value], _i, update) => (
               <>
                 <TextField
-                  label="名称"
+                  label={t("名称")}
                   value={key}
                   onChange={(name) => update([name, value])}
                 />
                 <RefField
-                  label="值"
+                  label={t("值")}
                   value={text(value)}
                   variables={variables}
                   onChange={(next) => update([key, next])}
@@ -2511,14 +2620,14 @@ export function NodeSettings({
             )}
           />
           <OutputFields
-            label="返回字段"
+            label={t("返回字段")}
             fields={node.outputs}
             prefix="outputs"
             issues={issues}
             onChange={(outputs) => change({ ...node, outputs })}
           />
           <NumberField
-            label="超时秒数"
+            label={t("超时秒数")}
             min={1}
             max={30}
             value={node.timeout_seconds}
@@ -2531,7 +2640,7 @@ export function NodeSettings({
     case "end":
       return (
         <ListEditor
-          label="结果字段"
+          label={t("结果字段")}
           items={node.outputs}
           min={1}
           onChange={(outputs) => change({ ...node, outputs })}
@@ -2543,19 +2652,19 @@ export function NodeSettings({
           render={(output, _i, update) => (
             <>
               <TextField
-                label="字段名"
+                label={t("字段名")}
                 value={output.key}
                 onChange={(key) => update({ ...output, key })}
               />
               <ListEditor
-                label="取值"
+                label={t("取值")}
                 items={output.from}
                 min={1}
                 make={() => ""}
                 onChange={(from) => update({ ...output, from })}
                 render={(ref, _j, set) => (
                   <RefField
-                    label="变量"
+                    label={t("变量")}
                     value={ref}
                     variables={variables}
                     onChange={set}
@@ -2563,7 +2672,7 @@ export function NodeSettings({
                 )}
               />
               <small className="muted">
-                依次取第一个有值的变量，几个分支可以汇到这里。
+                {t("依次取第一个有值的变量，几个分支可以汇到这里。")}
               </small>
             </>
           )}
@@ -2583,16 +2692,19 @@ function StuckField({
   issues: string[];
   onChange: (value: "fail" | "branch") => void;
 }) {
+  const t = useT();
   return (
     <SelectField
-      label="连续不过之后"
+      label={t("连续不过之后")}
       value={value ?? "fail"}
       issues={issues}
-      help="交给人时多一个分支「交给人」，一般连到人工节点：按意见重写，或终止。"
+      help={t(
+        "交给人时多一个分支「交给人」，一般连到人工节点：按意见重写，或终止。",
+      )}
       onChange={(next) => onChange(next === "branch" ? "branch" : "fail")}
       choices={[
-        { value: "fail", label: "报错停下" },
-        { value: "branch", label: "交给人" },
+        { value: "fail", label: t("报错停下") },
+        { value: "branch", label: t("交给人") },
       ]}
     />
   );

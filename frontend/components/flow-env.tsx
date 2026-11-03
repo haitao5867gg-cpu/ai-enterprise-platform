@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "../lib/i18n/client";
 import { useState } from "react";
 import {
   deleteAppSecret,
@@ -35,6 +36,7 @@ function SecretRow({
   onSaved: (secret: Secret) => void;
   onDeclare: (declared: boolean) => void;
 }) {
+  const t = useT();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -52,13 +54,16 @@ function SecretRow({
     }
   }
   return (
-    <li className="secret-row" aria-label={`密钥 ${secret.name}`}>
+    <li
+      className="secret-row"
+      aria-label={t("密钥 {name}", { name: secret.name })}
+    >
       <div>
         <code>{secret.name}</code>
         <span className={`secret-state ${secret.set ? "set" : ""}`}>
-          {secret.set ? "已设置" : "未设置"}
+          {secret.set ? t("已设置") : t("未设置")}
         </span>
-        {!declared && <span className="muted">未在配置中声明</span>}
+        {!declared && <span className="muted">{t("未在配置中声明")}</span>}
       </div>
       <form
         className="secret-form"
@@ -81,20 +86,20 @@ function SecretRow({
         }}
       >
         <label className="sr-only" htmlFor={id}>
-          {secret.name} 的值
+          {t("{name} 的值", { name: secret.name })}
         </label>
         <input
           id={id}
           type="password"
           autoComplete="new-password"
-          placeholder={secret.set ? "输入新值以替换" : "输入密钥的值"}
+          placeholder={secret.set ? t("输入新值以替换") : t("输入密钥的值")}
           value={value}
           maxLength={4096}
           disabled={busy}
           onChange={(event) => setValue(event.target.value)}
         />
         <button className="button secondary" disabled={busy || !value}>
-          设置
+          {t("设置")}
         </button>
         {secret.set && (
           <button
@@ -102,7 +107,11 @@ function SecretRow({
             className="button secondary"
             disabled={busy}
             onClick={() => {
-              if (!window.confirm(`确定清除密钥 ${secret.name} 的值吗？`))
+              if (
+                !window.confirm(
+                  t("确定清除密钥 {name} 的值吗？", { name: secret.name }),
+                )
+              )
                 return;
               void run(async () => {
                 await deleteAppSecret(app, secret.name);
@@ -110,7 +119,7 @@ function SecretRow({
               });
             }}
           >
-            清除
+            {t("清除")}
           </button>
         )}
         <button
@@ -118,7 +127,7 @@ function SecretRow({
           className="text-button"
           onClick={() => onDeclare(!declared)}
         >
-          {declared ? "从配置移除" : "在配置中声明"}
+          {declared ? t("从配置移除") : t("在配置中声明")}
         </button>
       </form>
       {error && <p className="field-error">{error}</p>}
@@ -143,10 +152,18 @@ export function FlowEnv({
   issues: Record<string, string>;
   disabled: boolean;
 }) {
+  const t = useT();
   const [name, setName] = useState("");
   const names = [
     ...new Set([...secrets.map((item) => item.name), ...config.env.secrets]),
   ];
+  // Folded while the app has none; a problem in them opens it.
+  const [open, setOpen] = useState(
+    config.env.vars.length > 0 || names.length > 0,
+  );
+  const hasIssues = Object.keys(issues).some(
+    (key) => key.startsWith("vars") || key.startsWith("secrets"),
+  );
   const setEnv = (env: Partial<FlowConfig["env"]>) =>
     setConfig({ ...config, env: { ...config.env, ...env } });
   const declare = (secret: string, on: boolean) =>
@@ -157,146 +174,163 @@ export function FlowEnv({
     });
   const nameIssue =
     name && !NODE_ID_PATTERN.test(name)
-      ? "以小写字母开头，只用小写字母、数字和下划线"
+      ? t("以小写字母开头，只用小写字母、数字和下划线")
       : names.includes(name)
-        ? "已有这个密钥"
+        ? t("已有这个密钥")
         : "";
   return (
-    <section className="panel asset-section" aria-label="常量和密钥">
-      <h2>常量和密钥</h2>
-      <p className="muted">
-        节点里用 {"{{env.名称}}"} 引用常量，常量跟着草稿保存和发布。密钥用{" "}
-        {"{{secret.名称}}"}
-        ，只能写在工具参数里；密钥的值单独保存，不进版本、导出和运行记录。
-      </p>
-      <ListEditor<EnvVar>
-        label="常量"
-        items={config.env.vars}
-        max={50}
-        disabled={disabled}
-        onChange={(vars) => setEnv({ vars })}
-        make={() => ({
-          key: `var_${config.env.vars.length + 1}`,
-          type: "string",
-          value: "",
-          description: "",
-        })}
-        issues={(i) => issuesUnder(issues, `vars.${i}`)}
-        render={(item, _i, update) => (
-          <>
-            <TextField
-              label="名称"
-              value={item.key}
-              onChange={(key) => update({ ...item, key })}
-            />
-            <SelectField
-              label="类型"
-              value={item.type}
-              choices={[
-                { value: "string", label: "文字" },
-                { value: "number", label: "数字" },
-                { value: "boolean", label: "是/否" },
-              ]}
-              onChange={(type) =>
-                update({
-                  ...item,
-                  type: type as EnvVar["type"],
-                  value:
-                    type === "number" ? 0 : type === "boolean" ? false : "",
-                })
-              }
-            />
-            {item.type === "boolean" ? (
-              <CheckField
-                label="值"
-                checked={item.value === true}
-                onChange={(value) => update({ ...item, value })}
-              />
-            ) : (
+    <section
+      className="panel asset-section flow-env"
+      aria-label={t("常量和密钥")}
+    >
+      <details
+        open={open || hasIssues}
+        onToggle={(event) => setOpen(event.currentTarget.open)}
+      >
+        <summary>
+          <h2>{t("常量和密钥")}</h2>
+          <span className="muted">
+            {t("{vars} 个常量，{secrets} 个密钥", {
+              vars: config.env.vars.length,
+              secrets: names.length,
+            })}
+          </span>
+        </summary>
+        <p className="muted">
+          {t(
+            "节点里用 {env} 引用常量，常量跟着草稿保存和发布。密钥用 {secret}，只能写在工具参数里；密钥的值单独保存，不进版本、导出和运行记录。",
+            { env: t("{{env.名称}}"), secret: t("{{secret.名称}}") },
+          )}
+        </p>
+        <ListEditor<EnvVar>
+          label={t("常量")}
+          items={config.env.vars}
+          max={50}
+          disabled={disabled}
+          onChange={(vars) => setEnv({ vars })}
+          make={() => ({
+            key: `var_${config.env.vars.length + 1}`,
+            type: "string",
+            value: "",
+            description: "",
+          })}
+          issues={(i) => issuesUnder(issues, `vars.${i}`)}
+          render={(item, _i, update) => (
+            <>
               <TextField
-                label="值"
-                value={String(item.value)}
-                onChange={(value) =>
+                label={t("名称")}
+                value={item.key}
+                onChange={(key) => update({ ...item, key })}
+              />
+              <SelectField
+                label={t("类型")}
+                value={item.type}
+                choices={[
+                  { value: "string", label: t("文字") },
+                  { value: "number", label: t("数字") },
+                  { value: "boolean", label: t("是/否") },
+                ]}
+                onChange={(type) =>
                   update({
                     ...item,
+                    type: type as EnvVar["type"],
                     value:
-                      item.type === "number" &&
-                      value.trim() &&
-                      Number.isFinite(Number(value))
-                        ? Number(value)
-                        : value,
+                      type === "number" ? 0 : type === "boolean" ? false : "",
                   })
                 }
               />
-            )}
-            <TextField
-              label="说明"
-              value={item.description ?? ""}
-              onChange={(description) => update({ ...item, description })}
-            />
-          </>
-        )}
-      />
-      <h3>密钥</h3>
-      {!names.length && <p className="muted">还没有密钥。</p>}
-      <ul className="secret-list">
-        {names.map((secret) => (
-          <SecretRow
-            key={secret}
-            app={app}
-            secret={
-              secrets.find((item) => item.name === secret) ?? {
-                name: secret,
-                set: false,
-                updated_at: null,
+              {item.type === "boolean" ? (
+                <CheckField
+                  label={t("值")}
+                  checked={item.value === true}
+                  onChange={(value) => update({ ...item, value })}
+                />
+              ) : (
+                <TextField
+                  label={t("值")}
+                  value={String(item.value)}
+                  onChange={(value) =>
+                    update({
+                      ...item,
+                      value:
+                        item.type === "number" &&
+                        value.trim() &&
+                        Number.isFinite(Number(value))
+                          ? Number(value)
+                          : value,
+                    })
+                  }
+                />
+              )}
+              <TextField
+                label={t("说明")}
+                value={item.description ?? ""}
+                onChange={(description) => update({ ...item, description })}
+              />
+            </>
+          )}
+        />
+        <h3>{t("密钥")}</h3>
+        {!names.length && <p className="muted">{t("还没有密钥。")}</p>}
+        <ul className="secret-list">
+          {names.map((secret) => (
+            <SecretRow
+              key={secret}
+              app={app}
+              secret={
+                secrets.find((item) => item.name === secret) ?? {
+                  name: secret,
+                  set: false,
+                  updated_at: null,
+                }
               }
-            }
-            declared={config.env.secrets.includes(secret)}
-            onDeclare={(on) => declare(secret, on)}
-            onSaved={(saved) =>
-              setSecrets([
-                ...secrets.filter((item) => item.name !== saved.name),
-                saved,
-              ])
-            }
-          />
-        ))}
-      </ul>
-      <form
-        className="add-key"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!name || nameIssue) return;
-          declare(name, true);
-          setName("");
-        }}
-      >
-        <div className="asset-field">
-          <label htmlFor="new-secret">新密钥名称</label>
-          <input
-            id="new-secret"
-            value={name}
-            disabled={disabled}
-            aria-invalid={Boolean(nameIssue)}
-            onChange={(event) => setName(event.target.value.trim())}
-          />
-          <FieldIssues
-            id="new-secret-issues"
-            messages={nameIssue ? [nameIssue] : []}
-          />
-        </div>
-        <button
-          className="button secondary"
-          disabled={disabled || !name || Boolean(nameIssue)}
+              declared={config.env.secrets.includes(secret)}
+              onDeclare={(on) => declare(secret, on)}
+              onSaved={(saved) =>
+                setSecrets([
+                  ...secrets.filter((item) => item.name !== saved.name),
+                  saved,
+                ])
+              }
+            />
+          ))}
+        </ul>
+        <form
+          className="add-key"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!name || nameIssue) return;
+            declare(name, true);
+            setName("");
+          }}
         >
-          添加密钥
-        </button>
-      </form>
-      {issuesUnder(issues, "secrets").map((msg) => (
-        <p className="field-error" key={msg}>
-          {msg}
-        </p>
-      ))}
+          <div className="asset-field">
+            <label htmlFor="new-secret">{t("新密钥名称")}</label>
+            <input
+              id="new-secret"
+              value={name}
+              disabled={disabled}
+              aria-invalid={Boolean(nameIssue)}
+              onChange={(event) => setName(event.target.value.trim())}
+            />
+            <FieldIssues
+              id="new-secret-issues"
+              messages={nameIssue ? [nameIssue] : []}
+            />
+          </div>
+          <button
+            className="button secondary"
+            disabled={disabled || !name || Boolean(nameIssue)}
+          >
+            {t("添加密钥")}
+          </button>
+        </form>
+        {issuesUnder(issues, "secrets").map((msg) => (
+          <p className="field-error" key={msg}>
+            {msg}
+          </p>
+        ))}
+      </details>
     </section>
   );
 }

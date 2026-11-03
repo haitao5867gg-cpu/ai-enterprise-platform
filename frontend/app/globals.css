@@ -6606,3 +6606,147 @@ p.skill-usage {
   color: var(--muted);
   font-size: 11px;
 }
+/* ---------------------------------------------------------------------------
+   界面改版第 4 批: app pages.
+   --------------------------------------------------------------------------- */
+.app-card {
+  gap: 10px;
+  align-content: start;
+}
+.app-card h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.app-card h2 a {
+  color: inherit;
+  text-decoration: none;
+}
+.app-card > p {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.app-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.app-card-actions .button {
+  min-height: 32px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+/* App page: tabs on the left, the version being edited and its buttons on the right. */
+.app-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.app-tabbar .app-tabs {
+  margin: 0;
+}
+.app-tabbar .config-banner {
+  flex: 0 1 auto;
+  gap: 8px 14px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.app-tabbar .config-banner > div:first-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+}
+.app-tabbar .config-banner p {
+  margin: 0;
+  font-size: 11px;
+}
+.app-tabbar .config-banner .button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+@media (max-width: 900px) {
+  .app-tabbar .config-banner > div:first-child {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+/* Flow editor: one row for the view switch, trial run and hint; a lower canvas toolbar;
+   a canvas sized to the window. */
+.flow-editor-toolbar {
+  padding: 10px 16px;
+}
+.flow-editor-hint {
+  margin-left: auto;
+  font-size: 11px;
+}
+.flow-editor-toolbar .button,
+.canvas-toolbar .button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+.canvas-toolbar {
+  min-height: 0;
+  padding: 8px 16px;
+}
+.canvas-stage {
+  height: clamp(420px, calc(100vh - 330px), 640px);
+}
+@media (max-width: 900px) {
+  .flow-editor-hint {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+}
+/* Node cards are drawn scaled down to fit the graph; larger type keeps them readable. */
+.canvas-node-card {
+  font-size: 13px;
+}
+.canvas-node-heading strong {
+  font-size: 15px;
+}
+.canvas-node-heading code {
+  font-size: 12px;
+}
+.canvas-node-heading .node-type-badge {
+  font-size: 11px;
+}
+.canvas-branch {
+  font-size: 12px;
+}
+/* The node settings drawer is as tall as the canvas and scrolls on its own. */
+.canvas-editor-body > .node-panel {
+  max-height: calc(clamp(420px, calc(100vh - 330px), 640px) + 50px);
+}
+.flow-env summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.flow-env summary::-webkit-details-marker {
+  display: none;
+}
+.flow-env summary::before {
+  content: "▸";
+  color: var(--muted);
+}
+.flow-env details[open] > summary::before {
+  content: "▾";
+}
+.flow-env summary h2 {
+  margin: 0;
+}
+.flow-env details[open] > summary {
+  margin-bottom: 12px;
+}

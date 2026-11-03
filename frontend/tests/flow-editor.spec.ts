@@ -350,6 +350,9 @@ test("constants save with the draft; secrets show set without echoing the value"
 }) => {
   const app = await blank(request, page);
   const env = page.getByRole("region", { name: "常量和密钥" });
+  // Folded while the app has neither.
+  await expect(env).toContainText("0 个常量，0 个密钥");
+  await env.locator("summary").click();
   await env.getByRole("button", { name: "添加常量" }).click();
   const constant = env.getByRole("group", { name: "常量 1" });
   await constant.getByLabel("名称").fill("refund_limit");
