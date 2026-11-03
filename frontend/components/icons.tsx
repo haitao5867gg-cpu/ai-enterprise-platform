@@ -18,7 +18,11 @@ type IconName =
   | "user"
   | "log"
   | "bell"
-  | "chart";
+  | "chart"
+  | "book"
+  | "box"
+  | "sidebar"
+  | "chevron";
 const paths: Record<IconName, string> = {
   grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   runs: "M5 4h14v16H5z M9 8h6 M9 12h6 M9 16h3",
@@ -38,6 +42,10 @@ const paths: Record<IconName, string> = {
   log: "M6 3h9l4 4v14H6z M15 3v4h4 M9 12h7 M9 16h7",
   bell: "M6 17V11a6 6 0 0 1 12 0v6l2 2H4z M10 21h4",
   chart: "M4 20h16 M7 16v-5 M12 16V6 M17 16v-8",
+  book: "M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z M4 21V5 M8 7h7",
+  box: "M3 7l9-4 9 4v10l-9 4-9-4z M3 7l9 4 9-4 M12 11v10",
+  sidebar: "M4 4h16v16H4z M9 4v16",
+  chevron: "m9 6 6 6-6 6",
   chip: "M7 7h10v10H7z M10 3v4 M14 3v4 M10 17v4 M14 17v4 M3 10h4 M3 14h4 M17 10h4 M17 14h4",
 };
 
