@@ -110,7 +110,7 @@ function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
       </div>
       {branches.map((branch) => (
         <div className="canvas-branch" key={branch}>
-          <span>{t(branchLabel(node, branch))}</span>
+          <span>{branchLabel(node, branch, t)}</span>
           <Handle
             type="source"
             position={Position.Right}
@@ -119,7 +119,7 @@ function NodeCard({ data, isConnectable }: NodeProps<CanvasNode>) {
             data-testid={`canvas-out-${node.id}-${branch || "next"}`}
             aria-label={t("{title}的{branch}出口", {
               title: node.title,
-              branch: t(branchLabel(node, branch)),
+              branch: branchLabel(node, branch, t),
             })}
           />
         </div>
@@ -399,7 +399,7 @@ export function FlowCanvas({
       ariaLabel: t("{from} → {to}，{branch}", {
         from: byId.get(edge.from)?.title ?? edge.from,
         to: byId.get(edge.to)?.title ?? edge.to,
-        branch: t(branchLabel(byId.get(edge.from), branch)),
+        branch: branchLabel(byId.get(edge.from), branch, t),
       }),
       ariaRole: "button",
       style: {
@@ -409,7 +409,7 @@ export function FlowCanvas({
       },
       markerEnd: { type: MarkerType.ArrowClosed, color: "#9385ab" },
       data: {
-        text: branch ? t(branchLabel(byId.get(edge.from), branch)) : "",
+        text: branch ? branchLabel(byId.get(edge.from), branch, t) : "",
         loop,
         disabled,
         remove: () => clearEdge(edge.from, branch),

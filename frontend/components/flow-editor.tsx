@@ -315,7 +315,7 @@ function NodeTestPanel({
             {t("{ms} 毫秒", { ms: result.duration_ms })}
             {result.branch
               ? t(" · 会走：{branch}", {
-                  branch: t(branchLabel(node, result.branch)),
+                  branch: branchLabel(node, result.branch, t),
                 })
               : ""}
           </strong>
@@ -940,7 +940,7 @@ export function FlowEditor({
                   {branchesOf(node).map((branch) => (
                     <SelectField
                       key={branch}
-                      label={t(branchLabel(node, branch))}
+                      label={branchLabel(node, branch, t)}
                       value={targetOf(config, node.id, branch)}
                       issues={
                         nodeIssues?.[`next:${branch}`]

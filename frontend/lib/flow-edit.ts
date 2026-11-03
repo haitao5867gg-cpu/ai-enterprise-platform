@@ -317,10 +317,12 @@ export function branchesOf(node: FlowNode): string[] {
     ? [...list, "error"]
     : list;
 }
-export function branchLabel(
+// The built-in caption of a branch, or null when the branch is named by the app's own
+// content (a class, rule or option label) or by its key.
+function builtinBranchLabel(
   node: FlowNode | undefined,
   branch: string,
-): string {
+): string | null {
   if (!branch) return "下一步";
   if (branch === "error") return "出错";
   if (
@@ -340,15 +342,27 @@ export function branchLabel(
       ? "已上线"
       : branch === "failed"
         ? "失败"
-        : branch;
+        : null;
   if (node?.type === "data_check")
     return branch === "passed"
       ? "通过"
       : branch === "failed"
         ? "不通过"
-        : branch;
+        : null;
   if (node?.type === "classifier" && branch === "other") return "都不是";
   if (node?.type === "condition" && branch === "else") return "否则";
+  return null;
+}
+
+// What a branch is called on the canvas and in the editor. Built-in captions are in the
+// reader's language through `t`; the app's own labels are shown as written.
+export function branchLabel(
+  node: FlowNode | undefined,
+  branch: string,
+  t: (text: string) => string = (text) => text,
+): string {
+  const builtin = builtinBranchLabel(node, branch);
+  if (builtin !== null) return t(builtin);
   const items =
     node?.type === "classifier"
       ? node.classes
