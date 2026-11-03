@@ -377,7 +377,12 @@ async def test_golden_compares_row_by_row():
 
 async def test_golden_compares_known_differences_apart():
     rt, lake, _, calls = await env()
-    b2 = {"match": {"sku": "B2", "month": "2026-11"}, "note": "B2 数量按新口径"}
+    # B2's qty is 4 here and 5 in the old system: only that cell is known.
+    b2 = {
+        "match": {"sku": "B2", "month": "2026-11"},
+        "columns": {"qty": {"table": 4, "expected": 5}},
+        "note": "B2 数量按新口径",
+    }
     base = check("old", "golden", table="ibf_table2", expected="old.jade.table2",
                  keys=["sku", "month"], tolerance=0.0001)  # fmt: skip
     out = await run(node(checks=[base | {"known": [b2]}]), state(lake), rt)
@@ -388,11 +393,16 @@ async def test_golden_compares_known_differences_apart():
         "和老系统的结果对不上：少 1 行、多 1 行、0 行不一致；另有 1 行是已知差异（B2 数量按新口径）"
     )
     assert [r["kind"] for r in found["rows"]] == ["extra", "missing"]
-    assert found["known"] == {"count": 1, "seen": ["B2 数量按新口径"], "absent": []}
+    assert found["known"] == {
+        "count": 1,
+        "seen": ["B2 数量按新口径"],
+        "absent": [],
+        "beyond": [],
+    }
     known = "(`sku` <=> 'B2' AND `month` <=> '2026-11')"
-    assert [(c[1]["where"], c[1]["expected_where"]) for c in calls] == [
-        (f"NOT ({known})", f"NOT ({known})"),
-        (known, known),
+    assert [(c[1]["where"], c[1]["expected_where"], c[1]["limit"]) for c in calls] == [
+        (f"NOT ({known})", f"NOT ({known})", 20),
+        (known, known, 200),
     ]
 
     # Every difference known: it passes and says so; a known one not seen is said too.
@@ -408,6 +418,104 @@ async def test_golden_compares_known_differences_apart():
     )
     assert out.outputs["ok"] is True
     assert out.outputs["summary"] == "1 项检查：1 项通过（其中 1 项只有已知差异）"
+
+
+async def test_a_golden_known_difference_covers_its_cells_only(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # jadeflow retest I-16: a known difference on one cell let a wrong value in another
+    # column of the same row through.
+    rt, lake, _, _ = await env()
+    base = check("old", "golden", table="ibf_table2", expected="old.jade.table2",
+                 keys=["sku", "month"], tolerance=0.0001)  # fmt: skip
+    others = [{"match": {"sku": "C3"}}, {"match": {"sku": "D4"}}]
+    qty = {"match": {"sku": "B2"}, "columns": ["qty"], "note": "B2 数量按新口径"}
+
+    async def judged(*known: dict[str, Any]) -> dict[str, Any]:
+        out = await run(node(checks=[base | {"known": [*known, *others]}]), state(lake), rt)
+        return out.outputs["results"][0]
+
+    found = await judged(qty)
+    assert (found["status"], found["known"]["count"]) == ("passed", 3)
+
+    # The amount of B2 goes wrong too: the row fails, and the entry says why.
+    wrong = [dict(r) for r in RESULT]
+    wrong[1]["amount"] = 41.0
+    monkeypatch.setitem(
+        fake_connector.DATABRICKS_TABLES,
+        ("dev.etl", "ibf_table2"),
+        {"comment": None, "columns": COLUMNS, "foreign_keys": [], "rows": wrong},
+    )
+    found = await judged(qty)
+    assert found["status"] == "failed"
+    assert found["actual"]["different"] == 1
+    assert found["rows"][0]["key"] == {"sku": "B2", "month": "2026-11"}
+    assert found["rows"][0]["differs"] == ["qty", "amount"]
+    assert found["known"] == {
+        "count": 2,
+        "seen": ["sku = C3", "sku = D4"],
+        "absent": [],
+        "beyond": ["B2 数量按新口径"],
+    }
+    assert found["message"] == (
+        "和老系统的结果对不上：少 0 行、多 0 行、1 行不一致；另有 2 行是已知差异（sku = C3；"
+        "sku = D4）；已知差异「B2 数量按新口径」的那行和清单写的不一样或还有别的不一致，"
+        "照常算不通过"
+    )
+
+    # Values pin the cell: the qty must be what the entry says on each side.
+    monkeypatch.setitem(
+        fake_connector.DATABRICKS_TABLES,
+        ("dev.etl", "ibf_table2"),
+        {"comment": None, "columns": COLUMNS, "foreign_keys": [], "rows": RESULT},
+    )
+    pinned = qty | {"columns": {"qty": {"table": 4, "expected": 5}}}
+    assert (await judged(pinned))["status"] == "passed"
+    assert (await judged(qty | {"columns": {"qty": {"table": "4.0000"}}}))["status"] == "passed"
+    found = await judged(qty | {"columns": {"qty": {"table": 3, "expected": 5}}})
+    assert found["status"] == "failed"
+    assert found["known"]["beyond"] == ["B2 数量按新口径"]
+
+    # Without columns a known difference is a row on one side only, not a changed row.
+    found = await judged({"match": {"sku": "B2"}})
+    assert (found["status"], found["actual"]["different"]) == ("failed", 1)
+    assert found["known"]["beyond"] == ["sku = B2"]
+    # With columns it is not a missing row.
+    found = await judged(qty, *[o | {"columns": ["qty"]} for o in others])
+    assert (found["status"], found["actual"]["missing"], found["actual"]["extra"]) == (
+        "failed",
+        1,
+        1,
+    )
+
+
+async def test_known_groups_may_pin_their_values():
+    rt, lake, _, _ = await env()
+    november = {"match": {"month": "2026-11"}, "note": "11 月只到一半"}
+    reconciled = check(
+        "vol",
+        "reconcile",
+        left={"table": "ibf_table2", "expr": "sum(qty)"},
+        right={"table": "old.jade.table2", "expr": "sum(qty)"},
+        group_by=["month"],
+    )
+
+    async def judged(item: dict[str, Any], c: dict[str, Any] = reconciled) -> dict[str, Any]:
+        out = await run(node(checks=[c | {"known": [item]}]), state(lake), rt)
+        return out.outputs["results"][0]
+
+    # November is 3 here and 6 in the old system.
+    assert (await judged(november | {"left": 3, "right": 6}))["status"] == "passed"
+    assert (await judged(november | {"right": 6}))["status"] == "passed"
+    found = await judged(november | {"left": 3, "right": 7})
+    assert found["status"] == "failed"
+    assert found["known"]["beyond"] == ["11 月只到一半"]
+    assert found["rows"] == [{"month": "2026-11", "left": 3, "right": 6}]
+
+    low = check("low", "aggregate", table="ibf_table2", expr="sum(qty)", op="ge", value=5,
+                group_by=["month"])  # fmt: skip
+    assert (await judged(november | {"value": 3}, low))["status"] == "passed"
+    assert (await judged(november | {"value": 2}, low))["status"] == "failed"
 
 
 async def test_other_checks_tell_known_rows_and_groups_apart():
@@ -548,6 +656,24 @@ async def test_rows_may_look_up_another_table(monkeypatch: pytest.MonkeyPatch):
         "`ibf_table2` 里没有满足 `qty <> 0`、并且在 `t` 里找不到 sku = code 对应的行"
     )
 
+    # trim: both sides without leading and trailing spaces (jadeflow retest, C8).
+    spaced = [dict(r) for r in forecast]
+    spaced[0]["sku"] = " A1 "
+    monkeypatch.setitem(
+        fake_connector.DATABRICKS_TABLES,
+        ("prev.sales", "forecast"),
+        {"comment": None, "columns": COLUMNS, "foreign_keys": [], "rows": spaced},
+    )
+    calls.clear()
+    out = await run(node(checks=[have]), state(lake), rt)
+    assert [r["sku"] for r in out.outputs["results"][0]["rows"]] == ["C3"]
+    trimmed = have | {"lookup": have["lookup"] | {"trim": True}}
+    out = await run(node(checks=[trimmed]), state(lake), rt)
+    (found,) = out.outputs["results"]
+    assert [r["sku"] for r in found["rows"]] == ["A1", "C3"]
+    assert calls[-1][1]["lookup"]["trim"] is True
+    assert "找得到 sku、month（去掉首尾空格后） 对应" in found["message"]
+
 
 def test_what_a_lookup_may_say():
     def said(lookup: Any) -> list[tuple[Any, str]]:
@@ -570,7 +696,9 @@ def test_what_a_lookup_may_say():
         (good | {"where": ""}, ("lookup", "where"), "lookup 的条件要写成不为空的文字"),
         (good | {"found": "false"}, ("lookup", "found"), "lookup.found 要写 true"),
         ({k: v for k, v in good.items() if k != "found"}, ("lookup", "found"), "lookup.found"),
+        (good | {"trim": "yes"}, ("lookup", "trim"), "lookup.trim 要写 true"),
     ]  # fmt: skip
+    assert said(good | {"trim": True}) == []
     for lookup, loc, message in cases:
         problems = said(lookup)
         assert any(p[0] == loc and p[1].startswith(message) for p in problems), (lookup, problems)
@@ -614,13 +742,55 @@ def test_what_known_differences_may_say():
     assert said("golden", **keyed, known=bad) == [
         (("known", 0), f"每项已知差异要写成 {shape}"),
         (("known", 1, "match"), "match 要写成 {列: 值}，至少一列"),
-        (("known", 2, "why"), "已知差异没有 why 这一项，只有 match 和 note"),
+        (("known", 2, "why"), "已知差异没有 why 这一项，只有 match、note、columns"),
         (("known", 2, "match", "sku"), "值只能是文字、数字、true、false 或 null"),
         (("known", 3, "note"), "note 要是 200 个字符以内的文字"),
+    ]
+    # What pins a known difference down (jadeflow retest I-16).
+    sku = {"match": {"sku": "C3"}}
+    columns_shape = (
+        'columns 要写成可能不一致的列名列表，或 {列: {"table": 结果表的值, "expected": 老系统的值}}'
+    )
+    assert said("golden", **keyed, known=[sku | {"columns": ["qty"]}]) == []
+    assert said("golden", **keyed, known=[sku | {"columns": {"qty": {"table": 4}}}]) == []
+    assert said("golden", **keyed, known=[sku | {"columns": "qty"}]) == [
+        (("known", 0, "columns"), columns_shape)
+    ]
+    assert said("golden", **keyed, known=[sku | {"columns": []}]) == [
+        (("known", 0, "columns"), "columns 要写 1–20 列")
+    ]
+    assert said("golden", **keyed, known=[sku | {"columns": ["sku", "qty", "qty"]}]) == [
+        (
+            ("known", 0, "columns", "sku"),
+            "列 sku 是对齐用的键，键不会不一致；已知差异的键写在 match 里",
+        ),
+        (("known", 0, "columns", "qty"), "列 qty 写了两次"),
+    ]
+    listed = keyed | {"columns": ["amount"]}
+    assert said("golden", **listed, known=[sku | {"columns": ["qty"]}]) == [
+        (("known", 0, "columns", "qty"), "列 qty 不在这项检查比较的 columns 里")
+    ]
+    assert said("golden", **keyed, known=[sku | {"columns": {"qty": {"old": 1}}}]) == [
+        (("known", 0, "columns", "qty"), columns_shape)
+    ]
+    assert said("golden", **keyed, known=[sku | {"columns": {"qty": {"table": [1]}}}]) == [
+        (("known", 0, "columns", "qty", "table"), "值只能是文字、数字、true、false 或 null")
+    ]
+    grouped = {"left": {"table": "t", "expr": "sum(x)"}, "right": {"table": "o", "expr": "sum(x)"},
+               "group_by": ["sku"]}  # fmt: skip
+    assert said("reconcile", **grouped, known=[sku | {"left": 1, "right": None}]) == []
+    assert said("reconcile", **grouped, known=[sku | {"value": 1, "left": [1]}]) == [
+        (("known", 0, "value"), "已知差异没有 value 这一项，只有 match、note、left、right"),
+        (("known", 0, "left"), "left 只能是文字、数字、true、false 或 null"),
+    ]
+    assert said("rows", **rows, known=[sku | {"columns": ["qty"]}]) == [
+        (("known", 0, "columns"), "已知差异没有 columns 这一项，只有 match、note")
     ]
     assert len(said("rows", **rows, known=[{"match": {"sku": "x"}}] * 21)) == 1
     described = checks.describe(check("k", "rows", **rows, known=[{"match": {"sku": "C3"}}]))
     assert described.endswith("；已知差异 1 处（sku = C3）不算不通过")
+    described = checks.describe(check("k", "golden", **keyed, known=[sku | {"columns": ["qty"]}]))
+    assert described.endswith("；已知差异 1 处（sku = C3 的 qty）不算不通过")
 
 
 async def test_golden_stops_at_repeated_keys(monkeypatch: pytest.MonkeyPatch):
@@ -1005,3 +1175,57 @@ async def test_group_keys_line_up_across_number_types():
     )
     found = await checks.run(c, checks.Scope(None, "", None), call)
     assert (found["status"], found["message"]) == ("passed", "按 year 分 1 组，每组都一致")
+
+
+def test_the_columns_a_check_names():
+    # Read without parsing (jadeflow retest I-10): only what is surely a column counts.
+    named = checks.columns_named
+    assert named("max(c)") == ["c"]
+    assert named("sum(cw_07) AS total") == ["cw_07"]
+    assert named("version_id = ${param.version_id} AND NOT (cw_07 <=> 0)") == [
+        "version_id",
+        "cw_07",
+    ]
+    assert named("coalesce(trim(platform_original), '') <> 'a b'") == ["platform_original"]
+    assert named("CAST(substring(update_month, 5, 2) AS INT) < 3") == ["update_month"]
+    assert named("filter(arr, x -> x > 0) AND transform(m, (k, v) -> k + v)") == ["arr", "m"]
+    assert named("t.col + s.f > 0") == []
+    assert named("`weird col` > 1 AND `a``b` IS NULL") == ["weird col", "a`b"]
+    assert named("date '2026-01-01' < d AND current_date - d > interval 3 days") == ["d"]
+    assert named("count(*)") == []
+    uses = list(
+        checks.column_uses(
+            check(
+                "r4",
+                "rows",
+                table="res",
+                where="NOT (cw_07 <=> 0)",
+                lookup={
+                    "table": "alloc",
+                    "on": {"lane": "lane_id"},
+                    "where": "m = 7",
+                    "found": False,
+                },  # fmt: skip
+            )
+        )
+    )
+    assert uses == [
+        ("res", "where", ["cw_07"]),
+        ("res", "lookup.on", ["lane"]),
+        ("alloc", "lookup.on", ["lane_id"]),
+        ("alloc", "lookup.where", ["m"]),
+    ]
+    grouped = check(
+        "vol",
+        "reconcile",
+        left={"table": "a", "expr": "sum(x)"},
+        right={"table": "b", "expr": "sum(y)", "where": "z > 0"},
+        group_by=["g"],
+    )
+    assert list(checks.column_uses(grouped)) == [
+        ("a", "left.expr", ["x"]),
+        ("a", "group_by", ["g"]),
+        ("b", "right.expr", ["y"]),
+        ("b", "right.where", ["z"]),
+        ("b", "group_by", ["g"]),
+    ]

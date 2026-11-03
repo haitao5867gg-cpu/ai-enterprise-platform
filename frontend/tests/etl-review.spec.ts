@@ -44,7 +44,7 @@ test("plan review: the brief, questions on the page, notes on items turn the dec
   await expect(review.getByText("我们理解你要的是")).toBeVisible();
   // Nothing was dropped after a rejection: no word on it.
   await expect(
-    review.getByRole("note", { name: "校验退回后去掉的内容" }),
+    review.getByRole("note", { name: "校验退回后改动的内容" }),
   ).toHaveCount(0);
   await expect(review.locator(".brief-goal")).toHaveText(
     "按月、按城市、按会员等级统计有效订单的 4 个指标",
@@ -373,7 +373,7 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   ).toHaveCount(0);
   // A check the model dropped after the platform sent the plan back is said at the top.
   await expect(
-    review.getByRole("note", { name: "校验退回后去掉的内容" }),
+    review.getByRole("note", { name: "校验退回后改动的内容" }),
   ).toContainText("检查「和上月环比不超过 30%」");
   const proposed = review.getByRole("region", { name: "建议的数据检查" });
   await expect(proposed).toContainText("每月每个城市每个等级一行");
@@ -388,9 +388,10 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   await expect(proposed).toContainText(
     "ads_sales_city_member_m 里没有满足 sales_amount < 0 的行；已知差异 1 处（退货中心的冲红单按负数记）不算不通过",
   );
-  // An error check says what it means: failed, the result cannot be approved as it is.
-  await expect(proposed).toContainText(
-    "键不重复 · 错误：不通过时结果不能直接通过",
+  // An error check says it blocks delivery, and the page counts them (I-10).
+  await expect(proposed).toContainText("键不重复 · 错误：会挡住交付");
+  await expect(proposed.getByRole("note")).toContainText(
+    "其中 2 条是错误级，会挡住交付",
   );
   await expect(
     proposed.getByRole("button", { name: "这里不对：没有负的销售额" }),

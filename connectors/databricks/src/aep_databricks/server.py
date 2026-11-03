@@ -50,6 +50,10 @@ class Lookup(BaseModel):
         StrictBool,
         Field(description="true: rows that have a matching row; false: rows that have none"),
     ]
+    trim: Annotated[
+        StrictBool,
+        Field(description="Compare the on columns without leading and trailing spaces"),
+    ] = False
 
 
 def http_security(settings: Settings) -> TransportSecuritySettings:

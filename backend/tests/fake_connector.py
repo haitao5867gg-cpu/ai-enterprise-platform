@@ -325,8 +325,11 @@ def build_databricks(calls: list[tuple[str, dict]] | None = None) -> MCPServer:
         other = table_rows(lookup["table"], lookup.get("where"))
         pairs = list(lookup["on"].items())
 
+        def value(v: object) -> object:
+            return v.strip() if lookup.get("trim") and isinstance(v, str) else v
+
         def has(row: dict) -> bool:
-            return any(all(row.get(a) == o.get(b) for a, b in pairs) for o in other)
+            return any(all(value(row.get(a)) == value(o.get(b)) for a, b in pairs) for o in other)
 
         return [r for r in found if has(r) is lookup["found"]]
 

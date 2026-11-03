@@ -621,11 +621,12 @@ async def test_answered_questions_are_remembered_across_rounds():
     )
     second = await check_round(rewritten, record, first.private)
     assert [q["label"] for q in second.outputs["questions"]] == ["退款算不算？"]
-    assert second.outputs["plan"]["rules"][-1] == {
-        "id": "r2",
-        "text": "韩梅梅已确认：城市空值怎么算？——算作未知",
-        "basis": "confirmed",
-    }
+    # The re-asked question becomes a confirmed rule; the answered one the rewrite left out
+    # is put back, so no answer silently drops out of the plan (jadeflow retest I-17).
+    assert second.outputs["plan"]["rules"][-2:] == [
+        {"id": "r2", "text": "韩梅梅已确认：城市空值怎么算？——算作未知", "basis": "confirmed"},
+        {"id": "r3", "text": "韩梅梅已确认：统计哪段时间？——只看 2026 年", "basis": "confirmed"},
+    ]
     assert set(second.private["answered"]) == {"统计哪段时间", "城市空值怎么算"}
 
     # Round 3: the record holds only the latest answers; earlier ones are remembered.
@@ -642,6 +643,7 @@ async def test_answered_questions_are_remembered_across_rounds():
     assert [r["text"] for r in third.outputs["plan"]["rules"][1:]] == [
         "韩梅梅已确认：统计哪段时间？——只看 2026 年",
         "李雷已确认：退款算不算？——不算",
+        "韩梅梅已确认：城市空值怎么算？——算作未知",
     ]
 
     # A newer answer to the same question replaces the older.

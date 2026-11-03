@@ -246,6 +246,10 @@ async def test_a_lookup_keeps_the_rows_with_or_without_a_match_in_another_table(
     )
     assert result == {"rows": [{"lane": "SEA-QY2", "value": 1}], "groups": 1}
     assert "FROM `main`.`out`.`lanes` AS __aep_t WHERE NOT EXISTS" in fake.statements[-1]
+    # trim: both sides of each pair without leading and trailing spaces (jadeflow C8).
+    trimmed = {"table": ALLOC, "on": {"lane": "lane"}, "found": True, "trim": True}
+    await found.aggregate("main.out.lanes", "count(*)", lookup=trimmed)
+    assert "WHERE trim(__aep_l.`lane`) <=> trim(__aep_t.`lane`))" in fake.statements[-1]
 
     for bad, message in [
         ({**NOT_APPLICABLE, "table": "other.ref.allocation"}, "没有允许读 catalog other"),
@@ -254,10 +258,11 @@ async def test_a_lookup_keeps_the_rows_with_or_without_a_match_in_another_table(
         ({**NOT_APPLICABLE, "where": "1 = 1; DROP TABLE x"}, "^lookup.where 写法不对：不能有分号"),
         ({**NOT_APPLICABLE, "where": "lane IN (SELECT lane FROM x)"}, "不能有 SELECT"),
         ({k: v for k, v in NOT_APPLICABLE.items() if k != "found"}, "lookup.found 要是 true"),
+        ({**NOT_APPLICABLE, "trim": "yes"}, "lookup.trim 要是 true"),
     ]:
         with pytest.raises(ConnectorError, match=message):
             await found.aggregate("main.out.lanes", "count(*)", lookup=bad)
-    assert len(fake.statements) == 1
+    assert len(fake.statements) == 2
 
 
 async def test_duplicates_lists_repeated_groups():

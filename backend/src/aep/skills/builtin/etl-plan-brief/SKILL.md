@@ -20,7 +20,7 @@ rules 写已经定下的处理，一条一句，并写明依据 basis：
 knowledge（口径资料，如城市名去掉末尾的“市”）、request（需求）、data（数据里看到的）、assumption（假设）。
 不再写 assumptions：要说明的假设写进 rules，basis 写 assumption。
 平台校验退回的问题里如果说“在 assumptions 里说明”，也照这样写进 rules。
-basis 为 confirmed 的规则是人已经确认过的，照着做，不要再问。
+basis 为 confirmed 的规则是平台按确认页上人的回答写的，照着做，不要再问；你自己不要写 confirmed，写了会被改成 assumption。
 
 questions 只问会改变结果、而需求又没说清的事，最多 5 题：
 - text 是题目，最多 50 个字，解释写在 why 里。

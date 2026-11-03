@@ -1074,6 +1074,10 @@ def _generate_answer(plan: EtlPlanV2, cleaned: list[str]) -> None:
         cleaned.append("模型没写答案设计，平台按业务说明生成了一份")
 
 
+def _confirmed_text(given: Confirmed) -> str:
+    return f"{given['actor'] or ''}已确认：{given['label']}——{given['value_label']}"
+
+
 def _confirm(plan: EtlPlanV2, answered: Mapping[str, Confirmed]) -> None:
     """A question a person already answered (in any round: compared by its text, never by
     id) becomes a rule with ``basis`` confirmed, unless the plan has that rule already."""
@@ -1084,10 +1088,38 @@ def _confirm(plan: EtlPlanV2, answered: Mapping[str, Confirmed]) -> None:
         if given is None:
             kept.append(q)
             continue
-        text = f"{given['actor'] or ''}已确认：{given['label']}——{given['value_label']}"
+        text = _confirmed_text(given)
         if not any(r.basis == "confirmed" and bare(r.text) == bare(text) for r in plan.rules):
             _new_rule(plan, text, "confirmed", q)._platform = True
     plan.questions = kept
+
+
+def _only_answers_confirm(
+    plan: EtlPlanV2, answered: Mapping[str, Confirmed], cleaned: list[str]
+) -> None:
+    """``confirmed`` is the platform's word for what a person answered on the review page
+    (jadeflow retest I-17: a model marked its own rule confirmed and skipped the question).
+    A rule the model marked confirmed that no answer of this run backs becomes an
+    assumption; an answer the plan no longer shows as a confirmed rule is put back as
+    the platform's words."""
+    backed = {bare(_confirmed_text(given)): given for given in answered.values()}
+    changed = []
+    for rule in plan.rules:
+        if rule.basis == "confirmed" and not rule._platform and bare(rule.text) not in backed:
+            rule.basis = "assumption"
+            changed.append(rule.id)
+    if changed:
+        cleaned.append(
+            f"规则 {'、'.join(changed)} 写了已确认，但这次运行里没有人回答过对应的问题，"
+            "改成了假设：已确认只由平台按确认页的回答写"
+        )
+    shown = {bare(r.text) for r in plan.rules if r.basis == "confirmed"}
+    for key, given in backed.items():
+        if key not in shown:
+            rule = Rule(id=_free("r", _ids(plan)), text=_confirmed_text(given), basis="confirmed")
+            rule._at = rule._text_at = "rules"
+            rule._platform = True
+            plan.rules.append(rule)
 
 
 def _overflow(plan: EtlPlanV2, cleaned: list[str]) -> None:
@@ -1351,6 +1383,7 @@ def _validated(
     version: Literal[2, 3] = 2,
     project: Mapping[str, Any] | None = None,
     existing: Sequence[Mapping[str, Any]] | None = None,
+    source_columns: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[EtlPlanV2, list[str]]:
     """Version 2 or 3 of the plan: parsed, tidied and checked (see the two callers)."""
     if not isinstance(raw, dict):
@@ -1384,6 +1417,7 @@ def _validated(
     if not model_answer:
         _generate_answer(plan, cleaned)
     _confirm(plan, answered or {})
+    _only_answers_confirm(plan, answered or {}, cleaned)
     _overflow(plan, cleaned)
     _cite_v2(plan, references or [])
     problems = _version_one_checks(
@@ -1392,7 +1426,7 @@ def _validated(
     problems += structure + _blank_texts(plan) + _version_two_checks(plan, model_answer)
     kept: list[dict[str, Any]] = []
     if version == 3:
-        kept, more = _version_three_checks(plan, proposed, project, existing)
+        kept, more = _version_three_checks(plan, proposed, project, existing, source_columns)
         problems += more
     if problems:
         unique = list(dict.fromkeys(problems))
@@ -1478,7 +1512,7 @@ OUTPUT_FORMAT_V2 = """只输出一个 JSON 对象，不要输出其他文字，�
     }
   ],
   "rules": [{"id": "r1", "text": "已经定下的处理，一条一句",
-             "basis": "knowledge、request、data、assumption 或 confirmed"}],
+             "basis": "knowledge、request、data 或 assumption（confirmed 只由平台写）"}],
   "questions": [{"id": "q1", "text": "要人拍板的问题，最多 50 个字", "why": "为什么问",
                  "options": [{"value": "选项值", "label": "选项名称"}],
                  "suggested": "方案现在按哪个选项写（选项的 value）", "affects": ["m1"]}],
@@ -1518,6 +1552,7 @@ def validate_plan_v3(
     show_values: bool = True,
     project: Mapping[str, Any] | None = None,
     existing: Sequence[Mapping[str, Any]] | None = None,
+    source_columns: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[EtlPlanV3, list[str]]:
     """Parse, tidy and check a version 3 plan: ``validate_plan_v2`` and the version's own
     rules. ``project`` is the run's project as the run keeps it (``table_prefix``,
@@ -1525,7 +1560,8 @@ def validate_plan_v3(
     the project's tables already in the run's environment (the profile node's
     ``existing``: ``name`` and ``columns``); a target with one's name writes to it, so the
     plan keeps its columns and the columns it adds go into ``load.add_columns``. None:
-    not known, nothing is added."""
+    not known, nothing is added. ``source_columns``: the source tables' column names by
+    table name, which the proposed checks may name (with the targets' own columns)."""
     plan, cleaned = _validated(
         raw,
         source_tables,
@@ -1538,6 +1574,7 @@ def validate_plan_v3(
         3,
         project,
         existing,
+        source_columns,
     )
     assert isinstance(plan, EtlPlanV3)
     return plan, cleaned
@@ -1747,10 +1784,15 @@ def _project_problems(plan: EtlPlanV2, project: Mapping[str, Any]) -> list[str]:
 
 
 def _plan_checks(
-    proposed: Any, plan: EtlPlanV2, project: Mapping[str, Any] | None
+    proposed: Any,
+    plan: EtlPlanV2,
+    project: Mapping[str, Any] | None,
+    columns: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """The checks the plan proposes, each one valid (with its ``severity``), and what is
-    wrong with them."""
+    wrong with them. ``columns``: the column names (lowercase) of the tables the checks may
+    read, by table name (lowercase); a check naming another column of a table listed there
+    goes back to the model."""
     if proposed is None:
         return [], []
     if not isinstance(proposed, list):
@@ -1805,12 +1847,37 @@ def _plan_checks(
             more = _param_problems(text, f"{at}.{where}", project)
             wrong = wrong or bool(more)
             problems += more
+        if not found:
+            more = _column_problems(check, at, columns or {})
+            wrong = wrong or bool(more)
+            problems += more
         if not wrong:
             # A check the model proposes only warns unless the plan says it must hold
             # (jadeflow acceptance I-10): a wrong model check at error level blocks a
             # right result.
             kept.append({**check, "severity": check.get("severity") or "warn"})
     return kept, problems
+
+
+def _column_problems(
+    check: dict[str, Any], at: str, columns: Mapping[str, Collection[str]]
+) -> list[str]:
+    """The columns a proposed check names that its table does not have (jadeflow retest
+    I-10: max(c) on a table with no c passed the plan check and failed only in the data
+    check). Tables whose columns are not known are not looked at."""
+    problems = []
+    for table, where, names in checks.column_uses(check):
+        have = columns.get(table.strip().lower())
+        if have is None:
+            continue
+        missing = [n for n in names if n.lower() not in have]
+        if missing:
+            shown = "、".join(sorted(have)[:30]) + ("…" if len(have) > 30 else "")
+            problems.append(
+                f"{at}.{where}：{table} 没有列 {'、'.join(missing)}，检查里只能用表里有的列："
+                f"{shown}"
+            )
+    return problems
 
 
 # The write modes that keep an existing table's rows, and so its columns.
@@ -1916,6 +1983,7 @@ def _version_three_checks(
     proposed: Any,
     project: Mapping[str, Any] | None,
     existing: Sequence[Mapping[str, Any]] | None = None,
+    source_columns: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     problems: list[str] = _type_problems(plan)
     for target in plan.targets:
@@ -1924,7 +1992,11 @@ def _version_three_checks(
         problems += _project_problems(plan, project)
     if existing is not None:
         problems += _schema_problems(plan, existing)
-    kept, more = _plan_checks(proposed, plan, project)
+    columns = {
+        name.lower(): {c.lower() for c in found} for name, found in (source_columns or {}).items()
+    }
+    columns |= {t.name.lower(): {c.name.lower() for c in t.columns} for t in plan.targets}
+    kept, more = _plan_checks(proposed, plan, project, columns)
     return kept, problems + more
 
 
@@ -1962,7 +2034,7 @@ OUTPUT_FORMAT_V3 = """只输出一个 JSON 对象，不要输出其他文字，�
     }
   ],
   "rules": [{"id": "r1", "text": "已经定下的处理，一条一句",
-             "basis": "knowledge、request、data、assumption 或 confirmed"}],
+             "basis": "knowledge、request、data 或 assumption（confirmed 只由平台写）"}],
   "questions": [{"id": "q1", "text": "要人拍板的问题，最多 50 个字", "why": "为什么问",
                  "options": [{"value": "选项值", "label": "选项名称"}],
                  "suggested": "方案现在按哪个选项写（选项的 value）", "affects": ["m1"]}],
@@ -1981,8 +2053,10 @@ append 追加；merge 按键合并（有的更新，没有的插入）。
 列的 type 可以不写；给已有的表新加的列必须写，确认方案时人看到的就是它，代码产出的类型不一样时
 平台不加列也不写表。已有的列照表里的类型写或者不写。
 checks 是建议在开发环境试算后做的数据检查，最多 10 条，没有就给空数组；
-表名只能是上面的目标表名和 sources 里的源表。severity：warn 不通过时只提醒；error 不通过时结果
-不能直接通过，只给确定了结果一错就不能交付的检查用；info 只列出来给人看。各种检查的其余字段：
+项目说明里的验收检查每次数据检查都会跑，不要再写意思相同的检查，只补它们没管到的。
+表名只能是上面的目标表名和 sources 里的源表，列只能用这些表里有的列。
+severity：warn 不通过时只提醒；error 不通过时结果不能直接通过，确认页会单独标出来，
+只给确定了结果一错就不能交付、条件和方向都核对过的检查用；info 只列出来给人看。各种检查的其余字段：
 - aggregate（一个聚合值和期望比）：
   {"table": "表名", "expr": "一个聚合表达式，如 sum(qty)", "where": "条件或 null",
    "group_by": ["可选：按组算，每组都要满足"], "op": "eq、ne、gt、ge、lt、le 或 between",
@@ -1996,7 +2070,8 @@ checks 是建议在开发环境试算后做的数据检查，最多 10 条，没
   要看的是在另一张表里找不到（或找得到）对应行的行时，加
   "lookup": {"table": "另一张表", "on": {"本表的列": "另一张表的列"},
   "where": "另一张表的条件或 null", "found": false}
-  （found 为 false 只看找不到的行，true 只看找得到的行）
+  （found 为 false 只看找不到的行，true 只看找得到的行；
+  两边的列要去掉首尾空格再比时加 "trim": true）
 load.where 和检查的 where、expr 里可以用 ${param.参数标识} 引用项目的运行参数，
 运行时换成参数值；没绑定项目时不能用。
 和老系统结果的逐行对比由数据检查节点自动加，不要写在 checks 里。"""

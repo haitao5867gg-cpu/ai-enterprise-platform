@@ -1033,7 +1033,7 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
         cleaned: ["去掉了 2 条规则开头的英文前缀“advance:”"],
         // Template v3: a check the model dropped after the platform sent the plan back.
         dropped:
-          state.checks !== "none" ? ["检查「和上月环比不超过 30%」"] : [],
+          state.checks !== "none" ? ["去掉了检查「和上月环比不超过 30%」"] : [],
         returned: state.reviewed,
         previous: state.confirmed,
       },

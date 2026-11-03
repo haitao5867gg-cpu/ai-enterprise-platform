@@ -2821,6 +2821,21 @@ textarea::placeholder {
 .plan-checks {
   margin-top: 18px;
 }
+/* A model's error-level check blocks delivery when it fails (jadeflow retest I-10). */
+.check-blocking-note {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #b45309;
+  background: #fff7ed;
+  color: #7c2d12;
+}
+.quality-rules li.check-blocking {
+  border-left: 3px solid #b45309;
+  padding-left: 8px;
+}
+.quality-rules li.check-blocking span {
+  color: #9a3412;
+}
 .data-checks .table-scroll {
   margin-top: 6px;
 }
