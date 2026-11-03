@@ -323,13 +323,24 @@ class ClusterExecutor:
                 try:
                     return await self._execute(context, statement, deadline)
                 except _ContextGone:
-                    # The cluster restarted or dropped the context: make a new one, once.
-                    self._contexts.remove(context)
+                    # The cluster restarted or dropped the context. A restart drops the
+                    # idle ones too, so forget them all and make a new one, once.
+                    self._forget(context, *self._free)
+                    self._free = []
                     context = await self._take(deadline)
-                    return await self._execute(context, statement, deadline)
+                    try:
+                        return await self._execute(context, statement, deadline)
+                    except _ContextGone:
+                        self._forget(context)
+                        raise ConnectorError(
+                            "集群上的执行环境刚建好就不见了，集群可能正在重启，请稍后重试"
+                        ) from None
             finally:
                 if context in self._contexts:
                     self._free.append(context)
+
+    def _forget(self, *contexts: str) -> None:
+        self._contexts = [known for known in self._contexts if known not in contexts]
 
     async def _execute(self, context: str, statement: str, deadline: float) -> Result:
         ids = {"clusterId": self._cluster, "contextId": context}
