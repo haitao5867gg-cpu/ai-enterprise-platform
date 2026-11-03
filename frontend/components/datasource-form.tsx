@@ -23,6 +23,7 @@ import {
   type TestResult,
 } from "../lib/datasources";
 import { ApiError, errorMessage } from "../lib/runs";
+import { useT } from "../lib/i18n/client";
 import { useUnsavedWarning } from "./asset-ui";
 import { FileUpload } from "./file-upload";
 import { ErrorNotice } from "./ui";
@@ -40,6 +41,7 @@ export function DatasourceDialog({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const t = useT();
   const titleId = useId();
   useEffect(() => {
     ref.current?.showModal();
@@ -59,7 +61,7 @@ export function DatasourceDialog({
           className="text-button"
           onClick={() => ref.current?.close()}
         >
-          关闭
+          {t("关闭")}
         </button>
       </div>
       {children}

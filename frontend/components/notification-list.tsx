@@ -12,9 +12,11 @@ import {
 import { errorMessage } from "../lib/runs";
 import { AssetHeading, AssetLoading } from "./asset-ui";
 import { EmptyState, ErrorNotice } from "./ui";
+import { useLocale, useT } from "../lib/i18n/client";
+import { htmlLang } from "../lib/i18n/locale";
 
-const time = (value: string) =>
-  new Date(value).toLocaleString("zh-CN", {
+const time = (value: string, lang: string) =>
+  new Date(value).toLocaleString(lang, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -24,6 +26,8 @@ const tell = (unread: number) =>
   window.dispatchEvent(new CustomEvent(UNREAD_EVENT, { detail: unread }));
 
 export function NotificationList() {
+  const t = useT();
+  const lang = htmlLang(useLocale().locale);
   const router = useRouter();
   const [items, setItems] = useState<AppNotification[] | null>(null);
   const [unread, setUnread] = useState(0);
@@ -81,8 +85,10 @@ export function NotificationList() {
 
   return (
     <div className="asset-page">
-      <AssetHeading title="通知">
-        运行等你确认、运行完成或失败时，平台会在这里通知你；配了邮件或群机器人的，同时发到那边。
+      <AssetHeading title={t("通知")}>
+        {t(
+          "运行等你确认、运行完成或失败时，平台会在这里通知你；配了邮件或群机器人的，同时发到那边。",
+        )}
       </AssetHeading>
       <div className="asset-actions notification-actions">
         <label className="notification-filter">
@@ -91,7 +97,7 @@ export function NotificationList() {
             checked={onlyUnread}
             onChange={(event) => setOnlyUnread(event.target.checked)}
           />
-          只看未读
+          {t("只看未读")}
         </label>
         <button
           type="button"
@@ -99,7 +105,7 @@ export function NotificationList() {
           disabled={!unread}
           onClick={() => void read()}
         >
-          全部标为已读
+          {t("全部标为已读")}
         </button>
       </div>
       {error && (
@@ -110,13 +116,13 @@ export function NotificationList() {
       )}
       {!items && !error && <AssetLoading />}
       {items && !items.length && (
-        <EmptyState title={onlyUnread ? "没有未读通知" : "还没有通知"}>
-          运行等你确认、完成或失败时，通知会出现在这里。
+        <EmptyState title={t(onlyUnread ? "没有未读通知" : "还没有通知")}>
+          {t("运行等你确认、完成或失败时，通知会出现在这里。")}
         </EmptyState>
       )}
       {items && items.length > 0 && (
         <section className="panel asset-section">
-          <ul className="notification-items" aria-label="通知">
+          <ul className="notification-items" aria-label={t("通知")}>
             {items.map((item) => (
               <li key={item.id} className={item.read ? "" : "unread"}>
                 <button
@@ -128,7 +134,7 @@ export function NotificationList() {
                   }}
                 >
                   <span className={`notification-event ${item.event}`}>
-                    {eventLabels[item.event]}
+                    {t(eventLabels[item.event])}
                   </span>
                   <span className="notification-text">
                     <strong>{item.title}</strong>
@@ -137,9 +143,9 @@ export function NotificationList() {
                     )}
                   </span>
                   <time className="muted" dateTime={item.created_at}>
-                    {time(item.created_at)}
+                    {time(item.created_at, lang)}
                   </time>
-                  {!item.read && <span className="sr-only">（未读）</span>}
+                  {!item.read && <span className="sr-only">{t("（未读）")}</span>}
                 </button>
               </li>
             ))}
@@ -151,7 +157,7 @@ export function NotificationList() {
               disabled={loadingMore}
               onClick={() => void more()}
             >
-              {loadingMore ? "正在加载…" : "加载更早的"}
+              {t(loadingMore ? "正在加载…" : "加载更早的")}
             </button>
           )}
         </section>

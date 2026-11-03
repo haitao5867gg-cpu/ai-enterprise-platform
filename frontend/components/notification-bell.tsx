@@ -4,11 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { listNotifications, UNREAD_EVENT } from "../lib/notifications";
+import { useT } from "../lib/i18n/client";
 import { Icon } from "./icons";
 
 // The unread count beside the service status; refreshed every 30 seconds, when the
 // page changes and when notices are marked read (docs/api/notifications.md).
 export function NotificationBell() {
+  const t = useT();
   const pathname = usePathname();
   const [unread, setUnread] = useState<number | null>(null);
   useEffect(() => {
@@ -40,7 +42,7 @@ export function NotificationBell() {
     <Link
       href="/notifications"
       className={`notification-bell ${pathname === "/notifications" ? "active" : ""}`}
-      aria-label={count ? `通知，${count} 条未读` : "通知"}
+      aria-label={count ? t("通知，{count} 条未读", { count }) : t("通知")}
     >
       <Icon name="bell" />
       {count > 0 && (

@@ -5967,3 +5967,38 @@ fieldset.project-form-section > legend + * {
   display: block;
   font-size: 0.85em;
 }
+
+/* Interface language switch (中 / EN) in the top bar and on the sign-in page. */
+.locale-switch {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 2px;
+  background: #fff;
+}
+.locale-switch button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.locale-switch button.selected {
+  background: #f0ecfb;
+  color: var(--purple-dark);
+  font-weight: 600;
+}
+.locale-switch button:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+.login-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

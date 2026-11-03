@@ -1,6 +1,7 @@
 import { AuditList } from "../../components/audit-list";
+import { pageTitle } from "../../lib/server/locale";
 
-export const metadata = { title: "操作记录" };
+export const generateMetadata = pageTitle("操作记录");
 export default function AuditPage() {
   return <AuditList />;
 }

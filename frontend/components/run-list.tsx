@@ -2,18 +2,21 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useLocale, useT } from "../lib/i18n/client";
 import {
-  durationText,
-  errorMessage,
+  durationParts,
   formatTime,
-  readRunList,
-  requestJson,
   runTitle,
-  statusLabels,
   stepText,
   timeAgo,
-  versionLabel,
   triggerText,
+  versionLabel,
+} from "../lib/i18n/format";
+import {
+  errorMessage,
+  readRunList,
+  requestJson,
+  statusLabels,
   type RunStatus,
   type RunSummary,
 } from "../lib/runs";
@@ -32,6 +35,8 @@ const filters: { key: Filter; label: string; statuses: RunStatus[] }[] = [
 type Filter = "all" | "running" | "waiting" | "done" | "stopped";
 
 export function RunList() {
+  const t = useT();
+  const { locale } = useLocale();
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [now, setNow] = useState(0);
   const [filter, setFilter] = useState<Filter>("all");
@@ -93,19 +98,19 @@ export function RunList() {
   const newButton = (
     <Link className="button primary" href="/runs/new">
       <Icon name="plus" />
-      新建运行
+      {t("新建运行")}
     </Link>
   );
   return (
     <>
       <div className="page-heading">
         <div>
-          <h1>运行记录</h1>
-          <p>从需求到结果，每一步都可追踪。</p>
+          <h1>{t("运行记录")}</h1>
+          <p>{t("从需求到结果，每一步都可追踪。")}</p>
         </div>
         {newButton}
       </div>
-      <section className="stats-grid" aria-label="运行概览">
+      <section className="stats-grid" aria-label={t("运行概览")}>
         {[
           { label: "全部运行", count: runs.length, icon: "runs" as const },
           {
@@ -121,7 +126,7 @@ export function RunList() {
         ].map((stat) => (
           <div className="stat-card" key={stat.label}>
             <div>
-              <span>{stat.label}</span>
+              <span>{t(stat.label)}</span>
               <strong>
                 {loading || error
                   ? "—"
@@ -134,9 +139,9 @@ export function RunList() {
           </div>
         ))}
       </section>
-      <section className="panel runs-panel" aria-label="运行列表">
+      <section className="panel runs-panel" aria-label={t("运行列表")}>
         <div className="panel-toolbar">
-          <div className="filter-tabs" role="group" aria-label="筛选运行状态">
+          <div className="filter-tabs" role="group" aria-label={t("筛选运行状态")}>
             {[{ key: "all" as const, label: "全部" }, ...filters].map(
               (item) => (
                 <button
@@ -145,14 +150,14 @@ export function RunList() {
                   className={filter === item.key ? "selected" : ""}
                   onClick={() => setFilter(item.key)}
                 >
-                  {item.label}
+                  {t(item.label)}
                 </button>
               ),
             )}
           </div>
           <button
             className="icon-button"
-            aria-label="刷新运行列表"
+            aria-label={t("刷新运行列表")}
             disabled={loading}
             onClick={() => setRevision((r) => r + 1)}
           >
@@ -169,39 +174,41 @@ export function RunList() {
         ) : loading ? (
           <div className="loading-state" role="status">
             <span className="spinner" />
-            正在加载运行记录…
+            {t("正在加载运行记录…")}
           </div>
         ) : visible.length === 0 ? (
           <EmptyState
-            title={
-              runs.length === 0 ? "从一个需求开始" : "这个状态下还没有运行"
-            }
+            title={t(
+              runs.length === 0 ? "从一个需求开始" : "这个状态下还没有运行",
+            )}
             action={runs.length === 0 ? newButton : undefined}
           >
-            {runs.length === 0
-              ? "选择一个应用，描述你的需求，开启第一次运行。"
-              : "切换其他状态，或发起一条新的运行。"}
+            {t(
+              runs.length === 0
+                ? "选择一个应用，描述你的需求，开启第一次运行。"
+                : "切换其他状态，或发起一条新的运行。",
+            )}
           </EmptyState>
         ) : (
           <div className="table-scroll">
             <table className="runs-table">
               <thead>
                 <tr>
-                  <th scope="col">需求</th>
-                  <th scope="col">提出人</th>
-                  <th scope="col">应用</th>
-                  <th scope="col">状态</th>
-                  <th scope="col">提交时间</th>
-                  <th scope="col">用时</th>
+                  <th scope="col">{t("需求")}</th>
+                  <th scope="col">{t("提出人")}</th>
+                  <th scope="col">{t("所属应用")}</th>
+                  <th scope="col">{t("状态")}</th>
+                  <th scope="col">{t("提交时间")}</th>
+                  <th scope="col">{t("用时")}</th>
                   <th scope="col">
-                    <span className="sr-only">操作</span>
+                    <span className="sr-only">{t("操作")}</span>
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {visible.map((run) => {
-                  const title = runTitle(run);
-                  const where = stepText(run);
+                  const title = runTitle(t, run);
+                  const where = stepText(t, run);
                   return (
                     <tr key={run.run_id}>
                       <td>
@@ -214,8 +221,15 @@ export function RunList() {
                           {run.created_at && (
                             // Tells runs with the same title apart for screen readers.
                             <span className="sr-only">
-                              （{run.created_by ? `${run.created_by}，` : ""}
-                              {formatTime(run.created_at)} 提交）
+                              {t(
+                                run.created_by
+                                  ? "（{who}，{time} 提交）"
+                                  : "（{time} 提交）",
+                                {
+                                  who: run.created_by ?? "",
+                                  time: formatTime(locale, run.created_at),
+                                },
+                              )}
                             </span>
                           )}
                         </Link>
@@ -224,7 +238,7 @@ export function RunList() {
                         {run.created_by || "—"}
                         {run.trigger && (
                           <span className="run-step">
-                            {triggerText(run.trigger)}
+                            {triggerText(t, run.trigger)}
                           </span>
                         )}
                       </td>
@@ -233,11 +247,11 @@ export function RunList() {
                           <Icon name="spark" size={14} />
                           {run.app_title || run.app}
                         </span>
-                        {versionLabel(run) && (
+                        {versionLabel(t, run) && (
                           <span
                             className={run.draft ? "draft-tag" : "run-version"}
                           >
-                            {versionLabel(run)}
+                            {versionLabel(t, run)}
                           </span>
                         )}
                       </td>
@@ -249,20 +263,20 @@ export function RunList() {
                         {run.created_at ? (
                           <time
                             dateTime={run.created_at}
-                            title={formatTime(run.created_at)}
+                            title={formatTime(locale, run.created_at)}
                           >
-                            {timeAgo(run.created_at, now)}
+                            {timeAgo(locale, run.created_at, now)}
                           </time>
                         ) : (
                           "—"
                         )}
                       </td>
                       <td className="run-cell run-duration">
-                        {(durationText(run, now) || "—")
-                          .split(" · ")
-                          .map((part) => (
-                            <span key={part}>{part}</span>
-                          ))}
+                        {durationParts(t, run, now).length
+                          ? durationParts(t, run, now).map((part) => (
+                              <span key={part}>{part}</span>
+                            ))
+                          : "—"}
                       </td>
                       <td>
                         {/* The title links to the run too; this is for the mouse. */}
@@ -285,17 +299,17 @@ export function RunList() {
         <div className="table-footer">
           <span>
             {error
-              ? "加载失败"
+              ? t("加载失败")
               : loading
-                ? "正在同步"
-                : `共 ${visible.length} 条运行`}
+                ? t("正在同步")
+                : t("共 {n} 条运行", { n: visible.length })}
           </span>
-          <span>运行过程与结果集中管理</span>
+          <span>{t("运行过程与结果集中管理")}</span>
         </div>
       </section>
       <div className="list-note">
         <Icon name="spark" size={16} />
-        需要你确认的运行会暂停等待，确认后继续执行。
+        {t("需要你确认的运行会暂停等待，确认后继续执行。")}
       </div>
     </>
   );

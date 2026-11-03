@@ -1,6 +1,7 @@
 import { AppDetailView } from "../../../components/app-detail";
+import { pageTitle } from "../../../lib/server/locale";
 
-export const metadata = { title: "应用设计与配置" };
+export const generateMetadata = pageTitle("应用设计与配置");
 export default async function AppPage({
   params,
 }: {
