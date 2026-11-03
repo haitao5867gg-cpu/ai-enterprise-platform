@@ -6043,3 +6043,343 @@ fieldset.project-form-section > legend + * {
 .step-changes .unasked {
   margin-left: 8px;
 }
+/* ---------------------------------------------------------------------------
+   Shell v2 (界面改版第 2 批): grouped navigation, a sidebar that folds to icons,
+   a quieter top bar, and tighter page spacing. These rules come last on purpose:
+   they replace the earlier shell rules, including those inside media queries.
+   --------------------------------------------------------------------------- */
+.app-shell {
+  --sidebar-w: 216px;
+}
+.app-shell.narrow {
+  --sidebar-w: 64px;
+}
+@media (max-width: 900px) {
+  .app-shell {
+    --sidebar-w: 64px;
+  }
+}
+.sidebar {
+  width: var(--sidebar-w);
+  padding: 20px 12px 16px;
+  overflow-y: auto;
+}
+.main-shell {
+  margin-left: var(--sidebar-w);
+  width: calc(100% - var(--sidebar-w));
+}
+.brand {
+  font-size: 20px;
+  gap: 10px;
+  padding-left: 4px;
+  min-height: 34px;
+}
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  flex-shrink: 0;
+}
+.brand-mark svg {
+  width: 18px;
+  height: 18px;
+}
+.sidebar nav {
+  display: grid;
+  gap: 2px;
+  margin-top: 18px;
+}
+.nav-group + .nav-group {
+  margin-top: 10px;
+}
+.nav-label {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #a09dab;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+.nav-label:hover {
+  color: #6f6a7c;
+}
+.nav-label svg {
+  transition: transform 0.15s;
+}
+.nav-label[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.nav-items {
+  display: grid;
+  gap: 2px;
+}
+.nav-items[hidden] {
+  display: none;
+}
+.nav-link {
+  height: 36px;
+  padding: 0 10px;
+  gap: 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.nav-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Folded: icons only; names stay for screen readers and show on hover. */
+.app-shell.narrow .brand-text,
+.app-shell.narrow .nav-label {
+  display: none;
+}
+.app-shell.narrow .nav-link {
+  justify-content: center;
+  padding: 0;
+}
+.app-shell.narrow .nav-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.app-shell.narrow .nav-group + .nav-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 900px) {
+  .brand-text,
+  .nav-label {
+    display: none;
+  }
+  .nav-link {
+    justify-content: center;
+    padding: 0;
+  }
+  .nav-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .sidebar-toggle {
+    display: none;
+  }
+}
+
+.topbar {
+  height: 56px;
+  padding: 0 28px 0 20px;
+  gap: 12px;
+}
+.topbar-tools {
+  gap: 12px;
+}
+.topbar-new {
+  min-height: 32px;
+  padding: 6px 12px;
+}
+.health {
+  font-size: 12px;
+}
+.health.down {
+  color: #a5762a;
+  font-weight: 550;
+}
+.mock-banner {
+  min-height: 28px;
+  padding: 6px 28px;
+}
+
+/* The account menu in the top bar. */
+.account {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: block;
+}
+.account > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 2px 6px 2px 2px;
+  font-size: 12px;
+}
+.account > summary::-webkit-details-marker {
+  display: none;
+}
+.account > summary:hover,
+.account[open] > summary {
+  background: #f5f3fa;
+}
+.account-avatar {
+  width: 30px;
+  height: 30px;
+  font-size: 13px;
+}
+.account-short {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 200px;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px #24233418;
+}
+.account-menu .account-name {
+  padding: 6px 8px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.menu-item {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: #f5f3fa;
+}
+
+/* Tighter pages: smaller titles and less air around them. */
+h1 {
+  font-size: 24px;
+  letter-spacing: -0.4px;
+  line-height: 1.4;
+}
+.main-content {
+  padding: 28px 32px 40px;
+}
+.page-heading {
+  margin-bottom: 20px;
+}
+.page-heading p {
+  margin-top: 4px;
+}
+.stats-grid {
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  padding: 14px 18px;
+}
+.stat-card strong {
+  margin-top: 6px;
+  font-size: 24px;
+}
+@media (min-width: 1600px) {
+  .main-content {
+    padding-top: 32px;
+  }
+}
+@media (max-width: 900px) {
+  .main-content {
+    padding: 22px 20px 32px;
+  }
+  .topbar {
+    padding: 0 20px;
+  }
+}
+
+@media (max-width: 600px) {
+  .sidebar {
+    width: 100%;
+    padding: 10px 14px;
+    overflow: visible;
+  }
+  .main-shell {
+    margin-left: 0;
+    width: 100%;
+  }
+  .sidebar nav {
+    margin: 0 0 0 auto;
+    display: flex;
+    gap: 2px;
+    overflow-x: auto;
+    min-width: 0;
+  }
+  .nav-group,
+  .nav-items {
+    display: contents;
+  }
+  .nav-group + .nav-group {
+    margin: 0;
+  }
+  .nav-link {
+    height: 34px;
+    width: 34px;
+    flex-shrink: 0;
+  }
+  .topbar {
+    height: 52px;
+    padding: 0 14px;
+  }
+  .topbar-new {
+    padding: 6px 8px;
+  }
+  .topbar-tools {
+    gap: 8px;
+  }
+  /* Icon only on a phone; the name stays for screen readers. */
+  .topbar-new-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .account-short,
+  .locale-switch button {
+    font-size: 11px;
+  }
+  .account-short {
+    display: none;
+  }
+}
+@media (min-width: 601px) {
+  .asset-section {
+    padding: 20px 22px;
+  }
+}
+.asset-section > h2,
+.asset-section-heading {
+  margin-bottom: 12px;
+}
+@media (max-width: 600px) {
+  .main-content {
+    padding: 20px 16px 32px;
+  }
+}

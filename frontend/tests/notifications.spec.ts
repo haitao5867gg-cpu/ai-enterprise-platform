@@ -80,6 +80,7 @@ test("运行等确认时铃铛有未读，点通知直达确认页", async ({ pa
 test("登录打开时，确认通知只发给审批者", async ({ page, context }) => {
   await signIn(context, page, "hanmeimei");
   await readAll(page);
+  await page.getByRole("banner").locator(".account summary").click();
   await page.getByRole("button", { name: "退出" }).click();
   await expect(page).toHaveURL(/\/login$/);
 
@@ -99,6 +100,7 @@ test("登录打开时，确认通知只发给审批者", async ({ page, context 
       .filter({ hasText: "整理客户数据清洗方案" })
       .filter({ hasText: "等你确认" }),
   ).toHaveCount(0);
+  await page.getByRole("banner").locator(".account summary").click();
   await page.getByRole("button", { name: "退出" }).click();
   await expect(page).toHaveURL(/\/login$/);
 

@@ -49,6 +49,7 @@ export default defineConfig({
         "knowledge-governance.spec.ts",
         "ops.spec.ts",
         "i18n.spec.ts",
+        "shell.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:3100" },
       metadata: {

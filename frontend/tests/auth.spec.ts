@@ -24,18 +24,17 @@ test("登录关着时和以前一样：不用登录，没有账号页", async ({
   await page.goto("/");
   await expect(nav(page)).toHaveText([
     "运行记录",
-    "资产目录",
     "应用",
     "Skill",
     "知识库",
     "数据源与工具",
-    "模型",
     "项目",
+    "资产目录",
+    "模型",
     "运营看板",
     "通知渠道",
-    "新建运行",
   ]);
-  await expect(page.getByRole("button", { name: "退出" })).toHaveCount(0);
+  await expect(page.locator(".account")).toHaveCount(0);
   await page.goto("/users");
   await expect(
     page.getByRole("heading", { name: "没有打开登录" }),
@@ -60,7 +59,11 @@ test("没登录跳到登录页，登录后回到原来的页面；使用者看�
   await page.getByLabel("密码", { exact: true }).fill(PASSWORD);
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page).toHaveURL(/\/runs\/new$/);
-  await expect(nav(page)).toHaveText(["运行记录", "新建运行"]);
+  await expect(nav(page)).toHaveText(["运行记录"]);
+  // A single group needs no group heading.
+  await expect(
+    page.getByRole("navigation", { name: "主导航" }).getByRole("button"),
+  ).toHaveCount(0);
   await expect(page.locator(".account")).toContainText("李雷");
   await expect(page.locator(".account")).toContainText("使用者");
   // The run is started under the signed-in name.
@@ -71,6 +74,7 @@ test("没登录跳到登录页，登录后回到原来的页面；使用者看�
   await expect(page.getByRole("heading", { name: "没有权限" })).toBeVisible();
   await expect(page.getByText("这个页面需要搭建者权限")).toBeVisible();
 
+  await page.getByRole("banner").locator(".account summary").click();
   await page.getByRole("button", { name: "退出" }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.goto("/");
@@ -96,6 +100,7 @@ test("待确认的一步只有审批者能处理，记录写登录人", async ({
     page.getByRole("button", { name: "确认", exact: true }),
   ).toBeDisabled();
 
+  await page.getByRole("banner").locator(".account summary").click();
   await page.getByRole("button", { name: "退出" }).click();
   await expect(page).toHaveURL(/\/login$/);
   await signIn(page, "hanmeimei", new URL(url).pathname);
