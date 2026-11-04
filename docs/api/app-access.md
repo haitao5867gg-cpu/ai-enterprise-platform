@@ -87,7 +87,7 @@ curl -s -X POST https://平台地址/api/v1/apps/hello/runs \
 
 两个工具的结果都带 `structuredContent`（就是上面的 `RunResult`），文字内容是给模型看的中文摘要。审批、表单都要人在平台上处理，MCP 里不能代替人确认。
 
-能对话的应用（智能体应用、开了对话的编排应用），运行工具的参数多两个可选的 `conversation_id`（字符串）和 `new_conversation`（布尔），说明里写“要接着上次聊，就传上次结果里的 conversation_id；要开始一段新的多轮对话，传 new_conversation: true”。规则同下面的“会话”。
+能对话的应用（智能体应用、开了对话的编排应用），运行工具的参数多两个可选的 `conversation_id`（字符串）和 `new_conversation`（布尔），说明里写“要接着上次聊，就传上次结果里的 conversation_id；要开始一段新的多轮对话，传 new_conversation: true”。规则同下面的“会话”。这样的应用，工具参数的 `required` 只有 `message`：接着聊时只能给 `message`，其他输入开会话时已经定了；开新会话或一次性调用时，开始节点的其他必填输入照样要给，没给时按“开始节点校验”报错（“…不能为空”），所以这些输入的说明末尾写上“（开新会话或单次调用时必填）”。
 
 ## 会话
 
