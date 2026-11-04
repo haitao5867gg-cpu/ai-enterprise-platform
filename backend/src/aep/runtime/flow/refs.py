@@ -2,8 +2,10 @@
 
 A reference names a node's output (``{{draft.text}}``), a constant
 (``{{env.refund_limit}}``), a secret (``{{secret.crm_token}}``), a run parameter
-(``{{param.update_month}}``) or what the run's project says (``{{project.brief}}``;
-docs/api/projects.md). In text a
+(``{{param.update_month}}``), what the run's project says (``{{project.brief}}``;
+docs/api/projects.md) or the conversation the run is a turn of
+(``{{conversation.history}}``, ``{{conversation.turn}}``; docs/api/flow-apps.md, "对话").
+In text a
 reference is replaced by its value as text; a setting that is exactly one
 reference (a tool argument, a code input) gets the value itself.
 """
@@ -21,7 +23,10 @@ ENV = "env"
 SECRET = "secret"
 PARAM = "param"
 PROJECT = "project"
-RESERVED = (ENV, SECRET, PARAM, PROJECT)
+CONVERSATION = "conversation"
+RESERVED = (ENV, SECRET, PARAM, PROJECT, CONVERSATION)
+# What ``{{conversation.*}}`` may name.
+CONVERSATION_FIELDS = ("history", "turn")
 
 Lookup = Callable[[str, str], Any]
 

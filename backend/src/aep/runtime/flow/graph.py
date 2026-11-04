@@ -61,6 +61,8 @@ class FlowState(TypedDict, total=False):
     data: Annotated[dict[str, list[str]], _merge]
     quoted: Annotated[dict[str, list[str]], _merge]
     restored: Annotated[dict[str, str], _merge]
+    # The conversation a run is a turn of: ``{"id", "turn", "history"}`` (aep.conversations).
+    conversation: dict[str, Any] | None
     # A run rerun from a step of another run starts at this node with that run's state
     # (docs/api/evals.md, "从某一步重跑"); other runs start at the start node.
     jump: str | None

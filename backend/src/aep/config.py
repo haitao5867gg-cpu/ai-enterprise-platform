@@ -128,6 +128,12 @@ class Settings(BaseSettings):
     schedule_timezone: str = "Asia/Shanghai"
     schedule_poll_seconds: float = 30.0
 
+    # Conversations (docs/api/conversations.md): a conversation whose last turn started
+    # more than this many days ago is deleted, its runs' content cleared (0: never); the
+    # platform looks for them every conversation_cleanup_hours.
+    conversation_retention_days: int = Field(30, ge=0, le=3650)
+    conversation_cleanup_hours: float = Field(24.0, gt=0)
+
     # Eval sets (app modules name theirs, e.g. etl/cases.yaml) and the publish gate: a
     # draft of an app with an eval set needs at least this average score. Its cases run
     # on eval_datasource (a name or id; empty: the first registered source).

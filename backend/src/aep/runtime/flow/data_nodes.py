@@ -22,6 +22,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from aep import llm, policy, schedules
+from aep.conversations import mask_key
 from aep.databricks import (
     PROD,
     DatabricksError,
@@ -390,7 +391,7 @@ async def run_profile(node: dict[str, Any], state: dict[str, Any], rt: Runtime) 
             "description": describe_for_model(
                 tables,
                 rt.data_policy(state).samples,
-                str(state.get("run_id") or ""),
+                mask_key(state),
                 references,
             ),
             "existing": existing,

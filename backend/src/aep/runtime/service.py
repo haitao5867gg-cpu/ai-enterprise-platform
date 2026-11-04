@@ -19,6 +19,9 @@ failed run can be retried from the node that failed when the failure may be
 temporary, and any run can be rerun: a new run of the same app version (a draft's
 runs copy its configuration), with the same or a changed input.
 
+A conversation (aep.conversations) strings runs of one app into a chat: each message
+starts the app's next run, which gets the done turns before it as its history.
+
 Every status change says which status it expects to find (``RunStore.set_status``),
 so a decision, a cancel and the end of a step cannot overwrite one another.
 
@@ -37,7 +40,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -47,6 +50,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
+from aep import conversations as chat
 from aep import policy, projects, tracing
 from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
@@ -63,7 +67,7 @@ from aep.runtime.flow.store import (
     SecretStore,
 )
 from aep.runtime.registry import AppBuilder, AppContext
-from aep.runtime.store import RunRecord, RunStatus, RunStore
+from aep.runtime.store import RunRecord, RunStatus, RunStore, TurnTaken
 from aep.runtime.versions import AppVersionStore, MemoryAppVersionStore
 from aep.skills import MemorySkillStore, SkillStore
 
@@ -135,6 +139,18 @@ class RunStopped(Exception):
     """The run was cancelled; raised at a node boundary to stop it there."""
 
 
+class NotConversable(Exception):
+    """The app does not converse (docs/api/conversations.md)."""
+
+
+class ConversationBusy(Exception):
+    """The conversation's last turn is still running or waits for a person."""
+
+
+class LaterTurns(Exception):
+    """A turn of a conversation that has turns after it cannot be retried."""
+
+
 # Failures that may go away by themselves: a retry is worth it. The others
 # (``output_format``, ``code_error``, ``step_limit``, ``max_visits``, ``max_steps``)
 # would happen again; such a run is rerun with a changed input instead. A failure of
@@ -155,8 +171,11 @@ MAX_CALL_DEPTH = 3
 
 
 def retryable(record: RunRecord) -> bool:
-    return record.status == "error" and (
-        record.error_type is None or record.error_type in TEMPORARY
+    # A run cleared with its conversation has nothing left to go on from.
+    return (
+        record.status == "error"
+        and record.cleared_at is None
+        and (record.error_type is None or record.error_type in TEMPORARY)
     )
 
 
@@ -316,6 +335,7 @@ class RunService:
         skills: SkillStore | None = None,
         flows: FlowAppStore | None = None,
         secrets: SecretStore | None = None,
+        conversations: chat.ConversationStore | None = None,
     ) -> None:
         self._store = store
         self._checkpointer = checkpointer
@@ -325,6 +345,10 @@ class RunService:
         self.skills = skills or MemorySkillStore()
         self.flows = flows or MemoryFlowAppStore()
         self.secrets = secrets or MemorySecretStore()
+        self.conversations = conversations or chat.MemoryConversationStore()
+        # One message at a time per conversation in this process (the store's unique turn
+        # catches two processes).
+        self._turn_locks: dict[str, asyncio.Lock] = {}
         code = {name: b for name, b in apps.items() if not isinstance(b, BuiltinFlow)}
         self.builtin_flows = {name: b for name, b in apps.items() if isinstance(b, BuiltinFlow)}
         self._graphs: dict[str, CompiledStateGraph] = {
@@ -344,6 +368,11 @@ class RunService:
         self.on_settled: Callable[[RunSettled], Awaitable[None]] | None = None
         # Where model calls are recorded (aep.models.CallStore), for each step's usage.
         self.calls: Any = None
+
+    @property
+    def settings(self) -> Any:
+        """The platform's settings (``aep.config.Settings``)."""
+        return self._ctx.settings
 
     @property
     def llm_client(self) -> Any:
@@ -661,28 +690,38 @@ class RunService:
         seed: dict[str, Any] | None = None,
         start_at: dict[str, Any] | None = None,
         trigger: dict[str, Any] | None = None,
+        conversation: tuple[chat.Conversation, int] | None = None,
     ) -> RunRecord:
         """Start a run of the app's current version, or of ``app_version``; with ``config``
         (a draft's configuration, for its eval) or ``draft`` (the draft as it is now) the
         run belongs to no version. A flow app's input must fit its start node's inputs.
         ``requester`` is who asks for it, as they say; ``project`` the project it binds
         (``project_id``, ``environment``, ``params``; docs/api/projects.md); ``trigger``
-        what started it when no person did (docs/api/schedules.md)."""
+        what started it when no person did (docs/api/schedules.md); ``conversation`` the
+        conversation and turn it is (use :meth:`send`)."""
         app_version, config, bound, rules = await self._prepare(
             app, input, app_version, config, draft, project
         )
-        record = await self._store.create(
-            app,
-            input,
-            app_version,
-            config,
-            requester,
-            rerun_of,
-            rules.as_dict(),
-            bound,
-            start_at,
-            trigger,
-        )
+        if conversation is not None:
+            # The history goes in with the run's first state (aep.conversations).
+            seed = {**(seed or {}), **await self._history(conversation, config, rules)}
+        try:
+            record = await self._store.create(
+                app,
+                input,
+                app_version,
+                config,
+                requester,
+                rerun_of,
+                rules.as_dict(),
+                bound,
+                start_at,
+                trigger,
+                conversation[0].conversation_id if conversation else None,
+                conversation[1] if conversation else None,
+            )
+        except TurnTaken as exc:
+            raise ConversationBusy(str(exc)) from exc
         # A rerun from a step starts there, with the state the source run had then.
         payload = {**(seed or {}), "input": input}
         if start_at:
@@ -919,9 +958,12 @@ class RunService:
 
     def title(self, record: RunRecord) -> str | None:
         """What the run is about, in one line: a flow app's first text input that was
-        filled in (in the start node's order), a code app's ``request``."""
+        filled in (in the start node's order), a code app's ``request``; a conversation's
+        turn its message."""
         fields = self.inputs(record)
-        if fields is None:
+        if record.conversation_id:
+            keys = [chat.MESSAGE]
+        elif fields is None:
             keys = ["request"]
         else:
             keys = [f["key"] for f in fields if f.get("type") in ("text", "textarea")]
@@ -1011,10 +1053,22 @@ class RunService:
 
     async def retry(self, run_id: str) -> RunRecord:
         """Continue a failed run from the node that failed (from its input if it failed
-        before its first step was saved)."""
+        before its first step was saved). A turn of a conversation is retried only while
+        it is the last one, in turn with the conversation's messages."""
         record = await self._store.get(run_id)
         if record is None:
             raise RunNotFound(run_id)
+        if record.conversation_id is None:
+            return await self._retry(record)
+        lock = self._turn_locks.setdefault(record.conversation_id, asyncio.Lock())
+        async with lock:
+            turns = await self._store.in_conversation(record.conversation_id)
+            if turns and turns[-1].run_id != run_id:
+                raise LaterTurns(run_id)
+            return await self._retry(record)
+
+    async def _retry(self, record: RunRecord) -> RunRecord:
+        run_id = record.run_id
         if record.status != "error":
             raise NotFailed(run_id)
         if not retryable(record):
@@ -1158,6 +1212,200 @@ class RunService:
             self._spawn(record, payload, "recover")
         return len(runs)
 
+    # Conversations (docs/api/conversations.md)
+
+    async def conversable(self, app: str, draft: bool = False) -> dict[str, Any]:
+        """The configuration the app's next turn would use: its current version, or its
+        draft. Raises ``UnknownApp``, ``NoDraftToRun`` or ``NotConversable``."""
+        kind = await self.kind(app)
+        if kind is None:
+            raise UnknownApp(app)
+        if kind != "flow":
+            raise NotConversable(app)
+        if draft:
+            found = await self.versions.draft(app)
+            if found is None:
+                raise NoDraftToRun(app)
+        else:
+            await self.ensure_versions(app)
+            found = await self.versions.version(app, await self.versions.current(app))
+            if found is None:
+                raise UnknownVersion(app)
+        config = self.flow_config(app, found.config)
+        if chat.chat_settings(config) is None:
+            raise NotConversable(app)
+        return config
+
+    async def open_conversation(
+        self,
+        app: str,
+        *,
+        owner: str,
+        created_by: str | None,
+        draft: bool = False,
+        input: dict[str, Any] | None = None,
+        title: str | None = None,
+        project: dict[str, Any] | None = None,
+    ) -> chat.Conversation:
+        """A new conversation with the app; no turn starts yet. ``input`` holds the start
+        inputs other than the message, checked as a run's would be."""
+        config = await self.conversable(app, draft)
+        given = dict(input or {})
+        fields = [f for f in flowgraph.inputs(config) if f["key"] != chat.MESSAGE]
+        problems: dict[str, str] = {}
+        if chat.MESSAGE in given:
+            problems[chat.MESSAGE] = "消息在发消息时给，不放在会话的输入里"
+        _, found = flownodes.answers(fields, given)
+        problems |= found
+        if problems:
+            raise InvalidValues(problems)
+        # The project is checked as a run's (a turn binds it again each time).
+        await self._bind(app, "flow", config, project)
+        return await self.conversations.create(
+            chat.Conversation(
+                conversation_id=chat.new_id(),
+                app=app,
+                title=title,
+                draft=draft,
+                input=given,
+                owner=owner,
+                created_by=created_by,
+                project=project,
+            )
+        )
+
+    async def send(
+        self, conversation: chat.Conversation, message: str, requester: str | None
+    ) -> RunRecord:
+        """Start the conversation's next turn with this message. Raises
+        ``ConversationBusy`` while its last turn runs or waits for a person."""
+        key = conversation.conversation_id
+        lock = self._turn_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            turns = await self._store.in_conversation(key)
+            if turns and turns[-1].status in ("running", "waiting"):
+                raise ConversationBusy(key)
+            await self.conversable(conversation.app, conversation.draft)
+            turn = (turns[-1].conversation_turn or len(turns)) + 1 if turns else 1
+            record = await self.create(
+                conversation.app,
+                {**conversation.input, chat.MESSAGE: message},
+                draft=conversation.draft,
+                requester=requester,
+                project=conversation.project,
+                conversation=(conversation, turn),
+            )
+        await self.conversations.update(
+            key,
+            title=chat.short_title(message) if conversation.title is None else None,
+            updated_at=record.created_at,
+        )
+        return record
+
+    async def _history(
+        self,
+        conversation: tuple[chat.Conversation, int],
+        config: dict[str, Any],
+        rules: policy.DataPolicy,
+    ) -> dict[str, Any]:
+        """What a turn's first state holds of its conversation: the history and the tokens
+        earlier turns turned back into values."""
+        found, turn = conversation
+        settings = chat.chat_settings(config)
+        if settings is None:
+            raise NotConversable(found.app)
+        earlier = await self._store.in_conversation(found.conversation_id)
+        replies = await self.conversations.replies(found.conversation_id)
+        turns, restored = chat.history(
+            [(r, replies.get(r.run_id)) for r in earlier],
+            rules.samples,
+            settings["history_turns"],
+        )
+        return {
+            "conversation": {"id": found.conversation_id, "turn": turn, "history": turns},
+            "restored": restored,
+        }
+
+    async def _keep_reply(
+        self, record: RunRecord, config: dict[str, Any], values: dict[str, Any]
+    ) -> None:
+        """A done turn's reply, as people see it and as its model wrote it."""
+        text = chat.reply_text(config, values.get("result"))
+        restored = values.get("restored") or {}
+        try:
+            await self.conversations.save_reply(
+                chat.Reply(
+                    record.run_id,
+                    str(record.conversation_id),
+                    text,
+                    policy.remask(text, restored) if text else None,
+                    restored,
+                    policy.DataPolicy.from_dict(record.policy).samples,
+                )
+            )
+        except Exception:  # the turn is done all the same; the next one lacks its reply
+            log.exception("could not keep the reply of run %s", record.run_id)
+
+    async def turns(self, conversation_id: str) -> list[tuple[RunView, str | None]]:
+        """The conversation's turns, the first first, each with its reply."""
+        replies = await self.conversations.replies(conversation_id)
+        found = []
+        for record in await self._store.in_conversation(conversation_id):
+            view = await self.get(record.run_id)
+            said = replies.get(record.run_id)
+            text = said.text if said is not None else None
+            if said is None and record.status == "done":
+                config = self.flow_config(record.app, record.config)
+                text = chat.reply_text(config, view.result)
+            found.append((view, text))
+        return found
+
+    async def busy(self, conversation_id: str) -> bool:
+        turns = await self._store.in_conversation(conversation_id)
+        return bool(turns) and turns[-1].status in ("running", "waiting")
+
+    async def turn_counts(self, conversation_ids: list[str]) -> dict[str, tuple[int, bool]]:
+        """How many turns each conversation has, and whether it is busy."""
+        counts = {}
+        for key in conversation_ids:
+            turns = await self._store.in_conversation(key)
+            counts[key] = (len(turns), bool(turns) and turns[-1].status in ("running", "waiting"))
+        return counts
+
+    async def delete_conversation(self, conversation_id: str, actor: str | None = None) -> None:
+        """Delete the conversation; its turns keep their status, version, times and usage,
+        but what they were about is cleared. A turn still running or waiting is cancelled."""
+        turns = await self._store.in_conversation(conversation_id)
+        for record in turns:
+            if record.status in ("running", "waiting"):
+                try:
+                    await self.cancel(record.run_id, actor, "会话已删除")
+                except (RunNotFound, NotCancellable):
+                    pass
+                task = self._running.get(record.run_id)
+                if task is not None:
+                    await asyncio.wait({task}, timeout=10)
+        for record in turns:
+            await self._checkpointer.adelete_thread(record.run_id)
+        await self._store.clear([r.run_id for r in turns])
+        await self.conversations.delete(conversation_id)
+        self._turn_locks.pop(conversation_id, None)
+
+    async def clear_expired(self, days: int) -> int:
+        """Delete the conversations whose last turn started more than ``days`` ago (0: none
+        expire); how many were deleted."""
+        if days <= 0:
+            return 0
+        before = datetime.now(UTC) - timedelta(days=days)
+        cleared = 0
+        for found in await self.conversations.expired(before):
+            try:
+                await self.delete_conversation(found.conversation_id)
+                cleared += 1
+            except Exception:
+                log.exception("could not clear conversation %s", found.conversation_id)
+        return cleared
+
     async def wait_idle(self) -> None:
         """Wait for every background step started so far (used by tests and shutdown)."""
         while self._tasks:
@@ -1206,7 +1454,9 @@ class RunService:
 
     async def _drive(self, record: RunRecord, payload: Any, step: str, step_input: Any) -> None:
         config = _config(record.run_id)
-        with self._tracer.segment(record.run_id, record.app, step, step_input) as segment:
+        with self._tracer.segment(
+            record.run_id, record.app, step, step_input, session=record.conversation_id
+        ) as segment:
             try:
                 graph = await self._graph(record)
                 nodes = await self.node_configs(record)
@@ -1244,6 +1494,8 @@ class RunService:
                 if status == "done" and record.app not in self._graphs:
                     flow = self.flow_config(record.app, record.config)
                     outcome = flowgraph.outcome(flow, state.values or {})
+                    if record.conversation_id:
+                        await self._keep_reply(record, flow, state.values or {})
                 await self._finish(record.run_id, status, outcome=outcome)
             except (RunStopped, asyncio.CancelledError) as exc:
                 # Cancelled (its status says so already), or this process is stopping:

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -63,6 +64,16 @@ class RunRecord:
     # What started the run when no person did: ``{"kind": "schedule", "schedule_id",
     # "title"}`` (docs/api/schedules.md); None for other runs.
     trigger: dict[str, Any] | None = None
+    # The conversation the run is a turn of, and which turn (from 1); None outside one
+    # (docs/api/conversations.md).
+    conversation_id: str | None = None
+    conversation_turn: int | None = None
+    # When its content (input, state, error) was cleared with its conversation.
+    cleared_at: datetime | None = None
+
+
+class TurnTaken(Exception):
+    """Another run already is that turn of the conversation."""
 
 
 class RunStore(Protocol):
@@ -79,7 +90,12 @@ class RunStore(Protocol):
         project: dict[str, Any] | None = None,
         start_at: dict[str, Any] | None = None,
         trigger: dict[str, Any] | None = None,
-    ) -> RunRecord: ...
+        conversation_id: str | None = None,
+        conversation_turn: int | None = None,
+    ) -> RunRecord:
+        """Raises ``TurnTaken`` when that turn of the conversation exists already."""
+        ...
+
     async def get(self, run_id: str) -> RunRecord | None: ...
     async def recent(self, limit: int = 50) -> list[RunRecord]: ...
     async def list_by_status(self, status: RunStatus) -> list[RunRecord]: ...
@@ -123,6 +139,15 @@ class RunStore(Protocol):
         """The app of each of these runs that exists."""
         ...
 
+    async def in_conversation(self, conversation_id: str) -> list[RunRecord]:
+        """The conversation's turns, the first first."""
+        ...
+
+    async def clear(self, run_ids: list[str]) -> None:
+        """Clear what these runs were about (input, error) and mark them cleared; their
+        status, version, times and usage stay."""
+        ...
+
 
 @dataclass(frozen=True)
 class RunStat:
@@ -163,7 +188,14 @@ class MemoryRunStore:
         project: dict[str, Any] | None = None,
         start_at: dict[str, Any] | None = None,
         trigger: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
+        conversation_turn: int | None = None,
     ) -> RunRecord:
+        if conversation_id is not None and any(
+            r.conversation_id == conversation_id and r.conversation_turn == conversation_turn
+            for r in self._runs.values()
+        ):
+            raise TurnTaken(conversation_id)
         record = RunRecord(
             run_id=str(uuid.uuid4()),
             app=app,
@@ -177,6 +209,8 @@ class MemoryRunStore:
             project=project,
             start_at=start_at,
             trigger=trigger,
+            conversation_id=conversation_id,
+            conversation_turn=conversation_turn,
         )
         self._runs[record.run_id] = record
         return record
@@ -223,6 +257,16 @@ class MemoryRunStore:
 
     async def apps_of(self, run_ids: list[str]) -> dict[str, str]:
         return {key: self._runs[key].app for key in run_ids if key in self._runs}
+
+    async def in_conversation(self, conversation_id: str) -> list[RunRecord]:
+        found = [r for r in self._runs.values() if r.conversation_id == conversation_id]
+        return sorted(found, key=lambda r: r.conversation_turn or 0)
+
+    async def clear(self, run_ids: list[str]) -> None:
+        now = datetime.now(UTC)
+        for key in run_ids:
+            if key in self._runs:
+                self._runs[key] = replace(self._runs[key], input={}, error=None, cleared_at=now)
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         runs = sorted(self._runs.values(), key=lambda r: r.created_at, reverse=True)
@@ -299,12 +343,19 @@ CREATE TABLE IF NOT EXISTS runs (
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS project jsonb",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS start_at jsonb",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS trigger jsonb",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS conversation_id text",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS conversation_turn integer",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS cleared_at timestamptz",
+    # One run per turn: two messages sent at once cannot both be the next turn.
+    "CREATE UNIQUE INDEX IF NOT EXISTS runs_conversation_turn_idx"
+    " ON runs (conversation_id, conversation_turn) WHERE conversation_id IS NOT NULL",
 ]
 
 COLUMNS = (
     "run_id::text, app, status, input, tenant_id, error, app_version, config, created_at,"
     " updated_at, created_by, step, waiting_since, wait_seconds, error_type, cancelled_by,"
-    " rerun_of::text, outcome, policy, project, start_at, trigger"
+    " rerun_of::text, outcome, policy, project, start_at, trigger, conversation_id,"
+    " conversation_turn, cleared_at"
 )
 
 
@@ -335,27 +386,35 @@ class PostgresRunStore:
         project: dict[str, Any] | None = None,
         start_at: dict[str, Any] | None = None,
         trigger: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
+        conversation_turn: int | None = None,
     ) -> RunRecord:
         async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                "INSERT INTO runs (run_id, app, status, input, app_version, config, created_by,"
-                " wait_seconds, rerun_of, policy, project, start_at, trigger)"
-                " VALUES (%s, %s, 'running', %s, %s, %s, %s, 0, %s, %s, %s, %s, %s)"
-                f" RETURNING {COLUMNS}",
-                (
-                    uuid.uuid4(),
-                    app,
-                    Jsonb(input),
-                    app_version,
-                    Jsonb(config) if config is not None else None,
-                    created_by,
-                    uuid.UUID(rerun_of) if rerun_of else None,
-                    Jsonb(policy) if policy is not None else None,
-                    Jsonb(project) if project is not None else None,
-                    Jsonb(start_at) if start_at is not None else None,
-                    Jsonb(trigger) if trigger is not None else None,
-                ),
-            )
+            try:
+                cur = await conn.execute(
+                    "INSERT INTO runs (run_id, app, status, input, app_version, config,"
+                    " created_by, wait_seconds, rerun_of, policy, project, start_at, trigger,"
+                    " conversation_id, conversation_turn)"
+                    " VALUES (%s, %s, 'running', %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s)"
+                    f" RETURNING {COLUMNS}",
+                    (
+                        uuid.uuid4(),
+                        app,
+                        Jsonb(input),
+                        app_version,
+                        Jsonb(config) if config is not None else None,
+                        created_by,
+                        uuid.UUID(rerun_of) if rerun_of else None,
+                        Jsonb(policy) if policy is not None else None,
+                        Jsonb(project) if project is not None else None,
+                        Jsonb(start_at) if start_at is not None else None,
+                        Jsonb(trigger) if trigger is not None else None,
+                        conversation_id,
+                        conversation_turn,
+                    ),
+                )
+            except UniqueViolation as exc:
+                raise TurnTaken(str(conversation_id)) from exc
             return _record(await cur.fetchone())
 
     async def get(self, run_id: str) -> RunRecord | None:
@@ -410,6 +469,25 @@ class PostgresRunStore:
                 "SELECT run_id::text, app FROM runs WHERE run_id = ANY(%s::uuid[])", (keys,)
             )
             return {row["run_id"]: row["app"] for row in await cur.fetchall()}
+
+    async def in_conversation(self, conversation_id: str) -> list[RunRecord]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {COLUMNS} FROM runs WHERE conversation_id = %s ORDER BY conversation_turn",
+                (conversation_id,),
+            )
+            return [_record(row) for row in await cur.fetchall()]
+
+    async def clear(self, run_ids: list[str]) -> None:
+        keys = [key for key in run_ids if _uuid(key)]
+        if not keys:
+            return
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE runs SET input = '{}', error = NULL, cleared_at = now()"
+                " WHERE run_id = ANY(%s::uuid[])",
+                (keys,),
+            )
 
     async def recent(self, limit: int = 50) -> list[RunRecord]:
         async with self._pool.connection() as conn:

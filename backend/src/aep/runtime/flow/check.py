@@ -9,6 +9,7 @@ import copy
 from collections import defaultdict
 from typing import Any
 
+from aep.conversations import DEFAULT_HISTORY_TURNS, MAX_HISTORY_TURNS, MESSAGE
 from aep.projects import FIELDS as PROJECT_FIELDS
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import refs
@@ -95,6 +96,56 @@ def _check_env(raw: Any, add: Any) -> dict[str, Any]:
         elif secrets.index(name) != i:
             add(["env", "secrets", i], f"密钥 {name} 重复")
     return {"vars": variables, "secrets": secrets}
+
+
+def _check_conversation(
+    raw: Any, by_id: dict[str, dict[str, Any]], add: Any
+) -> dict[str, Any] | None:
+    """The app's ``conversation`` setting as it is kept, or None when it has none
+    (docs/api/flow-apps.md, "对话")."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        add(["conversation"], "conversation 必须是对象")
+        return None
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        add(["conversation", "enabled"], "enabled 必须是 true 或 false")
+    turns = raw.get("history_turns", DEFAULT_HISTORY_TURNS)
+    if not isinstance(turns, int) or isinstance(turns, bool) or not 0 <= turns <= MAX_HISTORY_TURNS:
+        add(["conversation", "history_turns"], f"带的历史轮数要在 0–{MAX_HISTORY_TURNS} 之间")
+    reply = raw.get("reply")
+    outputs = {
+        o.get("key")
+        for n in by_id.values()
+        if n["type"] == "end"
+        for o in n.get("outputs") or []
+        if isinstance(o, dict)
+    }
+    if not isinstance(reply, str) or not reply:
+        add(["conversation", "reply"], "要选一个结束节点的输出作为回答")
+    elif enabled is True and reply not in outputs:
+        add(["conversation", "reply"], f"结束节点没有输出 {reply}")
+    start = next((n for n in by_id.values() if n["type"] == "start"), None)
+    if enabled is True and start is not None:
+        found = next(
+            (
+                f
+                for f in start.get("inputs") or []
+                if isinstance(f, dict) and f.get("key") == MESSAGE
+            ),
+            None,
+        )
+        if (
+            found is None
+            or found.get("type") not in ("text", "textarea")
+            or found.get("required") is not True
+        ):
+            add(
+                ["graph", "nodes", start["id"], "inputs"],
+                "打开对话要在开始节点里有一个必填的文字输入 message",
+            )
+    return {"enabled": enabled, "history_turns": turns, "reply": reply}
 
 
 def check_common(node: dict[str, Any], p: Problems) -> None:
@@ -272,6 +323,11 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
         add(["graph"], "要有一个开始节点")
     if not any(n["type"] == "end" for n in by_id.values()):
         add(["graph"], "至少要有一个结束节点")
+    conversation = _check_conversation(raw.get("conversation"), by_id, add)
+    chat = conversation is not None and conversation["enabled"] is True
+    for node_id, node in by_id.items():
+        if node.get("history") is True and not chat:
+            add(["graph", "nodes", node_id, "history"], "应用没有打开对话，不能带会话历史")
 
     out: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
     for i, edge in enumerate(edges):
@@ -375,6 +431,12 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
                         add(where, "密钥只能写在工具节点的参数里")
                     elif name not in environment["secrets"]:
                         add(where, f"没有声明密钥 {name}，请先在应用的密钥里添加")
+                elif target == refs.CONVERSATION:
+                    if not chat:
+                        add(where, "应用没有打开对话，不能引用会话")
+                    elif name not in refs.CONVERSATION_FIELDS:
+                        fields = "、".join(refs.CONVERSATION_FIELDS)
+                        add(where, f"会话没有 {name} 这一项，可以用 {fields}")
                 elif target in (refs.PARAM, refs.PROJECT):
                     # Which project a run binds is known only then: parameter names are
                     # checked when the run starts (docs/api/projects.md).
@@ -401,4 +463,6 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
     out_config["schema_version"] = SCHEMA_VERSION
     out_config["env"] = environment
     out_config["graph"].setdefault("edges", [])
+    if conversation is not None:
+        out_config["conversation"] = conversation
     return out_config

@@ -20,6 +20,7 @@ from aep.api import (
     apps,
     assets,
     auth,
+    conversations,
     datasources,
     eval_sets,
     flows,
@@ -41,9 +42,10 @@ from aep.app_access import ApiKeys, PostgresApiKeyStore
 from aep.app_mcp import AppMcpEndpoint
 from aep.asset_catalog import AssetCatalog, PostgresAssetMetaStore
 from aep.assets import AssetRepo, PostgresAssetStore
-from aep.auth import AuthService, PostgresAuthStore, audit_middleware, authorize
+from aep.auth import AuditRecord, AuthService, PostgresAuthStore, audit_middleware, authorize
 from aep.config import Settings, get_settings
 from aep.connector_check import ConnectorCheck
+from aep.conversations import PostgresConversationStore
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
 from aep.eval_sets import PostgresEvalSetStore
@@ -131,6 +133,8 @@ def create_app() -> FastAPI:
         await secret_store.setup()
         project_store = PostgresProjectStore(pool)
         await project_store.setup()
+        conversation_store = PostgresConversationStore(pool)
+        await conversation_store.setup()
         tools = McpTools(settings.tool_timeout_seconds)
         asset_repo = AssetRepo.from_settings(settings, tools)
         tracer = tracing.Tracer.from_settings(settings)
@@ -155,6 +159,7 @@ def create_app() -> FastAPI:
             skills=skill_store,
             flows=flow_store,
             secrets=secret_store,
+            conversations=conversation_store,
         )
         # Flow apps' eval sets and people's feedback on runs (docs/api/evals.md).
         eval_set_store = PostgresEvalSetStore(pool)
@@ -262,10 +267,25 @@ def create_app() -> FastAPI:
         app.state.schedules = schedule_store
         app.state.scheduler = scheduler
         schedule_task = asyncio.create_task(scheduler.run())
+
+        async def clean_conversations() -> None:
+            """Delete expired conversations now and then (docs/api/conversations.md)."""
+            while True:
+                try:
+                    cleared = await service.clear_expired(settings.conversation_retention_days)
+                    if cleared:
+                        await auth_service.record(
+                            AuditRecord("clear_conversations", 200, None, {"count": str(cleared)})
+                        )
+                except Exception:
+                    log.exception("could not clear expired conversations")
+                await asyncio.sleep(settings.conversation_cleanup_hours * 3600)
+
+        cleanup_task = asyncio.create_task(clean_conversations())
         try:
             yield
         finally:
-            for task in (schedule_task, knowledge_task):
+            for task in (schedule_task, knowledge_task, cleanup_task):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -299,6 +319,7 @@ def create_app() -> FastAPI:
     app.state.connector_check = ConnectorCheck()
     app.include_router(auth.router)
     app.include_router(runs.router)
+    app.include_router(conversations.router)
     app.include_router(datasources.router)
     app.include_router(projects.router)
     app.include_router(assets.router)
