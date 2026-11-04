@@ -19,18 +19,18 @@
   "conversation_id": "conv_…",
   "app": "expense-helper",
   "app_title": "报销政策助手",
-  "title": "出差住宿标准是多少？",     // 默认取第一条消息的前 30 个字，可改，1–80 字符
+  "title": "出差住宿标准是多少？",     // 默认取第一条消息的前 30 个字，可改，1–80 字符；还没有消息也没起名时为「新对话」
   "draft": false,                     // true：调试对话，每轮用草稿配置（应用页「设计」右侧）
   "input": {"datasource": "ds_1a2b"}, // 开会话时给的其他输入，见「开会话」；没有时为 {}
   "created_by": "王搭建" | null,      // 同运行的 requester
   "created_at": "…",
   "updated_at": "…",                  // 最近一轮的开始时间；没有轮次时等于 created_at
   "expires_at": "…" | null,           // updated_at 加保留天数；不自动删时为 null
-  "turns": 3,
+  "turn_count": 3,
   "busy": false                       // 最后一轮在跑或在等人处理
 }
 
-// Turn：GET /conversations/{id} 的 turns，旧的在前
+// Turn：GET /conversations/{id} 多一个 turns，列出各轮，旧的在前
 {
   "turn": 1,                          // 从 1 开始
   "run_id": "…",
@@ -45,13 +45,13 @@
 }
 ```
 
-运行记录（`GET /runs` 和 `GET /runs/{id}`）新增 `conversation`：`{"conversation_id", "title", "turn"}`，不在会话里的运行为 null。会话被删除后它的运行这一项也为 null。
+运行记录（`GET /runs` 和 `GET /runs/{id}`）新增 `conversation`：`{"conversation_id", "title", "turn"}`，不在会话里的运行为 null。会话被删除后它的运行这一项也为 null，另一项新增的 `cleared` 为 true（见「保存多久」）。
 
 ## 接口
 
 | 方法 | 路径 | 请求体 | 返回 |
 | --- | --- | --- | --- |
-| POST | `/conversations` | `{"app", "draft"?: false, "input"?: {}, "title"?, "requester"?}` | 201 `Conversation` |
+| POST | `/conversations` | `{"app", "draft"?: false, "input"?: {}, "title"?, "requester"?, "project"?}` | 201 `Conversation` |
 | GET | `/conversations?app=&draft=false&limit=50` | | `Conversation[]`，按 `updated_at` 新的在前；`limit` 最多 200 |
 | GET | `/conversations/{id}` | | `Conversation` 加 `turns: [Turn]` |
 | POST | `/conversations/{id}/messages` | `{"message", "requester"?}` | 201，这一轮的运行（同 `POST /runs` 的返回）加 `turn` |
@@ -62,7 +62,8 @@
 - 开会话：
   - 应用不存在或已归档 404；应用不能对话（代码应用，或没开 `conversation` 的编排应用）409「这个应用没有开对话」；`draft` 为 true 而应用没有草稿 409「没有草稿可以试」；应用关了「使用页」入口而自己不是搭建者或管理员，403「这个应用没有开放给使用者」（app-access.md“入口”）。草稿会话只有搭建者和管理员能开。
   - `input` 是开始节点里除 `message` 以外的输入，整个会话不变，每轮和 `message` 一起作为运行的输入。按开始节点校验，`loc` 为 `["body", "input", key]`；必填又没默认值的要在这里给。智能体应用没有其他输入，`input` 只能是 `{}`。
-  - 开会话不发起运行，`turns` 为 0。
+  - `project` 同 `POST /runs`（projects.md），开始节点设了 `project` 的应用在这里选，每轮都绑定它（每轮按项目当时的设置重新取快照）。
+  - 开会话不发起运行，`turn_count` 为 0。
 - 发消息：
   - `message` 1–8000 字符（去掉首尾空白后不能为空），否则 422。
   - 会话 `busy` 时 409「上一条还没处理完」。等人处理的那一轮在运行页或会话里处理完（`POST /runs/{id}/resume`）后才能发下一条；也可以取消它（`POST /runs/{id}/cancel`）。
@@ -84,12 +85,12 @@
   - 数据样本按「脱敏」（`masked`）外发时，模型写的回答里的标记是平台还原成原值后才给人看的。带进历史的是**还原之前**的样子（再按那一轮的还原表重新脱敏），模型在下一轮看到的不会比它当时看到的多。会话里的标记按会话算（用 `conversation_id` 而不是 `run_id` 生成），前几轮的还原表随历史带进新一轮，所以模型在新一轮里写回前几轮的标记时也能还原。
   - 某一轮运行时的样本级别比现在宽（比如那时是「完整」，现在是「脱敏」），这一轮不进历史，免得把那时的原值带给现在的模型。级别从宽到严是：完整、脱敏、只发统计、只发结构。
 - 模型看到的形式：智能体按对话消息给（每轮一条用户消息、一条助手消息，放在系统提示词之后、这一轮的消息之前）；编排应用见 flow-apps.md「对话」。
-- 运行页的流程视图里，智能体步骤的 `input` 多一个 `history`（这一步实际带给模型的历史，已按上面的规则处理过）。
+- 运行页的流程视图里，每一步的 `input` 多一个 `conversation`：`{"id", "turn", "history"}`，`history` 是这一轮实际带给模型的历史（已按上面的规则处理过）。
 
 ## 保存多久
 
 - 保留天数是平台配置 `AEP_CONVERSATION_RETENTION_DAYS`，默认 30；0 表示不自动删。
-- 会话最后一轮的开始时间（`updated_at`）超过保留天数后，平台每天清理一次：会话记录整条删除；它的各轮运行留下状态、版本、耗时和用量（运营看板、预算照算），但输入、结果、消息和待处理内容清空，运行页显示「这次运行属于已过期的会话，内容已清除」。
+- 会话最后一轮的开始时间（`updated_at`）超过保留天数后，平台每天清理一次：会话记录整条删除；它的各轮运行留下状态、版本、耗时和用量（运营看板、预算照算），但输入、结果、消息、待处理内容和报错原文清空，运行记录的 `cleared` 为 true，运行页显示「这次运行属于已过期的会话，内容已清除」。还在跑或在等人处理的那一轮先取消。
 - 已经存成评测用例的那一份（用例里的输入、历史和参考答案）不受影响。
 - 删除和清理都记进操作记录（auth.md）：删除记「删除会话」，清理记一条「清理过期会话」，`target` 里写清掉的会话数。
 
@@ -103,7 +104,7 @@
 
 ## 存储
 
-新表 `conversations`（带 `tenant_id`）：上面 `Conversation` 的字段（`turns`、`busy`、`expires_at` 读的时候算）。`runs` 加一列 `conversation_id`（可空，有索引）和 `conversation_turn`。历史里要用的「还原之前的回答」和还原表存在那次运行的结果旁边（不进 `result`）。
+新表 `conversations`（带 `tenant_id`）：上面 `Conversation` 的字段（`turn_count`、`busy`、`expires_at` 读的时候算），另记会话属于谁（登录的账号，或开它的 API 密钥）和开会话时选的项目。`runs` 加 `conversation_id`、`conversation_turn`（同一会话的轮次唯一，两条消息同时发只有一条成功）和 `cleared_at`（内容随会话清掉的时间）。新表 `conversation_replies`（带 `tenant_id`）按运行记每轮的回答：给人看的、模型写的（还原之前）、还原表和那一轮的样本级别，历史从这里取。
 
 ## 测试
 
