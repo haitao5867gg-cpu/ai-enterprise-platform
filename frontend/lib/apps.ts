@@ -365,6 +365,8 @@ export type AppTemplate = {
   title: string;
   summary: string;
   needs: string[];
+  // "agent": an agent app's template (docs/api/agent-apps.md); its pages come in batch 4.
+  kind?: "flow" | "agent";
   config: FlowConfig;
 };
 export type AppSource =
@@ -456,7 +458,7 @@ export type AppSummary = {
   current_version: number;
   has_draft: boolean;
   has_eval_set: boolean;
-  kind: "code" | "flow";
+  kind: "code" | "flow" | "agent";
   created_at: string | null;
 };
 export type AppDetail = AppSummary & {
@@ -529,7 +531,7 @@ function isSummary(
     Number.isInteger(value.current_version) &&
     typeof value.has_draft === "boolean" &&
     typeof value.has_eval_set === "boolean" &&
-    (value.kind === "code" || value.kind === "flow") &&
+    (value.kind === "code" || value.kind === "flow" || value.kind === "agent") &&
     (value.created_at === null || typeof value.created_at === "string")
   );
 }
