@@ -31,7 +31,8 @@ def agent_flow(kb_ids: list[str], **settings) -> dict:
 
 
 @pytest.mark.parametrize("omit", [False, True])
-async def test_agent_requires_a_datasource_tool_or_knowledge_at_tools(p, omit):
+async def test_an_agent_without_tools_or_knowledge_is_a_plain_chat(p, omit):
+    # Tools and knowledge are no longer required (docs/api/flow-apps.md, 智能体节点的新设置).
     config = agent_flow([])
     agent = config["graph"]["nodes"][1]
     if omit:
@@ -40,14 +41,7 @@ async def test_agent_requires_a_datasource_tool_or_knowledge_at_tools(p, omit):
         agent["knowledge"] = None
     await p.api.post("/apps", json={"app": "ask-policy", "title": "问答"})
     saved = await p.api.put("/apps/ask-policy/draft", json={"config": config})
-    assert saved.status_code == 422, saved.text
-    assert saved.json()["detail"] == [
-        {
-            "loc": ["body", "config", "graph", "nodes", "agent", "tools"],
-            "msg": "至少选一个数据源工具或知识库",
-            "type": "value_error",
-        }
-    ]
+    assert saved.status_code == 200, saved.text
 
 
 @pytest.mark.parametrize("knowledge", [False, [], "资料", 1])
@@ -137,7 +131,13 @@ async def test_knowledge_agent_template_starts_as_draft_and_runs_without_datasou
     types = (await p.api.get("/node-types")).json()
     agent_type = next(t for t in types if t["type"] == "agent")
     assert agent_type["defaults"]["knowledge"] is None
-    assert [o["key"] for o in agent_type["outputs"]] == ["text", "steps", "hits"]
+    assert [o["key"] for o in agent_type["outputs"]] == [
+        "text",
+        "steps",
+        "hits",
+        "grounded",
+        "ungrounded_text",
+    ]
     templates = (await p.api.get("/app-templates")).json()
     template = next(t for t in templates if t["id"] == "knowledge-agent")
     assert template["title"] == "知识库智能体"

@@ -6,9 +6,11 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from aep.api.apps import Catalog, _not_found
+from aep import conversations as chat
+from aep.api.apps import Catalog, _invalid, _not_found
 from aep.auth import who
 from aep.eval_sets import MAX_CASES, MAX_CHECKS
+from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import AppNotFound, CaseFromRunProblem, EvalSetReadOnly
 
 router = APIRouter(prefix="/apps", tags=["eval sets"])
@@ -51,12 +53,23 @@ class Answer(Strict):
     values: dict[str, Any] | None = None
 
 
+class Turn(Strict):
+    """One earlier turn of a case's conversation."""
+
+    message: Annotated[str, StringConstraints(min_length=1, max_length=chat.MAX_MESSAGE)]
+    # None (or empty): the turn had no reply, and its history has only the message.
+    reply: Annotated[str, StringConstraints(max_length=chat.HISTORY_CHARS)] | None = None
+
+
 class Case(Strict):
     id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{1,60}$")]
     title: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] | None = None
     input: dict[str, Any] = Field(default_factory=dict)
     answers: dict[str, Answer] = Field(default_factory=dict)
     expect: list[Check] = Field(default_factory=list, max_length=MAX_CHECKS)
+    history: list[Turn] = Field(default_factory=list, max_length=chat.MAX_HISTORY_TURNS)
+    turn: int | None = Field(default=None, ge=1, le=10000)
+    restored: dict[str, str] = Field(default_factory=dict)
     from_run: str | None = None
 
 
@@ -79,6 +92,19 @@ def _case(case: Case) -> dict[str, Any]:
         for node, answer in out["answers"].items()
     }
     return out
+
+
+def _turn_problems(i: int, case: Case) -> list[dict[str, Any]]:
+    """What is wrong with a case's history and restored tokens (docs/api/evals.md)."""
+    turns = [t.model_dump() for t in case.history]
+    found: list[dict[str, Any]] = []
+    if chat.history_chars(turns) > chat.HISTORY_CHARS:
+        msg = f"历史的消息和回答合计最多 {chat.HISTORY_CHARS} 字"
+        found.append({"loc": ["body", "cases", i, "history"], "msg": msg, "type": "value_error"})
+    if set(case.restored) - chat.tokens_in(turns):
+        msg = "还原表里有历史里没有的标记"
+        found.append({"loc": ["body", "cases", i, "restored"], "msg": msg, "type": "value_error"})
+    return found
 
 
 @router.get("/{app}/eval-set")
@@ -106,6 +132,9 @@ async def put_eval_set(
                 ]
             )
         seen.add(case.id)
+    problems = [p for i, case in enumerate(body.cases) for p in _turn_problems(i, case)]
+    if problems:
+        raise RequestValidationError(problems)
     try:
         return await catalog.put_eval_set(
             app,
@@ -118,6 +147,8 @@ async def put_eval_set(
         raise _not_found(app) from exc
     except EvalSetReadOnly as exc:
         raise HTTPException(409, READ_ONLY) from exc
+    except ConfigError as exc:
+        raise _invalid(exc) from exc
 
 
 @router.post("/{app}/eval-set/cases/from-run", status_code=status.HTTP_201_CREATED)

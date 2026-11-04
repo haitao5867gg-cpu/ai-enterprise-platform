@@ -125,6 +125,26 @@ MESSAGES: dict[str, str] = {
     "这次运行不是应用 {app} 的": "This run is not of app {app}",
     "运行结束后才能存成用例": "A run can be saved as a case once it has ended",
     "一个评测集最多 {count} 条用例": "An eval set holds at most {count} cases",
+    "这个应用没有开对话，用例不能带历史": (
+        "This app does not take conversations, so a case cannot have history"
+    ),
+    "历史的消息和回答合计最多 {count} 字": (
+        "The history's messages and replies have at most {count} characters together"
+    ),
+    "还原表里有历史里没有的标记": "The restored map has tokens that are not in the history",
+    "这是智能体应用的文件，不能导入成编排应用的草稿": (
+        "This file is an agent app's; it cannot become a flow app's draft"
+    ),
+    "这是编排应用的文件，不能导入成智能体应用的草稿": (
+        "This file is a flow app's; it cannot become an agent app's draft"
+    ),
+    "不认识的应用类型 {kind}，这里只读编排应用和智能体应用": (
+        "Unknown app kind {kind}; only flow and agent apps are read here"
+    ),
+    "只有智能体应用能转成编排应用": "Only agent apps can be turned into flow apps",
+    "这次运行属于已过期的会话，内容已清除": (
+        "This run was a turn of an expired conversation; its content has been cleared"
+    ),
     # Skills
     "没有 Skill {name}": "There is no Skill {name}",
     "Skill {name} 没有版本 {version}": "Skill {name} has no version {version}",
@@ -426,6 +446,14 @@ NODE_TYPES: dict[str, str] = {
     ),
     "可放进提示词的资料": "Material to put in a prompt",
     "命中的片段和出处编号": "Matched chunks and their source numbers",
+    "回答是否有依据（只依据资料回答时检查）": (
+        "Whether the answer rests on what was found (checked when answering only from sources)"
+    ),
+    "没有依据时被换掉的原回答": "The original answer, when it was replaced for having no grounds",
+    "指令最多 {count} 个字符": "Instructions have at most {count} characters",
+    "grounded_only 必须是 true 或 false": "grounded_only must be true or false",
+    "调用的应用必须是列表": "The apps to call must be a list",
+    "调用应用的功能还没有上线": "Calling apps is not available yet",
     "在沙箱里运行一段 Python（标准库、pandas、numpy），做计算、格式转换、数据整理": (
         "Run Python in a sandbox (standard library, pandas, numpy) to calculate, convert "
         "or tidy data"

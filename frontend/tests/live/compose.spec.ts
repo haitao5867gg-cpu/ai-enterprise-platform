@@ -75,11 +75,18 @@ test("Compose: reject with feedback → revised answer → approve → done", as
   await page.getByLabel("修改意见").fill(comment);
   await page.getByRole("button", { name: "驳回", exact: true }).click();
   // Waiting again with the new draft on 待处理; the conversation is folded under 过程.
+  // The page opens on 待处理 each time the run comes to wait again, so 过程 is picked
+  // only once the page has the revised draft (4 messages) and waits again: picked
+  // earlier, while the model still revises, the page would switch back.
+  const summary = page.getByText("运行过程 · 4 条消息", { exact: true });
+  await expect(summary).toBeAttached();
+  await expect(
+    page.getByRole("status").filter({ hasText: "应用已暂停，等待人工确认" }),
+  ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "需要你的确认" }),
   ).toBeVisible();
   await page.getByRole("tab", { name: "过程", exact: true }).click();
-  const summary = page.getByText("运行过程 · 4 条消息", { exact: true });
   await expect(summary).toBeVisible();
   await expect(
     page.locator("details.conversation-history"),

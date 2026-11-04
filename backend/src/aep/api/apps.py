@@ -52,6 +52,8 @@ class Activate(BaseModel):
 
 class Source(BaseModel):
     blank: bool | None = None
+    # A blank agent app (docs/api/agent-apps.md, "新建、模板、导出导入").
+    blank_agent: bool | None = None
     template: str | None = None
     app: str | None = None
     version: int | None = Field(default=None, ge=1)
@@ -62,6 +64,14 @@ class CreateApp(BaseModel):
     title: str = Field(min_length=1, max_length=50)
     summary: str = Field(default="", max_length=500)
     source: Source = Field(default_factory=lambda: Source(blank=True), alias="from")
+    actor: str | None = None
+
+
+class ConvertToFlow(BaseModel):
+    app: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    title: str | None = Field(default=None, min_length=1, max_length=50)
+    summary: str | None = Field(default=None, max_length=500)
+    version: int | None = Field(default=None, ge=1)
     actor: str | None = None
 
 
@@ -223,6 +233,33 @@ async def save_draft(
     except ConfigError as exc:
         raise _invalid(exc) from exc
     return await catalog.detail(app)
+
+
+@router.post("/{app}/convert-to-flow", status_code=status.HTTP_201_CREATED)
+async def convert_to_flow(
+    app: str, body: ConvertToFlow, catalog: Catalog, request: Request
+) -> dict[str, Any]:
+    """A flow app copied from a version of an agent app (docs/api/agent-apps.md)."""
+    try:
+        await catalog.convert_to_flow(
+            app,
+            body.app,
+            body.title.strip() if body.title and body.title.strip() else None,
+            body.summary.strip() if body.summary is not None else None,
+            body.version,
+            who(request, body.actor),
+        )
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except NotAFlowApp as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except AppExists as exc:
+        raise HTTPException(409, f"已经有应用 {body.app}") from exc
+    except VersionNotFound as exc:
+        raise HTTPException(404, f"应用 {app} 没有版本 {body.version}") from exc
+    except ConfigError as exc:
+        raise _invalid(exc) from exc
+    return await catalog.detail(body.app)
 
 
 @router.post("/{app}/draft/import")

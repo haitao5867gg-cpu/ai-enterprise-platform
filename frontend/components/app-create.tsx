@@ -48,7 +48,8 @@ export function AppCreate({
     if (importing) return;
     const controller = new AbortController();
     getAppTemplates(controller.signal)
-      .then(setTemplates)
+      // Agent apps get their own way in with the agent app pages (docs/api/agent-apps.md).
+      .then((items) => setTemplates(items.filter((item) => item.kind !== "agent")))
       .catch((err) => {
         if (!controller.signal.aborted) setError(errorMessage(err));
       });

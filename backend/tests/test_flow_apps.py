@@ -63,7 +63,11 @@ async def test_shipped_configs_pass_the_check():
     for config in [
         builtin.HELLO.config,
         builtin.blank(),
-        *(t.config for t in builtin.TEMPLATES.values() if "knowledge_base" not in t.needs),
+        *(
+            t.config
+            for t in builtin.TEMPLATES.values()
+            if "knowledge_base" not in t.needs and t.kind == "flow"
+        ),
     ]:
         checked = await check_config(config, ENV)
         assert checked["schema_version"] == 1
@@ -682,6 +686,9 @@ async def test_node_types_and_templates():
             "knowledge-agent",
             "etl-lakehouse",
             "etl-lakehouse-project",
+            "agent-blank",
+            "agent-knowledge",
+            "agent-data",
         ]
         assert templates[2]["needs"] == ["datasource"]
 

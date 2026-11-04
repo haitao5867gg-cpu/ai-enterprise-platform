@@ -10,6 +10,7 @@ from typing import Any, Literal
 import yaml
 
 from aep.datasources import canon_id
+from aep.runtime import agent_app
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import refs
 
@@ -103,32 +104,42 @@ def dump(
     config: dict[str, Any],
     sources: dict[str, dict[str, Any]],
     knowledge_bases: dict[str, dict[str, Any]],
+    kind: str = "flow",
 ) -> str:
-    """The YAML text; ``sources`` and ``knowledge_bases`` describe required resources by id."""
+    """The YAML text; ``sources`` and ``knowledge_bases`` describe required resources by id.
+    An agent app's file says ``kind: agent`` and holds its own configuration
+    (docs/api/agent-apps.md, "新建、模板、导出导入")."""
+    agent = kind == agent_app.KIND
+    shape = agent_app.as_flow(config) if agent else config
+    requires: dict[str, Any] = {
+        "skills": [{"name": n, "version": v} for n, v in flowgraph.skill_refs(shape)],
+        "datasources": [
+            sources.get(d, {"datasource_id": d, "name": None, "kind": None})
+            for d in datasource_ids(shape)
+        ],
+        "knowledge_bases": [
+            knowledge_bases.get(kb_id, {"kb_id": kb_id, "name": None})
+            for kb_id in knowledge_ids(shape)
+        ],
+        "secrets": list((config.get("env") or {}).get("secrets") or []),
+    }
+    if agent:
+        requires["apps"] = [a["app"] for a in config["agent"].get("apps") or []]
     data = {
         "format": FORMAT,
+        **({"kind": agent_app.KIND} if agent else {}),
         "title": title,
         "summary": summary,
         "exported_from": {"app": app, "version": version},
         "config": config,
-        "requires": {
-            "skills": [{"name": n, "version": v} for n, v in flowgraph.skill_refs(config)],
-            "datasources": [
-                sources.get(d, {"datasource_id": d, "name": None, "kind": None})
-                for d in datasource_ids(config)
-            ],
-            "knowledge_bases": [
-                knowledge_bases.get(kb_id, {"kb_id": kb_id, "name": None})
-                for kb_id in knowledge_ids(config)
-            ],
-            "secrets": list((config.get("env") or {}).get("secrets") or []),
-        },
+        "requires": requires,
     }
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
 
 
 def load(text: str) -> dict[str, Any]:
-    """The file's contents: ``title``, ``summary``, ``config`` and ``requires``."""
+    """The file's contents: ``kind`` (``flow`` when the file names none), ``title``,
+    ``summary``, ``config`` and ``requires``."""
     if len(text.encode()) > MAX_BYTES:
         raise BadFile("文件不能超过 1 MB")
     try:
@@ -141,7 +152,11 @@ def load(text: str) -> dict[str, Any]:
         raise BadFile(f"不认识的文件格式 {data.get('format')!r}，这里只读 {FORMAT}")
     if not isinstance(data.get("config"), dict):
         raise BadFile("文件里没有 config")
+    kind = data.get("kind", "flow")
+    if kind not in ("flow", agent_app.KIND):
+        raise BadFile(f"不认识的应用类型 {kind!r}，这里只读编排应用和智能体应用")
     return {
+        "kind": kind,
         "title": str(data.get("title") or ""),
         "summary": str(data.get("summary") or ""),
         "config": data["config"],

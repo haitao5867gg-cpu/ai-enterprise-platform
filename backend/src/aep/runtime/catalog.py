@@ -25,12 +25,13 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from aep import conversations as chat
 from aep import eval_sets, evals, llm, policy
 from aep.config import Settings
 from aep.connector_urls import same_url
 from aep.datasources import DATABASE_KINDS, DataSourceStore
 from aep.knowledge.rerank import rerank_options
-from aep.runtime import appconfig, design, manual
+from aep.runtime import agent_app, appconfig, design, manual
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import builtin as flowbuiltin
 from aep.runtime.flow import files as flowfiles
@@ -46,6 +47,7 @@ from aep.runtime.service import (
     RunNotFound,
     RunService,
     RunView,
+    TurnCleared,
 )
 from aep.runtime.store import FINISHED
 from aep.runtime.versions import AppVersion, Draft, NoDraft, VersionNotFound
@@ -101,6 +103,9 @@ class CaseFromRunProblem(Exception):
 # How long a node tried on its own may take.
 NODE_TEST_SECONDS = 120
 MASK = "******"
+
+
+NOT_CHAT = "这个应用没有开对话，用例不能带历史"
 
 
 def _check_out(check: evals.Check) -> dict[str, Any]:
@@ -204,7 +209,7 @@ class AppCatalog:
             flow = await self._runs.flows.get(app)
             assert flow is not None
             title, summary, created_at = flow.title, flow.summary, flow.created_at.isoformat()
-            kind = "flow"
+            kind = flow.kind
         return {
             "app": app,
             "kind": kind,
@@ -228,10 +233,12 @@ class AppCatalog:
         return config if app in self._runs.code_apps else self._runs.flow_config(app, config)
 
     def _version_out(self, v: AppVersion, current: int) -> dict[str, Any]:
+        # An agent app's configuration shows as it was set up, not as its generated graph.
+        shown = v.config if agent_app.is_agent(v.config) else self._config(v.app, v.config)
         return {
             "version": v.version,
             "status": "current" if v.version == current else "previous",
-            "config": self._config(v.app, v.config),
+            "config": shown,
             "note": v.note,
             "created_by": v.created_by,
             "created_at": v.created_at.isoformat(),
@@ -262,6 +269,7 @@ class AppCatalog:
         current = await store.version(app, summary["current_version"])
         assert current is not None
         draft = await store.draft(app)
+        chat: dict[str, Any] | None = None
         if kind == "code":
             options = self._runs.options[app]
             configs = await appconfig.load(current.config, options, self._runs.skills)
@@ -281,6 +289,9 @@ class AppCatalog:
             config = self._runs.flow_config(app, current.config)
             options = {}
             nodes, edges = flowgraph.shape(config, await self._runs.runtime(config))
+            if agent_app.is_agent(current.config):
+                # What the use page shows before the first message (docs/api/agent-apps.md).
+                chat = current.config.get("chat") or {"opening": "", "suggestions": []}
             texts = {
                 "pattern": flowgraph.DESIGN["pattern"],
                 "knowledge": flowgraph.DESIGN["knowledge"],
@@ -296,6 +307,7 @@ class AppCatalog:
             summary
             | texts
             | {
+                "chat": chat,
                 "inputs": inputs,
                 "project": uses_project,
                 "nodes": [
@@ -505,7 +517,9 @@ class AppCatalog:
     async def save_draft(self, app: str, raw: Any, actor: str | None) -> None:
         kind = await self._check(app)
         await self._runs.ensure_versions(app)
-        if kind == "flow":
+        if await self._runs.app_kind(app) == agent_app.KIND:
+            config = await self.check_agent(raw)
+        elif kind == "flow":
             config = await self.check_flow(raw)
         else:
             config = await appconfig.validate_config(
@@ -534,6 +548,10 @@ class AppCatalog:
     async def check_flow(self, raw: Any, strict: bool = True) -> dict[str, Any]:
         return await check_config(raw, self._env(await self.models(), strict))
 
+    async def check_agent(self, raw: Any, strict: bool = True) -> dict[str, Any]:
+        """An agent app's configuration, checked as its generated graph is."""
+        return await agent_app.check(raw, lambda flow: self.check_flow(flow, strict))
+
     async def discard_draft(self, app: str) -> None:
         await self._check(app)
         await self._runs.versions.discard_draft(app)
@@ -548,49 +566,102 @@ class AppCatalog:
         source: dict[str, Any],
         actor: str | None,
     ) -> None:
-        """A new flow app; its version 1 is a blank app, a template or a copy of a flow
-        app's version."""
+        """A new flow or agent app; its version 1 is a blank app, a template or a copy of
+        an app's version (docs/api/agent-apps.md, "新建、模板、导出导入")."""
         if app in self._runs.code_apps or await self._runs.flows.get(app) is not None:
             raise AppExists(app)
         needs_setup = False
+        kind = "flow"
         copied: eval_sets.EvalSet | None = None
         if source.get("template"):
             template = flowbuiltin.TEMPLATES.get(source["template"])
             if template is None:
                 raise BadSource(f"没有模板 {source['template']}")
             raw, note = template.config, f"从模板「{template.title}」新建"
-            needs_setup = "knowledge_base" in template.needs
+            kind = template.kind
+            # An agent's data source is chosen too before it can run.
+            needs_setup = "knowledge_base" in template.needs or (
+                kind == agent_app.KIND and "datasource" in template.needs
+            )
         elif source.get("app"):
             original = source["app"]
-            if await self._runs.kind(original) != "flow":
+            kind = await self._runs.app_kind(original) or ""
+            if kind not in ("flow", agent_app.KIND):
                 raise BadSource(f"没有编排应用 {original}，代码应用不能复制")
             await self._runs.ensure_versions(original)
             number = source.get("version") or await self._runs.versions.current(original)
             found = await self._runs.versions.version(original, number)
             if found is None:
                 raise BadSource(f"应用 {original} 没有版本 {number}")
-            raw = self._runs.flow_config(original, found.config)
+            raw = (
+                found.config
+                if kind == agent_app.KIND
+                else self._runs.flow_config(original, found.config)
+            )
             note = f"复制自 {original} 版本 {number}"
             copied = await self.eval_sets.get(original)
+        elif source.get("blank_agent"):
+            raw, note, kind = agent_app.blank(), "新建空白智能体", agent_app.KIND
         else:
             raw, note = flowbuiltin.blank(), "新建空白应用"
         # Built-in templates that need a base intentionally have an empty selection.
-        config = copy.deepcopy(raw) if needs_setup else await self.check_flow(raw)
-        await self._create_flow(app, title, summary, config, note, actor, needs_setup)
+        if needs_setup:
+            config = copy.deepcopy(raw)
+        elif kind == agent_app.KIND:
+            config = await self.check_agent(raw)
+        else:
+            config = await self.check_flow(raw)
+        await self._create_flow(app, title, summary, config, note, actor, needs_setup, kind)
         if source.get("app") and copied is not None:
-            # A copy keeps the original's eval set, and so its publishing gate.
-            for case in copied.cases:
-                case["from_run"] = None
-            await self.eval_sets.put(
-                eval_sets.EvalSet(
-                    app,
-                    copied.threshold,
-                    copied.judge_model,
-                    copied.cases,
-                    actor,
-                    datetime.now(UTC),
-                )
+            await self._copy_eval_set(copied, app, actor)
+
+    async def _copy_eval_set(self, copied: eval_sets.EvalSet, app: str, actor: str | None) -> None:
+        """A copy keeps the original's eval set, and so its publishing gate."""
+        for case in copied.cases:
+            case["from_run"] = None
+        await self.eval_sets.put(
+            eval_sets.EvalSet(
+                app, copied.threshold, copied.judge_model, copied.cases, actor, datetime.now(UTC)
             )
+        )
+
+    async def convert_to_flow(
+        self,
+        app: str,
+        new: str,
+        title: str | None,
+        summary: str | None,
+        version: int | None,
+        actor: str | None,
+    ) -> None:
+        """A new flow app whose version 1 is the graph a version of the agent app runs as,
+        with its eval set; the agent app stays as it is (docs/api/agent-apps.md,
+        "转成编排应用")."""
+        await self._check(app)
+        if await self._runs.app_kind(app) != agent_app.KIND:
+            raise NotAFlowApp("只有智能体应用能转成编排应用")
+        if new in self._runs.code_apps or await self._runs.flows.get(new) is not None:
+            raise AppExists(new)
+        await self._runs.ensure_versions(app)
+        number = version or await self._runs.versions.current(app)
+        found = await self._runs.versions.version(app, number)
+        if found is None:
+            raise VersionNotFound(f"{app} v{number}")
+        original = await self._runs.flows.get(app)
+        assert original is not None
+        config = await self.check_flow(self._runs.flow_config(app, found.config))
+        await self._create_flow(
+            new,
+            (title or original.title)[:50],
+            (original.summary if summary is None else summary)[:500],
+            config,
+            f"由智能体应用 {app} 版本 {number} 转成",
+            actor,
+            False,
+        )
+        copied = await self.eval_sets.get(app)
+        if copied is not None:
+            await self._copy_eval_set(copied, new, actor)
 
     async def _create_flow(
         self,
@@ -601,10 +672,15 @@ class AppCatalog:
         note: str,
         actor: str | None,
         needs_setup: bool,
+        kind: str = "flow",
     ) -> None:
         """Create version 1 and, when resources need choosing, keep the config as a draft."""
-        initial = await self.check_flow(flowbuiltin.blank()) if needs_setup else config
-        await self._runs.flows.create(app, title, summary, actor)
+        initial = config
+        if needs_setup and kind == agent_app.KIND:
+            initial = await self.check_agent(agent_app.blank())
+        elif needs_setup:
+            initial = await self.check_flow(flowbuiltin.blank())
+        await self._runs.flows.create(app, title, summary, actor, kind)
         await self._runs.versions.ensure(
             app, initial, f"新建空白应用（{note}的配置在草稿里）" if needs_setup else note, actor
         )
@@ -667,13 +743,28 @@ class AppCatalog:
             d.datasource_id: {"datasource_id": d.datasource_id, "name": d.name, "kind": d.kind}
             for d in await self._datasources.all()
         }
-        config = self._runs.flow_config(app, found.config)
+        # An agent app's file holds its own configuration, not the graph it runs as.
+        config = (
+            found.config
+            if flow.kind == agent_app.KIND
+            else self._runs.flow_config(app, found.config)
+        )
         bases = {
             kb.kb_id: {"kb_id": kb.kb_id, "name": kb.name}
             for kb in await self._runs.knowledge.all()
         }
-        text = flowfiles.dump(flow.title, flow.summary, app, version, config, sources, bases)
+        text = flowfiles.dump(
+            flow.title, flow.summary, app, version, config, sources, bases, flow.kind
+        )
         return f"{app}-v{version}.yaml", text
+
+    async def _file_config(self, data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """A file's configuration as checked, and the graph it runs as."""
+        if data["kind"] == agent_app.KIND:
+            config = await self.check_agent(data["config"], strict=False)
+            return config, agent_app.as_flow(config)
+        config = await self.check_flow(data["config"], strict=False)
+        return config, config
 
     async def _missing(
         self, app: str, config: dict[str, Any], requires: dict[str, Any]
@@ -745,8 +836,8 @@ class AppCatalog:
         data = flowfiles.load(text)
         if app in self._runs.code_apps or await self._runs.flows.get(app) is not None:
             raise AppExists(app)
-        config = await self.check_flow(data["config"], strict=False)
-        problems = await self._missing(app, config, data["requires"])
+        config, shape = await self._file_config(data)
+        problems = await self._missing(app, shape, data["requires"])
         name = (title or data["title"] or app)[:50]
         needs_setup = any(p["kind"] != "secret" for p in problems)
         await self._create_flow(
@@ -757,6 +848,7 @@ class AppCatalog:
             "导入" if needs_setup else "从文件导入",
             actor,
             needs_setup,
+            data["kind"],
         )
         return problems
 
@@ -764,8 +856,15 @@ class AppCatalog:
         """A file imported as the draft of an existing flow app."""
         await self._flow(app)
         data = flowfiles.load(text)
-        config = await self.check_flow(data["config"], strict=False)
-        problems = await self._missing(app, config, data["requires"])
+        kind = await self._runs.app_kind(app)
+        if data["kind"] != kind:
+            raise flowfiles.BadFile(
+                "这是智能体应用的文件，不能导入成编排应用的草稿"
+                if data["kind"] == agent_app.KIND
+                else "这是编排应用的文件，不能导入成智能体应用的草稿"
+            )
+        config, shape = await self._file_config(data)
+        problems = await self._missing(app, shape, data["requires"])
         await self._runs.versions.save_draft(app, config, actor)
         return problems
 
@@ -1093,7 +1192,11 @@ class AppCatalog:
         run: dict[str, Any]
         try:
             record = await self._runs.create(
-                app, case.get("input") or {}, config=draft.config, requester=evals.ACTOR
+                app,
+                case.get("input") or {},
+                config=draft.config,
+                requester=evals.ACTOR,
+                seed=self._case_turn(app, draft, case),
             )
             out.run_id = record.run_id
             state["cases"][index]["run_id"] = record.run_id
@@ -1117,6 +1220,21 @@ class AppCatalog:
         out.checks = await eval_sets.score_flow_case(case, run, judge)
         out.seconds = round(time.monotonic() - started, 1)
         return out
+
+    def _case_turn(self, app: str, draft: Draft, case: dict[str, Any]) -> dict[str, Any] | None:
+        """A case with history runs as the next turn of a conversation that has it: the
+        history as it is, the case's turn and the tokens it turned back; no conversation
+        is kept (docs/api/evals.md, "history")."""
+        history = case.get("history") or []
+        if not history and case.get("turn") is None:
+            return None
+        if chat.chat_settings(self._runs.flow_config(app, draft.config)) is None:
+            raise RuntimeError(NOT_CHAT)
+        turn = case.get("turn") or len(history) + 1
+        return {
+            refs.CONVERSATION: {"id": None, "turn": turn, "history": copy.deepcopy(history)},
+            "restored": dict(case.get("restored") or {}),
+        }
 
     async def _answer(self, run_id: str, pending: dict[str, Any], answers: dict[str, Any]) -> None:
         """Answer the person's step the run waits at, as the case says."""
@@ -1188,6 +1306,9 @@ class AppCatalog:
         actor: str | None,
     ) -> dict[str, Any]:
         await self._editable(app)
+        talking = [i for i, c in enumerate(cases) if c.get("history") or c.get("turn") is not None]
+        if talking and not await self._converses(app):
+            raise ConfigError([(["cases", i, "history"], NOT_CHAT) for i in talking])
         found = await self.eval_sets.get(app)
         await self.eval_sets.put(
             eval_sets.EvalSet(
@@ -1202,6 +1323,16 @@ class AppCatalog:
             )
         )
         return await self.get_eval_set(app)
+
+    async def _converses(self, app: str) -> bool:
+        """Whether the app's current version or its draft converses."""
+        store = self._runs.versions
+        await self._runs.ensure_versions(app)
+        found = [await store.version(app, await store.current(app)), await store.draft(app)]
+        return any(
+            v is not None and chat.chat_settings(self._runs.flow_config(app, v.config))
+            for v in found
+        )
 
     async def case_from_run(
         self, app: str, run_id: str, rating: str, actor: str | None
@@ -1220,13 +1351,21 @@ class AppCatalog:
         )
         if len(found.cases) >= eval_sets.MAX_CASES:
             raise CaseFromRunProblem(f"一个评测集最多 {eval_sets.MAX_CASES} 条用例")
+        try:
+            turn = await self._runs.turn_context(run_id)
+        except TurnCleared as exc:
+            raise CaseFromRunProblem("这次运行属于已过期的会话，内容已清除") from exc
         good = rating == "good" and view.record.status == "done"
+        # How the run went (an agent's steps and hits) changes every run: no checks for it.
+        skip = flowgraph.execution_outputs(self._runs.flow_config(app, view.record.config or {}))
         case = {
             "id": eval_sets.case_id(run_id, {c["id"] for c in found.cases}),
             "title": self._runs.title(view.record),
             "input": view.record.input,
             "answers": await self._runs.answers_given(run_id),
-            "expect": eval_sets.suggested_checks(view.result) if good else [],
+            "expect": eval_sets.suggested_checks(view.result, skip) if good else [],
+            # A run outside a conversation replays as one: no history, turn 0.
+            **(turn or {"history": [], "turn": None, "restored": {}}),
             "from_run": run_id,
         }
         if case["title"] and len(case["title"]) > 100:

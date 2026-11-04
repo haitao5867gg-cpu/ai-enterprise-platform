@@ -31,7 +31,7 @@ from aep.datasources import (
     DataSourceStore,
     tool_seconds,
 )
-from aep.knowledge.citations import IndexedHit, Source, context
+from aep.knowledge.citations import IndexedHit, Source, cited_numbers, context
 from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import record_hits, search
@@ -278,9 +278,12 @@ class Runtime:
         self, value: Any, state: dict[str, Any], extra: list[Any] | None = None
     ) -> tuple[Any, dict[str, str]]:
         """A model's reply with its tokens turned back into the run's data values, and which
-        tokens were; as it is unless the run's data goes out masked."""
+        tokens were; as it is unless the run's data goes out masked. Tokens the run was
+        given turned back already (``restored``: earlier turns of its conversation, an
+        eval case's) are turned back whatever the run's own level."""
+        tokens = state.get("restored") or {}
         if self.data_policy(state).samples != "masked":
-            return value, {}
+            return policy.unmask(value, [], mask_key(state), tokens) if tokens else (value, {})
         values = state.get("vars") or {}
         found = [
             (values.get(node) or {}).get(name)
@@ -292,9 +295,8 @@ class Runtime:
             for node, names in (state.get("quoted") or {}).items()
             for name in names
         ]
-        restored = list((state.get("restored") or {}).values())
-        known = [*found, *quoted, *(extra or []), restored]
-        return policy.unmask(value, known, mask_key(state))
+        known = [*found, *quoted, *(extra or [])]
+        return policy.unmask(value, known, mask_key(state), tokens)
 
     def model_check(self, node: dict[str, Any], state: dict[str, Any]) -> Callable[[str], None]:
         """Raises ``input_error`` for a model the run's policy does not allow, before any
@@ -1774,7 +1776,16 @@ async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
 async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     await _model_and_skills(node, p, env)
     _text(node, "task", p, "任务说明", required=True)
+    _text(node, "instructions", p, "指令", max_length=MAX_INSTRUCTIONS)
     _history(node, p)
+    if "grounded_only" in node and not isinstance(node["grounded_only"], bool):
+        p.add(("grounded_only",), "grounded_only 必须是 true 或 false")
+    apps = node.get("apps", [])
+    if not isinstance(apps, list):
+        p.add(("apps",), "调用的应用必须是列表")
+    elif apps:
+        # Agents calling apps comes with a later batch (docs/api/agent-apps.md, "调用应用").
+        p.add(("apps",), "调用应用的功能还没有上线")
     entries = _list(node, "tools", p, "允许的工具", 0, 10)
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
@@ -1801,8 +1812,7 @@ async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
         else:
             nested = Problems((*p.prefix, "knowledge"), p.found)
             await _check_knowledge_settings(knowledge, nested, env, 10)
-    elif not entries:
-        p.add(("tools",), "至少选一个数据源工具或知识库")
+    # With no tools and no knowledge base the node is a plain chat with its model.
     steps = node.get("max_steps", 8)
     if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 20:
         p.add(("max_steps",), "最多步数要在 1–20 之间")
@@ -1810,6 +1820,26 @@ async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
 
 def _answer_json(text: str) -> str:
     return json.dumps({"action": "answer", "text": text}, ensure_ascii=False)
+
+
+MAX_INSTRUCTIONS = 20000
+# What an agent that may only answer from what it found says when it found nothing
+# (docs/api/agent-apps.md, "只依据资料回答").
+UNGROUNDED = "没有在已接入的资料和数据里找到依据，暂时答不了这个问题。"
+GROUNDED_RULE = (
+    "只能依据这一轮工具返回的数据和检索到的资料回答；"
+    "工具和资料里查不到的，直接说查不到，不要凭常识或猜测回答。"
+)
+
+
+def grounded(steps: list[dict[str, Any]], hits: dict[int, Any], text: str) -> bool:
+    """Whether an answer rests on what this turn found: a tool call that worked (reading
+    a Skill or searching a knowledge base is not one), or a cited hit of this turn."""
+    if any(
+        s["error"] is None and s["tool"] not in ("read_skill", "search_knowledge") for s in steps
+    ):
+        return True
+    return bool(cited_numbers(text) & set(hits))
 
 
 AGENT_PROTOCOL = """每次只输出一个 JSON 对象，三选一：
@@ -1823,7 +1853,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     get = rt.lookup(state)
     offered: dict[str, tuple[DataSource, ToolInfo] | None] = {}
     lines = []
-    for entry in node["tools"]:
+    for entry in node.get("tools") or []:
         source = await rt.source(refs.resolve(entry["datasource"], get))
         wanted = entry.get("tools")
         for tool in await rt.list_tools(source):
@@ -1851,12 +1881,24 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             "query 必须是非空字符串；knowledge_bases 可选，不写查全部，"
             "写了只查这些名称对应的知识库。"
         )
-    if not offered:
+    if node.get("tools") and not offered:
         raise NodeFailure("tool_error", "选的数据源上没有可用的工具")
     skills = {s["name"]: rt.skills[(s["name"], s["version"])] for s in node.get("skills") or []}
-    parts = [AGENT_PROTOCOL, "可以用的工具：\n" + "\n".join(lines)]
+    instructions = refs.render(node.get("instructions") or "", rt.model_lookup(state)).strip()
+    task = refs.render(node["task"], rt.model_lookup(state))
+    if not offered and not skills:
+        return await _agent_chat(node, state, rt, instructions, task)
+    # Only answers from what it found, when it has something to find with.
+    strict = node.get("grounded_only") is True and bool(offered)
+    parts = [AGENT_PROTOCOL]
+    if instructions:
+        parts.append(instructions)
+    if lines:
+        parts.append("可以用的工具：\n" + "\n".join(lines))
     if knowledge is not None:
         parts.append("用到检索到的资料时，在回答里按资料前的 [n] 标出处；资料里没有的不要编。")
+    if strict:
+        parts.append(GROUNDED_RULE)
     if skills:
         listed = "\n".join(f"- {name}：{c.description}" for name, c in skills.items())
         parts.append("可以读取的 Skill（需要时用 read_skill 读全文）：\n" + listed)
@@ -1864,7 +1906,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         {"role": "system", "content": "\n\n".join(parts)},
         # Earlier answers as the protocol has the model give them.
         *history_messages(node, state, _answer_json),
-        {"role": "user", "content": refs.render(node["task"], rt.model_lookup(state))},
+        {"role": "user", "content": task},
     ]
 
     def valid(data: Any) -> str | None:
@@ -1912,8 +1954,16 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         if data["action"] == "answer":
             text, back = rt.unmask(data["text"], state, found)
             restored |= back
+            ok = not strict or grounded(steps, hits, data["text"])
+            held, text = ("", text) if ok else (text, UNGROUNDED)
             return Outcome(
-                {"text": text, "steps": steps, "hits": [asdict(hits[i]) for i in sorted(hits)]},
+                {
+                    "text": text,
+                    "steps": steps,
+                    "hits": [asdict(hits[i]) for i in sorted(hits)],
+                    "grounded": ok,
+                    "ungrounded_text": held,
+                },
                 messages=[{"role": "assistant", "content": text}],
                 citations=citations,
                 sources=sources,
@@ -2015,6 +2065,20 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                 reply = f"出错了：{said_error}"
         steps.append(step)
         messages += [said, {"role": "user", "content": f"工具 {data['tool']} 返回：\n{reply}"}]
+
+
+async def _agent_chat(
+    node: dict[str, Any], state: dict[str, Any], rt: Runtime, instructions: str, task: str
+) -> Outcome:
+    """An agent with nothing to call: one plain chat with its model."""
+    messages = [{"role": "system", "content": instructions}] if instructions else []
+    messages += [*history_messages(node, state), {"role": "user", "content": task}]
+    text, restored = rt.unmask(await rt.chat(node, messages, state), state)
+    return Outcome(
+        {"text": text, "steps": [], "hits": [], "grounded": True, "ungrounded_text": ""},
+        messages=[{"role": "assistant", "content": text}],
+        restored=restored,
+    )
 
 
 def _none(node: dict[str, Any]) -> list[str] | None:
@@ -2209,11 +2273,13 @@ TYPES: dict[str, NodeType] = {
             check_agent,
             run_agent,
             _none,
-            _fixed("text", "steps", "hits"),
+            _fixed("text", "steps", "hits", "grounded", "ungrounded_text"),
             outputs=(
                 ("text", "最终回答"),
                 ("steps", "调用过的工具"),
                 ("hits", "命中的片段和出处编号"),
+                ("grounded", "回答是否有依据（只依据资料回答时检查）"),
+                ("ungrounded_text", "没有依据时被换掉的原回答"),
             ),
             defaults={
                 "model": None,
