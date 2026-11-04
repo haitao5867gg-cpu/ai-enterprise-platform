@@ -2,7 +2,9 @@
 
 ``/mcp/apps/{app}`` speaks stateless Streamable HTTP. A request needs an API key of
 that app; the server then offers two tools: one that runs the app (named after it) and
-``get_run``. Approvals and forms stay with people on the platform.
+``get_run``. Approvals and forms stay with people on the platform. An app that converses
+takes ``conversation_id`` or ``new_conversation`` too: the conversation lives on the
+platform, the stateless endpoint only carries its id (docs/api/app-access.md, "会话").
 """
 
 import json
@@ -18,11 +20,23 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import Receive, Scope, Send
 
-from aep.app_access import ApiKey, ApiKeys, bearer, run_result, settle
+from aep.app_access import (
+    ApiKey,
+    ApiKeys,
+    ConversationProblem,
+    bearer,
+    run_result,
+    settle,
+    start,
+)
+from aep.conversations import MESSAGE
 from aep.runtime.catalog import AppCatalog
 from aep.runtime.service import (
+    ConversationBusy,
     InvalidValues,
     ModelNotAllowed,
+    NoDraftToRun,
+    NotConversable,
     ProjectProblem,
     RunNotFound,
     RunService,
@@ -73,6 +87,38 @@ def input_schema(inputs: list[dict[str, Any]] | None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required}
 
 
+# What the run tool of an app that converses takes besides its inputs.
+CONVERSATION = {
+    "conversation_id": {
+        "type": "string",
+        "description": "要接着上次聊，就传上次结果里的 conversation_id",
+    },
+    "new_conversation": {
+        "type": "boolean",
+        "description": "要开始一段新的多轮对话，传 true",
+    },
+}
+
+
+def conversing(schema: dict[str, Any]) -> dict[str, Any]:
+    """The run tool's schema for an app that converses: going on with a conversation
+    takes only the message, so only it is required; the start's other required inputs
+    are checked when a conversation opens or the app runs once (docs/api/app-access.md)."""
+    properties = dict(schema["properties"])
+    for key in schema["required"]:
+        if key != MESSAGE:
+            said = properties[key].get("description") or key
+            properties[key] = {
+                **properties[key],
+                "description": f"{said}（开新会话或单次调用时必填）",
+            }
+    return {
+        **schema,
+        "properties": {**properties, **CONVERSATION},
+        "required": [MESSAGE] if MESSAGE in schema["required"] else [],
+    }
+
+
 GET_RUN = types.Tool(
     name="get_run",
     description="查一次运行现在的状态和结果。运行还在跑时最多等 wait_seconds 秒。",
@@ -88,7 +134,15 @@ GET_RUN = types.Tool(
 
 
 def summary(result: dict[str, Any]) -> str:
-    """What the model reads: the outcome in a sentence or two, and the result."""
+    """What the model reads: the outcome in a sentence or two, and the result; for a turn
+    of a conversation, the id to go on with."""
+    said = _outcome(result)
+    if result.get("conversation_id"):
+        said += f"\n要接着这段对话，下次传 conversation_id：{result['conversation_id']}。"
+    return said
+
+
+def _outcome(result: dict[str, Any]) -> str:
     status, link = result["status"], result["link"]
     if status == "done":
         body = json.dumps(result["result"], ensure_ascii=False, indent=2, default=str)
@@ -133,11 +187,18 @@ class AppTools:
         app: str = who["key"].app
         detail = await catalog.detail(app)
         about = "\n".join(p for p in (detail.get("title"), detail.get("summary")) if p)
+        schema = input_schema(detail.get("inputs"))
+        if await _converses(who["service"], app):
+            schema = conversing(schema)
+            about += (
+                "\n可以多轮对话：要接着上次聊，就传上次结果里的 conversation_id；"
+                "要开始一段新的多轮对话，传 new_conversation: true。"
+            )
         run = types.Tool(
             name=tool_name(app),
             title=detail.get("title") or app,
             description=f"运行应用「{detail.get('title') or app}」。{about}".strip(),
-            input_schema=input_schema(detail.get("inputs")),
+            input_schema=schema,
         )
         return types.ListToolsResult(tools=[run, GET_RUN])
 
@@ -150,7 +211,15 @@ class AppTools:
         args = dict(params.arguments or {})
         try:
             if params.name == tool_name(key.app):
-                record = await service.create(key.app, args, requester=f"API：{key.name}")
+                conversation_id = args.pop("conversation_id", None)
+                new_conversation = args.pop("new_conversation", False) is True
+                record = await start(
+                    service,
+                    key,
+                    args,
+                    conversation_id=str(conversation_id) if conversation_id else None,
+                    new_conversation=new_conversation,
+                )
                 view = await settle(service, record.run_id, TOOL_WAIT)
             elif params.name == "get_run":
                 run_id = str(args.get("run_id") or "")
@@ -170,6 +239,12 @@ class AppTools:
             return _error(f"没有应用 {key.app}")
         except (ModelNotAllowed, ProjectProblem) as exc:
             return _error(str(exc))
+        except ConversationProblem as exc:
+            return _error(exc.message)
+        except (NotConversable, NoDraftToRun):
+            return _error("这个应用没有开对话")
+        except ConversationBusy:
+            return _error("上一条还没处理完，稍后用 get_run 查它的结果")
         result = json.loads(
             json.dumps(run_result(view, who["web_url"]), default=lambda v: v.isoformat())
         )
@@ -178,6 +253,14 @@ class AppTools:
             structured_content=result,
             is_error=result["status"] == "error",
         )
+
+
+async def _converses(service: RunService, app: str) -> bool:
+    try:
+        await service.conversable(app)
+    except (UnknownApp, UnknownVersion, NotConversable, NoDraftToRun):
+        return False
+    return True
 
 
 def _error(message: str) -> types.CallToolResult:

@@ -153,6 +153,45 @@ MESSAGES: dict[str, str] = {
         "Invalid schedule: the range {range} in {where} goes from high to low"
     ),
     "时区 {name} 不认识": "Unknown time zone {name}",
+    # Conversations (docs/api/conversations.md)
+    "没有找到这个会话": "Conversation not found",
+    "这个应用没有开对话": "This app does not take conversations",
+    "没有草稿可以试": "There is no draft to try",
+    "上一条还没处理完": "The previous message is still being handled",
+    "会话里已经有后面的消息，这一轮不能重试": (
+        "The conversation has later messages, so this turn cannot be retried"
+    ),
+    "上一条还没处理完，稍后用 get_run 查它的结果": (
+        "The previous message is still being handled; check its result later with get_run"
+    ),
+    "消息不能为空": "The message cannot be empty",
+    "消息最多 {count} 个字符": "A message has at most {count} characters",
+    "消息在发消息时给，不放在会话的输入里": (
+        "The message goes with each message sent, not in the conversation's inputs"
+    ),
+    "new_conversation 和 conversation_id 只能给一个": (
+        "Give new_conversation or conversation_id, not both"
+    ),
+    "会话里的其他输入在开会话时已经定了": (
+        "The conversation's other inputs were set when it was opened"
+    ),
+    "应用没有打开对话，不能带会话历史": (
+        "The app does not take conversations, so nodes cannot use the history"
+    ),
+    "应用没有打开对话，不能引用会话": (
+        "The app does not take conversations, so nothing can refer to one"
+    ),
+    "会话没有 {name} 这一项，可以用 {fields}": (
+        "A conversation has no {name}; use one of {fields}"
+    ),
+    "结束节点没有输出 {reply}": "No end node has the output {reply}",
+    "要选一个结束节点的输出作为回答": "Choose an end node output as the reply",
+    "带的历史轮数要在 0–{max} 之间": "The turns of history must be between 0 and {max}",
+    "打开对话要在开始节点里有一个必填的文字输入 message": (
+        "A conversation needs a required text input named message in the start node"
+    ),
+    "conversation 必须是对象": "conversation must be an object",
+    "history 必须是 true 或 false": "history must be true or false",
     # App API keys and notifications
     "API 密钥服务还没有准备好": "The API key service is not ready yet",
     "没有找到这个密钥": "Key not found",

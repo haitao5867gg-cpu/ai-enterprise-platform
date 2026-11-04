@@ -7,13 +7,27 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, StringConstraints
 
+from aep.api.conversations import ConversationDetail, detail
 from aep.api.runs import ProjectChoice
 from aep.api.validation import NoNulls, chinese_errors
-from aep.app_access import ApiKey, ApiKeys, TooManyKeys, bearer, run_result, settle
+from aep.app_access import (
+    ApiKey,
+    ApiKeys,
+    ConversationProblem,
+    TooManyKeys,
+    bearer,
+    key_owner,
+    run_result,
+    settle,
+    start,
+)
 from aep.auth import who
 from aep.runtime.service import (
+    ConversationBusy,
     InvalidValues,
     ModelNotAllowed,
+    NoDraftToRun,
+    NotConversable,
     NotWaiting,
     ProjectProblem,
     RunNotFound,
@@ -63,6 +77,9 @@ class RunResult(BaseModel):
     pending: Pending | None
     error: str | None
     link: str
+    # The conversation the run is a turn of, and which turn (docs/api/app-access.md, "会话").
+    conversation_id: str | None = None
+    turn: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -71,6 +88,9 @@ class StartRun(NoNulls):
     input: dict[str, Any] = Field(default_factory=dict)
     wait: Wait = 0
     project: ProjectChoice | None = None
+    # A new conversation whose first turn this is, or the conversation it goes on.
+    new_conversation: bool = False
+    conversation_id: str | None = Field(default=None, max_length=64)
 
 
 class Answer(NoNulls):
@@ -161,11 +181,13 @@ async def start_run(app: str, body: StartRun, request: Request) -> RunResult:
         raise HTTPException(403, f"这个密钥不能调用应用 {app}")
     service = _service(request)
     try:
-        record = await service.create(
-            app,
+        record = await start(
+            service,
+            key,
             body.input,
-            requester=f"API：{key.name}",
             project=body.project.model_dump() if body.project else None,
+            conversation_id=body.conversation_id,
+            new_conversation=body.new_conversation,
         )
     except (UnknownApp, UnknownVersion) as exc:
         raise HTTPException(404, f"没有应用 {app}") from exc
@@ -173,7 +195,23 @@ async def start_run(app: str, body: StartRun, request: Request) -> RunResult:
         raise _invalid("input", exc) from exc
     except (ModelNotAllowed, ProjectProblem) as exc:
         raise HTTPException(422, str(exc)) from exc
+    except ConversationProblem as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    except (NotConversable, NoDraftToRun) as exc:
+        raise HTTPException(409, "这个应用没有开对话") from exc
+    except ConversationBusy as exc:
+        raise HTTPException(409, "上一条还没处理完") from exc
     return _result(request, await settle(service, record.run_id, body.wait))
+
+
+@router.get("/v1/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str, request: Request) -> ConversationDetail:
+    key = await _key(request)
+    service = _service(request)
+    found = await service.conversations.get(conversation_id)
+    if found is None or found.owner != key_owner(key) or found.app != key.app:
+        raise HTTPException(404, "没有找到这个会话")
+    return ConversationDetail(**await detail(service, found))
 
 
 @router.get("/v1/runs/{run_id}")

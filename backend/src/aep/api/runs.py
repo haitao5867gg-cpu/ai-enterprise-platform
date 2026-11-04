@@ -55,6 +55,9 @@ run record (in the list and in ``GET /runs/{id}``) has:
 - ``conversation``: the conversation the run is a turn of (``conversation_id``,
   ``title`` and ``turn``, from 1), or null: a run outside any conversation, or one
   whose conversation was deleted or expired (docs/api/conversations.md).
+- ``cleared``: whether what the run was about (input, result, messages, what it waited
+  for, its error) was cleared with its expired or deleted conversation; its status,
+  version, times and usage stay.
 
 ``GET /runs/{id}`` also has the run's ``input``; ``inputs``: what a copy of the run
 asks for, the start node's inputs (as in docs/api/flow-apps.md) of the configuration
@@ -224,6 +227,7 @@ from aep.runtime.service import (
     InvalidDecision,
     InvalidNotes,
     InvalidValues,
+    LaterTurns,
     ModelNotAllowed,
     NoDraftToRun,
     NotAFlowRun,
@@ -359,6 +363,9 @@ class RunSummary(BaseModel):
     policy: RunPolicy
     # What started it when no person did, e.g. a schedule (docs/api/schedules.md).
     trigger: dict[str, Any] | None = None
+    # The conversation it is a turn of (docs/api/conversations.md).
+    conversation: dict[str, Any] | None = None
+    cleared: bool = False
 
 
 class Message(BaseModel):
@@ -459,7 +466,13 @@ def _is_draft(r: RunRecord) -> bool:
     return r.app_version is None and r.config is not None
 
 
-def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> dict[str, Any]:
+def _summary(
+    r: RunRecord,
+    service: RunService,
+    app_titles: dict[str, str],
+    conversations: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    titled = (conversations or {}).get(r.conversation_id or "")
     return {
         "run_id": r.run_id,
         "app": r.app,
@@ -481,14 +494,28 @@ def _summary(r: RunRecord, service: RunService, app_titles: dict[str, str]) -> d
         "project": run_summary(r.project),
         "policy": DataPolicy.from_dict(r.policy).as_dict(),
         "trigger": r.trigger,
+        "conversation": {
+            "conversation_id": r.conversation_id,
+            "title": titled,
+            "turn": r.conversation_turn,
+        }
+        if titled is not None
+        else None,
+        "cleared": r.cleared_at is not None,
     }
+
+
+async def conversation_titles(service: RunService, runs: list[RunRecord]) -> dict[str, str]:
+    """The titles of the conversations these runs are turns of, those that still exist."""
+    keys = sorted({r.conversation_id for r in runs if r.conversation_id})
+    return await service.conversations.titles(keys) if keys else {}
 
 
 async def _detail(v: RunView, service: RunService, app_titles: dict[str, str]) -> RunDetail:
     r = v.record
     step = r.step or {}
     return RunDetail(
-        **_summary(r, service, app_titles),
+        **_summary(r, service, app_titles, await conversation_titles(service, [r])),
         input=r.input,
         inputs=await service.copy_inputs(r),
         failed=Failed(
@@ -553,7 +580,8 @@ def _invalid_values(where: str, exc: InvalidValues) -> RequestValidationError:
 async def list_runs(service: Service, limit: int = 50) -> list[RunSummary]:
     titles = await service.app_titles()
     runs = await service.recent(min(max(limit, 1), 200))
-    return [RunSummary(**_summary(r, service, titles)) for r in runs]
+    talks = await conversation_titles(service, runs)
+    return [RunSummary(**_summary(r, service, titles, talks)) for r in runs]
 
 
 @router.get("/{run_id}")
@@ -734,6 +762,8 @@ async def retry_run(run_id: str, service: Service, body: Retry | None = None) ->
         raise HTTPException(409, "这次运行已经不在失败状态，可能有人已经重试过") from exc
     except NotRetryable as exc:
         raise HTTPException(409, "这次运行不能重试，请复制后重新发起") from exc
+    except LaterTurns as exc:
+        raise HTTPException(409, "会话里已经有后面的消息，这一轮不能重试") from exc
     return RunRef(run_id=record.run_id, status=record.status)
 
 

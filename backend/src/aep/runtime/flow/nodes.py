@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from aep import llm, policy
 from aep.config import Settings
+from aep.conversations import as_messages, as_text, mask_key
 from aep.databricks import DevTarget
 from aep.datasources import (
     DATA_KINDS,
@@ -141,6 +142,30 @@ class AppCall:
 CallApp = Callable[[str, dict[str, Any], dict[str, Any], str, int], Awaitable[AppCall]]
 
 
+def conversation_value(state: dict[str, Any], name: str) -> Any:
+    """``{{conversation.history}}`` (as text) or ``{{conversation.turn}}`` (0 outside a
+    conversation)."""
+    found = state.get("conversation")
+    found = found if isinstance(found, dict) else {}
+    if name == "history":
+        return as_text(found.get("history") or [])
+    if name == "turn":
+        turn = found.get("turn")
+        return turn if isinstance(turn, int) else 0
+    return None
+
+
+def history_messages(
+    node: dict[str, Any], state: dict[str, Any], answer: Any = None
+) -> list[dict[str, str]]:
+    """The conversation's history as chat messages, for a node that asks for it."""
+    if node.get("history") is not True:
+        return []
+    found = state.get("conversation")
+    turns = found.get("history") if isinstance(found, dict) else None
+    return as_messages(turns or [], answer)
+
+
 def _refers(outputs: dict[str, Any], setting: Any) -> bool:
     return any(
         name in (outputs.get(node) or ())
@@ -198,6 +223,8 @@ class Runtime:
             if node == refs.PROJECT:
                 # Released jobs run on the prod schedule's time zone.
                 return project_value(project, name, self.settings.databricks_prod_timezone)
+            if node == refs.CONVERSATION:
+                return conversation_value(state, name)
             return (values.get(node) or {}).get(name)
 
         return get
@@ -217,13 +244,14 @@ class Runtime:
         data = state.get("data") or {}
         quoted = state.get("quoted") or {}
         restored = state.get("restored") or {}
-        run_id = str(state.get("run_id") or "")
+        run_id = mask_key(state)
 
         def model_get(node: str, name: str) -> Any:
             value = get(node, name)
             if name in (data.get(node) or ()):
                 return policy.for_model(value, samples, run_id)
-            # What people wrote, constants and the project's settings stay as they are.
+            # What people wrote, constants, the project's settings and the conversation's
+            # history (already as the model saw it) stay as they are.
             if restored and node not in refs.RESERVED and node not in self.people:
                 value = policy.remask(value, restored)
             if name in (quoted.get(node) or ()):
@@ -266,7 +294,7 @@ class Runtime:
         ]
         restored = list((state.get("restored") or {}).values())
         known = [*found, *quoted, *(extra or []), restored]
-        return policy.unmask(value, known, str(state.get("run_id") or ""))
+        return policy.unmask(value, known, mask_key(state))
 
     def model_check(self, node: dict[str, Any], state: dict[str, Any]) -> Callable[[str], None]:
         """Raises ``input_error`` for a model the run's policy does not allow, before any
@@ -682,6 +710,7 @@ async def check_llm(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     _text(node, "prompt", p, "提示词", required=True)
     if "quiet" in node and not isinstance(node["quiet"], bool):
         p.add(("quiet",), "quiet 必须是 true 或 false")
+    _history(node, p)
     output = node.get("output", {"kind": "text"})
     if not isinstance(output, dict) or output.get("kind") not in ("text", "json"):
         p.add(("output",), "输出方式只能是 text 或 json")
@@ -695,6 +724,12 @@ async def check_llm(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
             if f.get("type") not in JSON_TYPES:
                 sub.add(("fields", fields.index(f), "type"), "类型只能是 " + "、".join(JSON_TYPES))
         p.found += sub.found
+
+
+def _history(node: dict[str, Any], p: Problems) -> None:
+    # Whether the app converses at all is checked with the whole configuration.
+    if "history" in node and not isinstance(node["history"], bool):
+        p.add(("history",), "history 必须是 true 或 false")
 
 
 def _json_fields(node: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -753,6 +788,7 @@ async def run_llm(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
         instruction = "只输出一个 JSON 对象，不要输出别的内容。字段：\n" + "\n".join(lines)
     system = rt.system(node, refs.render(node.get("system") or "", get), instruction)
     messages = [{"role": "system", "content": system}] if system else []
+    messages += history_messages(node, state)
     messages.append({"role": "user", "content": refs.render(node["prompt"], get)})
     if fields is None:
         text, restored = rt.unmask(await rt.chat(node, messages, state), state)
@@ -1738,6 +1774,7 @@ async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
 async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     await _model_and_skills(node, p, env)
     _text(node, "task", p, "任务说明", required=True)
+    _history(node, p)
     entries = _list(node, "tools", p, "允许的工具", 0, 10)
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
@@ -1769,6 +1806,10 @@ async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     steps = node.get("max_steps", 8)
     if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 20:
         p.add(("max_steps",), "最多步数要在 1–20 之间")
+
+
+def _answer_json(text: str) -> str:
+    return json.dumps({"action": "answer", "text": text}, ensure_ascii=False)
 
 
 AGENT_PROTOCOL = """每次只输出一个 JSON 对象，三选一：
@@ -1821,6 +1862,8 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         parts.append("可以读取的 Skill（需要时用 read_skill 读全文）：\n" + listed)
     messages = [
         {"role": "system", "content": "\n\n".join(parts)},
+        # Earlier answers as the protocol has the model give them.
+        *history_messages(node, state, _answer_json),
         {"role": "user", "content": refs.render(node["task"], rt.model_lookup(state))},
     ]
 
@@ -1862,6 +1905,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     restored: dict[str, str] = {}
     samples = rt.data_policy(state).samples
     run_id = str(state.get("run_id") or "")
+    key = mask_key(state)
     while True:
         data = await _ask_json(rt, node, messages, valid, state)
         said = {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)}
@@ -1959,7 +2003,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                 result = await rt.call(source, tool.name, args)
                 if source.kind in DATA_KINDS:
                     found.append(result)
-                    result = policy.for_model(result, samples, run_id)
+                    result = policy.for_model(result, samples, key)
                 reply = json.dumps(result, ensure_ascii=False, default=str)[:MAX_TOOL_RESULT]
             except NodeFailure as exc:
                 step["error"] = exc.message
@@ -1967,7 +2011,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                 if source.kind in DATA_KINDS:
                     # The error may quote the data (aep.policy).
                     found.append(policy.literals(exc.message))
-                    said_error = policy.scrub(exc.message, samples, run_id)
+                    said_error = policy.scrub(exc.message, samples, key)
                 reply = f"出错了：{said_error}"
         steps.append(step)
         messages += [said, {"role": "user", "content": f"工具 {data['tool']} 返回：\n{reply}"}]

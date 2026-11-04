@@ -6,6 +6,8 @@ adds a span to that trace, with LangGraph's nodes underneath. Model calls are
 reported by the gateway (LiteLLM), which attaches each generation to the span
 that was active when the call was made; see ``gateway_metadata``.
 
+The runs of one conversation share a Langfuse session: its id is the conversation's.
+
 Without Langfuse keys the tracer does nothing and nothing leaves the process.
 """
 
@@ -65,7 +67,10 @@ class Tracer:
         return self._client is not None
 
     @contextmanager
-    def segment(self, run_id: str, app: str, name: str, input: Any = None) -> Iterator[Segment]:
+    def segment(
+        self, run_id: str, app: str, name: str, input: Any = None, session: str | None = None
+    ) -> Iterator[Segment]:
+        """One execution of the run; ``session`` groups the runs of a conversation."""
         if self._client is None:
             yield Segment()
             return
@@ -75,7 +80,9 @@ class Tracer:
             as_type="span",
             input=input,
         ) as span:
-            with propagate_attributes(trace_name=app, metadata={"run_id": run_id}):
+            with propagate_attributes(
+                trace_name=app, metadata={"run_id": run_id}, session_id=session
+            ):
                 yield Segment(span, [CallbackHandler(public_key=self._public_key)])
 
     def flush(self) -> None:

@@ -12,8 +12,9 @@ from typing import Any, Protocol
 
 from psycopg_pool import AsyncConnectionPool
 
-from aep.runtime.service import RunService, RunView
-from aep.runtime.store import DEFAULT_TENANT
+from aep.conversations import MAX_MESSAGE, MESSAGE
+from aep.runtime.service import ConversationGone, InvalidValues, RunService, RunView
+from aep.runtime.store import DEFAULT_TENANT, RunRecord
 
 PREFIX = "aep_"
 SHOWN = 12  # characters of a key shown in lists
@@ -209,6 +210,60 @@ def bearer(header: str | None) -> str | None:
     return value.strip() if scheme.lower() == "bearer" else None
 
 
+class ConversationProblem(Exception):
+    """A conversation request the app API refuses: its status code and why."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def key_owner(key: ApiKey) -> str:
+    """Whose a conversation an API key opens is: only that key's (docs/api/app-access.md)."""
+    return f"key:{key.key_id}"
+
+
+async def start(
+    service: RunService,
+    key: ApiKey,
+    input: dict[str, Any],
+    *,
+    project: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
+    new_conversation: bool = False,
+) -> RunRecord:
+    """A run of the key's app: on its own, as the first turn of a new conversation, or
+    as the next turn of one the key opened (docs/api/app-access.md, "会话"). Raises what
+    ``RunService.create``, ``open_conversation`` and ``send`` raise, and
+    ``ConversationProblem``."""
+    requester = f"API：{key.name}"
+    if conversation_id is not None and new_conversation:
+        raise ConversationProblem(422, "new_conversation 和 conversation_id 只能给一个")
+    if conversation_id is None and not new_conversation:
+        return await service.create(key.app, input, requester=requester, project=project)
+    given = dict(input)
+    message = given.pop(MESSAGE, None)
+    if not isinstance(message, str) or not message.strip():
+        raise InvalidValues({MESSAGE: "消息不能为空"})
+    if len(message) > MAX_MESSAGE:
+        raise InvalidValues({MESSAGE: f"消息最多 {MAX_MESSAGE} 个字符"})
+    if conversation_id is not None:
+        found = await service.conversations.get(conversation_id)
+        if found is None or found.owner != key_owner(key) or found.app != key.app:
+            raise ConversationProblem(404, "没有找到这个会话")
+        if given or project is not None:
+            raise ConversationProblem(422, "会话里的其他输入在开会话时已经定了")
+    else:
+        found = await service.open_conversation(
+            key.app, owner=key_owner(key), created_by=requester, input=given, project=project
+        )
+    try:
+        return await service.send(found, message, requester)
+    except ConversationGone as exc:
+        raise ConversationProblem(404, "没有找到这个会话") from exc
+
+
 async def settle(service: RunService, run_id: str, wait: float) -> RunView:
     """The run once it is no longer running, or after ``wait`` seconds."""
     loop = asyncio.get_running_loop()
@@ -237,6 +292,8 @@ def run_result(view: RunView, web_url: str) -> dict[str, Any]:
         else None,
         "error": r.error if r.status == "error" else None,
         "link": f"{web_url.rstrip('/')}/runs/{r.run_id}",
+        "conversation_id": r.conversation_id,
+        "turn": r.conversation_turn,
         "created_at": r.created_at,
         "updated_at": r.updated_at,
     }
