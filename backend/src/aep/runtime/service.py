@@ -151,6 +151,10 @@ class LaterTurns(Exception):
     """A turn of a conversation that has turns after it cannot be retried."""
 
 
+class ConversationGone(Exception):
+    """The conversation was deleted (or expired) while a message to it waited its turn."""
+
+
 # Failures that may go away by themselves: a retry is worth it. The others
 # (``output_format``, ``code_error``, ``step_limit``, ``max_visits``, ``max_steps``)
 # would happen again; such a run is rerun with a changed input instead. A failure of
@@ -1282,6 +1286,8 @@ class RunService:
         key = conversation.conversation_id
         lock = self._turn_locks.setdefault(key, asyncio.Lock())
         async with lock:
+            if await self.conversations.get(key) is None:
+                raise ConversationGone(key)
             turns = await self._store.in_conversation(key)
             if turns and turns[-1].status in ("running", "waiting"):
                 raise ConversationBusy(key)
@@ -1374,22 +1380,25 @@ class RunService:
 
     async def delete_conversation(self, conversation_id: str, actor: str | None = None) -> None:
         """Delete the conversation; its turns keep their status, version, times and usage,
-        but what they were about is cleared. A turn still running or waiting is cancelled."""
-        turns = await self._store.in_conversation(conversation_id)
-        for record in turns:
-            if record.status in ("running", "waiting"):
-                try:
-                    await self.cancel(record.run_id, actor, "会话已删除")
-                except (RunNotFound, NotCancellable):
-                    pass
-                task = self._running.get(record.run_id)
-                if task is not None:
-                    await asyncio.wait({task}, timeout=10)
-        for record in turns:
-            await self._checkpointer.adelete_thread(record.run_id)
-        await self._store.clear([r.run_id for r in turns])
-        await self.conversations.delete(conversation_id)
-        self._turn_locks.pop(conversation_id, None)
+        but what they were about is cleared. A turn still running or waiting is cancelled.
+        Holds the conversation's lock, so no message starts a turn in the meantime."""
+        lock = self._turn_locks.setdefault(conversation_id, asyncio.Lock())
+        async with lock:
+            turns = await self._store.in_conversation(conversation_id)
+            for record in turns:
+                if record.status in ("running", "waiting"):
+                    try:
+                        await self.cancel(record.run_id, actor, "会话已删除")
+                    except (RunNotFound, NotCancellable):
+                        pass
+                    task = self._running.get(record.run_id)
+                    if task is not None:
+                        await asyncio.wait({task}, timeout=10)
+            for record in turns:
+                await self._checkpointer.adelete_thread(record.run_id)
+            await self._store.clear([r.run_id for r in turns])
+            await self.conversations.delete(conversation_id)
+            self._turn_locks.pop(conversation_id, None)
 
     async def clear_expired(self, days: int) -> int:
         """Delete the conversations whose last turn started more than ``days`` ago (0: none

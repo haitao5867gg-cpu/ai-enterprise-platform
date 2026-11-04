@@ -13,6 +13,7 @@ from aep.conversations import MAX_MESSAGE, MAX_TITLE, MESSAGE, Conversation
 from aep.knowledge.citations import CitedSource
 from aep.runtime.service import (
     ConversationBusy,
+    ConversationGone,
     InvalidValues,
     ModelNotAllowed,
     NoDraftToRun,
@@ -117,9 +118,12 @@ async def _visible(request: Request, conversation_id: str) -> Conversation:
     return found
 
 
-async def out(service: RunService, found: Conversation) -> dict[str, Any]:
-    """A conversation as the API shows it (``Conversation`` in the contract)."""
-    titles = await service.app_titles()
+async def out(
+    service: RunService, found: Conversation, titles: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """A conversation as the API shows it (``Conversation`` in the contract); ``titles``
+    the apps' titles when the caller has them already."""
+    titles = titles if titles is not None else await service.app_titles()
     count, busy = (await service.turn_counts([found.conversation_id]))[found.conversation_id]
     days = service.settings.conversation_retention_days
     return {
@@ -214,7 +218,8 @@ async def list_conversations(
     found = await service.conversations.owned(
         owner_of(request), app or None, draft, min(max(limit, 1), 200)
     )
-    return [ConversationOut(**await out(service, c)) for c in found]
+    titles = await service.app_titles()
+    return [ConversationOut(**await out(service, c, titles)) for c in found]
 
 
 @router.get("/{conversation_id}")
@@ -231,6 +236,8 @@ async def send(
         return await service.send(found, message, requester)
     except ConversationBusy as exc:
         raise HTTPException(409, "上一条还没处理完") from exc
+    except ConversationGone as exc:
+        raise HTTPException(404, NOT_FOUND) from exc
     except (UnknownApp, UnknownVersion) as exc:
         raise HTTPException(404, f"没有应用 {found.app}") from exc
     except NotConversable as exc:

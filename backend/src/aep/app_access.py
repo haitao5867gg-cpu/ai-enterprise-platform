@@ -13,7 +13,7 @@ from typing import Any, Protocol
 from psycopg_pool import AsyncConnectionPool
 
 from aep.conversations import MAX_MESSAGE, MESSAGE
-from aep.runtime.service import InvalidValues, RunService, RunView
+from aep.runtime.service import ConversationGone, InvalidValues, RunService, RunView
 from aep.runtime.store import DEFAULT_TENANT, RunRecord
 
 PREFIX = "aep_"
@@ -258,7 +258,10 @@ async def start(
         found = await service.open_conversation(
             key.app, owner=key_owner(key), created_by=requester, input=given, project=project
         )
-    return await service.send(found, message, requester)
+    try:
+        return await service.send(found, message, requester)
+    except ConversationGone as exc:
+        raise ConversationProblem(404, "没有找到这个会话") from exc
 
 
 async def settle(service: RunService, run_id: str, wait: float) -> RunView:

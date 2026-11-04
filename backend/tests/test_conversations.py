@@ -12,7 +12,7 @@ from aep import conversations as chat
 from aep import policy
 from aep.policy import DataPolicy
 from aep.runtime.flow.check import check_config
-from aep.runtime.service import retryable
+from aep.runtime.service import ConversationGone, retryable
 from aep.runtime.store import MemoryRunStore, RunRecord, TurnTaken
 from tests.test_app_access import Access, bearer, mcp_client
 from tests.test_auth import Platform as Accounts
@@ -600,6 +600,26 @@ async def test_deleting_a_conversation_cancels_its_waiting_turn():
         assert gone["error"] is None and gone["pending"] is None and gone["input"] == {}
         assert (await p.api.get(f"/conversations/{cid}")).status_code == 404
         assert (await p.api.delete(f"/conversations/{cid}")).status_code == 404
+
+
+async def test_a_message_and_a_delete_at_once_leave_no_turn_behind():
+    async with Platform(["你好"]) as p:
+        await p.new_app("chat", llm_chat())
+        cid = await open_chat(p, "chat")
+        found = await p.service.conversations.get(cid)
+        sent, deleted = await asyncio.gather(
+            p.api.post(f"/conversations/{cid}/messages", json={"message": "你好"}),
+            p.api.delete(f"/conversations/{cid}"),
+        )
+        await p.service.wait_idle()
+        assert deleted.status_code == 204 and sent.status_code in (201, 404), sent.text
+        runs = await p.service._store.in_conversation(cid)
+        assert all(r.cleared_at is not None and r.input == {} for r in runs)
+        # A message that waited its turn while the conversation went starts none.
+        assert found is not None
+        with pytest.raises(ConversationGone):
+            await p.service.send(found, "还在吗", None)
+        assert len(await p.service._store.in_conversation(cid)) == len(runs)
 
 
 # The app API and MCP
