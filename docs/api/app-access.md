@@ -99,7 +99,7 @@ curl -s -X POST https://平台地址/api/v1/apps/hello/runs \
   - 两个都给 422。都不给就是以前的一次性运行，不在会话里。
 - 用 API 开的会话，发起人写「API：密钥名称」，只有开它的那个密钥能接着发、能查；别的密钥（同一个应用的也一样）返回 404「没有找到这个会话」。密钥删掉后这个会话不能再接着发，平台里的管理员仍能按 id 打开看。
 - `GET /v1/conversations/{conversation_id}` → `Conversation` 加 `turns`（同 `GET /conversations/{id}`），权限同上。
-- MCP 的运行工具用同样的两个参数，返回的 `RunResult` 里有 `conversation_id`。
+- MCP 的运行工具用同样的两个参数，返回的 `RunResult` 里有 `conversation_id`；给模型读的文字结果末尾也写上它（“要接着这段对话，下次传 conversation_id：…”）。
 - 一次性运行（不带这两个字段）的行为和返回都不变，只多两个为 null 的字段。
 
 ## 入口
