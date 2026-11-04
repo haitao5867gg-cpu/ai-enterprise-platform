@@ -2,12 +2,26 @@
 
 import { useT } from "../lib/i18n/client";
 import { AppAccess } from "./app-access";
+import { AppEntriesPanel } from "./app-entries";
+import { AppUsagePanel } from "./app-usage";
+import {
+  AgentForm,
+  agentIssues,
+  DebugChat,
+  type AgentIssues,
+} from "./agent-design";
+import { ConfigCode } from "./config-code";
+import { ConvertToFlow } from "./app-convert";
+import { FlowConversation } from "./flow-conversation";
 import { AppBudget } from "./app-budget";
 import { AppSchedules } from "./app-schedules";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   activateAppVersion,
+  agentAsFlow,
+  isAgentConfig,
+  isCodeConfig,
   isFlowConfig,
   exportAppVersion,
   deleteAppDraft,
@@ -167,7 +181,7 @@ function ConfigDiff({
   data: AppDetail;
 }) {
   const t = useT();
-  if (isFlowConfig(left.config) || isFlowConfig(right.config))
+  if (!isCodeConfig(left.config) || !isCodeConfig(right.config))
     return (
       <section className="asset-diff" aria-label={t("配置差异")}>
         <h3>
@@ -283,9 +297,12 @@ const TABS: [Tab, string][] = [
 function AppTabs({
   tab,
   onChange,
+  agent,
 }: {
   tab: Tab;
   onChange: (tab: Tab) => void;
+  // An agent app is designed with a form, not a flow (docs/api/agent-apps.md).
+  agent: boolean;
 }) {
   const t = useT();
   return (
@@ -319,7 +336,7 @@ function AppTabs({
             document.getElementById(`app-tab-${next}`)?.focus();
           }}
         >
-          {t(label)}
+          {key === "design" && agent ? t("设计") : t(label)}
         </button>
       ))}
     </div>
@@ -365,6 +382,12 @@ export function AppDetailView({ app }: { app: string }) {
   const [actor, setActor] = useState(savedActor);
   const [retry, setRetry] = useState(0);
   const [issues, setIssues] = useState<FlowIssues>(noIssues);
+  const [agentProblems, setAgentProblems] = useState<AgentIssues>({});
+  // The design tab as a form, or as the YAML of the configuration.
+  const [codeView, setCodeView] = useState(false);
+  const [codeProblem, setCodeProblem] = useState<string | null>(null);
+  // Bumped when a debug chat saves a case, so the eval set panel reads it again.
+  const [evalRevision, setEvalRevision] = useState(0);
   const [manualDraft, setManualDraft] = useState(false);
   const [tab, setTab] = useState<Tab>("design");
   const [evalSet, setEvalSet] = useState<EvalSet | null>(null);
@@ -466,6 +489,8 @@ export function AppDetailView({ app }: { app: string }) {
 
   function accept(value: AppDetail, message: string) {
     setIssues(noIssues);
+    setAgentProblems({});
+    setCodeProblem(null);
     setData(value);
     setConfig(structuredClone((value.draft ?? value.current).config));
     setView(value.draft ? "draft" : "current");
@@ -499,6 +524,8 @@ export function AppDetailView({ app }: { app: string }) {
     )
       return;
     setView(next);
+    setCodeView(false);
+    setCodeProblem(null);
     setConfig(
       structuredClone(
         (next === "draft" ? (data.draft ?? data.current) : data.current).config,
@@ -509,6 +536,44 @@ export function AppDetailView({ app }: { app: string }) {
   }
   function save() {
     if (!config || !data) return;
+    if (codeProblem) {
+      setError(t("草稿没有保存。") + codeProblem);
+      return;
+    }
+    if (isAgentConfig(config)) {
+      void action(async () => {
+        try {
+          accept(
+            await saveAppDraft(app, config),
+            t("草稿已保存，上次评测结果已清空。"),
+          );
+        } catch (err) {
+          if (
+            !(err instanceof ApiError) ||
+            err.status !== 422 ||
+            !err.issues.length
+          )
+            throw err;
+          const { fields, other } = agentIssues(err.issues);
+          setAgentProblems(fields);
+          throw new ApiError(
+            [
+              t("草稿没有保存。"),
+              Object.keys(fields).length
+                ? t("有 {count} 处问题，已标在对应的设置下。", {
+                    count: Object.keys(fields).length,
+                  })
+                : "",
+              ...other,
+            ]
+              .filter(Boolean)
+              .join(""),
+            422,
+          );
+        }
+      });
+      return;
+    }
     if (isFlowConfig(config)) {
       void action(async () => {
         try {
@@ -551,7 +616,7 @@ export function AppDetailView({ app }: { app: string }) {
       });
       return;
     }
-    const codeNodes = isFlowConfig(config) ? {} : config.nodes;
+    const codeNodes = isCodeConfig(config) ? config.nodes : {};
     const errors = data.nodes
       .flatMap((node) =>
         node.settings.map((setting) =>
@@ -589,7 +654,7 @@ export function AppDetailView({ app }: { app: string }) {
         )}
       </div>
     );
-  const codeNodes = isFlowConfig(config) ? {} : config.nodes;
+  const codeNodes = isCodeConfig(config) ? config.nodes : {};
   const node =
     data.nodes.find((item) => item.id === selected) ??
     data.nodes.find((item) => item.settings.length) ??
@@ -625,10 +690,17 @@ export function AppDetailView({ app }: { app: string }) {
         {t("← 应用")}
       </Link>
       <AssetHeading
-        eyebrow={data.kind === "flow" ? app : t("{app} · 代码应用", { app })}
+        eyebrow={
+          data.kind === "flow"
+            ? app
+            : data.kind === "agent"
+              ? t("{app} · 智能体应用", { app })
+              : t("{app} · 代码应用", { app })
+        }
         title={data.title}
         action={
           <div className="asset-actions heading-actions">
+            {data.kind === "agent" && <ConvertToFlow app={app} data={data} />}
             <Link
               className="button secondary"
               href={`/use/${encodeURIComponent(app)}`}
@@ -654,7 +726,7 @@ export function AppDetailView({ app }: { app: string }) {
       )}
       {/* The tabs and the version being edited share one row. */}
       <div className="app-tabbar">
-        <AppTabs tab={tab} onChange={selectTab} />
+        <AppTabs tab={tab} onChange={selectTab} agent={data.kind === "agent"} />
         {(tab === "design" || tab === "release") && (
           <section
             className={`panel config-banner ${view}`}
@@ -675,7 +747,7 @@ export function AppDetailView({ app }: { app: string }) {
                     ? t("草稿已保存 · 当前发布版本 v{current_version}", {
                         current_version: data.current_version,
                       })
-                    : data.kind === "flow"
+                    : data.kind !== "code"
                       ? t("新运行使用当前发布版本。")
                       : t("编辑节点设置后，可保存为草稿。")}
               </p>
@@ -730,7 +802,7 @@ export function AppDetailView({ app }: { app: string }) {
         )}
       </div>
       <TabPanel tab="overview" current={tab}>
-        {data.kind === "flow" && (
+        {data.kind !== "code" && (
           <AppMetadata
             data={data}
             changed={(value) => accept(value, t("应用信息已保存。"))}
@@ -765,9 +837,79 @@ export function AppDetailView({ app }: { app: string }) {
             )
           }
         />
+        <AppUsagePanel app={app} />
       </TabPanel>
       <TabPanel tab="design" current={tab}>
-        {isFlowConfig(config) ? (
+        {!isCodeConfig(config) && (
+          <div
+            className="filter-tabs design-view-switch"
+            role="group"
+            aria-label={t("设计方式")}
+          >
+            {(
+              [
+                [false, t("表单")],
+                [true, t("代码")],
+              ] as const
+            ).map(([code, label]) => (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={codeView === code}
+                className={codeView === code ? "selected" : ""}
+                disabled={!code && Boolean(codeProblem)}
+                onClick={() => setCodeView(code)}
+              >
+                {label}
+              </button>
+            ))}
+            {codeProblem && (
+              <span className="field-error">
+                {t("YAML 改好之前不能回到表单。")}
+              </span>
+            )}
+          </div>
+        )}
+        {codeView && !isCodeConfig(config) ? (
+          <section className="panel asset-section" aria-label={t("配置代码")}>
+            <ConfigCode
+              config={config}
+              onChange={(value) => {
+                setConfig(value);
+                setNotice("");
+              }}
+              onProblem={setCodeProblem}
+              disabled={busy || running}
+            />
+            {agentProblemList(agentProblems, issues)}
+          </section>
+        ) : isAgentConfig(config) ? (
+          <div className="agent-design">
+            <section
+              className="panel asset-section"
+              aria-label={t("智能体设置")}
+            >
+              <AgentForm
+                app={app}
+                data={data}
+                config={config}
+                setConfig={(value) => {
+                  setConfig(value);
+                  setNotice("");
+                }}
+                issues={agentProblems}
+                setSecrets={(secrets) => setData({ ...data, secrets })}
+                disabled={busy || running}
+              />
+            </section>
+            <DebugChat
+              app={app}
+              data={data}
+              dirty={dirty}
+              onCaseSaved={() => setEvalRevision((n) => n + 1)}
+            />
+          </div>
+        ) : isFlowConfig(config) ? (
           <>
             <FlowEditor
               app={app}
@@ -792,6 +934,14 @@ export function AppDetailView({ app }: { app: string }) {
               secrets={data.secrets}
               setSecrets={(secrets) => setData({ ...data, secrets })}
               issues={issues.env}
+              disabled={busy || running}
+            />
+            <FlowConversation
+              config={config}
+              setConfig={(value) => {
+                setConfig(value);
+                setNotice("");
+              }}
               disabled={busy || running}
             />
           </>
@@ -962,11 +1112,8 @@ export function AppDetailView({ app }: { app: string }) {
         </div>
         <EvalSetPanel
           app={app}
-          config={
-            data.kind === "flow"
-              ? ((data.draft?.config ?? data.current.config) as FlowConfig)
-              : null
-          }
+          revision={evalRevision}
+          config={evalConfig(data)}
           options={data.options}
           onSaved={(value) => {
             setEvalSet(value);
@@ -1006,7 +1153,7 @@ export function AppDetailView({ app }: { app: string }) {
                     })}
                   </small>
                 </div>
-                {data.kind === "flow" && (
+                {data.kind !== "code" && (
                   <button
                     type="button"
                     className="button secondary"
@@ -1067,6 +1214,7 @@ export function AppDetailView({ app }: { app: string }) {
         </section>
       </TabPanel>
       <TabPanel tab="access" current={tab}>
+        <AppEntriesPanel app={app} />
         <AppAccess app={app} inputs={data.inputs} />
         <AppSchedules
           app={app}
@@ -1076,5 +1224,37 @@ export function AppDetailView({ app }: { app: string }) {
         />
       </TabPanel>
     </div>
+  );
+}
+
+// The configuration whose start inputs the eval cases answer: a flow app's, or the graph
+// an agent app runs as.
+function evalConfig(data: AppDetail): FlowConfig | null {
+  const config = (data.draft ?? data.current).config;
+  return isFlowConfig(config)
+    ? config
+    : isAgentConfig(config)
+      ? agentAsFlow(config)
+      : null;
+}
+
+// In the code view, where the problems found on saving have no form field to sit by.
+function agentProblemList(agent: AgentIssues, flow: FlowIssues) {
+  const items = [
+    ...Object.entries(agent).map(([where, msg]) => `${where}: ${msg}`),
+    ...Object.entries(flow.nodes).flatMap(([node, bucket]) =>
+      Object.entries(bucket).map(([where, msg]) =>
+        where ? `${node}.${where}: ${msg}` : `${node}: ${msg}`,
+      ),
+    ),
+    ...Object.entries(flow.env).map(([where, msg]) => `env.${where}: ${msg}`),
+  ];
+  if (!items.length) return null;
+  return (
+    <ul className="field-error config-code-problems">
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
   );
 }

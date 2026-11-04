@@ -224,11 +224,6 @@ export function knowledgeIssues(
   return config.graph.nodes.flatMap((node) => {
     const loc = ["body", "config", "graph", "nodes", node.id];
     const issues: ValidationIssue[] = [];
-    if (node.type === "agent" && !node.tools.length && !node.knowledge)
-      issues.push({
-        loc: [...loc, "tools"],
-        msg: "至少选一个数据源工具或知识库",
-      });
     const settings =
       node.type === "knowledge"
         ? node

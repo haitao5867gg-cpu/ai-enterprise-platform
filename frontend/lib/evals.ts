@@ -22,6 +22,11 @@ export type EvalCase = {
   answers: Record<string, EvalAnswer>;
   expect: EvalCheck[];
   from_run: string | null;
+  // A turn of a conversation (docs/api/evals.md): the history the model saw, the turn's
+  // number, and how the masked values in that history read. Left out: a one-shot run.
+  history?: { message: string; reply: string | null }[];
+  turn?: number | null;
+  restored?: Record<string, string>;
 };
 export type EvalSet = {
   app: string;

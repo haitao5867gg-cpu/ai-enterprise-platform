@@ -357,6 +357,8 @@ test("knowledge-qa 创建后直接编辑，模板配置保留在草稿", async (
   const app = unique("knowledge-qa");
   await page.goto("/apps");
   await page.getByRole("button", { name: "新建应用" }).click();
+  // Flow templates are under 「编排」; a new app starts as an agent app.
+  await page.getByRole("radio", { name: /^编排/ }).check();
   await page.getByRole("radio", { name: /知识问答/ }).check();
   await page.getByRole("button", { name: "下一步", exact: true }).click();
   await page.getByLabel("标识", { exact: true }).fill(app);

@@ -1,6 +1,6 @@
 import "server-only";
 import type { AppConfig, FlowNode } from "../apps";
-import { isFlowConfig } from "../apps";
+import { isCodeConfig, isFlowConfig } from "../apps";
 import type { AppManual, ManualNode } from "../app-manual";
 import { kindLabels } from "../flow";
 import { nodeKind, typeLabels } from "../flow-edit";
@@ -72,7 +72,7 @@ export function buildMockManual(
     const ref: ManualNode = { id: node.id, title: node.title };
     const setting = flow
       ? ordered.find((item) => item.id === node.id)
-      : !isFlowConfig(config)
+      : isCodeConfig(config)
         ? config.nodes[node.id]
         : undefined;
     const uses: string[] = [];

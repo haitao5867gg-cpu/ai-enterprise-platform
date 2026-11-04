@@ -96,7 +96,8 @@ export function AppList() {
                   <span>
                     {t("v{version}", { version: app.current_version })}
                   </span>
-                  {app.kind !== "flow" && <span>{t("代码应用")}</span>}
+                  {app.kind === "agent" && <span>{t("智能体应用")}</span>}
+                  {app.kind === "code" && <span>{t("代码应用")}</span>}
                   {app.has_draft && (
                     <span className="draft-tag">{t("有草稿")}</span>
                   )}

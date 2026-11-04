@@ -34,7 +34,7 @@ import { ErrorNotice } from "./ui";
 
 const number = new Intl.NumberFormat("zh-CN");
 
-function Card({
+export function Card({
   label,
   value,
   note,
@@ -103,7 +103,7 @@ const dayLabel = (date: string) => {
   return `${Number(month)}/${Number(day)}`;
 };
 
-function Bars({
+export function Bars({
   title,
   days,
   value,

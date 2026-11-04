@@ -89,7 +89,7 @@ function rawItems(): Raw[] {
           ? quality(app.score, "评测通过率")
           : quality(null, "还没有评测，近 30 天运行不到 3 次"),
       facts: { kind: app.kind, runs_30d: 0, success_rate: null },
-      can_propose: app.kind === "flow",
+      can_propose: app.kind !== "code",
       creator: app.created_by,
     });
   for (const skill of mockSkillList()) {

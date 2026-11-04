@@ -10,6 +10,7 @@ import {
   runTitle,
   stepText,
   timeAgo,
+  conversationText,
   triggerText,
   versionLabel,
 } from "../lib/i18n/format";
@@ -679,6 +680,7 @@ export function RunDetail({
                 run.created_by &&
                   t("{created_by} 提出", { created_by: run.created_by }),
                 run.trigger && triggerText(t, run.trigger),
+                run.conversation && conversationText(t, run.conversation),
                 run.created_at && timeAgo(locale, run.created_at, now),
                 durationParts(t, run, now).join(" · "),
                 [run.app_title || run.app, versionLabel(t, run)]
@@ -804,6 +806,11 @@ export function RunDetail({
         run && (
           <>
             <RunTabs tabs={tabs} tab={tab} onChange={chooseTab} />
+            {run.cleared && (
+              <p className="datasource-note" role="note">
+                {t("这次运行属于已过期或已删除的对话，内容已清除。")}
+              </p>
+            )}
             {mutationError && <ErrorNotice message={mutationError} />}
             <div
               className="run-tab-panel"
@@ -1510,6 +1517,23 @@ export function RunDetail({
                           </Link>
                         ) : (
                           triggerText(t, run.trigger)
+                        )}
+                      </dd>
+                    </div>
+                  )}
+                  {run.conversation && (
+                    <div>
+                      <dt>{t("对话")}</dt>
+                      <dd>
+                        {run.draft ? (
+                          conversationText(t, run.conversation)
+                        ) : (
+                          <Link
+                            className="text-button"
+                            href={`/use/${encodeURIComponent(run.app)}?conversation=${encodeURIComponent(run.conversation.conversation_id)}`}
+                          >
+                            {conversationText(t, run.conversation)}
+                          </Link>
                         )}
                       </dd>
                     </div>

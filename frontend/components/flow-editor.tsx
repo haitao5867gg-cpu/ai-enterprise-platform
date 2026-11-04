@@ -59,7 +59,6 @@ import { InputFields } from "./input-fields";
 const commonKeys = ["id", "title", "note", "max_visits", "on_error", "ui"];
 const formKeys: Record<FlowNode["type"], string[]> = {
   start: ["inputs"],
-  llm: ["model", "skills", "system", "prompt", "output"],
   classifier: ["model", "skills", "text", "instruction", "classes"],
   llm_review: [
     "model",
@@ -82,7 +81,19 @@ const formKeys: Record<FlowNode["type"], string[]> = {
     "retrieval",
   ],
   tool: ["datasource", "tool", "args"],
-  agent: ["model", "skills", "task", "tools", "knowledge", "max_steps"],
+  agent: [
+    "model",
+    "skills",
+    "instructions",
+    "task",
+    "tools",
+    "knowledge",
+    "apps",
+    "grounded_only",
+    "history",
+    "max_steps",
+  ],
+  llm: ["model", "skills", "system", "prompt", "output", "history"],
   human: [
     "mode",
     "prompt",

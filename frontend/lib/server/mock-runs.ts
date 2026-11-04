@@ -12,6 +12,7 @@ import {
   type Message,
   type Run,
   type RunStatus,
+  type RunConversation,
   type RunSummary,
   type RunTrigger,
 } from "../runs";
@@ -30,6 +31,7 @@ import { mockUpload, mockUploads, mockUploadedPlan } from "./mock-uploads";
 import { mockDatasources, mockToolService } from "./mock-datasources";
 import type { UploadedDataset } from "../uploads";
 import {
+  isCodeConfig,
   isFlowConfig,
   type AppConfig,
   type FlowConfig,
@@ -342,6 +344,8 @@ const summaryKeys: (keyof RunSummary)[] = [
   "step",
   "waiting_since",
   "wait_seconds",
+  "conversation",
+  "cleared",
 ];
 function summary(run: Run): RunSummary {
   return Object.fromEntries(
@@ -1034,12 +1038,12 @@ function create(
       ? {
           language: input.language === "sql" ? "sql" : "pyspark",
           knowledgeBases:
-            !isFlowConfig(snapshot.config) &&
+            isCodeConfig(snapshot.config) &&
             Array.isArray(snapshot.config.nodes.plan?.params.knowledge_bases)
               ? snapshot.config.nodes.plan.params.knowledge_bases
               : [],
           knowledgeTopK:
-            !isFlowConfig(snapshot.config) &&
+            isCodeConfig(snapshot.config) &&
             typeof snapshot.config.nodes.plan?.params.knowledge_top_k ===
               "number"
               ? snapshot.config.nodes.plan.params.knowledge_top_k
@@ -1121,6 +1125,60 @@ function timed(entry: StoredRun, steps: MockSteps): MockSteps {
         : null,
     };
   });
+}
+
+// A conversation's turn (docs/api/conversations.md): started like POST /runs, and
+// marked with its conversation.
+export async function mockConversationTurn(
+  body: Record<string, unknown>,
+  conversation: RunConversation,
+): Promise<Response | { run_id: string; status: RunStatus }> {
+  const response = create(body);
+  if (response.status !== 201) return response;
+  const value = (await response.json()) as { run_id: string; status: RunStatus };
+  store.get(value.run_id)!.run.conversation = conversation;
+  return value;
+}
+// A run as GET /runs/{id} has it, up to date; null when there is none.
+export function mockRunView(runId: string): Run | null {
+  const entry = store.get(runId);
+  return entry ? withAppTitle(refresh(entry)) : null;
+}
+// The runs of an app, newest first (an app's usage, docs/api/ops.md).
+export function mockRunsOf(app: string): Run[] {
+  return [...store.values()]
+    .filter((entry) => entry.run.app === app)
+    .map((entry) => refresh(entry))
+    .sort((a, b) => ((a.created_at ?? "") < (b.created_at ?? "") ? 1 : -1));
+}
+// A conversation renamed: its runs show the new title.
+export function mockRetitleRuns(ids: string[], title: string) {
+  for (const id of ids) {
+    const run = store.get(id)?.run;
+    if (run?.conversation) run.conversation = { ...run.conversation, title };
+  }
+}
+// A deleted or expired conversation's runs keep status, version, times and usage; what
+// they were about is cleared. A turn still going is cancelled first.
+export function mockClearRuns(ids: string[]) {
+  for (const id of ids) {
+    const entry = store.get(id);
+    if (!entry) continue;
+    const run = refresh(entry);
+    if (run.status === "running" || run.status === "waiting")
+      setStatus(run, "cancelled");
+    Object.assign(run, {
+      conversation: null,
+      cleared: true,
+      title: null,
+      input: {},
+      result: null,
+      messages: [],
+      pending: null,
+      error: null,
+      sources: [],
+    });
+  }
 }
 
 export function mockRunStatus(runId: string): RunStatus | null {

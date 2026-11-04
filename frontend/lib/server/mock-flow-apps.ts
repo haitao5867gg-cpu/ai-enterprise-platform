@@ -5,6 +5,7 @@ import {
   searchMockKnowledge,
 } from "./mock-knowledge";
 import type {
+  AgentAppConfig,
   AppTemplate,
   FlowConfig,
   FlowNode,
@@ -521,7 +522,83 @@ export const mockTemplates: AppTemplate[] = [
       },
     },
   },
+  {
+    id: "agent-blank",
+    title: "通用助手",
+    summary: "只有指令的对话助手：写好角色和做事规则就能多轮对话。",
+    needs: [],
+    kind: "agent",
+    config: agentBlank(),
+  },
+  {
+    id: "agent-knowledge",
+    title: "知识库助手",
+    summary: "先检索知识库再回答，标出处；只依据资料回答。",
+    needs: ["knowledge_base"],
+    kind: "agent",
+    config: agentConfig(
+      "你是知识库助手。先在知识库里检索资料，再根据资料回答，并用 [n] 标出处；资料里没有的就说没有找到，不要编造。",
+      {
+        knowledge: {
+          knowledge_bases: [],
+          top_k: 5,
+          min_score: 0.3,
+          retrieval: { ...mockKnowledgeOptions.retrieval },
+        },
+        opening: "你好，我可以根据知识库里的资料回答问题。",
+        max_steps: 6,
+      },
+    ),
+  },
+  {
+    id: "agent-data",
+    title: "数据问答助手",
+    summary: "先看表结构再查询，只用查到的数字回答。",
+    needs: ["datasource"],
+    kind: "agent",
+    config: agentConfig(
+      "你是数据问答助手。回答数据问题时，先看有哪些表和字段，再查需要的数据；只用查到的数字回答，并说明用到了哪些表和数据。",
+      {
+        tools: [{ datasource: "", tools: null }],
+        opening: "你好，我可以查数据回答问题。",
+      },
+    ),
+  },
 ];
+// An agent app's configuration with the defaults filled in, as the backend's
+// agent_app.config (docs/api/agent-apps.md, "配置").
+export function agentConfig(
+  instructions: string,
+  options: {
+    tools?: AgentAppConfig["agent"]["tools"];
+    knowledge?: AgentAppConfig["agent"]["knowledge"];
+    opening?: string;
+    max_steps?: number;
+  } = {},
+): AgentAppConfig {
+  return {
+    schema_version: 1,
+    env: { vars: [], secrets: [] },
+    agent: {
+      instructions,
+      model: null,
+      skills: [],
+      tools: options.tools ?? [],
+      knowledge: options.knowledge ?? null,
+      apps: [],
+      grounded_only: true,
+      max_steps: options.max_steps ?? 8,
+      history_turns: 10,
+    },
+    chat: { opening: options.opening ?? "", suggestions: [] },
+  };
+}
+export function agentBlank(): AgentAppConfig {
+  return agentConfig(
+    "你是一个乐于助人的助手。回答简洁、准确；不知道的就直说，不要编造。",
+    { opening: "你好，有什么可以帮你？" },
+  );
+}
 const defaults: FlowNode[] = [
   ...dataDefaults,
   {
@@ -1245,12 +1322,11 @@ export function simulateNode(
             ]),
           );
   if (node.type === "agent") {
-    if (!node.tools.length && !node.knowledge)
-      throw new Error("至少选一个数据源工具或知识库");
     const output: AgentOutput = {
       text: `（模拟回答）${render(node.task, pool)}`,
       steps: [],
       hits: [],
+      grounded: true,
     };
     if (node.knowledge) {
       const query = String(pool.start?.question ?? rendered.task);

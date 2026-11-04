@@ -77,6 +77,8 @@ export type LlmNode = NodeBase &
     output: { kind: "text" } | { kind: "json"; fields: OutputField[] };
     // A text answer that is only for later steps stays out of the run process.
     quiet?: boolean;
+    // The conversation's history as chat messages (docs/api/flow-apps.md, "对话").
+    history?: boolean;
   };
 export type ClassifierNode = NodeBase &
   ModelSettings &
@@ -155,12 +157,19 @@ export type AgentStep = {
   args: Record<string, unknown>;
   error: string | null;
   hits?: number;
+  // A call of another app (docs/api/agent-apps.md, "调用应用"): which, and its run.
+  app?: string;
+  run_id?: string | null;
 };
 export type AgentOutput = {
   text: string;
   steps: AgentStep[];
   hits: Reference[];
+  // Whether the answer stood on the tools and sources (agent-apps.md, grounded_only).
+  grounded?: boolean;
 };
+// A published app an agent may call as a tool (docs/api/agent-apps.md, AppTool).
+export type AppTool = { app: string; when: string; enabled?: boolean };
 export type AgentNode = NodeBase &
   ModelSettings &
   Fallible & {
@@ -169,6 +178,12 @@ export type AgentNode = NodeBase &
     tools: { datasource: string; tools: string[] | null }[];
     knowledge?: AgentKnowledge | null;
     max_steps: number;
+    // docs/api/flow-apps.md, "智能体节点的新设置": a system prompt, the conversation's
+    // history, answering only from the tools and sources, and other apps as tools.
+    instructions?: string;
+    history?: boolean;
+    grounded_only?: boolean;
+    apps?: AppTool[];
   };
 // The extended settings (view, data, the approval's fields, changed_branch and
 // options[].requires) are written in templates or imported files; the editor shows them
@@ -327,14 +342,50 @@ export type FlowNode =
   | GitPrNode
   | EndNode;
 export type Edge = { from: string; to: string; branch?: string | null };
+// A flow app that people talk to (docs/api/flow-apps.md, "对话").
+export type FlowConversation = {
+  enabled: boolean;
+  history_turns?: number;
+  reply: string;
+};
 export type FlowConfig = {
   schema_version: 1;
   env: { vars: EnvVar[]; secrets: string[] };
   graph: { nodes: FlowNode[]; edges: Edge[] };
+  conversation?: FlowConversation | null;
 };
-export type AppConfig = CodeConfig | FlowConfig;
+// What the use page shows before the first message (docs/api/agent-apps.md).
+export type ChatSettings = { opening: string; suggestions: string[] };
+// An agent app's configuration (docs/api/agent-apps.md, "配置").
+export type AgentAppConfig = {
+  schema_version: 1;
+  env: { vars: EnvVar[]; secrets: string[] };
+  agent: {
+    instructions: string;
+    model: string | null;
+    skills: SkillRef[];
+    tools: { datasource: string; tools: string[] | null }[];
+    knowledge: AgentKnowledge | null;
+    apps: AppTool[];
+    grounded_only: boolean;
+    max_steps: number;
+    history_turns: number;
+  };
+  chat: ChatSettings;
+};
+export type AppConfig = CodeConfig | FlowConfig | AgentAppConfig;
 export function isFlowConfig(config: AppConfig): config is FlowConfig {
   return "graph" in config;
+}
+export function isCodeConfig(config: AppConfig): config is CodeConfig {
+  return "nodes" in config && !("graph" in config);
+}
+export function isAgentConfig(config: AppConfig): config is AgentAppConfig {
+  return "agent" in config && !("graph" in config);
+}
+// Whether people can talk to the app: an agent app always, a flow app that opened it.
+export function converses(config: AppConfig): boolean {
+  return isAgentConfig(config) || Boolean(isFlowConfig(config) && config.conversation?.enabled);
 }
 type WithoutBase<T> = T extends unknown
   ? Omit<T, keyof NodeBase | "type" | "on_error">
@@ -360,17 +411,19 @@ export type NodeType = {
     max_count: number | null;
   };
 }[FlowNode["type"]];
+export type AppKind = "code" | "flow" | "agent";
 export type AppTemplate = {
   id: string;
   title: string;
   summary: string;
   needs: string[];
-  // "agent": an agent app's template (docs/api/agent-apps.md); its pages come in batch 4.
+  // Missing in templates from before agent apps: a flow app's.
   kind?: "flow" | "agent";
-  config: FlowConfig;
+  config: FlowConfig | AgentAppConfig;
 };
 export type AppSource =
   | { blank: true }
+  | { blank_agent: true }
   | { template: string }
   | { app: string; version?: number };
 export type CreateAppInput = {
@@ -396,7 +449,7 @@ export type ImportProblem =
       message: string;
     }
   | { kind: "knowledge_base"; kb_id: string; name?: string; message: string }
-  | { kind: "model" | "secret"; name: string; message: string };
+  | { kind: "model" | "secret" | "app"; name: string; message: string };
 export type ImportResult = { app: AppDetail; problems: ImportProblem[] };
 export type NodeTest = {
   status: "done" | "error";
@@ -458,8 +511,16 @@ export type AppSummary = {
   current_version: number;
   has_draft: boolean;
   has_eval_set: boolean;
-  kind: "code" | "flow" | "agent";
+  kind: AppKind;
   created_at: string | null;
+};
+// An app an agent may name in its apps, and why not when it may not.
+export type CallableApp = {
+  app: string;
+  title: string;
+  kind: AppKind;
+  callable: boolean;
+  reason: string | null;
 };
 export type AppDetail = AppSummary & {
   pattern: string;
@@ -473,7 +534,11 @@ export type AppDetail = AppSummary & {
   // Whether the app's runs bind a project; null for code apps and apps that do not.
   project?: ProjectUse | null;
   secrets: { name: string; set: boolean; updated_at: string | null }[];
+  // An agent app's opening and suggested questions; null for the other kinds.
+  chat?: ChatSettings | null;
   options: {
+    // Agent apps only: the apps it may call (docs/api/agent-apps.md).
+    apps?: CallableApp[];
     knowledge_bases: KnowledgeOption[];
     datasources: { datasource_id: string; name: string; kind: string }[];
     models: string[];
@@ -547,6 +612,9 @@ function isVersion(value: unknown): value is AppVersion {
       Array.isArray(value.config.graph.nodes) &&
       Array.isArray(value.config.graph.edges) &&
       isRecord(value.config.env)) ||
+      (value.config.schema_version === 1 &&
+        isRecord(value.config.agent) &&
+        isRecord(value.config.env)) ||
       (isRecord(value.config.nodes) &&
         Object.values(value.config.nodes).every(
           (node) =>
@@ -743,4 +811,63 @@ export async function exportAppVersion(
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Copies an agent app into an equivalent flow app (docs/api/agent-apps.md, "转成编排应用").
+export const convertToFlow = async (
+  app: string,
+  input: { app: string; title?: string; summary?: string; version?: number; actor?: string },
+): Promise<AppDetail> =>
+  readAppDetail(
+    await requestJson(`${pathFor(app)}/convert-to-flow`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  );
+
+// The graph an agent app runs as (docs/api/agent-apps.md, "生成的图"), for the parts of
+// the page that read a flow: the eval set's inputs and the env and secret editor.
+export function agentAsFlow(config: AgentAppConfig): FlowConfig {
+  const { instructions, history_turns, ...agent } = config.agent;
+  return {
+    schema_version: 1,
+    env: config.env,
+    graph: {
+      nodes: [
+        {
+          id: "start",
+          type: "start",
+          title: "收到消息",
+          inputs: [
+            { key: "message", label: "消息", type: "textarea", required: true },
+          ],
+        },
+        {
+          id: "agent",
+          type: "agent",
+          title: "智能体",
+          task: "{{start.message}}",
+          instructions,
+          history: true,
+          ...agent,
+        },
+        {
+          id: "end",
+          type: "end",
+          title: "回答",
+          outputs: [
+            { key: "reply", from: ["{{agent.text}}"] },
+            { key: "steps", from: ["{{agent.steps}}"] },
+            { key: "hits", from: ["{{agent.hits}}"] },
+            { key: "grounded", from: ["{{agent.grounded}}"] },
+          ],
+        },
+      ],
+      edges: [
+        { from: "start", to: "agent" },
+        { from: "agent", to: "end" },
+      ],
+    },
+    conversation: { enabled: true, history_turns, reply: "reply" },
+  };
 }

@@ -123,6 +123,15 @@ async function handle(request: Request, context: Context) {
     // An app's eval set (docs/api/evals.md).
     [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set$/, ["GET", "PUT"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set\/cases\/from-run$/, ["POST"]],
+    // An app's ways in and how it is used (docs/api/app-access.md "入口", ops.md).
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/access$/, ["GET", "PUT"]],
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/usage$/, ["GET"]],
+    // An agent app copied into a flow app (docs/api/agent-apps.md).
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/convert-to-flow$/, ["POST"]],
+    // Conversations (docs/api/conversations.md).
+    [/^conversations$/, ["GET", "POST"]],
+    [/^conversations\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],
+    [/^conversations\/[a-zA-Z0-9_-]{1,128}\/messages$/, ["POST"]],
     // API keys of an app (docs/api/app-access.md).
     // The operations dashboard and per-app model budgets (docs/api/ops.md).
     [/^ops\/summary$/, ["GET"]],
@@ -235,6 +244,11 @@ async function handle(request: Request, context: Context) {
     if (path[0] === "skills") {
       const { mockSkills } = await import("../../../lib/server/mock-skills");
       return mockSkills(request, path);
+    }
+    if (path[0] === "conversations") {
+      const { mockConversations } =
+        await import("../../../lib/server/mock-conversations");
+      return mockConversations(request, path);
     }
     const { mockRuns } = await import("../../../lib/server/mock-runs");
     return mockRuns(request, path);

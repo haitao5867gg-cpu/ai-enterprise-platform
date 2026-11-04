@@ -9,6 +9,8 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import type {
   AgentNode,
   AppCallNode,
+  AppTool,
+  CallableApp,
   AppDetail,
   AppSummary,
   ClassifierNode,
@@ -225,7 +227,7 @@ function DatasourceField({
   );
 }
 
-function ModelFields({
+export function ModelFields({
   node,
   options,
   change,
@@ -619,7 +621,7 @@ function AddKey({
   );
 }
 
-function AgentTools({
+export function AgentTools({
   node,
   config,
   options,
@@ -1810,6 +1812,378 @@ function GitPrFields({
   );
 }
 
+// The agent's knowledge bases (docs/api/knowledge.md, "编排应用智能体调用知识库").
+export function AgentKnowledgeFields<T extends { knowledge?: AgentNode["knowledge"] }>({
+  node,
+  options,
+  change,
+  at,
+}: {
+  node: T;
+  options: Options;
+  change: (node: T) => void;
+  at: (path: string) => string[];
+}) {
+  const t = useT();
+  return (
+    <fieldset className="list-editor" aria-label={t("知识库")}>
+        <legend>{t("知识库")}</legend>
+        <label className="asset-field retrieval-switch">
+          <input
+            type="checkbox"
+            role="switch"
+            checked={Boolean(node.knowledge)}
+            onChange={(event) =>
+              change({
+                ...node,
+                knowledge: event.target.checked
+                  ? {
+                      knowledge_bases: [],
+                      top_k: 5,
+                      min_score: 0.3,
+                      retrieval: {
+                        mode: "hybrid",
+                        vector_weight: 0.7,
+                        rerank: null,
+                      },
+                    }
+                  : null,
+              })
+            }
+          />
+
+          {t("让智能体检索知识库")}
+        </label>
+        {node.knowledge && (
+          <>
+            <KnowledgePicker
+              options={options.knowledge_bases ?? []}
+              value={node.knowledge.knowledge_bases}
+              max={5}
+              onChange={(knowledge_bases) =>
+                change({
+                  ...node,
+                  knowledge: { ...node.knowledge!, knowledge_bases },
+                })
+              }
+            />
+            {at("knowledge.knowledge_bases").map((message) => (
+              <p className="field-error" key={message}>
+                {message}
+              </p>
+            ))}
+            <NumberField
+              label="top_k"
+              min={1}
+              max={10}
+              value={node.knowledge.top_k}
+              issues={at("knowledge.top_k")}
+              onChange={(top_k) =>
+                change({
+                  ...node,
+                  knowledge: { ...node.knowledge!, top_k },
+                })
+              }
+            />
+            <label className="asset-field">
+              min_score
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step="any"
+                value={
+                  Number.isNaN(node.knowledge.min_score)
+                    ? ""
+                    : node.knowledge.min_score
+                }
+                onChange={(event) =>
+                  change({
+                    ...node,
+                    knowledge: {
+                      ...node.knowledge!,
+                      min_score: event.target.valueAsNumber,
+                    },
+                  })
+                }
+              />
+              {at("knowledge.min_score").map((message) => (
+                <span className="field-error" key={message}>
+                  {message}
+                </span>
+              ))}
+            </label>
+            <RetrievalFields
+              value={node.knowledge.retrieval}
+              topK={node.knowledge.top_k}
+              models={options.rerank_models ?? []}
+              issues={at("knowledge.retrieval")}
+              onChange={(retrieval) =>
+                change({
+                  ...node,
+                  knowledge: { ...node.knowledge!, retrieval },
+                })
+              }
+            />
+          </>
+        )}
+      </fieldset>
+  );
+}
+
+// Published apps the agent may call as tools (docs/api/agent-apps.md, "调用应用"): what
+// each is for decides whether the model calls it; a stopped one stays in the settings.
+// ``choices`` lists the apps with why one may not be called; null: list them here.
+export function AgentAppsField({
+  value,
+  choices,
+  issues,
+  onChange,
+}: {
+  value: AppTool[];
+  choices: CallableApp[] | null;
+  issues: Issues;
+  onChange: (value: AppTool[]) => void;
+}) {
+  const t = useT();
+  const [listed, setListed] = useState<CallableApp[] | null>(choices);
+  const [adding, setAdding] = useState("");
+  useEffect(() => {
+    if (choices) return;
+    const controller = new AbortController();
+    listApps(controller.signal)
+      .then((apps) =>
+        setListed(
+          apps.map((app) => ({
+            app: app.app,
+            title: app.title,
+            kind: app.kind,
+            callable: app.kind !== "code",
+            reason:
+              app.kind === "code"
+                ? t("代码应用不能被调用")
+                : null,
+          })),
+        ),
+      )
+      .catch(() => {
+        if (!controller.signal.aborted) setListed([]);
+      });
+    return () => controller.abort();
+  }, [choices, t]);
+  const options = choices ?? listed ?? [];
+  const titleOf = (app: string) =>
+    options.find((item) => item.app === app)?.title ?? app;
+  const left = options.filter(
+    (item) => !value.some((entry) => entry.app === item.app),
+  );
+  return (
+    <fieldset className="list-editor agent-apps">
+      <legend>{t("可以调用的应用")}</legend>
+      <p className="muted">
+        {t(
+          "把已发布的应用当工具：模型按「什么时候调用」决定调不调，被调的应用不带对话历史。",
+        )}
+      </p>
+      {issues?.apps && <p className="field-error">{issues.apps}</p>}
+      {value.map((entry, index) => (
+        <div className="list-row" key={`${entry.app}-${index}`}>
+          <div className="list-row-fields">
+            <strong>
+              {titleOf(entry.app)}{" "}
+              <small className="muted monospace">{entry.app}</small>
+            </strong>
+            <FieldIssues
+              id={`agent-app-${index}`}
+              messages={issuesUnder(issues, `apps.${index}.app`)}
+            />
+            <div className="asset-field">
+              <label htmlFor={`agent-app-when-${index}`}>
+                {t("什么时候调用")}
+              </label>
+              <textarea
+                id={`agent-app-when-${index}`}
+                rows={2}
+                maxLength={500}
+                value={entry.when}
+                placeholder={t("例如：用户问订单状态时")}
+                aria-invalid={issuesUnder(issues, `apps.${index}.when`).length > 0}
+                onChange={(event) =>
+                  onChange(
+                    value.map((item, i) =>
+                      i === index ? { ...item, when: event.target.value } : item,
+                    ),
+                  )
+                }
+              />
+              <FieldIssues
+                id={`agent-app-when-${index}-issues`}
+                messages={issuesUnder(issues, `apps.${index}.when`)}
+              />
+            </div>
+            <CheckField
+              label={t("启用")}
+              checked={entry.enabled !== false}
+              help={
+                entry.enabled === false
+                  ? t("停用后保留设置，但不提供给模型。")
+                  : undefined
+              }
+              onChange={(enabled) =>
+                onChange(
+                  value.map((item, i) =>
+                    i === index ? { ...item, enabled } : item,
+                  ),
+                )
+              }
+            />
+          </div>
+          <button
+            type="button"
+            className="text-button danger-text"
+            aria-label={t("不再调用「{title}」", { title: titleOf(entry.app) })}
+            onClick={() => onChange(value.filter((_, i) => i !== index))}
+          >
+            {t("移除")}
+          </button>
+        </div>
+      ))}
+      {value.length < 10 && (
+        <div className="list-add">
+          <label className="sr-only" htmlFor="agent-app-add">
+            {t("添加要调用的应用")}
+          </label>
+          <select
+            id="agent-app-add"
+            value={adding}
+            onChange={(event) => setAdding(event.target.value)}
+          >
+            <option value="">{t("选择一个已发布的应用…")}</option>
+            {left.map((item) => (
+              <option key={item.app} value={item.app} disabled={!item.callable}>
+                {item.title}
+                {item.callable
+                  ? item.kind === "agent"
+                    ? t("（智能体）")
+                    : ""
+                  : t("（{reason}）", { reason: item.reason ?? t("不能调用") })}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="button secondary"
+            disabled={!adding}
+            onClick={() => {
+              onChange([...value, { app: adding, when: "", enabled: true }]);
+              setAdding("");
+            }}
+          >
+            {t("添加")}
+          </button>
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
+// The settings of an agent node, and (standalone) of an agent app's one agent
+// (docs/api/flow-apps.md, "智能体节点的新设置"; agent-apps.md, "配置").
+export function AgentFields({
+  node,
+  config,
+  options,
+  issues,
+  change,
+}: {
+  node: AgentNode;
+  config: FlowConfig;
+  options: Options;
+  issues: Issues;
+  change: Change;
+}) {
+  const t = useT();
+  const variables = variablesFor(config, node.id);
+  const at = (path: string) => issuesUnder(issues, path);
+  return (
+    <>
+      <ModelFields
+        node={node}
+        options={options}
+        change={change}
+        issues={issues}
+      />
+      <RefField
+        label={t("角色和做事规则（可选）")}
+        multiline
+        rows={4}
+        value={node.instructions ?? ""}
+        variables={variables}
+        issues={at("instructions")}
+        help={t("放进系统提示词；任务说明写这一次要做的事。")}
+        onChange={(instructions) => change({ ...node, instructions })}
+      />
+      <RefField
+        label={t("任务说明")}
+        multiline
+        rows={5}
+        value={node.task}
+        variables={variables}
+        issues={at("task")}
+        onChange={(task) => change({ ...node, task })}
+      />
+      <AgentTools
+        node={node}
+        config={config}
+        options={options}
+        change={change}
+      />
+      {at("tools").map((msg) => (
+        <p className="field-error" key={msg}>
+          {msg}
+        </p>
+      ))}
+      <AgentKnowledgeFields
+        node={node}
+        options={options}
+        change={change}
+        at={at}
+      />
+      <AgentAppsField
+        value={node.apps ?? []}
+        choices={null}
+        issues={issues}
+        onChange={(apps) => change({ ...node, apps })}
+      />
+      <CheckField
+        label={t("只依据工具和资料回答")}
+        checked={node.grounded_only ?? false}
+        help={t(
+          "没有调成功工具、也没标出资料出处时，平台把回答换成「没有找到依据」。",
+        )}
+        onChange={(grounded_only) => change({ ...node, grounded_only })}
+      />
+      {(config.conversation?.enabled || node.history) && (
+        <CheckField
+          label={t("带上对话历史")}
+          checked={node.history ?? false}
+          issues={at("history")}
+          onChange={(history) => change({ ...node, history })}
+        />
+      )}
+      <NumberField
+        label={t("最多步数")}
+        min={1}
+        max={20}
+        value={node.max_steps}
+        issues={at("max_steps")}
+        help={t("一次工具调用、一次检索、一次调用应用各算一步。")}
+        onChange={(max_steps) => change({ ...node, max_steps })}
+      />
+    </>
+  );
+}
+
 export function NodeSettings({
   node,
   config,
@@ -2223,6 +2597,15 @@ export function NodeSettings({
             issues={at("prompt")}
             onChange={(prompt) => change({ ...node, prompt })}
           />
+          {(config.conversation?.enabled || node.history) && (
+            <CheckField
+              label={t("带上对话历史")}
+              checked={node.history ?? false}
+              issues={at("history")}
+              help={t("前几轮的问答按对话消息给模型。")}
+              onChange={(history) => change({ ...node, history })}
+            />
+          )}
           <SelectField
             label={t("输出方式")}
             value={node.output.kind}
@@ -2399,150 +2782,13 @@ export function NodeSettings({
       );
     case "agent":
       return (
-        <>
-          <ModelFields
-            node={node}
-            options={options}
-            change={change}
-            issues={issues}
-          />
-          <RefField
-            label={t("任务说明")}
-            multiline
-            rows={5}
-            value={node.task}
-            variables={variables}
-            issues={at("task")}
-            onChange={(task) => change({ ...node, task })}
-          />
-          <AgentTools
-            node={node}
-            config={config}
-            options={options}
-            change={change}
-          />
-          {at("tools").map((msg) => (
-            <p className="field-error" key={msg}>
-              {msg}
-            </p>
-          ))}
-          <fieldset className="list-editor" aria-label={t("知识库")}>
-            <legend>{t("知识库")}</legend>
-            <label className="asset-field retrieval-switch">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={Boolean(node.knowledge)}
-                onChange={(event) =>
-                  change({
-                    ...node,
-                    knowledge: event.target.checked
-                      ? {
-                          knowledge_bases: [],
-                          top_k: 5,
-                          min_score: 0.3,
-                          retrieval: {
-                            mode: "hybrid",
-                            vector_weight: 0.7,
-                            rerank: null,
-                          },
-                        }
-                      : null,
-                  })
-                }
-              />
-
-              {t("让智能体检索知识库")}
-            </label>
-            {node.knowledge && (
-              <>
-                <KnowledgePicker
-                  options={options.knowledge_bases ?? []}
-                  value={node.knowledge.knowledge_bases}
-                  max={5}
-                  onChange={(knowledge_bases) =>
-                    change({
-                      ...node,
-                      knowledge: { ...node.knowledge!, knowledge_bases },
-                    })
-                  }
-                />
-                {at("knowledge.knowledge_bases").map((message) => (
-                  <p className="field-error" key={message}>
-                    {message}
-                  </p>
-                ))}
-                <NumberField
-                  label="top_k"
-                  min={1}
-                  max={10}
-                  value={node.knowledge.top_k}
-                  issues={at("knowledge.top_k")}
-                  onChange={(top_k) =>
-                    change({
-                      ...node,
-                      knowledge: { ...node.knowledge!, top_k },
-                    })
-                  }
-                />
-                <label className="asset-field">
-                  min_score
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step="any"
-                    value={
-                      Number.isNaN(node.knowledge.min_score)
-                        ? ""
-                        : node.knowledge.min_score
-                    }
-                    onChange={(event) =>
-                      change({
-                        ...node,
-                        knowledge: {
-                          ...node.knowledge!,
-                          min_score: event.target.valueAsNumber,
-                        },
-                      })
-                    }
-                  />
-                  {at("knowledge.min_score").map((message) => (
-                    <span className="field-error" key={message}>
-                      {message}
-                    </span>
-                  ))}
-                </label>
-                <RetrievalFields
-                  value={node.knowledge.retrieval}
-                  topK={node.knowledge.top_k}
-                  models={options.rerank_models ?? []}
-                  issues={at("knowledge.retrieval")}
-                  onChange={(retrieval) =>
-                    change({
-                      ...node,
-                      knowledge: { ...node.knowledge!, retrieval },
-                    })
-                  }
-                />
-              </>
-            )}
-          </fieldset>
-          {!node.tools.length && !node.knowledge && (
-            <p className="field-error" role="alert">
-              {t("至少选一个数据源工具或知识库")}
-            </p>
-          )}
-          <NumberField
-            label={t("最多步数")}
-            min={1}
-            max={20}
-            value={node.max_steps}
-            issues={at("max_steps")}
-            help={t("一次工具调用算一步。")}
-            onChange={(max_steps) => change({ ...node, max_steps })}
-          />
-        </>
+        <AgentFields
+          node={node}
+          config={config}
+          options={options}
+          issues={issues}
+          change={change}
+        />
       );
     case "human":
       return (
