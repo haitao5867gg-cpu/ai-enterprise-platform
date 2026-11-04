@@ -456,7 +456,28 @@ NODE_TYPES: dict[str, str] = {
     "指令最多 {count} 个字符": "Instructions have at most {count} characters",
     "grounded_only 必须是 true 或 false": "grounded_only must be true or false",
     "调用的应用必须是列表": "The apps to call must be a list",
-    "调用应用的功能还没有上线": "Calling apps is not available yet",
+    "最多调用 {count} 个应用": "An agent calls at most {count} apps",
+    "每项要有 app、when 和 enabled": "Each item needs app, when and enabled",
+    "调用的应用没有 {key} 这一项": "An app to call has no setting {key}",
+    "要选择被调用的应用": "Choose the app to call",
+    "应用 {name} 选了两次": "The app {name} is chosen twice",
+    "要写什么时候调用它": "Say when to call it",
+    "什么时候调用最多 {count} 个字符": "When to call it has at most {count} characters",
+    "enabled 必须是 true 或 false": "enabled must be true or false",
+    "不能调用自己": "An app cannot call itself",
+    "没有已发布的应用 {name}": "There is no published app {name}",
+    "「{title}」是代码应用，智能体只能调用编排应用和智能体应用": (
+        "“{title}” is a code app; agents call flow and agent apps only"
+    ),
+    "应用「{title}」里有人工节点，智能体等不了人": (
+        "The app “{title}” has a human step, and an agent cannot wait for a person"
+    ),
+    "应用「{title}」的必填输入「{label}」要选{kind}，模型填不了": (
+        "The app “{title}” needs a {kind} chosen for “{label}”, which a model cannot fill in"
+    ),
+    "没有这个已发布的应用，请在智能体里重新选择": (
+        "There is no such published app; choose another one in the agent"
+    ),
     "在沙箱里运行一段 Python（标准库、pandas、numpy），做计算、格式转换、数据整理": (
         "Run Python in a sandbox (standard library, pandas, numpy) to calculate, convert "
         "or tidy data"

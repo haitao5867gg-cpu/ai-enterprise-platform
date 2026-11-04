@@ -38,7 +38,7 @@ from aep.runtime.flow import files as flowfiles
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import refs
 from aep.runtime.flow.check import check_common, check_config
-from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems
+from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems, why_not_callable
 from aep.runtime.flow.store import AppExists
 from aep.runtime.service import (
     CommentRequired,
@@ -349,9 +349,33 @@ class AppCatalog:
                         {"kb_id": kb.kb_id, "name": kb.name, "document_count": kb.document_count}
                         for kb in await self._runs.knowledge.all()
                     ],
+                    **({"apps": await self._callable_apps(app)} if chat is not None else {}),
                 },
             }
         )
+
+    async def _callable_apps(self, app: str) -> list[dict[str, Any]]:
+        """The apps an agent app may call, and why the others may not
+        (docs/api/agent-apps.md, "应用接口的变化")."""
+        out: list[dict[str, Any]] = []
+        for name in await self._runs.app_names():
+            if name == app:
+                continue
+            shape = await self._runs.app_shape(name)
+            reason = why_not_callable(shape, name)
+            kind = await self._runs.app_kind(name)
+            if kind is None:
+                continue
+            out.append(
+                {
+                    "app": name,
+                    "title": shape.title if shape else name,
+                    "kind": kind,
+                    "callable": reason is None,
+                    "reason": reason,
+                }
+            )
+        return out
 
     async def manual(self, app: str, version: int | None = None, draft: bool = False) -> dict:
         """The manual of the app's ``version`` (the current one if None), or of its draft
@@ -442,6 +466,41 @@ class AppCatalog:
             uses_of_one.sort(key=lambda use: use["app"])
         return found
 
+    async def app_callers(self, app: str) -> list[dict[str, Any]]:
+        """The apps whose current version calls ``app``, as ``{"app", "title", "version",
+        "via"}`` sorted by app (docs/api/app-access.md, "入口"): ``via`` is ``node`` for an app
+        node and ``agent`` for an agent that names it in its enabled ``apps``. Drafts, older
+        versions and archived apps do not count; an app whose configuration cannot be read
+        is left out."""
+        await self._runs.ensure_flows()
+        found: list[dict[str, Any]] = []
+        for flow in await self._runs.flows.all():
+            if flow.app == app:
+                continue
+            try:
+                number = await self._runs.versions.current(flow.app)
+                current = await self._runs.versions.version(flow.app, number)
+                if current is None:
+                    continue
+                nodes = flowgraph.nodes(self._runs.flow_config(flow.app, current.config))
+            except Exception:  # noqa: BLE001 - one broken app must not hide the others
+                log.warning("could not read the calls of app %s", flow.app, exc_info=True)
+                continue
+            for via in ("node", "agent"):
+                if any(
+                    (n["type"] == "app" and n.get("app") == app)
+                    if via == "node"
+                    else n["type"] == "agent"
+                    and any(
+                        a.get("app") == app and a.get("enabled", True) for a in n.get("apps") or []
+                    )
+                    for n in nodes
+                ):
+                    found.append(
+                        {"app": flow.app, "title": flow.title, "version": number, "via": via}
+                    )
+        return sorted(found, key=lambda use: (use["app"], use["via"]))
+
     async def model_usage(self) -> dict[str, list[dict[str, Any]]]:
         """Per model alias, the apps whose current version calls it, as ``{"app", "title",
         "version", "nodes", "via"}`` sorted by app (docs/api/models.md, "使用情况"): ``via``
@@ -518,9 +577,9 @@ class AppCatalog:
         kind = await self._check(app)
         await self._runs.ensure_versions(app)
         if await self._runs.app_kind(app) == agent_app.KIND:
-            config = await self.check_agent(raw)
+            config = await self.check_agent(raw, app=app)
         elif kind == "flow":
-            config = await self.check_flow(raw)
+            config = await self.check_flow(raw, app=app)
         else:
             config = await appconfig.validate_config(
                 raw,
@@ -531,7 +590,9 @@ class AppCatalog:
             )
         await self._runs.versions.save_draft(app, config, actor)
 
-    def _env(self, models: list[str] | None, strict: bool = True) -> CheckEnv:
+    def _env(
+        self, models: list[str] | None, strict: bool = True, app: str | None = None
+    ) -> CheckEnv:
         return CheckEnv(
             models,
             self._runs.skills,
@@ -543,14 +604,19 @@ class AppCatalog:
                 self._settings, models if models is not None else [self._runs.default_model]
             ),
             apps=self._runs.app_shape,
+            app=app,
         )
 
-    async def check_flow(self, raw: Any, strict: bool = True) -> dict[str, Any]:
-        return await check_config(raw, self._env(await self.models(), strict))
+    async def check_flow(
+        self, raw: Any, strict: bool = True, app: str | None = None
+    ) -> dict[str, Any]:
+        return await check_config(raw, self._env(await self.models(), strict, app))
 
-    async def check_agent(self, raw: Any, strict: bool = True) -> dict[str, Any]:
+    async def check_agent(
+        self, raw: Any, strict: bool = True, app: str | None = None
+    ) -> dict[str, Any]:
         """An agent app's configuration, checked as its generated graph is."""
-        return await agent_app.check(raw, lambda flow: self.check_flow(flow, strict))
+        return await agent_app.check(raw, lambda flow: self.check_flow(flow, strict, app))
 
     async def discard_draft(self, app: str) -> None:
         await self._check(app)
@@ -819,6 +885,16 @@ class AppCatalog:
                 if model not in models:
                     out.append(
                         {"kind": "model", "name": model, "message": "模型网关上没有这个别名"}
+                    )
+        for node in flowgraph.nodes(config):
+            for entry in node.get("apps") or [] if node["type"] == "agent" else []:
+                if await self._runs.app_shape(entry["app"]) is None:
+                    out.append(
+                        {
+                            "kind": "app",
+                            "name": entry["app"],
+                            "message": "没有这个已发布的应用，请在智能体里重新选择",
+                        }
                     )
         for name in (config.get("env") or {}).get("secrets") or []:
             if await self._runs.secrets.get(app, name) is None:

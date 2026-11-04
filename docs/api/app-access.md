@@ -112,9 +112,12 @@ curl -s -X POST https://平台地址/api/v1/apps/hello/runs \
   "use":  {"enabled": true, "last_used_at": "…" | null},   // 平台里的使用者：使用页 /use/{app}、新建运行页、会话
   "api":  {"enabled": true, "last_used_at": "…" | null},   // 应用 API（/v1）
   "mcp":  {"enabled": true, "last_used_at": "…" | null},   // MCP（/mcp/apps/{app}）
-  "apps": {"enabled": true, "last_used_at": "…" | null}    // 「允许被其他应用调用」：调用应用节点、智能体的 apps
+  "apps": {"enabled": true, "last_used_at": "…" | null,   // 「允许被其他应用调用」：调用应用节点、智能体的 apps
+           "callers": [{"app": "front-desk", "title": "总助手", "version": 3, "via": "agent"}]}
 }
 ```
+
+`callers` 是生效版本里调用它的应用，按应用标识排序：`via` 为 `node` 是调用应用节点，`agent` 是智能体（智能体应用或编排应用里的智能体节点）的 `apps` 里启用的一项。草稿、旧版本和已归档的应用不算。
 
 - `PUT /apps/{app}/access`，请求体 `{"use"?: bool, "api"?: bool, "mcp"?: bool, "apps"?: bool}`，只改给了的项 → `AppAccess`。要搭建者（auth.md 规则 3）；记进操作记录「修改应用入口」。
 - 默认全开，以前的应用也是全开。开关是应用的设置，不进版本，改了立刻生效，和密钥一样不随发布和回滚变化。

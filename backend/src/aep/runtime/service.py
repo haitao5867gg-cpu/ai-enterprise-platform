@@ -482,6 +482,7 @@ class RunService:
                 n["id"] for n in flowgraph.nodes(config) if n["type"] in ("start", "human")
             ),
             call_app=self.call_app,
+            app_shape=self.app_shape,
         )
 
     async def app_shape(self, app: str) -> flownodes.AppShape | None:
@@ -505,6 +506,7 @@ class RunService:
         for n in nodes:
             if n["type"] == "end":
                 outputs += [o["key"] for o in n.get("outputs") or [] if o["key"] not in outputs]
+        flow = await self.flows.get(app)
         return flownodes.AppShape(
             app,
             kind,
@@ -513,6 +515,9 @@ class RunService:
             outputs,
             start.get("project"),
             callable_,
+            flow.summary if flow else "",
+            any(n["type"] == "human" for n in nodes),
+            agent_app.is_agent(found.config),
         )
 
     async def _callers(self, record: RunRecord) -> list[str]:

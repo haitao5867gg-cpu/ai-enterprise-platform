@@ -213,7 +213,7 @@ async def test_an_agent_apps_settings_are_checked():
             ("agent", "colour"): "智能体没有 colour 这一项"
         }
         assert await problems(p, changed(apps=[{"app": "hello", "when": "总是"}])) == {
-            ("agent", "apps"): "调用应用的功能还没有上线"
+            ("agent", "apps", 0, "app"): "应用「问答示例」里有人工节点，智能体等不了人"
         }
         assert await problems(
             p, changed(tools=[{"datasource": "{{env.source}}", "tools": None}])

@@ -40,6 +40,7 @@ from aep.policy import DataPolicy
 from aep.projects import project_value
 from aep.runtime import human
 from aep.runtime.flow import refs
+from aep.runtime.flow.schema import input_schema
 from aep.skills import SkillContent, SkillStore
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo, tool_message
 
@@ -114,6 +115,8 @@ class CheckEnv:
     # What an app node needs to know about the app it calls (aep.runtime.flow.app_node);
     # None: unknown, any app is taken.
     apps: "Callable[[str], Awaitable[AppShape | None]] | None" = None
+    # The app being checked, when known (an agent cannot call its own app).
+    app: str | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,11 @@ class AppShape:
     project: str | None = None
     # Whether it lets other apps call it (docs/api/app-access.md, "入口").
     callable: bool = True
+    summary: str = ""
+    # Whether its current version has a human node (an agent cannot wait for a person),
+    # and whether it is an agent app (called with a message).
+    people: bool = False
+    agent: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,6 +213,8 @@ class Runtime:
     # Starts a run of another app and waits for it (app nodes): app, input, the calling
     # run's state, the node's id and the seconds to wait. None: apps cannot be called.
     call_app: CallApp | None = None
+    # An app as a caller sees it (its current version), for an agent's ``apps``.
+    app_shape: "Callable[[str], Awaitable[AppShape | None]] | None" = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -1782,12 +1792,7 @@ async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     _history(node, p)
     if "grounded_only" in node and not isinstance(node["grounded_only"], bool):
         p.add(("grounded_only",), "grounded_only 必须是 true 或 false")
-    apps = node.get("apps", [])
-    if not isinstance(apps, list):
-        p.add(("apps",), "调用的应用必须是列表")
-    elif apps:
-        # Agents calling apps comes with a later batch (docs/api/agent-apps.md, "调用应用").
-        p.add(("apps",), "调用应用的功能还没有上线")
+    await _check_apps(node, p, env)
     entries = _list(node, "tools", p, "允许的工具", 0, 10)
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
@@ -1818,6 +1823,81 @@ async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     steps = node.get("max_steps", 8)
     if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 20:
         p.add(("max_steps",), "最多步数要在 1–20 之间")
+
+
+# Agents calling apps (docs/api/agent-apps.md, "调用应用").
+MAX_APPS = 10
+MAX_WHEN = 500
+APP_KEYS = ("app", "when", "enabled")
+# Start inputs a model can fill in.
+FILLABLE = ("text", "textarea", "number", "boolean", "select")
+CALL_TIMEOUT = 300
+CALL_APP = "call_app"
+TYPE_LABELS = {"datasource": "数据源", "file": "文件"}
+# What an agent app is called with.
+MESSAGE_PARAM = {"type": "string", "description": "要问它的话"}
+
+
+async def _check_apps(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
+    apps = node.get("apps", [])
+    if not isinstance(apps, list):
+        p.add(("apps",), "调用的应用必须是列表")
+        return
+    if len(apps) > MAX_APPS:
+        p.add(("apps",), f"最多调用 {MAX_APPS} 个应用")
+    seen: set[str] = set()
+    for i, entry in enumerate(apps):
+        if not isinstance(entry, dict):
+            p.add(("apps", i), "每项要有 app、when 和 enabled")
+            continue
+        for key in entry:
+            if key not in APP_KEYS:
+                p.add(("apps", i, key), f"调用的应用没有 {key} 这一项")
+        name = entry.get("app")
+        if not isinstance(name, str) or not name.strip():
+            p.add(("apps", i, "app"), "要选择被调用的应用")
+        elif name in seen:
+            p.add(("apps", i, "app"), f"应用 {name} 选了两次")
+        else:
+            seen.add(name)
+            problem = await callee_problem(name, env)
+            if problem:
+                p.add(("apps", i, "app"), problem)
+        when = entry.get("when")
+        if not isinstance(when, str) or not when.strip():
+            p.add(("apps", i, "when"), "要写什么时候调用它")
+        elif len(when) > MAX_WHEN:
+            p.add(("apps", i, "when"), f"什么时候调用最多 {MAX_WHEN} 个字符")
+        if "enabled" in entry and not isinstance(entry["enabled"], bool):
+            p.add(("apps", i, "enabled"), "enabled 必须是 true 或 false")
+
+
+async def callee_problem(name: str, env: CheckEnv) -> str | None:
+    """Why an agent cannot call this app, or None when it can (or it cannot be told)."""
+    if env.app is not None and name == env.app:
+        return "不能调用自己"
+    if env.apps is None or not env.strict:
+        return None
+    shape = await env.apps(name)
+    return why_not_callable(shape, name)
+
+
+def why_not_callable(shape: "AppShape | None", name: str) -> str | None:
+    if shape is None:
+        return f"没有已发布的应用 {name}"
+    if shape.kind != "flow":
+        return f"「{shape.title}」是代码应用，智能体只能调用编排应用和智能体应用"
+    if not shape.callable:
+        return f"应用「{shape.title}」不允许被其他应用调用"
+    if shape.people:
+        return f"应用「{shape.title}」里有人工节点，智能体等不了人"
+    if not shape.agent:
+        for f in shape.inputs:
+            if f.get("required") and f.get("default") is None and f.get("type") not in FILLABLE:
+                kind = TYPE_LABELS.get(str(f.get("type")), str(f.get("type")))
+                label = f.get("label") or f["key"]
+                return f"应用「{shape.title}」的必填输入「{label}」要选{kind}，模型填不了"
+    return None
 
 
 def _answer_json(text: str) -> str:
@@ -1885,6 +1965,26 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         )
     if node.get("tools") and not offered:
         raise NodeFailure("tool_error", "选的数据源上没有可用的工具")
+    calls: dict[str, AppShape] = {}
+    for entry in node.get("apps") or []:
+        shape = await rt.app_shape(entry["app"]) if rt.app_shape else None
+        # One that is switched off, closed to other apps or gone is not offered.
+        if entry.get("enabled", True) is False or why_not_callable(shape, entry["app"]):
+            continue
+        assert shape is not None
+        key = f"a{len(calls) + 1}"
+        calls[key] = shape
+        offered[key] = None
+        schema = (
+            {"type": "object", "properties": {"message": MESSAGE_PARAM}, "required": ["message"]}
+            if shape.agent
+            else input_schema(shape.inputs)
+        )
+        about = f"{shape.summary.strip()} " if shape.summary.strip() else ""
+        lines.append(
+            f"- {key}：调用应用「{shape.title}」。{about}什么时候用：{entry['when']}"
+            f" 参数：{json.dumps(schema, ensure_ascii=False)}"
+        )
     skills = {s["name"]: rt.skills[(s["name"], s["version"])] for s in node.get("skills") or []}
     instructions = refs.render(node.get("instructions") or "", rt.model_lookup(state)).strip()
     task = refs.render(node["task"], rt.model_lookup(state))
@@ -2001,7 +2101,38 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             )
             continue
         args = data.get("args") or {}
-        if data["tool"] == "kb":
+        if data["tool"] in calls:
+            shape = calls[data["tool"]]
+            args, back = rt.unmask(args, state, found)
+            restored |= back
+            step = {
+                "tool": CALL_APP,
+                "datasource": None,
+                "app": shape.app,
+                "run_id": None,
+                "args": args,
+                "error": None,
+            }
+            try:
+                assert rt.call_app is not None
+                called = await rt.call_app(
+                    shape.app, args, state, f"{node['id']}.{len(steps) + 1}", CALL_TIMEOUT
+                )
+                step["run_id"] = called.run_id
+                answer = called.result.get("reply") if shape.agent else called.result
+                # What another app worked out may come from its data.
+                found.append(answer)
+                answer = policy.for_model(answer, samples, key)
+                reply = (
+                    answer
+                    if isinstance(answer, str)
+                    else json.dumps(answer, ensure_ascii=False, default=str)
+                )[:MAX_TOOL_RESULT]
+            except NodeFailure as exc:
+                step["error"] = exc.message
+                found.append(policy.literals(exc.message))
+                reply = f"出错了：{policy.scrub(exc.message, samples, key)}"
+        elif data["tool"] == "kb":
             names = args.get("knowledge_bases", list(bases))
             kb_ids = (
                 [bases[name] for name in names]
