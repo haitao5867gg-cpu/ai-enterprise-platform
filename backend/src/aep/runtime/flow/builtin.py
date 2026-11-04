@@ -4,6 +4,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
+from aep.runtime import agent_app
+
 HELLO_SYSTEM = "你是一个乐于助人的助手，用中文简洁地回答。"
 
 
@@ -1073,10 +1075,13 @@ class Template:
     summary: str
     config: dict[str, Any]
     needs: tuple[str, ...] = ()
+    # The kind of app it makes: ``flow`` or ``agent`` (docs/api/agent-apps.md).
+    kind: str = "flow"
 
     def describe(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "kind": self.kind,
             "title": self.title,
             "summary": self.summary,
             "needs": list(self.needs),
@@ -1137,6 +1142,29 @@ TEMPLATES = {
             "审核通过后可以上线到 prod 定时刷新。",
             _etl_lakehouse_project(),
             needs=("datasource", "knowledge_base"),
+        ),
+        Template(
+            "agent-blank",
+            "通用助手",
+            "只有指令的对话助手：写好角色和做事规则就能多轮对话。",
+            agent_app.blank(),
+            kind="agent",
+        ),
+        Template(
+            "agent-knowledge",
+            "知识库助手",
+            "先检索知识库再回答，标出处；只依据资料回答。",
+            agent_app.knowledge_template(),
+            needs=("knowledge_base",),
+            kind="agent",
+        ),
+        Template(
+            "agent-data",
+            "数据问答助手",
+            "先看表结构再查询，只用查到的数字回答。",
+            agent_app.data_template(),
+            needs=("datasource",),
+            kind="agent",
         ),
     )
 }

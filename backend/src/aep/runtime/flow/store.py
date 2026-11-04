@@ -28,12 +28,17 @@ class FlowApp:
     created_by: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     archived_at: datetime | None = None
+    # ``flow`` (an orchestration graph) or ``agent`` (a form-configured agent, run as a
+    # generated graph; docs/api/agent-apps.md). Both run on the flow runtime.
+    kind: str = "flow"
 
 
 class FlowAppStore(Protocol):
     async def setup(self) -> None: ...
     async def ensure(self, app: str, title: str, summary: str) -> None: ...
-    async def create(self, app: str, title: str, summary: str, actor: str | None) -> FlowApp: ...
+    async def create(
+        self, app: str, title: str, summary: str, actor: str | None, kind: str = "flow"
+    ) -> FlowApp: ...
     async def get(self, app: str) -> FlowApp | None: ...
     async def all(self, archived: bool = False) -> list[FlowApp]: ...
     async def update(self, app: str, title: str | None, summary: str | None) -> None: ...
@@ -52,10 +57,12 @@ class MemoryFlowAppStore:
     async def ensure(self, app: str, title: str, summary: str) -> None:
         self._apps.setdefault(app, FlowApp(app, title, summary))
 
-    async def create(self, app: str, title: str, summary: str, actor: str | None) -> FlowApp:
+    async def create(
+        self, app: str, title: str, summary: str, actor: str | None, kind: str = "flow"
+    ) -> FlowApp:
         if app in self._apps:
             raise AppExists(app)
-        self._apps[app] = FlowApp(app, title, summary, actor)
+        self._apps[app] = FlowApp(app, title, summary, actor, kind=kind)
         return self._apps[app]
 
     async def get(self, app: str) -> FlowApp | None:
@@ -90,9 +97,10 @@ CREATE TABLE IF NOT EXISTS apps (
     archived_at timestamptz,
     PRIMARY KEY (tenant_id, app)
 )""",
+    "ALTER TABLE apps ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'flow'",
 ]
 
-COLUMNS = "app, title, summary, created_by, created_at, archived_at"
+COLUMNS = "app, title, summary, created_by, created_at, archived_at, kind"
 
 
 class PostgresFlowAppStore:
@@ -114,13 +122,15 @@ class PostgresFlowAppStore:
                 (DEFAULT_TENANT, app, title, summary),
             )
 
-    async def create(self, app: str, title: str, summary: str, actor: str | None) -> FlowApp:
+    async def create(
+        self, app: str, title: str, summary: str, actor: str | None, kind: str = "flow"
+    ) -> FlowApp:
         async with self._pool.connection() as conn:
             try:
                 cur = await conn.execute(
-                    "INSERT INTO apps (tenant_id, app, title, summary, created_by)"
-                    f" VALUES (%s, %s, %s, %s, %s) RETURNING {COLUMNS}",
-                    (DEFAULT_TENANT, app, title, summary, actor),
+                    "INSERT INTO apps (tenant_id, app, title, summary, created_by, kind)"
+                    f" VALUES (%s, %s, %s, %s, %s, %s) RETURNING {COLUMNS}",
+                    (DEFAULT_TENANT, app, title, summary, actor, kind),
                 )
             except UniqueViolation as exc:
                 raise AppExists(app) from exc

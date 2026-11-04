@@ -29,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 
 from aep.knowledge.citations import cited_numbers
 from aep.runtime.design import NodeDesign
+from aep.runtime.flow import refs
 from aep.runtime.flow.check import DEFAULT_MAX_VISITS, branches
 from aep.runtime.flow.nodes import ERROR, INPUT_ERROR, TYPES, NodeFailure, Outcome, Runtime
 
@@ -108,6 +109,26 @@ def skill_refs(config: dict[str, Any]) -> list[tuple[str, int]]:
             key = (ref["name"], ref["version"])
             if key not in found:
                 found.append(key)
+    return found
+
+
+# What an agent node records of how it went: different on every run (docs/api/evals.md).
+EXECUTION_OUTPUTS = ("steps", "hits")
+
+
+def execution_outputs(config: dict[str, Any]) -> set[str]:
+    """The result fields an end node takes straight from an agent node's ``steps`` or
+    ``hits``: a run saved as an eval case gets no generated checks for them."""
+    agents = {n["id"] for n in nodes(config) if n["type"] == "agent"}
+    found: set[str] = set()
+    for node in nodes(config):
+        if node["type"] != "end":
+            continue
+        for output in node.get("outputs") or []:
+            for source in output.get("from") or []:
+                ref = refs.whole(source) if isinstance(source, str) else None
+                if ref and ref[0] in agents and ref[1] in EXECUTION_OUTPUTS:
+                    found.add(output["key"])
     return found
 
 

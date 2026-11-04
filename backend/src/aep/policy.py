@@ -185,13 +185,17 @@ def _texts(value: Any) -> Iterable[str]:
         yield str(value)
 
 
-def unmask(value: Any, data: Iterable[Any], run_id: str) -> tuple[Any, dict[str, str]]:
+def unmask(
+    value: Any, data: Iterable[Any], run_id: str, tokens: dict[str, str] | None = None
+) -> tuple[Any, dict[str, str]]:
     """``value`` (a reply, or what was parsed from it) with the tokens of texts found in
     ``data`` turned back into those texts, and which tokens were (token: text); other
-    tokens stay as they are, and so does a token two different texts share."""
+    tokens stay as they are, and so does a token two different texts share. ``tokens``
+    are tokens known as they are (token: text), such as an eval case's ``restored``,
+    whose tokens were worked out from another key than ``run_id``."""
     if not any(TOKEN.search(text) for text in _texts(value)):
         return value, {}
-    originals: dict[str, str | None] = {}
+    originals: dict[str, str | None] = dict(tokens or {})
     for item in data:
         for text in _texts(item):
             key = token(run_id, text)

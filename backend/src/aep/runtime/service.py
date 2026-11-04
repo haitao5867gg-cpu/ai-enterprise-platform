@@ -54,7 +54,7 @@ from aep import conversations as chat
 from aep import policy, projects, tracing
 from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
-from aep.runtime import appconfig, design, human
+from aep.runtime import agent_app, appconfig, design, human
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import nodes as flownodes
 from aep.runtime.flow import refs
@@ -153,6 +153,10 @@ class LaterTurns(Exception):
 
 class ConversationGone(Exception):
     """The conversation was deleted (or expired) while a message to it waited its turn."""
+
+
+class TurnCleared(Exception):
+    """The run was a turn of a conversation that has been cleared away."""
 
 
 # Failures that may go away by themselves: a retry is worth it. The others
@@ -421,9 +425,21 @@ class RunService:
         await self.ensure_flows()
         return sorted([*self._graphs, *(a.app for a in await self.flows.all())])
 
+    async def app_kind(self, app: str) -> str | None:
+        """``code``, ``flow`` or ``agent`` (docs/api/agent-apps.md); None when there is no
+        such app. Agent apps run as flow apps, so :meth:`kind` says ``flow`` for them."""
+        if app in self._graphs:
+            return "code"
+        await self.ensure_flows()
+        found = await self.flows.get(app)
+        return found.kind if found is not None and found.archived_at is None else None
+
     def flow_config(self, app: str, config: dict[str, Any] | None) -> dict[str, Any]:
-        """A flow app's configuration as the runtime reads it: a shipped app's
-        configuration from before it was a flow app is carried over."""
+        """A flow app's configuration as the runtime reads it: an agent app's as its
+        generated graph, and a shipped app's configuration from before it was a flow app
+        carried over."""
+        if agent_app.is_agent(config):
+            return agent_app.as_flow(config)  # type: ignore[arg-type]
         shipped = self.builtin_flows.get(app)
         if config is None:
             if shipped is None:
@@ -1197,6 +1213,34 @@ class RunService:
                     answer["values"] = given["values"]
                 out[item["id"]] = answer
         return out
+
+    async def turn_context(self, run_id: str) -> dict[str, Any] | None:
+        """For a turn of a conversation, what an eval case saved from it keeps: the
+        history it went to the model with (masked as the model saw it), its turn and the
+        tokens of that history it turned back (``restored``); None for other runs
+        (docs/api/evals.md, "从运行存用例"). Raises ``TurnCleared`` once its conversation
+        has been cleared away."""
+        record = await self._store.get(run_id)
+        if record is None:
+            raise RunNotFound(run_id)
+        if record.conversation_id is None:
+            return None
+        if record.cleared_at is not None:
+            raise TurnCleared(run_id)
+        state = await (await self._graph(record)).aget_state(_config(run_id))
+        values = state.values or {}
+        found = values.get(refs.CONVERSATION) or {}
+        history = [
+            {"message": turn["message"], "reply": turn.get("reply")}
+            for turn in found.get("history") or []
+        ]
+        held = chat.tokens_in(history)
+        restored = {k: v for k, v in (values.get("restored") or {}).items() if k in held}
+        return {
+            "history": history,
+            "turn": found.get("turn") or record.conversation_turn,
+            "restored": restored,
+        }
 
     async def can_rerun(self, record: RunRecord) -> bool:
         if await self.kind(record.app) is None:

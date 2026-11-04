@@ -231,13 +231,16 @@ def judge_reply(reply: Any) -> tuple[bool, str]:
 # Saving a run as a case
 
 
-def suggested_checks(result: Any) -> list[dict[str, Any]]:
+def suggested_checks(result: Any, skip: set[str] | frozenset[str] = frozenset()) -> list[dict]:
     """Checks that a run with this result passes: equals for short values, a judge
-    against the run's own answer for long texts."""
+    against the run's own answer for long texts. ``skip`` are fields that record how the
+    run went (an agent's ``steps``, ``hits``), different on every run."""
     if not isinstance(result, dict):
         return [{"kind": "equals", "path": None, "value": result}] if result is not None else []
     checks: list[dict[str, Any]] = []
     for key, value in result.items():
+        if key in skip:
+            continue
         if isinstance(value, str) and len(value) > SHORT_TEXT:
             checks.append(
                 {"kind": "judge", "path": key, "criteria": SAME_MEANING, "reference": value}

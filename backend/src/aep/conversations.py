@@ -23,7 +23,7 @@ from typing import Any, Protocol
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from aep.policy import LEVELS
+from aep.policy import LEVELS, TOKEN
 from aep.runtime.store import DEFAULT_TENANT, RunRecord
 
 MAX_MESSAGE = 8000
@@ -150,6 +150,21 @@ def history(
 
 def _chars(turn: dict[str, Any]) -> int:
     return len(turn["message"]) + len(turn["reply"] or "")
+
+
+def history_chars(turns: list[dict[str, Any]]) -> int:
+    """How many characters the turns' messages and replies have together."""
+    return sum(_chars(turn) for turn in turns)
+
+
+def tokens_in(turns: list[dict[str, Any]]) -> set[str]:
+    """The masking tokens the turns' messages and replies hold."""
+    return {
+        m.group(0)
+        for turn in turns
+        for text in (turn["message"], turn["reply"] or "")
+        for m in TOKEN.finditer(text)
+    }
 
 
 def as_text(turns: list[dict[str, Any]]) -> str:
