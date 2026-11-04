@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from psycopg_pool import AsyncConnectionPool
 
 from aep.conversations import MAX_MESSAGE, MESSAGE
+from aep.entries import CLOSED_ENTRY
 from aep.runtime.service import ConversationGone, InvalidValues, RunService, RunView
 from aep.runtime.store import DEFAULT_TENANT, RunRecord
 
@@ -232,16 +233,21 @@ async def start(
     project: dict[str, Any] | None = None,
     conversation_id: str | None = None,
     new_conversation: bool = False,
+    entry: str = "api",
 ) -> RunRecord:
     """A run of the key's app: on its own, as the first turn of a new conversation, or
     as the next turn of one the key opened (docs/api/app-access.md, "会话"). Raises what
     ``RunService.create``, ``open_conversation`` and ``send`` raise, and
-    ``ConversationProblem``."""
+    ``ConversationProblem``. ``entry`` is the way it came in: ``api`` or ``mcp``."""
+    if not (await service.entries.get(key.app)).open(entry):
+        raise ConversationProblem(403, CLOSED_ENTRY)
     requester = f"API：{key.name}"
     if conversation_id is not None and new_conversation:
         raise ConversationProblem(422, "new_conversation 和 conversation_id 只能给一个")
     if conversation_id is None and not new_conversation:
-        return await service.create(key.app, input, requester=requester, project=project)
+        return await service.create(
+            key.app, input, requester=requester, project=project, entry=entry
+        )
     given = dict(input)
     message = given.pop(MESSAGE, None)
     if not isinstance(message, str) or not message.strip():
@@ -259,7 +265,7 @@ async def start(
             key.app, owner=key_owner(key), created_by=requester, input=given, project=project
         )
     try:
-        return await service.send(found, message, requester)
+        return await service.send(found, message, requester, entry)
     except ConversationGone as exc:
         raise ConversationProblem(404, "没有找到这个会话") from exc
 

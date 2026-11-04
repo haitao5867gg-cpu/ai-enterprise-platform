@@ -142,6 +142,9 @@ MESSAGES: dict[str, str] = {
         "Unknown app kind {kind}; only flow and agent apps are read here"
     ),
     "只有智能体应用能转成编排应用": "Only agent apps can be turned into flow apps",
+    "这个应用没有开放给使用者": "This app is not open to users",
+    "这个应用没有开放这个入口": "This app does not take requests this way",
+    "应用「{title}」不允许被其他应用调用": "The app “{title}” cannot be called by other apps",
     "这次运行属于已过期的会话，内容已清除": (
         "This run was a turn of an expired conversation; its content has been cleared"
     ),

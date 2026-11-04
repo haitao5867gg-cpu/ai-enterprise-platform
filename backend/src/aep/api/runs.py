@@ -216,6 +216,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from aep import feedback as runfeedback
+from aep.api.entries import open_to_users
 from aep.auth import current_user, enabled, require, who
 from aep.knowledge.citations import CitedSource
 from aep.policy import DataPolicy
@@ -545,6 +546,7 @@ async def _detail(v: RunView, service: RunService, app_titles: dict[str, str]) -
 async def create_run(body: CreateRun, service: Service, request: Request) -> RunRef:
     if body.draft and body.app_version is not None:
         raise HTTPException(422, "draft 和 app_version 不能同时给")
+    await open_to_users(request, body.app)
     try:
         record = await service.create(
             body.app,
@@ -553,6 +555,7 @@ async def create_run(body: CreateRun, service: Service, request: Request) -> Run
             draft=body.draft,
             requester=who(request, body.requester),
             project=body.project.model_dump() if body.project else None,
+            entry="use",
         )
     except UnknownApp as exc:
         raise HTTPException(404, f"没有应用 {body.app}") from exc

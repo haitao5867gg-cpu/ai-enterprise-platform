@@ -19,7 +19,7 @@ from psycopg_pool import AsyncConnectionPool
 from aep import llm
 from aep.compute import ComputeRecord
 from aep.models import CallRollup, CallStore, SettingStore
-from aep.runtime.store import DEFAULT_TENANT, FINISHED, RunStat, RunStore
+from aep.runtime.store import DEFAULT_TENANT, FINISHED, RunRecord, RunStat, RunStore
 
 if TYPE_CHECKING:
     from aep.notify import Notifier
@@ -523,6 +523,40 @@ class Ops:
             "daily": self._daily(stats, rollups, now, days),
             "reuse": await self.reuse() if self.reuse else None,
             "compute_hourly_usd": price,
+        }
+
+    async def app_metrics(self, records: list[RunRecord], days: int) -> dict[str, Any]:
+        """``since``, ``totals`` and ``daily`` as the summary has them, for these runs of
+        one app (docs/api/ops.md, "应用的使用情况")."""
+        now = self.now()
+        since = now - timedelta(days=days)
+        copied = {r.rerun_of for r in records if r.rerun_of}
+        stats = [
+            RunStat(
+                r.run_id,
+                r.app,
+                r.status,
+                r.outcome,
+                r.rerun_of,
+                r.created_at,
+                r.updated_at,
+                r.wait_seconds,
+                r.run_id in copied,
+            )
+            for r in records
+        ]
+        ids = {r.run_id for r in records}
+        rollups = [r for r in await self.calls.rollup(since, self.timezone) if r.run_id in ids]
+        metrics = _Metrics(stats)
+        for rollup in rollups:
+            metrics.add_calls(rollup)
+        for run_id, seconds in (await self.compute.by_run(since)).items():
+            if run_id in ids:
+                metrics.compute_seconds += seconds
+        return {
+            "since": since,
+            "totals": metrics.out(await self.price()),
+            "daily": self._daily(stats, rollups, now, days),
         }
 
     def _daily(

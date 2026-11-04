@@ -28,6 +28,7 @@ class FeedbackStore(Protocol):
     async def put(self, feedback: Feedback) -> None: ...
     async def delete(self, run_id: str, who: str) -> None: ...
     async def for_run(self, run_id: str) -> list[Feedback]: ...
+    async def for_runs(self, run_ids: list[str]) -> list[Feedback]: ...
 
 
 class MemoryFeedbackStore:
@@ -45,6 +46,10 @@ class MemoryFeedbackStore:
 
     async def for_run(self, run_id: str) -> list[Feedback]:
         return [f for (run, _), f in self.items.items() if run == run_id]
+
+    async def for_runs(self, run_ids: list[str]) -> list[Feedback]:
+        wanted = set(run_ids)
+        return [f for (run, _), f in self.items.items() if run in wanted]
 
 
 SCHEMA = """
@@ -96,6 +101,17 @@ class PostgresFeedbackStore:
                 "SELECT run_id, who, rating, note, at FROM run_feedback"
                 " WHERE tenant_id = %s AND run_id = %s",
                 (DEFAULT_TENANT, run_id),
+            )
+            return [Feedback(**row) for row in await cur.fetchall()]
+
+    async def for_runs(self, run_ids: list[str]) -> list[Feedback]:
+        if not run_ids:
+            return []
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT run_id, who, rating, note, at FROM run_feedback"
+                " WHERE tenant_id = %s AND run_id = ANY(%s)",
+                (DEFAULT_TENANT, run_ids),
             )
             return [Feedback(**row) for row in await cur.fetchall()]
 

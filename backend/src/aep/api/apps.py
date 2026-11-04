@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, 
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
-from aep.auth import who
+from aep.auth import current_user, enabled, who
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import (
     AppCatalog,
@@ -120,8 +120,13 @@ def _invalid(exc: ConfigError) -> RequestValidationError:
 
 
 @router.get("")
-async def list_apps(catalog: Catalog) -> list[dict[str, Any]]:
-    return await catalog.summaries()
+async def list_apps(catalog: Catalog, request: Request) -> list[dict[str, Any]]:
+    found = await catalog.summaries()
+    if enabled(request) and not current_user(request).has("builder"):
+        # An app closed to users is not listed for them (docs/api/app-access.md, "入口").
+        entries = catalog.runs.entries
+        found = [s for s in found if (await entries.get(s["app"])).use]
+    return found
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

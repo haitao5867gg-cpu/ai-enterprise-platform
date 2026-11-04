@@ -5,8 +5,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from aep import usage
 from aep.api.validation import NoNulls, chinese_errors
 from aep.auth import who
+from aep.feedback import MemoryFeedbackStore
 from aep.ops import DAYS, MAX_BUDGET, MAX_PRICE, Ops
 
 router = APIRouter(tags=["ops"], route_class=chinese_errors())
@@ -68,3 +70,17 @@ async def delete_budget(app: str, ops: OpsDep) -> Response:
     await _app(ops, app)
     await ops.delete_budget(app)
     return Response(status_code=204)
+
+
+@router.get("/apps/{app}/usage")
+async def app_usage(
+    app: str, ops: OpsDep, request: Request, days: Annotated[int, Query()] = 30
+) -> dict[str, Any]:
+    """How the app is used (docs/api/ops.md, "应用的使用情况")."""
+    if days not in DAYS:
+        raise HTTPException(422, "days 只能是 7、30 或 90")
+    service = request.app.state.run_service
+    if await service.kind(app) is None:
+        raise HTTPException(404, f"没有应用 {app}")
+    feedback = getattr(request.app.state, "feedback", None) or MemoryFeedbackStore()
+    return await usage.app_usage(app, days, service, ops, feedback)

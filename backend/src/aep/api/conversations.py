@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
+from aep.api.entries import open_to_users
 from aep.api.runs import Pending, ProjectChoice, RunRef
 from aep.api.validation import chinese_errors
 from aep.auth import ROLE_LABELS, current_user, enabled, require, who
@@ -186,6 +187,7 @@ def _invalid(exc: InvalidValues, turn: bool = False) -> HTTPException:
 async def open_conversation(body: OpenConversation, request: Request) -> ConversationOut:
     if body.draft:
         require(request, "builder", f"没有权限：这项操作需要{ROLE_LABELS['builder']}")
+    await open_to_users(request, body.app)
     service = _service(request)
     try:
         found = await service.open_conversation(
@@ -253,6 +255,7 @@ async def send(
 @router.post("/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
 async def send_message(conversation_id: str, body: SendMessage, request: Request) -> TurnStarted:
     found = await _visible(request, conversation_id)
+    await open_to_users(request, found.app)
     record = await send(_service(request), found, body.message, who(request, body.requester))
     return TurnStarted(
         run_id=record.run_id, status=record.status, turn=record.conversation_turn or 0

@@ -5,6 +5,7 @@ fields it names from its result; the run service does the starting and waiting
 
 from typing import Any
 
+from aep.entries import not_callable
 from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
     ID,
@@ -41,6 +42,8 @@ async def check_app(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
         elif shape.kind != "flow":
             p.add(("app",), f"只能调用编排应用，「{shape.title}」是代码应用")
             shape = None
+        elif not shape.callable:
+            p.add(("app",), not_callable(shape.title))
     given = node.get("input", {})
     if not isinstance(given, dict):
         p.add(("input",), "输入必须是对象")
