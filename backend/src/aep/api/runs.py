@@ -9,6 +9,9 @@ app's input must fit its start node's inputs (422 with ``loc``
 ``project`` (``project_id``, optional ``environment`` and ``params``): the project the
 run works in, for an app whose start node sets ``project``; the checks, their order and
 messages, and the snapshot the run keeps are in docs/api/projects.md.
+An app whose "use" entry is off (docs/api/app-access.md, "入口") answers 403 to anyone
+but builders and admins. A conversation's turns are started with
+``POST /conversations/{id}/messages`` instead (docs/api/conversations.md).
 
 ``GET /runs`` lists the latest runs (``limit``, at most 200), newest first. Every
 run record (in the list and in ``GET /runs/{id}``) has:
@@ -46,7 +49,12 @@ run record (in the list and in ``GET /runs/{id}``) has:
   docs/api/projects.md.
 - ``trigger``: what started the run when no person did:
   ``{"kind": "schedule", "schedule_id", "title"}`` for a schedule's run (also one it
-  was asked to run now; docs/api/schedules.md), null otherwise.
+  was asked to run now; docs/api/schedules.md), ``{"kind": "app", "run_id", "node",
+  "title"}`` for a run another app called (docs/api/flow-apps.md, "app"; an agent's
+  ``apps``, docs/api/agent-apps.md), null otherwise.
+- ``conversation``: the conversation the run is a turn of (``conversation_id``,
+  ``title`` and ``turn``, from 1), or null: a run outside any conversation, or one
+  whose conversation was deleted or expired (docs/api/conversations.md).
 
 ``GET /runs/{id}`` also has the run's ``input``; ``inputs``: what a copy of the run
 asks for, the start node's inputs (as in docs/api/flow-apps.md) of the configuration

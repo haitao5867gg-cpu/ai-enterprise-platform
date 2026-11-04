@@ -42,6 +42,35 @@
 - **模型费用**：来自模型页的调用记录（`model_calls`，见 [models.md](models.md)），按调用所在的运行归到应用；不在运行里的调用（知识库算向量、检索测试、页面上的试用）归到 `totals`，不归到应用。费用是网关按它的价格表算的，网关不知道价格的模型不计费用，计入 `unpriced_calls`。
 - 调用记录只保留 90 天（和模型页一样），所以 `days` 最多 90。
 
+### 应用的使用情况
+
+智能体应用第 1 批新增，所有应用都有，在应用页「概览」标签显示，借鉴 Copilot Studio 的「分析」页（会话量、回答率、点赞点踩、用到的工具），放在已有标签里，不另开页。
+
+`GET /apps/{app}/usage?days=30`（`days` 只能是 7、30、90，默认 30；搭建者）返回：
+
+```jsonc
+{
+  "days": 30,
+  "since": "…",
+  "totals": Metrics,                    // 同上，只算这个应用
+  "daily": [ {"date": "…", "runs": 3, "done": 2, "error": 1, "model_cost_usd": 0.42} ],   // 同上
+  "entries": {"use": 20, "api": 5, "mcp": 0, "apps": 3, "schedule": 2, "other": 0},       // 运行按入口分，见下
+  "conversations": {"count": 8, "turns_avg": 2.5} | null,   // 统计期内新开的会话数和平均轮数；不能对话的应用为 null
+  "answers": {"answered": 25, "ungrounded": 3} | null,      // 智能体应用：done 的运行里 grounded 为 true / false 的次数；别的应用为 null
+  "feedback": {"good": 6, "bad": 2},                        // 统计期内运行收到的点赞点踩
+  "tools": [ {"tool": "search_knowledge", "datasource": null, "app": null, "calls": 30, "errors": 1} ],   // 智能体步骤里调用过的工具，按次数从多到少，最多 20 项
+  "apps": [ {"app": "order-lookup", "title": "…", "calls": 4, "errors": 0} ],                           // 这个应用调用过的应用（调用应用节点和智能体的 apps），最多 20 项
+  "truncated": false                    // 统计期内运行超过 2000 次时只看最近的 2000 次，为 true
+}
+```
+
+- 入口按运行的 `trigger` 和发起方式分：`use` 是平台里的人发起的（新建运行页、使用页、会话），`api`、`mcp` 是经密钥发起的，`apps` 是被别的应用调用的，`schedule` 是定时运行，`other` 是别的（比如评测、从某一步重跑）。
+- `tools` 来自运行里智能体步骤的 `steps`：`tool` 是工具名，数据源工具另带 `datasource`，调用应用的一步 `tool` 为 `call_app`、另带 `app`；读 Skill 不算。`errors` 是这一步记了 `error` 的次数。
+- 已过期清掉内容的运行（conversations.md“保存多久”）仍算进次数和用量，但没有步骤了，不算进 `tools`、`apps` 和 `answers`。
+- 应用不存在 404「没有应用 xxx」。
+
+页面：应用页「概览」标签多一块「使用情况」：顶部选 7 / 30 / 90 天；卡片为运行数、成功率、模型费用，能对话的应用加会话数和平均轮数，智能体应用加“没找到依据”的次数；下面是每天的运行数、按入口分的运行数、用得最多的工具和被调应用、点赞点踩。
+
 ### Databricks 费用
 
 平台读不到 Databricks 的账单（要 `system.billing` 的权限，客户环境一般不给），所以记**作业时长**，每条算力用量记运行、节点、种类、集群和秒数：
@@ -114,4 +143,6 @@
 -- compute_usage(id, tenant_id, run_id, node, kind, cluster_id, seconds, at)
 -- app_budgets(tenant_id, app, monthly_usd, warn_at, block, updated_by, updated_at, warned_month, over_month)
 -- 单价存在平台设置里（models.md 的 SettingStore，键 ops.compute_hourly_usd）
+-- runs 加一列 entry（use | api | mcp | apps | schedule | other），给「应用的使用情况」按入口分；不进接口。
+--   以前的运行按 trigger 和发起人推断：经密钥的（发起人「API：…」）分不清 API 和 MCP，都算 api
 ```
