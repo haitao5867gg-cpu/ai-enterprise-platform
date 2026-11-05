@@ -69,6 +69,10 @@ test("the review node is added, checked and saved with a rule and a reference", 
   await panel(page)
     .getByLabel("要审查的内容", { exact: true })
     .fill("{{answer.text}}");
+  // What people already decided: kept and checked, not reported (5th retest I-20, I-21).
+  await panel(page)
+    .getByLabel("人已经做的决定", { exact: true })
+    .fill("{{answer.text}}");
   const rules = panel(page).getByRole("group", {
     name: "审查清单",
     exact: true,
@@ -109,6 +113,7 @@ test("the review node is added, checked and saved with a rule and a reference", 
   ).toMatchObject({
     type: "llm_review",
     subject: "{{answer.text}}",
+    decided: "{{answer.text}}",
     rules: [
       {
         key: "rule_1",

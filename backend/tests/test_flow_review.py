@@ -8,7 +8,7 @@ import pytest
 
 from aep.runtime.flow.check import ConfigError, check_config
 from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Runtime
-from aep.runtime.flow.review import readable, rules_of
+from aep.runtime.flow.review import no_change, readable, rules_of
 from aep.skills import MemorySkillStore
 from tests.conftest import FakeGateway
 
@@ -38,12 +38,13 @@ def review_node(**changes) -> dict:
     } | changes
 
 
-def state(private: dict | None = None, project: dict | None = PROJECT) -> dict:
+def state(private: dict | None = None, project: dict | None = PROJECT, decisions: str = "") -> dict:
     return {
         "input": {},
         "vars": {
             "start": {"request": "负数按 0"},
             "check_plan": {"plan": {"rules": [{"id": "r5", "text": "负数按 0"}]}},
+            "review": {"decisions": decisions},
         },
         "run_id": "run-1",
         "project": project,
@@ -167,6 +168,74 @@ async def test_a_reply_off_the_checklist_is_asked_again():
     assert out.branch == "ok" and len(gateway.requests) == 2
     again = gateway.requests[1]["body"]["messages"][-1]["content"]
     assert "rule 只能是清单里的标识：open_items、ask_open、names" in again
+
+
+def test_a_finding_that_needs_no_change_is_none():
+    # jadeflow 5th retest I-21: reviewers listed points and wrote they need no change.
+    assert not no_change(finding())
+    assert no_change(finding(violates=False))
+    assert no_change(finding(fix="")) and no_change(finding(fix=None))
+    for problem in (
+        "当前代码用 v 汇总，符合要求，但需确认",
+        "此处判定 q3 已覆盖，不记",
+        "该点不构成违反",
+        "此处无违规，仅确认读法正确",
+    ):
+        assert no_change(finding(problem=problem)), problem
+    assert no_change(finding(fix="无需修改"))
+    # Saying something does not meet a rule, or about a log record, is a finding.
+    assert not no_change(finding(problem="规则 r5 不符合要求：负数按 0 还没定"))
+    assert not no_change(finding(problem="出错时不记录日志", fix="加一句日志"))
+
+
+async def test_findings_that_need_no_change_are_dropped_and_not_counted():
+    rt, gateway = runtime(
+        reply(finding(violates=False), finding(fix=""), finding(problem="符合约定，不记问题")),
+        reply(finding(problem="此处正确……这条不构成违规"), finding()),
+    )
+    out = await run(review_node(), state(), rt)
+    assert out.branch == "ok" and out.outputs["ok"] is True and out.outputs["findings"] == []
+    assert out.outputs["summary"] == (
+        "审查方案：按 3 条清单审查，没有发现问题（另有 3 条写着不用改，已忽略）"
+    )
+    out = await run(review_node(), state(), rt)
+    assert out.branch == "retry" and len(out.outputs["findings"]) == 1
+    assert out.messages[0]["content"] == (
+        "审查方案发现 1 处问题，让上一步带着问题重写（第 1/2 次）（另有 1 条写着不用改，已忽略）"
+    )
+    system = gateway.requests[0]["body"]["messages"][0]["content"]
+    assert '"violates": true' in system and "不要写「无需修改」「不记」「符合要求」" in system
+
+
+async def test_what_people_decided_is_kept_and_not_reported():
+    # jadeflow 5th retest I-20: the reviewer had answered questions asked again; I-21: it
+    # suggested removing what a person asked for. Decisions come first in the checklist.
+    decisions = (
+        "【第 1 轮 · 确认方案 · 修改】「负数的计费重量怎么处理？」选「按资料，原样保留」"
+        "（原建议「按需求，负数按 0」）"
+    )
+    rt, gateway = runtime(reply())
+    node = review_node(decided="{{review.decisions}}")
+    out = await run(node, state(decisions=decisions), rt)
+    assert out.outputs["summary"] == "审查方案：按 4 条清单审查，没有发现问题"
+    system, user = (m["content"] for m in gateway.requests[0]["body"]["messages"])
+    assert "按这些决定写的内容不是问题：不要报成违反，也不要建议撤掉或改掉它们。" in system
+    assert user.startswith(
+        "审查清单：\n- 〔decided〕人已经做的决定都要做到：「人已经做的决定」里的每一条"
+    )
+    assert (
+        "人已经做的决定（按时间先后，同一件事以后面的为准）：\n" + decisions + "\n\n要审查的内容："
+    ) in user
+
+    # Without conventions there is still something to review: what people asked for.
+    rt, gateway = runtime(reply(finding(rule="decided")))
+    node = review_node(rules=["{{project.code_rules}}"], decided="{{review.decisions}}")
+    out = await run(node, state(project={"conventions": []}, decisions=decisions), rt)
+    assert out.branch == "retry" and out.outputs["findings"][0]["title"] == "人已经做的决定都要做到"
+    # Nothing decided yet: no such rule, and no model call without other rules.
+    rt, gateway = runtime(reply())
+    out = await run(node, state(project={"conventions": []}), rt)
+    assert out.outputs["summary"] == "审查方案：没有审查清单，跳过" and gateway.requests == []
 
 
 async def test_settings_are_checked():

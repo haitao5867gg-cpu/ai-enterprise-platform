@@ -2711,6 +2711,17 @@ export function NodeSettings({
             issues={at("instruction")}
             onChange={(instruction) => change({ ...node, instruction })}
           />
+          <RefField
+            label={t("人已经做的决定")}
+            multiline
+            value={node.decided ?? ""}
+            variables={variables}
+            issues={at("decided")}
+            help={t(
+              "可选，一般引用人工节点的 decisions。审查员不会把这些决定报成问题，还会核对它们都做到了。",
+            )}
+            onChange={(decided) => change({ ...node, decided })}
+          />
           <ReviewRules
             node={node}
             change={change}

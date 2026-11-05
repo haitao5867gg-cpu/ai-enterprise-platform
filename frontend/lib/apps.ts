@@ -100,6 +100,8 @@ export type ReviewNode = NodeBase &
     subject: string;
     context?: string;
     instruction?: string;
+    // What people already decided in this run (jadeflow 5th retest I-20, I-21).
+    decided?: string;
     rules: ReviewRule[];
     max_attempts?: number;
     on_stuck?: "pass" | "branch" | "fail";

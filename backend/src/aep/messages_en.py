@@ -628,6 +628,10 @@ NODE_TYPES: dict[str, str] = {
     "运行报告（Markdown）": "Run report (Markdown)",
     "这次上线的详情": "Details of this release",
     "这次处理的完整记录（确认模式）": "The full record of this decision (approval mode)",
+    "这次运行里在这一步做过的所有决定，一轮一行，按时间先后（确认模式）": (
+        "Every decision made at this step in this run, a line per round, oldest first "
+        "(approval mode)"
+    ),
     "这次运行的详情": "Details of this run",
     "通过数据源的只读连接器读取源表的结构、统计、取值分布和样本行": (
         "Read source tables' structure, statistics, value distributions and sample rows "
