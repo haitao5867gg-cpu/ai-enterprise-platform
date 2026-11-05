@@ -2722,6 +2722,28 @@ export function NodeSettings({
             )}
             onChange={(decided) => change({ ...node, decided })}
           />
+          <RefField
+            label={t("平台限制")}
+            multiline
+            value={node.limits ?? ""}
+            variables={variables}
+            issues={at("limits")}
+            help={t(
+              "可选，内容必须遵守的限制，比如 {{check_plan.limits}}。审查给的改法不能违反它们，违反的意见交给人判断，不让上一步照改。",
+            )}
+            onChange={(limits) => change({ ...node, limits })}
+          />
+          <RefField
+            label={t("检查结果")}
+            multiline
+            value={node.evidence ?? ""}
+            variables={variables}
+            issues={at("evidence")}
+            help={t(
+              "可选，比审查员更可靠的结果，比如真实数据上的 {{checks.report}}。和它相反的意见交给人判断，不让上一步照改。",
+            )}
+            onChange={(evidence) => change({ ...node, evidence })}
+          />
           <ReviewRules
             node={node}
             change={change}

@@ -65,14 +65,17 @@ const strings = (value: unknown) =>
     ? value.filter((item): item is string => typeof item === "string")
     : [];
 
-// A problem a review node (llm_review) found and the model did not fix: the node's
-// `findings` (docs/api/flow-apps.md, "llm_review 模型审查").
+// A problem a review node (llm_review) found and the model did not fix, or a finding of
+// it that goes against what outranks the review (a hint, not sent back for a rewrite): the
+// node's `findings` (docs/api/flow-apps.md, "llm_review 模型审查").
 export type Finding = {
   title: string;
   where: string;
   problem: string;
   fix: string;
   quote: string;
+  against: string;
+  hint: boolean;
 };
 const NO_CODE = "这次运行的步骤里没有找到代码";
 
@@ -89,13 +92,45 @@ export function readFindings(value: unknown): Finding[] {
             problem: text(item, "problem"),
             fix: text(item, "fix"),
             quote: text(item, "quote"),
+            against: text(item, "against"),
+            hint: item.hint === true,
           },
         ]
       : [],
   );
 }
 
-// What the model reviewer still found after the model's rewrites, for the person to weigh.
+// What a hint goes against (llm_review `against`).
+const AGAINST: Record<string, string> = {
+  decided: "和人已经做的决定相反",
+  limits: "违反平台限制",
+  evidence: "和检查结果相反",
+  previous: "推翻了上一次审查的意见",
+};
+
+function FindingItem({ item }: { item: Finding }) {
+  const t = useT();
+  return (
+    <li>
+      <strong>{item.title}</strong>
+      {item.where && t("（{where}）", { where: item.where })}
+      {t("：{problem}", { problem: item.problem })}
+      {item.fix && t(" 建议：{fix}", { fix: item.fix })}
+      {item.quote && (
+        <span className="muted">
+          {t("（依据：{quote}）", { quote: item.quote })}
+        </span>
+      )}
+      {AGAINST[item.against] && (
+        <span className="app-tag unasked">{t(AGAINST[item.against])}</span>
+      )}
+    </li>
+  );
+}
+
+// What the model reviewer still found after the model's rewrites, and what it said against
+// a person's decisions, the platform's limits, the checks or its own earlier review (not
+// sent back for a rewrite), for the person to weigh.
 export function ReviewFindings({
   findings,
   what,
@@ -104,37 +139,57 @@ export function ReviewFindings({
   what: string;
 }) {
   const t = useT();
-  if (!findings.length) return null;
+  const problems = findings.filter((item) => !item.hint);
+  const hints = findings.filter((item) => item.hint);
   return (
-    <div
-      className="review-returned"
-      role="note"
-      aria-label={t("模型审查{what}没改过来的问题", { what })}
-    >
-      <h3>
-        <Icon name="alert" size={16} />
-        {t("模型审查{what}时发现的问题，模型重写后还没改过来（{n} 处）", {
-          what,
-          n: findings.length,
-        })}
-      </h3>
-      <p>{t("请逐条看一下；需要改的话写意见，模型会按意见重写。")}</p>
-      <ul>
-        {findings.map((item, i) => (
-          <li key={i}>
-            <strong>{item.title}</strong>
-            {item.where && t("（{where}）", { where: item.where })}
-            {t("：{problem}", { problem: item.problem })}
-            {item.fix && t(" 建议：{fix}", { fix: item.fix })}
-            {item.quote && (
-              <span className="muted">
-                {t("（依据：{quote}）", { quote: item.quote })}
-              </span>
+    <>
+      {problems.length > 0 && (
+        <div
+          className="review-returned"
+          role="note"
+          aria-label={t("模型审查{what}没改过来的问题", { what })}
+        >
+          <h3>
+            <Icon name="alert" size={16} />
+            {t("模型审查{what}时发现的问题，模型重写后还没改过来（{n} 处）", {
+              what,
+              n: problems.length,
+            })}
+          </h3>
+          <p>{t("请逐条看一下；需要改的话写意见，模型会按意见重写。")}</p>
+          <ul>
+            {problems.map((item, i) => (
+              <FindingItem key={i} item={item} />
+            ))}
+          </ul>
+        </div>
+      )}
+      {hints.length > 0 && (
+        <div
+          className="review-returned"
+          role="note"
+          aria-label={t("模型审查{what}交给你判断的意见", { what })}
+        >
+          <h3>
+            <Icon name="alert" size={16} />
+            {t(
+              "模型审查{what}时有 {n} 条意见和排在审查前面的依据相反，平台没有让模型照改",
+              { what, n: hints.length },
             )}
-          </li>
-        ))}
-      </ul>
-    </div>
+          </h3>
+          <p>
+            {t(
+              "人的决定、平台限制、检查结果都排在模型审查前面。请你判断这些意见；需要改的话写意见，模型会按意见重写。",
+            )}
+          </p>
+          <ul>
+            {hints.map((item, i) => (
+              <FindingItem key={i} item={item} />
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
   );
 }
 

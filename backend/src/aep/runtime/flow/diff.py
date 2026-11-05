@@ -259,19 +259,11 @@ def changes(
     return out[:MAX_CHANGES]
 
 
-def check(value: Any) -> list[tuple[tuple[str | int, ...], str]]:
-    """What is wrong with a human node's ``changes`` setting, located inside it."""
-    from aep.runtime.flow import refs
-
-    if not isinstance(value, dict):
-        return [((), "changes 要写成 {of, lists}")]
-    found: list[tuple[tuple[str | int, ...], str]] = []
-    of = value.get("of")
-    if not isinstance(of, str) or refs.whole(of) is None:
-        found.append((("of",), "要比较的内容 of 必须恰好是一个变量，如 {{check_plan.plan}}"))
-    lists = value.get("lists")
+def check_lists(lists: Any) -> list[tuple[tuple[str | int, ...], str]]:
+    """What is wrong with the lists to compare (``lists`` of a ``changes`` setting)."""
     if not isinstance(lists, list) or not 1 <= len(lists) <= 10:
-        return found + [(("lists",), "要比较的列表 lists 要有 1–10 个")]
+        return [(("lists",), "要比较的列表 lists 要有 1–10 个")]
+    found: list[tuple[tuple[str | int, ...], str]] = []
     paths: set[str] = set()
     for i, spec in enumerate(lists):
         if not isinstance(spec, dict):
@@ -306,6 +298,20 @@ def check(value: Any) -> list[tuple[tuple[str | int, ...], str]]:
             )
         elif ignore and spec.get("key") in ignore:
             found.append((("lists", i, "ignore"), "配对用的 key 不能不算"))
+    return found
+
+
+def check(value: Any) -> list[tuple[tuple[str | int, ...], str]]:
+    """What is wrong with a human node's ``changes`` setting, located inside it."""
+    from aep.runtime.flow import refs
+
+    if not isinstance(value, dict):
+        return [((), "changes 要写成 {of, lists}")]
+    found: list[tuple[tuple[str | int, ...], str]] = []
+    of = value.get("of")
+    if not isinstance(of, str) or refs.whole(of) is None:
+        found.append((("of",), "要比较的内容 of 必须恰好是一个变量，如 {{check_plan.plan}}"))
+    found += check_lists(value.get("lists"))
     for key in value:
         if key not in ("of", "lists"):
             found.append(((key,), f"changes 没有 {key} 这一项"))

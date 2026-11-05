@@ -73,6 +73,10 @@ test("the review node is added, checked and saved with a rule and a reference", 
   await panel(page)
     .getByLabel("人已经做的决定", { exact: true })
     .fill("{{answer.text}}");
+  // What outranks the review besides people (6th retest I-23, I-24).
+  await panel(page)
+    .getByLabel("检查结果", { exact: true })
+    .fill("{{answer.text}}");
   const rules = panel(page).getByRole("group", {
     name: "审查清单",
     exact: true,
@@ -114,6 +118,7 @@ test("the review node is added, checked and saved with a rule and a reference", 
     type: "llm_review",
     subject: "{{answer.text}}",
     decided: "{{answer.text}}",
+    evidence: "{{answer.text}}",
     rules: [
       {
         key: "rule_1",

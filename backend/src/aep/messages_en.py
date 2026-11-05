@@ -440,8 +440,9 @@ NODE_TYPES: dict[str, str] = {
     "发现的问题，一条一行，给重写的那一步": (
         "Problems found, one per line, for the step that rewrites"
     ),
-    "发现的问题：规则、位置、问题、依据、怎么改": (
-        "Problems found: rule, place, problem, basis, how to fix"
+    "发现的问题：规则、位置、问题、依据、怎么改；和前面依据相反的标为提示": (
+        "Problems found: rule, place, problem, basis, how to fix; those against what "
+        "outranks the review are marked as hints"
     ),
     "另调一次模型，只按一份清单审查前面某一步的产出；有问题就让那一步带着问题重写": (
         "Call a model once more to review an earlier step's output against a checklist; "
@@ -544,6 +545,10 @@ NODE_TYPES: dict[str, str] = {
     "方案被校验退回后，通过的这一版去掉了的检查和列": (
         "Checks and columns the passing version dropped after the plan was sent back"
     ),
+    "校验方案的限制，一条一行，给审查等步骤参考（第 2、3 版方案）": (
+        "What the plan check holds a plan to, one per line, for steps such as a review "
+        "(plan versions 2 and 3)"
+    ),
     "是不是沿用了这次运行上次抽取的表": "Whether the tables loaded earlier in this run were reused",
     "是否上线成功": "Whether the release succeeded",
     "是否新开的 PR（否：更新了已有的）": "Whether the PR is new (no: an existing one was updated)",
@@ -584,8 +589,9 @@ NODE_TYPES: dict[str, str] = {
     "没找到口径依据的指标、维度和筛选（第 2 版方案）": (
         "Metrics, dimensions and filters without a documented definition (plan version 2)"
     ),
-    "没改过来时给人看的说明（Markdown）；改好了或没问题时为空": (
-        "A note for people when it was not fixed (Markdown); empty when fixed or fine"
+    "给人看的说明（Markdown）：没改过来的问题和交给人判断的提示；都没有时为空": (
+        "A note for people (Markdown): problems not fixed and hints left to them; empty "
+        "when there are none"
     ),
     "没通过的原因": "Why it did not pass",
     "用的 Quartz cron": "The Quartz cron used",

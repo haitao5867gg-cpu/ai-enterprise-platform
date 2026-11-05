@@ -1202,7 +1202,21 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
                   fix: "先按 version_id 筛选再汇总",
                 },
               ]
-            : [],
+            : state.rounds.data_review === 2
+              ? [
+                  // A finding against the checks: shown, not sent back (6th retest I-24).
+                  {
+                    rule: "matches_plan",
+                    title: "代码和已确认的方案一致",
+                    where: "member_level 那一列",
+                    problem: "方案写等级为空时按普通会员算，代码写成了空值",
+                    quote: "等级为空按普通会员",
+                    fix: "空值改成普通会员",
+                    against: "evidence",
+                    hint: true,
+                  },
+                ]
+              : [],
       },
       state.rounds.data_review,
       [],

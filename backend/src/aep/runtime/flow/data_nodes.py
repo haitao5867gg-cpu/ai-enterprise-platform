@@ -52,6 +52,7 @@ from aep.etl.plan import (
     bare,
     existing_columns,
     existing_table,
+    limits_text,
     result_table,
     uncited,
     validate_plan,
@@ -1006,6 +1007,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
             "message": text,
             "sources": [],
             "targets": [],
+            "limits": limits_text(version),
         } | _no_plan()
         return Outcome(
             outputs,
@@ -1025,6 +1027,7 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         "message": plan_message(plan),
         "sources": used,
         "targets": [t.name for t in plan.targets],
+        "limits": limits_text(version),
     } | _no_plan()
     outputs |= {"references": dumped["references"], "summary": summary}
     dropped = _dropped(rejected, plan, state.get("project") or None)
@@ -1993,6 +1996,7 @@ TYPES: dict[str, NodeType] = {
                 "result_keys",
                 "checks",
                 "dropped",
+                "limits",
             ),
             outputs=(
                 ("ok", "是否通过"),
@@ -2015,6 +2019,7 @@ TYPES: dict[str, NodeType] = {
                     "方案建议的数据检查，可以整段给数据检查节点的 include（第 3 版方案）",
                 ),
                 ("dropped", "方案被校验退回后，通过的这一版去掉了的检查和列"),
+                ("limits", "校验方案的限制，一条一行，给审查等步骤参考（第 2、3 版方案）"),
             ),
             defaults={
                 "reply": "",

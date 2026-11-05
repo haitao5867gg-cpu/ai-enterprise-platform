@@ -38,17 +38,26 @@ def review_node(**changes) -> dict:
     } | changes
 
 
-def state(private: dict | None = None, project: dict | None = PROJECT, decisions: str = "") -> dict:
+def state(
+    private: dict | None = None,
+    project: dict | None = PROJECT,
+    decisions: str = "",
+    plan: dict | None = None,
+    humans: int = 0,
+) -> dict:
+    found = {"review_plan": private} if private else {}
+    if humans:
+        found["review"] = {"history": ["【第 1 轮 · 确认方案 · 修改】意见：改一下"] * humans}
     return {
         "input": {},
         "vars": {
             "start": {"request": "负数按 0"},
-            "check_plan": {"plan": {"rules": [{"id": "r5", "text": "负数按 0"}]}},
+            "check_plan": {"plan": plan or {"rules": [{"id": "r5", "text": "负数按 0"}]}},
             "review": {"decisions": decisions},
         },
         "run_id": "run-1",
         "project": project,
-        "private": {"review_plan": private} if private else {},
+        "private": found,
     }
 
 
@@ -122,7 +131,7 @@ async def test_a_review_without_problems_goes_on():
 async def test_problems_go_back_and_after_the_last_attempt_the_person_sees_them():
     rt, gateway = runtime(reply(finding()), reply(finding()))
     out = await run(review_node(), state(), rt)
-    assert out.branch == "retry" and out.private == {"failures": 1}
+    assert out.branch == "retry" and out.private["failures"] == 1
     assert out.outputs["ok"] is False and out.outputs["report"] == ""
     assert out.outputs["problems"] == (
         "- 〔资料写明还没定的事要写成问题〕（规则 r5）资料说负数按 0 还没定，方案直接定了"
@@ -133,8 +142,9 @@ async def test_problems_go_back_and_after_the_last_attempt_the_person_sees_them(
 
     # Not fixed the second time: the run goes on, the person who confirms next sees them,
     # and a rewrite for that person's comment is not sent back to them.
-    out = await run(review_node(), state(private=out.private), rt)
-    assert out.branch == "ok" and out.private == {"failures": 0}
+    rewritten = {"rules": [{"id": "r5", "text": "负数按 0（资料还没定）"}]}
+    out = await run(review_node(), state(private=out.private, plan=rewritten), rt)
+    assert out.branch == "ok" and out.private["failures"] == 0
     assert out.outputs["ok"] is False and out.outputs["problems"] == ""
     report = out.outputs["report"]
     assert report.startswith("### 审查方案：没改过来的问题\n\n按审查清单连续审查了 2 次")
@@ -294,3 +304,142 @@ async def test_settings_are_checked():
     with pytest.raises(ConfigError) as failed:
         await check_config(config(rules=[]), env)
     assert any(m == "审查清单要有 1–20 条" for _, m in failed.value.problems)
+
+
+# jadeflow 6th retest: the reviewer overruled the data checks (I-24), the plan validation
+# (I-23), people and its own earlier findings (I-20); the same code passed twice and failed
+# the third time.
+
+
+async def test_findings_against_what_outranks_the_review_go_to_a_person():
+    decisions = "【第 1 轮 · 审核试算结果 · 改代码】意见：去掉回填"
+    rt, gateway = runtime(
+        reply(
+            finding(problem="没合并的平台没回填", fix="回填成平台", against="evidence"),
+            finding(rule="decided", problem="回填还在", fix="去掉回填", against="evidence"),
+            finding(problem="条件里要用子查询", fix="改成子查询", against="made_up"),
+        ),
+        reply(),
+    )
+    node = review_node(
+        decided="{{review.decisions}}", limits="不能有子查询", evidence="C6 不通过：应为空值"
+    )
+    out = await run(node, state(decisions=decisions), rt)
+    # A person's decision not carried out and a finding against nothing go back; the one
+    # against the checks is a hint.
+    assert out.branch == "retry"
+    assert [(f["rule"], f["against"], f["hint"]) for f in out.outputs["findings"]] == [
+        ("decided", "", False),
+        ("open_items", "", False),
+        ("open_items", "evidence", True),
+    ]
+    assert "回填成平台" not in out.outputs["problems"] and "去掉回填" in out.outputs["problems"]
+    assert out.messages[0]["content"].endswith(
+        "（1 条意见和排在审查前面的依据相反，交给人看，没有让模型改）"
+    )
+    system, user = (m["content"] for m in gateway.requests[0]["body"]["messages"])
+    assert "依据有先后：人已经做的决定 > 平台限制 > 检查结果 > 审查清单。" in system
+    assert "decided（和人已经做的决定相反）；limits（违反平台限制）" in system
+    assert "平台限制（内容必须遵守，你给的改法也不能违反）：\n不能有子查询" in user
+    assert "检查结果（在真实数据或真实运行上得到的，比你的判断可靠）：\nC6 不通过" in user
+
+    # The rewrite fixed the rest: the hint is still there for the person, in the report.
+    rewritten = {"rules": [{"id": "r5", "text": "负数按 0，不回填"}]}
+    out = await run(node, state(out.private, decisions=decisions, plan=rewritten), rt)
+    assert out.branch == "ok" and out.outputs["ok"] is True
+    assert [f["against"] for f in out.outputs["findings"]] == ["evidence"]
+    report = out.outputs["report"]
+    assert report.startswith("### 审查方案：和人的决定、平台限制、检查结果或上一次审查相反的意见")
+    assert "建议：回填成平台（依据：Q-081 还没定）（和检查结果相反）" in report
+    # The second review was told what the first sent back, and may not reverse it.
+    system, user = (m["content"] for m in gateway.requests[1]["body"]["messages"])
+    assert "上一次要加的这次要去、上一次要去的这次要加，就是推翻上一次的意见。" in system
+    assert "上一次审查提的意见（上一步已经按这些改过）：\n- 〔人已经做的决定都要做到〕" in user
+
+
+async def test_a_finding_quoting_what_is_not_there_is_dropped():
+    rt, _ = runtime(
+        reply(
+            finding(excerpt="F.coalesce(platform_original, platform)"),
+            finding(excerpt='"text": "负数按 0"'),
+            finding(excerpt="r5"),
+        )
+    )
+    out = await run(review_node(), state(), rt)
+    assert len(out.outputs["findings"]) == 2
+    assert out.messages[0]["content"].endswith("（另有 1 条引用的原文在内容里找不到，已忽略）")
+
+
+async def test_the_same_content_keeps_its_verdict_and_only_new_decisions_are_checked():
+    rt, gateway = runtime(reply(), reply(finding(rule="decided", problem="没加注释")))
+    node = review_node(decided="{{review.decisions}}")
+    first = "【第 1 轮 · 审核试算结果 · 改代码】意见：加注释"
+    out = await run(node, state(decisions=first), rt)
+    assert out.branch == "ok" and len(gateway.requests) == 1
+    # Nothing changed, and a decision that says only which option was clicked: no call.
+    clicked = first + "\n【第 2 轮 · 审核试算结果 · 按检查结果改代码】"
+    out = await run(node, state(out.private, decisions=clicked), rt)
+    assert out.branch == "ok" and len(gateway.requests) == 1
+    assert out.outputs["summary"] == (
+        "审查方案：按 4 条清单审查，没有发现问题"
+        "（内容和上次审查时一样，沿用上次的结论，没有再调模型）"
+    )
+    # A new decision that says something: only whether it was carried out is checked.
+    asked = clicked + "\n【第 3 轮 · 审核试算结果 · 改代码】意见：开头加注释 mark-A"
+    out = await run(node, state(out.private, decisions=asked), rt)
+    assert out.branch == "retry" and len(gateway.requests) == 2
+    user = gateway.requests[1]["body"]["messages"][1]["content"]
+    assert user.startswith("审查清单：\n- 〔decided〕人已经做的决定都要做到")
+    assert "〔open_items〕" not in user
+    assert "只查上一次审查之后新加的这些决定有没有做到：\n【第 3 轮" in user
+
+
+async def test_after_a_first_review_only_what_changed_is_reviewed():
+    rt, gateway = runtime(reply(), reply())
+    rules = {"path": "rules", "key": "text", "label": "text", "name": "规则", "ignore": ["id"]}
+    node = review_node(changes={"lists": [rules]})
+    plan = {"summary": "按月汇总", "rules": [{"id": "r1", "text": "负数按 0"}]}
+    out = await run(node, state(plan=plan), rt)
+    # Renumbered only: nothing to review again.
+    renumbered = {"summary": "按月汇总", "rules": [{"id": "r9", "text": "负数按 0"}]}
+    out = await run(node, state(out.private, plan=renumbered), rt)
+    assert len(gateway.requests) == 1 and "沿用上次的结论" in out.outputs["summary"]
+    changed = {
+        "summary": "按自然月汇总",
+        "rules": [{"id": "r9", "text": "负数按 0"}, {"id": "r10", "text": "空值写空"}],
+    }
+    out = await run(node, state(out.private, plan=changed), rt)
+    system, user = (m["content"] for m in gateway.requests[1]["body"]["messages"])
+    assert "只审改了的地方和改动影响到的地方" in system
+    assert "上一次审查之后改了的地方：\n- 规则新加「空值写空」\n" in user
+    assert '-  "summary": "按月汇总"\n+  "summary": "按自然月汇总"' in user
+
+
+async def test_a_person_deciding_starts_the_count_again():
+    # jadeflow 6th retest I-23: right after a person had the plan rewritten, the review
+    # said "2 in a row" and handed over at once.
+    rt, _ = runtime(reply(finding()), reply(finding(problem="别的问题")))
+    out = await run(review_node(), state(), rt)
+    assert out.private["failures"] == 1 and out.private["humans"] == 0
+    rewritten = {"rules": [{"id": "r5", "text": "负数按 0，见问题 q1"}]}
+    out = await run(review_node(), state(out.private, plan=rewritten, humans=1), rt)
+    assert out.branch == "retry" and out.private["failures"] == 1
+
+
+async def test_review_settings_for_changes_are_checked():
+    env = CheckEnv(models=None, skills=MemorySkillStore(), strict=False)
+    found = await _problems(review_node(changes={"of": "x"}), env)
+    assert found[("changes",)] == "changes 要写成 {lists}，lists 同人工节点的 changes"
+    node = review_node(subject="方案：{{check_plan.plan}}", changes={"lists": []})
+    found = await _problems(node, env)
+    assert found[("changes",)] == "要审查的内容整段是一个变量时才能写 changes"
+    found = await _problems(review_node(changes={"lists": [{"path": "Rules"}]}), env)
+    assert found[("changes", "lists", 0, "path")].startswith("path 是列表在内容里的位置")
+
+
+async def _problems(node: dict, env: CheckEnv) -> dict:
+    from aep.runtime.flow.nodes import Problems
+
+    p = Problems(())
+    await TYPES["llm_review"].check(node, p, env)
+    return {tuple(loc): message for loc, message in p.found}
