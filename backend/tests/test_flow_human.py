@@ -247,6 +247,7 @@ async def test_null_settings_and_what_an_approval_produces():
             "changed",
             "feedback",
             "record",
+            "decisions",
         ]
         assert types["human"]["defaults"] == builtin_human_defaults()
 
@@ -742,3 +743,31 @@ async def test_the_changes_setting_is_checked():
     }
     found = await problems(reviewed(changes={"of": "{{ask.brief}}", "lists": []}))
     assert found == {(*at, "lists"): "要比较的列表 lists 要有 1–10 个"}
+
+
+async def test_every_decision_of_the_run_is_kept_in_order():
+    # jadeflow 5th retest I-20, I-21: a later step keeps to all of them, not only the latest
+    # round; an answer that took the suggestion is a decision too.
+    async with Platform([reply(), reply()]) as p:
+        await p.new_app("plan", reviewed())
+        run = await p.run("plan", {"question": "按城市统计客单价"})
+        run = await p.resume(
+            run,
+            decision="revise",
+            values={"q1": "y2026", "q2": True},
+            notes=[{"item": "metric:m4", "text": "要带单位"}],
+            comment="单位写清楚",
+            seen=run["pending"]["details"]["seen"],
+        )
+        first = (
+            "【第 1 轮 · 确认方案 · 按我的意见修改方案】「统计哪段时间？」选「只看 2026 年」"
+            "（原建议「源库现有的 12 个月」）；「要不要去掉测试订单？」选「是」；"
+            "指标「客单价」：要带单位；意见：单位写清楚"
+        )
+        assert (await review_output(p, run))["decisions"] == first
+        run = await p.resume(run, decision="approve", values={"q1": "all", "q2": True}, seen=None)
+        assert run["status"] == "done"
+        assert (await review_output(p, run))["decisions"] == first + (
+            "\n【第 2 轮 · 确认方案 · 确认方案，开始做】"
+            "「统计哪段时间？」选「源库现有的 12 个月」；「要不要去掉测试订单？」选「是」"
+        )

@@ -331,6 +331,9 @@ PLAN_PROMPT = """需求：{{start.request}}
 校验连续没通过、交给人时人的意见（为空时忽略）：{{plan_stuck.feedback}}
 确认方案时的意见（为空时忽略）：{{review.feedback}}
 审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
+这次运行里人确认方案时做过的全部决定（为空时忽略；同一件事以后面的为准。回答过的问题不要再写成\
+问题，平台会照回答写成已确认的规则；这些决定都要在方案里保留）：
+{{review.decisions}}
 意见开头写着第几轮、哪一步、什么决定。校验连续没通过时人的意见是针对上一版方案和这些问题写的，\
 按它和问题一起改，只改格式和写法，不要为了通过校验改口径。两段意见都有时，\
 确认方案时的意见是最新的，两者冲突时以它为准；审核试算结果时的意见上一版方案已经按它改过。只处理最新一轮、和方案有关的意见；\
@@ -357,6 +360,10 @@ CODEGEN_PROMPT = """已确认的方案：
 检查连续没通过、交给人时人的意见（为空时忽略）：{{code_stuck.feedback}}
 Databricks 开发环境试算的报错（为空时忽略）：{{dev_run.errors}}
 审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}
+这次运行里人对代码和结果提过的全部要求（为空时忽略；同一件事以后面的为准。都要做到，\
+之后每一版都要保留，不要为了改别的问题撤掉）：
+{{data_review.decisions}}
+{{code_stuck.decisions}}
 意见开头写着第几轮、哪一步、什么决定。只处理和代码有关的意见；上一版代码里已经按它改过的，\
 不要重复处理。有上一版代码时，按问题、报错和意见修改，输出全部目标表的完整代码。"""
 
@@ -821,7 +828,8 @@ PLAN_REVIEW_RULES = [
         "instruction": "参考资料里写明还没定、暂不实现、试点不做、要另行确认或开发时再确认的事，"
         "方案的规则、指标、筛选或技术方案对它做了决定（不管依据写的是需求、资料还是数据），"
         "questions 里却没有对应的问题，就是违反。where 写方案里做决定的位置（如 规则 r5），"
-        "quote 写资料里说它还没定的原话。",
+        "quote 写资料里说它还没定的原话。依据是 confirmed（已确认）的规则是人在确认页的回答，"
+        "事情已经定了，不算违反（jadeflow 第 5 轮 I-20）。",
     },
     {
         "key": "data_rules",
@@ -835,6 +843,13 @@ PLAN_REVIEW_RULES = [
         "instruction": "方案建议的每条数据检查（checks），在结果完全正确时也要能通过。资料里写明的"
         "例外（不分摊的行、允许的负数、只在部分月份适用的组合等）检查没有排除，比较的两边按资料"
         "本来就不相等，或者标题和条件说的不是一回事，就是违反。where 写检查的 id。",
+    },
+    {
+        "key": "needless_questions",
+        "title": "不该问的不要写成问题",
+        "instruction": "questions 里的问题，需求和资料对这件事的说法一致"
+        "（都要做、都不做或写法相同），或者人已经回答过（见「人已经做的决定」），就是违反。"
+        "where 写问题的 id，fix 写按一致的说法或人的回答写成规则。",
     },
 ]
 
@@ -909,7 +924,8 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "type": "llm_review",
         "title": "审查方案",
         "note": "另调一次模型，只按清单审查方案：资料写明还没定的事有没有写成问题，按数据自己加的"
-        "会删行改值的规则有没有写成问题，建议的检查在结果正确时能不能通过，以及项目写方案时的约定。"
+        "会删行改值的规则有没有写成问题，建议的检查在结果正确时能不能通过，有没有不该问的问题，"
+        "人确认方案时的决定是不是都做到了，以及项目写方案时的约定。"
         "有问题就让模型带着问题重写；连续 2 次没改过来就放行，把问题列在确认页上。",
         "model": None,
         "skills": [],
@@ -917,6 +933,8 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "context": "需求：{{start.request}}\n\n{{project.brief}}\n\n公司数据口径（参考资料）：\n"
         "{{glossary.context}}\n\n源表：\n{{profile.description}}",
         "rules": [*PLAN_REVIEW_RULES, "{{project.plan_rules}}"],
+        # What people decided is not reviewed as a problem, and must be kept (I-20).
+        "decided": "{{review.decisions}}\n{{plan_stuck.decisions}}",
         "max_attempts": 2,
         "on_stuck": "pass",
         "max_visits": 20,
@@ -927,13 +945,16 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "id": "review_code",
         "type": "llm_review",
         "title": "审查代码",
-        "note": "按项目写代码时的约定审查代码（项目没写约定时跳过，不调模型）。有问题就让模型带着"
-        "问题重写；连续 2 次没改过来就照常试算，把问题列在审核页上。",
+        "note": "按项目写代码时的约定审查代码，并核对人在审核试算结果时对代码提的要求都还在"
+        "（都没有时跳过，不调模型）。有问题就让模型带着问题重写；连续 2 次没改过来就照常试算，"
+        "把问题列在审核页上。",
         "model": None,
         "skills": [],
         "subject": "{{check_code.code}}",
         "context": "已确认的方案：\n{{check_plan.plan}}\n\n{{project.brief}}",
         "rules": ["{{project.code_rules}}"],
+        # What people asked of the code in this run stays in it (I-21).
+        "decided": "{{data_review.decisions}}\n{{code_stuck.decisions}}",
         "max_attempts": 2,
         "on_stuck": "pass",
         "max_visits": 20,

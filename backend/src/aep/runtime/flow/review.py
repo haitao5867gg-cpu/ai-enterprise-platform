@@ -10,9 +10,15 @@ shown to the person who confirms next (``on_stuck: pass``), or a person decides
 (``branch``), or the node fails (``fail``). Any app can use it: a reply checked
 against "不能承诺退款时间", a summary against "金额要和原文一致", an ETL plan against
 a project's conventions.
+
+A reviewer is kept to what it is for (jadeflow 5th retest I-20, I-21): a finding it marks
+as no violation, without a fix, or that says itself nothing needs changing is dropped;
+and with ``decided`` (what people already decided in this run) it may not report those
+decisions as problems or suggest undoing them, and checks they were all carried out.
 """
 
 import json
+import re
 from typing import Any
 
 from aep.runtime.flow import refs
@@ -40,13 +46,36 @@ MAX_INSTRUCTION = 2000
 MAX_ATTEMPTS = 5
 
 FORMAT = """你是审查员。只按「审查清单」逐条检查「要审查的内容」：确实违反某一条时才记一条问题；\
-清单以外的事不管，拿不准的不记，不要重写内容。
+清单以外的事不管，拿不准的不记，不要重写内容。看过、觉得没问题的地方不要记，\
+不要写「无需修改」「不记」「符合要求」这样的条目。
 
 只输出一个 JSON 对象，不要输出其他文字：
-{"findings": [{"rule": "清单里的标识", "where": "要审查的内容里出问题的位置，如 规则 r5、检查 \
-ck_x、函数 build 里读 table1 的那句", "problem": "哪里不符合这一条，一两句话", "quote": "依据的原话\
-（资料里的或内容里的，可以为空）", "fix": "怎么改，一句话"}]}
-没有问题时输出 {"findings": []}。同一处违反同一条只记一次。"""
+{"findings": [{"rule": "清单里的标识", "violates": true, "where": "要审查的内容里出问题的位置，\
+如 规则 r5、检查 ck_x、函数 build 里读 table1 的那句", "problem": "哪里不符合这一条，一两句话", \
+"quote": "依据的原话（资料里的或内容里的，可以为空）", "fix": "要怎么改，一句话，必须写"}]}
+violates 写这一处是不是确实违反了这一条，只有 true 的才算问题。没有问题时输出 {"findings": []}。\
+同一处违反同一条只记一次。"""
+
+# With ``decided`` (jadeflow 5th retest I-20: the reviewer took the answers people gave for
+# undecided matters and had them asked again; I-21: it suggested removing what a person
+# had asked for, and the rewrite did).
+DECIDED_FORMAT = """「人已经做的决定」是这次运行里人亲自做的决定\
+（回答的问题、选的选项、写的意见），按时间先后排，同一件事以后面的为准。按这些决定写的内容不是问题：不要报成违反，\
+也不要建议撤掉或改掉它们。"""
+DECIDED_RULE = {
+    "key": "decided",
+    "title": "人已经做的决定都要做到",
+    "instruction": "「人已经做的决定」里的每一条（同一件事以后面的为准），要审查的内容里都要做到："
+    "人已经决定的事不能再拿出来问，人要求的改动不能没做，也不能被撤掉。没做到就是违反，"
+    "where 写哪里没做到，quote 写那条决定的原话。",
+}
+# What a finding that is no finding says (I-21: "符合要求……无需修改", "此处判定 q3 已覆盖，
+# 不记", "该点不构成违反"); "不符合要求" and "不记录" are findings.
+NO_CHANGE = re.compile(
+    r"无需(?:修改|改动|更改|调整|处理)|不需要?(?:修改|改动|更改)|不用改|不必改|可不改"
+    r"|不记(?![录入账])|不构成|无违规|没有违规|未违反|没有违反|并未违反|不违反"
+    r"|(?<!不)符合(?:要求|约定|清单|规则)|无问题"
+)
 
 
 # Checking settings
@@ -83,6 +112,7 @@ async def check_review(node: dict[str, Any], p: Problems, env: CheckEnv) -> None
     _text(node, "subject", p, "要审查的内容", required=True)
     _text(node, "context", p, "参考资料")
     _text(node, "instruction", p, "补充说明")
+    _text(node, "decided", p, "人已经做的决定")
     _check_rules(node, p)
     attempts = node.get("max_attempts", 2)
     if (
@@ -136,6 +166,15 @@ def rules_of(node: dict[str, Any], get: refs.Lookup) -> list[dict[str, str]]:
     return out[:MAX_RULES]
 
 
+def _decided_rule(rules: list[dict[str, str]]) -> dict[str, str]:
+    """The checklist item a node with ``decided`` gets first: its key made unique."""
+    key = DECIDED_RULE["key"]
+    used = {r["key"] for r in rules}
+    while key in used:
+        key += "_"
+    return DECIDED_RULE | {"key": key}
+
+
 def _checklist(rules: list[dict[str, str]]) -> str:
     return "\n".join(
         f"- 〔{r['key']}〕{r['title']}" + (f"：{r['instruction']}" if r["instruction"] else "")
@@ -160,10 +199,22 @@ def _text_of(value: Any) -> str:
     return str(value).strip() if isinstance(value, str | int | float) else ""
 
 
-def _findings(data: dict[str, Any], rules: list[dict[str, str]]) -> list[dict[str, str]]:
+def no_change(item: dict[str, Any]) -> bool:
+    """Whether a finding is none: marked as no violation, without a fix, or saying itself
+    that nothing needs changing."""
+    if item.get("violates") is False or not _text_of(item.get("fix")):
+        return True
+    return any(NO_CHANGE.search(_text_of(item.get(k))) for k in ("problem", "fix"))
+
+
+def _findings(
+    data: dict[str, Any], rules: list[dict[str, str]]
+) -> tuple[list[dict[str, str]], int]:
+    """The findings that are findings, and how many others were dropped."""
     titles = {r["key"]: r["title"] for r in rules}
     out = []
-    for item in data["findings"][:MAX_FINDINGS]:
+    kept = [item for item in data["findings"] if not no_change(item)]
+    for item in kept[:MAX_FINDINGS]:
         out.append(
             {
                 "rule": item["rule"],
@@ -174,7 +225,7 @@ def _findings(data: dict[str, Any], rules: list[dict[str, str]]) -> list[dict[st
                 "fix": _text_of(item.get("fix")),
             }
         )
-    return out
+    return out, len(data["findings"]) - len(kept)
 
 
 def _line(f: dict[str, str]) -> str:
@@ -211,6 +262,10 @@ async def run_review(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
     rules = rules_of(node, get)
     title = node.get("title") or "模型审查"
     keys = ["findings", "problems", "report"]
+    decided = refs.render(node.get("decided") or "", get).strip()
+    if decided:
+        # People decided something in this run: the reviewer checks it was carried out.
+        rules = [_decided_rule(rules), *rules]
     if not rules:
         # A project without conventions, say: nothing to review against.
         said = f"{title}：没有审查清单，跳过"
@@ -223,10 +278,13 @@ async def run_review(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
     context = refs.render(node.get("context") or "", get).strip()
     lone = refs.whole(node["subject"])
     subject = readable(get(*lone)) if lone else refs.render(node["subject"], get)
-    system = rt.system(node, FORMAT, refs.render(node.get("instruction") or "", get))
+    instruction = refs.render(node.get("instruction") or "", get)
+    system = rt.system(node, FORMAT + ("\n\n" + DECIDED_FORMAT if decided else ""), instruction)
     user = "审查清单：\n" + _checklist(rules)
     if context:
         user += "\n\n参考资料：\n" + context
+    if decided:
+        user += "\n\n人已经做的决定（按时间先后，同一件事以后面的为准）：\n" + decided
     user += "\n\n要审查的内容：\n" + subject
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     known = _keys(rules)
@@ -244,15 +302,19 @@ async def run_review(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
         return None
 
     data, restored = rt.unmask(await _ask_json(rt, node, messages, valid, state), state)
-    findings = _findings(data, rules)
+    findings, ignored = _findings(data, rules)
+    # Findings that said themselves nothing needs changing are not counted (I-21).
+    aside = f"（另有 {ignored} 条写着不用改，已忽略）" if ignored else ""
     mine = (state.get("private") or {}).get(node["id"]) or {}
     failures = mine.get("failures", 0) + 1 if findings else 0
     most = node.get("max_attempts", 2)
     problems = "\n".join(f"- {_line(f)}" for f in findings)
-    classified = rt.classify(state, [node["subject"], node.get("context") or ""], keys)
+    classified = rt.classify(
+        state, [node["subject"], node.get("context") or "", node.get("decided") or ""], keys
+    )
     outputs = {"ok": not findings, "findings": findings, "problems": problems, "report": ""}
     if not findings:
-        said = f"{title}：按 {len(rules)} 条清单审查，没有发现问题"
+        said = f"{title}：按 {len(rules)} 条清单审查，没有发现问题{aside}"
         return Outcome(
             outputs | {"summary": said},
             "ok",
@@ -264,6 +326,7 @@ async def run_review(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -
     if failures < most:
         said = (
             f"{title}发现 {len(findings)} 处问题，让上一步带着问题重写（第 {failures}/{most} 次）"
+            + aside
         )
         return Outcome(
             outputs | {"summary": said},
@@ -324,6 +387,7 @@ TYPES = {
             "subject": "",
             "context": "",
             "instruction": "",
+            "decided": "",
             "rules": [{"key": "rule_1", "title": "", "instruction": ""}],
             "max_attempts": 2,
             "on_stuck": "pass",

@@ -409,8 +409,11 @@ async def test_a_bound_run_is_planned_checked_and_delivered(make, monkeypatch):
 async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, monkeypatch):
     repeated = GOOD_ROWS + [{"sku": "A1", "month": "2026-10", "qty": 0}]
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", repeated)
+    # After the note the code is reviewed for it (jadeflow 5th retest I-21).
     lake = await make(
-        [reply(v3_plan()), REVIEWED, GOOD_CODE, GOOD_CODE], [PASSED, PASSED], [PREVIEW, PREVIEW]
+        [reply(v3_plan()), REVIEWED, GOOD_CODE, GOOD_CODE, REVIEWED],
+        [PASSED, PASSED],
+        [PREVIEW, PREVIEW],
     )
     run_id, view = await lake.start(golden="")
     view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
@@ -535,12 +538,19 @@ def test_template_follows_the_contract():
         "open_items",
         "data_rules",
         "checks_hold",
+        "needless_questions",
     ]
     assert review_plan["rules"][-1] == "{{project.plan_rules}}"
     assert (review_code["subject"], review_code["rules"]) == (
         "{{check_code.code}}",
         ["{{project.code_rules}}"],
     )
+    # What people decided in this run is kept and not reviewed as a problem (5th retest
+    # I-20, I-21); the steps that rewrite are given all of it too.
+    assert review_plan["decided"] == "{{review.decisions}}\n{{plan_stuck.decisions}}"
+    assert review_code["decided"] == "{{data_review.decisions}}\n{{code_stuck.decisions}}"
+    assert "{{review.decisions}}" in nodes["plan"]["prompt"]
+    assert "{{data_review.decisions}}\n{{code_stuck.decisions}}" in nodes["codegen"]["prompt"]
     for node in (review_plan, review_code):
         assert (node["max_attempts"], node["on_stuck"]) == (2, "pass")
     # Each rewrite for a reviewer is one more visit of the steps in the loop.

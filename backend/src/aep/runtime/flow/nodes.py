@@ -959,6 +959,7 @@ APPROVAL_OUTPUTS = (
     "changed",
     "feedback",
     "record",
+    "decisions",
 )
 
 
@@ -1247,6 +1248,12 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         seen=extended,
     )
     outcome = _decided(node, answer, asked, details, rounds, labels)
+    # Every decision made here in this run, oldest first (flow-apps.md, decisions): what a
+    # later step must keep to, not only the latest round (jadeflow 5th retest I-20, I-21).
+    mine = (state.get("private") or {}).get(node["id"]) or {}
+    history = [*(mine.get("history") or []), decision_line(outcome.outputs["record"])]
+    outcome.outputs["decisions"] = "\n".join(history)
+    outcome.private = {"history": history}
     if kept is not None:
         # Kept for the next round: what was shown, and what the person said when they sent
         # it back (a decision that passes their remarks on), to tell what they asked for.
@@ -1256,8 +1263,25 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             if sent_back
             else None
         )
-        outcome.private = {"shown": kept, "feedback": feedback}
+        outcome.private |= {"shown": kept, "feedback": feedback}
     return outcome
+
+
+def decision_line(record: dict[str, Any]) -> str:
+    """One round of a human node in one line: which round, which step, the option, every
+    answer (the suggested ones too: they are decisions as well), notes and the comment."""
+    head = f"【第 {record['round']} 轮 · {record['title']} · {record['decision_label']}】"
+    parts = []
+    for a in record["answers"]:
+        part = f"「{a['label']}」选「{a['value_label']}」"
+        if a["picked_suggested"] is False:
+            part += f"（原建议「{a['suggested_label']}」）"
+        parts.append(part)
+    parts += [f"{_kind(n['item'])}「{n['label']}」：{n['text']}" for n in record["notes"]]
+    comment = record.get("comment")
+    if isinstance(comment, str) and comment.strip():
+        parts.append(f"意见：{comment.strip()}")
+    return head + "；".join(parts)
 
 
 def _shown(option: dict[str, Any], get: refs.Lookup) -> bool:
@@ -2352,6 +2376,10 @@ TYPES: dict[str, NodeType] = {
                 ("changed", "有没有哪题没按建议答（确认模式）"),
                 ("feedback", "交给后面步骤的一段话，按意见处理时才有（确认模式）"),
                 ("record", "这次处理的完整记录（确认模式）"),
+                (
+                    "decisions",
+                    "这次运行里在这一步做过的所有决定，一轮一行，按时间先后（确认模式）",
+                ),
             ),
             defaults={
                 "mode": "approval",

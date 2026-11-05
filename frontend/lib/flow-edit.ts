@@ -127,6 +127,7 @@ export function ownOutputs(node: FlowNode): string[] {
             "changed",
             "feedback",
             "record",
+            "decisions",
           ];
     case "template":
       return ["text"];
