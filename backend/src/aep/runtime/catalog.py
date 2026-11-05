@@ -1433,13 +1433,19 @@ class AppCatalog:
             raise CaseFromRunProblem("这次运行属于已过期的会话，内容已清除") from exc
         good = rating == "good" and view.record.status == "done"
         # How the run went (an agent's steps and hits) changes every run: no checks for it.
-        skip = flowgraph.execution_outputs(self._runs.flow_config(app, view.record.config or {}))
+        # What a model wrote is worded differently every run: a judge, not equals. Only
+        # when the run sent data as it is: otherwise the judge would be shown values the
+        # model never saw (masked ones turned back), so those stay with equals.
+        flow = self._runs.flow_config(app, view.record.config or {})
+        skip = flowgraph.execution_outputs(flow)
+        samples = (view.record.policy or {}).get("samples", "full")
+        worded = flowgraph.model_text_outputs(flow) if samples == "full" else set()
         case = {
             "id": eval_sets.case_id(run_id, {c["id"] for c in found.cases}),
             "title": self._runs.title(view.record),
             "input": view.record.input,
             "answers": await self._runs.answers_given(run_id),
-            "expect": eval_sets.suggested_checks(view.result, skip) if good else [],
+            "expect": eval_sets.suggested_checks(view.result, skip, worded) if good else [],
             # A run outside a conversation replays as one: no history, turn 0.
             **(turn or {"history": [], "turn": None, "restored": {}}),
             "from_run": run_id,
