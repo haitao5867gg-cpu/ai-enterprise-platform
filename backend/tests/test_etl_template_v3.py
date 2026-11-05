@@ -576,6 +576,10 @@ def test_template_follows_the_contract():
     assert review_code["rules"][-1] == "{{project.code_rules}}"
     # What people decided in this run is kept and not reviewed as a problem (5th retest
     # I-20, I-21); the steps that rewrite are given all of it too.
+    # The plan's review page says what the project's cap on checks means (5th retest S-24),
+    # and a rule renumbered or reworded is not a removed and an added one (I-3).
+    assert nodes["review"]["data"]["check_cap"] == "{{project.model_check_max_severity}}"
+    assert nodes["review"]["changes"]["lists"][-1]["ignore"] == ["id"]
     assert review_plan["decided"] == "{{review.decisions}}\n{{plan_stuck.decisions}}"
     assert review_code["decided"] == "{{data_review.decisions}}\n{{code_stuck.decisions}}"
     assert "{{review.decisions}}" in nodes["plan"]["prompt"]

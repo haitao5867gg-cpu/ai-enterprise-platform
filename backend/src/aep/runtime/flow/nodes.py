@@ -1280,9 +1280,17 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     if kept is not None:
         # Kept for the next round: what was shown, and what the person said when they sent
         # it back (a decision that passes their remarks on), to tell what they asked for.
+        # The questions they answered too: what follows from an answer was asked for.
         sent_back = bool(outcome.outputs.get("feedback"))
         feedback = (
-            {"comment": outcome.outputs.get("comment"), "notes": outcome.outputs.get("notes")}
+            {
+                "comment": outcome.outputs.get("comment"),
+                "notes": outcome.outputs.get("notes"),
+                "answers": [
+                    {"label": a["label"], "value_label": a["value_label"]}
+                    for a in outcome.outputs["record"]["answers"]
+                ],
+            }
             if sent_back
             else None
         )

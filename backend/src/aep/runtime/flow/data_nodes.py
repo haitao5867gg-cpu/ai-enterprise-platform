@@ -585,10 +585,12 @@ def plan_message_v2(
     plan: EtlPlanV2,
     answer: dict[str, Any] | None,
     existing: list[dict[str, Any]] | None = None,
+    cap: str = "error",
 ) -> str:
     """A version 2 plan as a person reviews it (Markdown): the business part first,
     then the technical one; with the project's ``existing`` tables, what writing each
-    target does to the table's structure."""
+    target does to the table's structure; ``cap`` is the project's
+    ``model_check_max_severity``."""
     brief = plan.brief
     lines = ["## 业务说明"]
     if brief is not None:
@@ -638,16 +640,30 @@ def plan_message_v2(
         lines += _target_lines(n, t, existing)
     lines += _reference_lines(plan.references)
     if isinstance(plan, EtlPlanV3):
-        lines += _check_lines(plan.checks)
+        lines += _check_lines(plan.checks, cap)
     return "\n".join(lines)
 
 
-def _check_lines(found: list[dict[str, Any]]) -> list[str]:
+def cap_text(cap: str) -> str:
+    """What a project's cap on the checks a model proposes means, said to the person who
+    reviews them ("" when it allows errors): jadeflow 5th retest S-24, an error asked for
+    in a comment came back as a warning with nothing said, as the model wrote it so."""
+    if cap == "error":
+        return ""
+    return (
+        f"本项目规定方案建议的检查最高按{checks.SEVERITY_TEXT[cap]}跑，不通过时不挡住交付；"
+        "要挡住交付的检查，请加到项目的验收检查里。"
+    )
+
+
+def _check_lines(found: list[dict[str, Any]], cap: str = "error") -> list[str]:
     """The data checks a version 3 plan proposes (Markdown)."""
     lines = ["", "### 数据检查", ""]
     if not found:
         return lines + ["方案没有建议数据检查。"]
     lines.append("开发环境试算之后检查（填了老系统结果表时另加一条逐行对比）。")
+    if capped := cap_text(cap):
+        lines.append(capped)
     errors = sum(1 for c in found if c.get("severity") == "error")
     if errors:
         # The count is in the text too, not only on the page (jadeflow 4th retest I-10).
@@ -1017,7 +1033,8 @@ async def run_plan_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
         outputs["message"] = _dropped_text(dropped) + "\n\n" + outputs["message"]
     if isinstance(plan, EtlPlanV2):
         answer = answer_output(plan)
-        message = plan_message_v2(plan, answer, existing)
+        cap = (state.get("project") or {}).get("model_check_max_severity") or "error"
+        message = plan_message_v2(plan, answer, existing, cap)
         outputs |= {
             "message": _dropped_text(dropped) + "\n\n" + message if dropped else message,
             "brief": dumped["brief"],

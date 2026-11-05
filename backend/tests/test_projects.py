@@ -413,7 +413,7 @@ async def test_a_cap_on_the_checks_the_model_proposes():
 
 
 def test_the_cap_in_old_snapshots():
-    from aep.projects import brief
+    from aep.projects import brief, project_value
 
     snap = {
         "name": "x", "description": "", "table_prefix": "ibf_", "references": [], "params": [],
@@ -422,6 +422,11 @@ def test_the_cap_in_old_snapshots():
     assert "最高只能是" not in brief(snap)
     assert "最高只能是" not in brief(snap | {"model_check_max_severity": "error"})
     assert "最高只能是 info" in brief(snap | {"model_check_max_severity": "info"})
+    # The page reads it too (jadeflow 5th retest S-24); old snapshots allow errors.
+    assert project_value(snap, "model_check_max_severity") == "error"
+    capped = snap | {"model_check_max_severity": "warn"}
+    assert project_value(capped, "model_check_max_severity") == "warn"
+    assert project_value(None, "model_check_max_severity") is None
 
 
 async def test_repeated_keys_and_environment_fields():

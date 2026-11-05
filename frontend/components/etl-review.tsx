@@ -150,6 +150,9 @@ export type PlanReview = {
   review: Finding[];
   returned: ReviewRecord | null;
   previous: ReviewRecord | null;
+  // The bound project's cap on the checks the model proposes (warn, info); null when
+  // errors are allowed or no project is bound (jadeflow 5th retest S-24).
+  checkCap: "warn" | "info" | null;
 };
 
 // What 确认方案 (view etl_plan_review) was given; null when it is not what the view
@@ -169,6 +172,10 @@ export function readPlanReview(data: unknown): PlanReview | null {
     review: readFindings(data.review),
     returned: readRecord(data.returned),
     previous: readRecord(data.previous),
+    checkCap:
+      data.check_cap === "warn" || data.check_cap === "info"
+        ? data.check_cap
+        : null,
   };
 }
 
@@ -345,7 +352,13 @@ export function EtlPlanReview({
               />
             </section>
           )}
-          <TechPlanView plan={plan} columnNotes ruleNotes checkNotes />
+          <TechPlanView
+            plan={plan}
+            columnNotes
+            ruleNotes
+            checkNotes
+            checkCap={review.checkCap}
+          />
           {review.cleaned.length > 0 && (
             <details className="review-cleaned">
               <summary>

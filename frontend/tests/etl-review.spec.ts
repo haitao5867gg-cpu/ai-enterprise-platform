@@ -165,10 +165,14 @@ test("plan review: the brief, questions on the page, notes on items turn the dec
   const changed = page.getByRole("note", {
     name: "和上次看到的版本比改了什么",
   });
-  await expect(changed).toContainText("和你上次看到的版本比，改了 2 处");
+  await expect(changed).toContainText("和你上次看到的版本比，改了 3 处");
   await expect(changed).toContainText(
     "其中 1 处意见里没有提到，请确认是不是要这样改。",
   );
+  // What follows from an answer is marked so (jadeflow 5th retest I-3).
+  await expect(
+    changed.getByRole("listitem").filter({ hasText: "已确认：" }),
+  ).toContainText("按你的回答");
   await expect(
     changed.getByRole("listitem").filter({ hasText: "退款订单整单去掉" }),
   ).toContainText("新加规则「退款订单整单去掉」意见里没提到");
@@ -366,8 +370,9 @@ test("data review sends the plan back: the plan review says so at its top", asyn
   const changed = page.getByRole("note", {
     name: "和上次看到的版本比改了什么",
   });
-  await expect(changed).toContainText("和你上次看到的版本比，改了 2 处");
+  await expect(changed).toContainText("和你上次看到的版本比，改了 3 处");
   await expect(changed).not.toContainText("意见里没");
+  await expect(changed).not.toContainText("按你的回答");
 });
 
 test("template v3: write modes and proposed checks on the plan, a failed check has no 通过, a note on it sends the code back", async ({
@@ -510,4 +515,22 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   await expect(result.locator(".result-text")).toContainText(
     "3 项检查：3 项通过",
   );
+});
+
+test("template v3: the plan page says what the project's cap on proposed checks means", async ({
+  page,
+}) => {
+  // jadeflow 5th retest S-24: an error asked for came back as a warning, nothing said.
+  await start(
+    page,
+    "按城市和会员等级统计上个月的销售，演示数据检查，项目规定检查最高按警告",
+  );
+  const proposed = page
+    .locator(".etl-review")
+    .getByRole("region", { name: "建议的数据检查" });
+  await expect(proposed.getByRole("note")).toHaveText(
+    "本项目规定方案建议的检查最高按警告跑，不通过时不挡住交付；要挡住交付的检查，请加到项目的验收检查里。",
+  );
+  await expect(proposed).not.toContainText("会挡住交付：");
+  await expect(proposed).toContainText("键不重复 · 警告");
 });

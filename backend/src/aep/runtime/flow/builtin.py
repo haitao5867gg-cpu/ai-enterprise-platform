@@ -984,6 +984,8 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         node["max_visits"] = 40
     found["review"]["show"] = "{{review_plan.report}}\n\n{{check_plan.message}}"
     found["review"]["data"]["review"] = "{{review_plan.findings}}"
+    # The page says what the project's cap on the proposed checks means (5th retest S-24).
+    found["review"]["data"]["check_cap"] = "{{project.model_check_max_severity}}"
     # What the rewrite changed since the person last saw the plan, and what they did not
     # ask for (jadeflow 4th retest I-3).
     found["review"]["changes"] = {
@@ -992,7 +994,9 @@ def _etl_lakehouse_project() -> dict[str, Any]:
             {"path": "checks", "key": "id", "label": "label", "name": "检查"},
             {"path": "targets", "key": "name", "label": "name", "name": "目标表"},
             {"path": "brief.metrics", "key": "name", "label": "name", "name": "指标"},
-            {"path": "rules", "key": "text", "label": "text", "name": "规则"},
+            # Rules are renumbered between versions; a new id alone is no change (5th
+            # retest I-3), and a rule with a few words changed is paired by its text.
+            {"path": "rules", "key": "text", "label": "text", "name": "规则", "ignore": ["id"]},
         ],
     }
     found["dev_run"]["note"] = (

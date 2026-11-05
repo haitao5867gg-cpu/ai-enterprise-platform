@@ -57,6 +57,7 @@ FIELDS = (
     "conventions",
     "plan_rules",
     "code_rules",
+    "model_check_max_severity",
 )
 # The environment a run releases to (the template's databricks_release node).
 RELEASE_ENVIRONMENT = "prod"
@@ -714,6 +715,9 @@ def project_value(
         return project.get("checks") or []
     if name in ("project_id", "name", "description", "table_prefix", "references"):
         return project[name]
+    if name == "model_check_max_severity":
+        # Snapshots taken before projects had the setting allow errors.
+        return project.get(name) or "error"
     return None
 
 

@@ -2835,6 +2835,14 @@ textarea::placeholder {
   background: #fff7ed;
   color: #7c2d12;
 }
+/* The project's cap on the checks a plan proposes (jadeflow 5th retest S-24). */
+.check-cap-note {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #8a8f98;
+  background: #f5f6f8;
+  color: #3f4650;
+}
 .quality-rules li.check-blocking {
   border-left: 3px solid #b45309;
   padding-left: 8px;
@@ -6040,8 +6048,14 @@ fieldset.project-form-section > legend + * {
 .step-changes .change-kind.added {
   color: #2f6b45;
 }
-.step-changes .unasked {
+.step-changes .unasked,
+.step-changes .answered {
   margin-left: 8px;
+}
+/* Follows from a question the person answered (jadeflow 5th retest I-3). */
+.step-changes .answered {
+  color: #2f6b45;
+  background: #eef7f0;
 }
 /* ---------------------------------------------------------------------------
    Shell v2 (界面改版第 2 批): grouped navigation, a sidebar that folds to icons,

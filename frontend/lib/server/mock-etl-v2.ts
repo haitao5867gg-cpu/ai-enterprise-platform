@@ -30,6 +30,8 @@ export type EtlV2State = {
   failFirst: boolean;
   // Template v3's data checks: none (v2), checks that pass, or fail in the first round.
   checks: "none" | "pass" | "fail";
+  // The project runs the checks a plan proposes at warning level at most (S-24).
+  capped?: boolean;
   confirmed: Record_ | null;
   reviewed: Record_ | null;
   // What people answered so far, by question: answered questions become rules.
@@ -922,7 +924,13 @@ function planFor(state: EtlV2State) {
     answer: design,
     assumptions: [],
     references,
-    ...(v3 ? { checks: planChecks } : {}),
+    ...(v3
+      ? {
+          checks: state.capped
+            ? planChecks.map((check) => ({ ...check, severity: "warn" }))
+            : planChecks,
+        }
+      : {}),
   };
 }
 function fieldsOf(plan: ReturnType<typeof planFor>): Question[] {
@@ -955,6 +963,7 @@ function planChanges(state: EtlV2State): Record_[] {
       label: "ads_sales_city_member_m",
       fields: "columns",
       mentioned: mentioned(true),
+      because: revised ? "remarks" : null,
     },
     {
       list: "规则",
@@ -963,7 +972,21 @@ function planChanges(state: EtlV2State): Record_[] {
       label: "退款订单整单去掉",
       fields: "",
       mentioned: mentioned(false),
+      because: null,
     },
+    // What follows from a question the person answered (jadeflow 5th retest I-3).
+    ...state.answered.slice(0, 1).map((answered) => {
+      const rule = `${answered.actor ? `${answered.actor}已确认` : "已确认"}：${answered.label}——${answered.value}`;
+      return {
+        list: "规则",
+        kind: "added",
+        key: rule,
+        label: rule,
+        fields: "",
+        mentioned: mentioned(true),
+        because: revised ? "answer" : null,
+      };
+    }),
   ];
 }
 
@@ -1037,6 +1060,8 @@ export function startEtlV2(input: Record_): EtlV2State {
         : input.request.includes("数据检查不通过")
           ? "fail"
           : "pass",
+    capped:
+      typeof input.request === "string" && input.request.includes("最高按警告"),
     confirmed: null,
     reviewed: null,
     answered: [],
@@ -1111,6 +1136,9 @@ export function advanceEtlV2(entry: Entry, ops: Ops): Run {
             : [],
         returned: state.reviewed,
         previous: state.confirmed,
+        ...(state.checks !== "none"
+          ? { check_cap: state.capped ? "warn" : "error" }
+          : {}),
       },
       state.rounds.review,
       fieldsOf(plan),

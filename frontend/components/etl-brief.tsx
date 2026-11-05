@@ -255,12 +255,15 @@ export function TechPlanView({
   qualityNotes = false,
   ruleNotes = false,
   checkNotes = false,
+  checkCap = null,
 }: {
   plan: PlanV2;
   columnNotes?: boolean;
   qualityNotes?: boolean;
   ruleNotes?: boolean;
   checkNotes?: boolean;
+  // The project's cap on the checks the model proposes, when below error.
+  checkCap?: "warn" | "info" | null;
 }) {
   const t = useT();
   // A model's error-level check blocks delivery when it fails (jadeflow retest I-10).
@@ -457,6 +460,17 @@ export function TechPlanView({
           <p className="muted">
             {t("开发环境试算之后检查；填了老系统结果表时另加一条逐行对比。")}
           </p>
+          {checkCap && (
+            <p className="check-cap-note" role="note">
+              {checkCap === "warn"
+                ? t(
+                    "本项目规定方案建议的检查最高按警告跑，不通过时不挡住交付；要挡住交付的检查，请加到项目的验收检查里。",
+                  )
+                : t(
+                    "本项目规定方案建议的检查最高按提示跑，不通过时不挡住交付；要挡住交付的检查，请加到项目的验收检查里。",
+                  )}
+            </p>
+          )}
           {blocking > 0 && (
             <p className="check-blocking-note" role="note">
               {t(

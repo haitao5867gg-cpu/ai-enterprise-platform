@@ -17,7 +17,12 @@ from aep.etl.plan import (
     validate_plan_v2,
     validate_plan_v3,
 )
-from aep.runtime.flow.data_nodes import _check_fields, _check_signature
+from aep.runtime.flow.data_nodes import (
+    _check_fields,
+    _check_signature,
+    cap_text,
+    plan_message_v2,
+)
 from aep.runtime.flow.diff import field_changes as _field_changes
 from aep.runtime.flow.nodes import NodeFailure
 from tests.test_etl_plan_v2 import HIT, KNOWN, SEEN, SOURCES, brief_plan
@@ -133,6 +138,20 @@ def test_a_model_check_blocks_only_with_a_reason_and_within_the_projects_cap():
     # The reason is part of a check, not of what it checks.
     assert _check_signature(reasoned) == _check_signature(blocking)
     assert problems3(v3_plan({**KEYS, "why": 3}))[0].endswith("why 要是 500 个字符以内的文字")
+
+
+def test_the_plan_says_what_the_projects_cap_on_its_checks_means():
+    # jadeflow 5th retest S-24: an error asked for in a comment came back as a warning
+    # (the model wrote it so, nothing was lowered) and the page said nothing.
+    plan, cleaned = check3(v3_plan(TOTAL, KEYS), PROJECT | {"model_check_max_severity": "warn"})
+    assert cleaned == []
+    said = (
+        "本项目规定方案建议的检查最高按警告跑，不通过时不挡住交付；"
+        "要挡住交付的检查，请加到项目的验收检查里。"
+    )
+    assert said in plan_message_v2(plan, None, None, "warn")
+    assert "本项目规定" not in plan_message_v2(plan, None, None, "error")
+    assert cap_text("info").startswith("本项目规定方案建议的检查最高按提示跑")
 
 
 def test_what_a_check_checks_leaves_out_what_the_platform_tidies():
