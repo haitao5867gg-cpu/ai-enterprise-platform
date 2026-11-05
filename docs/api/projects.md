@@ -194,6 +194,7 @@
 | `release_ready` | `can_release` 为 true，而且每个参数在定时运行时都取得到（见下一节）时为 true |
 | `release_brief` | `can_release` 为 true 时，给人看的上线说明（Markdown），否则 `""`：上线到哪个环境、写到哪个 `catalog.schema`、只写前缀开头的本项目表；平台在 Databricks 上建（或更新）一个 notebook Job，按选的时间运行，上线时不马上运行；有参数时列一张表：每个参数定时运行时怎么取、按今天（`AEP_DATABRICKS_PROD_TIMEZONE` 的日期）运行的话是什么值，算出的值不符合参数格式时注明“这样的日子定时运行会报错、不写表”；有参数取不到时写“现在不能上线”和原因；最后是怎么撤销（删掉或暂停 Job；写进表的数据不跟着撤销，Delta 表可以 `RESTORE TABLE … TO VERSION AS OF …`） |
 | `conventions` | 项目的约定（同项目的 `conventions`）；快照里没有时（加这个字段以前的运行）是 `[]` |
+| `model_check_max_severity` | 项目给模型建议的检查定的最高级别（`error`、`warn`、`info`），快照里没有时是 `error`（第 5 轮复测 S-24 后新增，确认方案页用它说明检查最高按什么跑） |
 | `plan_rules`、`code_rules` | 给模型审查节点当清单用：`applies_to` 是 `plan`（或 `code`）和 `both` 的约定，写成 `[{"key", "title", "instruction"}]`，`instruction` 是约定的 `text`；没有时是 `[]` |
 | `brief` | 给模型看的一段 Markdown，由平台按快照写：项目名称和说明；写到哪里（`catalog.schema`）和表名前缀；“只能写以前缀开头、属于本项目的表”；引用表（全名、名称、读取筛选、说明）；运行参数（标识、名称、类型（有格式时写成“text，格式 `…`”）、这次的值、说明），以及生成的代码用 `param("标识")` 读、方案和检查里的条件用 `${param.标识}` 写；有验收检查时再列一张表（id、名称、级别、检查什么），并说“方案里建议的数据检查不要重复这些，id 也不能和它们相同”；`model_check_max_severity` 不是 `error` 时再写一句“方案里建议的数据检查最高只能是 warn（项目规定），写得更高的按 warn 运行。”；有约定时最后加一节“约定（必须遵守，平台会按它们审查）”，每条写名称、什么时候遵守（写方案时、写代码时、写方案和写代码时）和说明 |
 

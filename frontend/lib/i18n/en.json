@@ -859,6 +859,8 @@
   "本次运行已取消": "This run was cancelled",
   "本次运行已结束": "This run has finished",
   "本次运行的步骤": "Steps of this run",
+  "本项目规定方案建议的检查最高按提示跑，不通过时不挡住交付；要挡住交付的检查，请加到项目的验收检查里。": "This project runs the checks a plan proposes at info level at most: a failure does not block delivery. To block delivery, add the check to the project's acceptance checks.",
+  "本项目规定方案建议的检查最高按警告跑，不通过时不挡住交付；要挡住交付的检查，请加到项目的验收检查里。": "This project runs the checks a plan proposes at warning level at most: a failure does not block delivery. To block delivery, add the check to the project's acceptance checks.",
   "机器 {d}": "Machine {d}",
   "条件": "Condition",
   "条件判断": "Condition",

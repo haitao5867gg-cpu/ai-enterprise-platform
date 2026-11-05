@@ -9,8 +9,12 @@ export type StepChange = {
   key: string;
   label: string;
   fields: string;
-  // Whether the remarks that sent it back named the item; null without such remarks.
+  // Whether the remarks that sent it back named the item or it follows from an answer;
+  // null without such remarks.
   mentioned: boolean | null;
+  // Why, when it was asked for: named in the remarks, or follows from an answer
+  // (jadeflow 5th retest I-3).
+  because: "remarks" | "answer" | null;
 };
 
 const KINDS = ["added", "removed", "changed"] as const;
@@ -34,6 +38,10 @@ export function readChanges(value: unknown): StepChange[] {
             fields: typeof item.fields === "string" ? item.fields : "",
             mentioned:
               typeof item.mentioned === "boolean" ? item.mentioned : null,
+            because:
+              item.because === "remarks" || item.because === "answer"
+                ? item.because
+                : null,
           },
         ]
       : [],
@@ -66,6 +74,9 @@ export function StepChanges({ changes }: { changes: StepChange[] }) {
             {item.fields && <span className="muted">：{item.fields}</span>}
             {item.mentioned === false && (
               <span className="app-tag unasked">意见里没提到</span>
+            )}
+            {item.because === "answer" && (
+              <span className="app-tag answered">按你的回答</span>
             )}
           </li>
         ))}

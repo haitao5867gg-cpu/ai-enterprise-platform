@@ -7,7 +7,7 @@ import hashlib
 import json
 
 from aep.runtime import human
-from aep.runtime.flow import builtin
+from aep.runtime.flow import builtin, diff
 from aep.runtime.flow.check import check_config
 from aep.runtime.flow.graph import looping_options
 from tests.conftest import said
@@ -699,6 +699,7 @@ async def test_what_changed_since_the_last_round_and_what_was_not_asked_for():
                 "label": "客单价",
                 "fields": "unit（无 → 元）",
                 "mentioned": True,
+                "because": "remarks",
             },
             {
                 "list": "指标",
@@ -707,6 +708,7 @@ async def test_what_changed_since_the_last_round_and_what_was_not_asked_for():
                 "label": "件数",
                 "fields": "",
                 "mentioned": False,
+                "because": None,
             },
             {
                 "list": "指标",
@@ -715,6 +717,7 @@ async def test_what_changed_since_the_last_round_and_what_was_not_asked_for():
                 "label": "m5",
                 "fields": "",
                 "mentioned": False,
+                "because": None,
             },
         ]
         # Shown again unchanged: nothing changed.
@@ -835,3 +838,99 @@ async def test_a_visit_limit_is_at_most_fifty():
         ("config", "graph", "nodes", "review", "max_visits"): "最多运行次数要在 1–50 之间"
     }
     assert (await check_config(reviewed(max_visits=50), ENV))["graph"]
+
+
+# What a person asked for (jadeflow 5th retest I-3)
+
+PLAN_LISTS = [
+    {"path": "checks", "key": "id", "label": "label", "name": "检查"},
+    {"path": "rules", "key": "text", "label": "text", "name": "规则", "ignore": ["id"]},
+]
+
+
+def plan_items(checks: list[dict], rules: list[dict]) -> dict:
+    return diff.items({"checks": checks, "rules": rules}, PLAN_LISTS)
+
+
+def test_a_change_is_asked_for_when_the_comment_names_it_in_other_words():
+    actual = {"id": "chk_actual_months_null", "label": "分界月及以前的 12 个月全部留空"}
+    stop = {"id": "r3", "text": "update_month 不是 8 位合法日期时停止运行", "basis": "doc"}
+    lane = {"id": "chk_lane", "label": "每条线路一行", "severity": "warn"}
+    before = plan_items([actual, lane], [])
+    now = plan_items(
+        [actual | {"severity": "error"}, lane | {"severity": "info"}],
+        [stop],
+    )
+    comment = "Actual 检查查满 12 个月并设成错误级；停止条件补上「不是 8 位合法日期」"
+    found = diff.changes(before, now, PLAN_LISTS, {"comment": comment, "notes": []})
+    # A word of the check's key (Actual), and a quoted phrase found in the rule.
+    assert [(c["key"], c["because"], c["mentioned"]) for c in found] == [
+        ("chk_actual_months_null", "remarks", True),
+        ("chk_lane", None, False),
+        ("update_month 不是 8 位合法日期时停止运行", "remarks", True),
+    ]
+    # Five characters in a row shared with the name count; a common word does not.
+    said = {"comment": "每条线路一行这条降成提示", "notes": []}
+    assert diff.changes(before, now, PLAN_LISTS, said)[1]["because"] == "remarks"
+    said = {"comment": "check 都看一下，线路别动", "notes": []}
+    assert diff.changes(before, now, PLAN_LISTS, said)[1]["because"] is None
+
+
+def test_what_follows_from_an_answer_is_asked_for_too():
+    before = plan_items([], [{"id": "r1", "text": "负数按 0 处理", "basis": "assumption"}])
+    confirmed = {"id": "r1", "text": "已确认：负数怎么处理？——原样保留", "basis": "confirmed"}
+    now = plan_items([], [confirmed])
+    answers = [{"label": "负数怎么处理？", "value_label": "原样保留"}]
+    found = diff.changes(before, now, PLAN_LISTS, {"comment": "", "answers": answers})
+    assert [(c["kind"], c["because"], c["mentioned"]) for c in found] == [
+        ("added", "answer", True),
+        ("removed", None, False),
+    ]
+
+
+def test_a_reworded_or_renumbered_rule_is_one_change_or_none():
+    rule = "基数为空的组月，适用的月份写 0，不适用的月份留空"
+    before = plan_items(
+        [{"id": "chk_a", "label": "合计和源表一致"}],
+        [
+            {"id": "r5", "text": rule, "basis": "doc"},
+            {"id": "r6", "text": "负数原样保留", "basis": "doc"},
+        ],
+    )
+    now = plan_items(
+        [{"id": "chk_total", "label": "合计和源表一致"}],
+        [
+            {"id": "r4", "text": rule.replace("写 0", "写成 0"), "basis": "confirmed"},
+            {"id": "r5", "text": "负数原样保留", "basis": "doc"},
+        ],
+    )
+    found = diff.changes(before, now, PLAN_LISTS, None)
+    assert [(c["list"], c["kind"], c["label"], c["fields"]) for c in found] == [
+        ("检查", "changed", "合计和源表一致", "id（chk_a → chk_total）"),
+        ("规则", "changed", rule.replace("写 0", "写成 0"), "改了文字、basis（doc → confirmed）"),
+    ]
+    assert [c["because"] for c in found] == [None, None]
+    # Unlike texts stay one removed and one added.
+    other = plan_items([], [{"id": "r9", "text": "按平台取固定值", "basis": "doc"}])
+    found = diff.changes(before, other, PLAN_LISTS, None)
+    assert [(c["list"], c["kind"]) for c in found] == [
+        ("检查", "removed"),
+        ("规则", "added"),
+        ("规则", "removed"),
+        ("规则", "removed"),
+    ]
+
+
+async def test_fields_left_out_of_the_comparison_are_checked():
+    at = ("config", "graph", "nodes", "review", "changes", "lists")
+    lists = [
+        {"path": "rules", "key": "text", "ignore": ["id", "Bad"]},
+        {"path": "checks", "key": "id", "ignore": ["id"]},
+        {"path": "metrics", "key": "id", "ignore": "id"},
+    ]
+    found = await problems(reviewed(changes={"of": "{{ask.brief}}", "lists": lists}))
+    assert found == {
+        (*at, 0, "ignore"): "ignore 是比较时不算的字段名，最多 10 个",
+        (*at, 1, "ignore"): "配对用的 key 不能不算",
+        (*at, 2, "ignore"): "ignore 是比较时不算的字段名，最多 10 个",
+    }
