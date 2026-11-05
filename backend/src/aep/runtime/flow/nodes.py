@@ -1097,6 +1097,7 @@ def _check_questions(node: dict[str, Any], p: Problems, options: list[str]) -> N
 
 
 MAX_REQUIRES = 5
+MAX_UNMET = 200
 
 
 def _requires_problem(value: Any) -> str | None:
@@ -1149,6 +1150,15 @@ async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
                 guarded.add(o.get("key"))
                 if (problem := _requires_problem(o["requires"])) is not None:
                     p.add(("options", i, "requires"), problem)
+            if isinstance(o, dict) and o.get("unmet") is not None:
+                unmet = o["unmet"]
+                if o.get("requires") is None:
+                    p.add(
+                        ("options", i, "unmet"),
+                        "unmet 是不显示这个选项时的说明，要和 requires 一起设",
+                    )
+                elif not isinstance(unmet, str) or not 1 <= len(unmet.strip()) <= MAX_UNMET:
+                    p.add(("options", i, "unmet"), f"unmet 要写成 1–{MAX_UNMET} 个字符的文字")
         if good and all(o.get("key") in guarded for o in good):
             p.add(("options",), "至少要有一个选项不设 requires，总是显示")
         branch = node.get("changed_branch")
@@ -1170,8 +1180,9 @@ async def check_human(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
                 p.add((key,), APPROVAL_ONLY)
         options = node.get("options")
         for i, o in enumerate(options if isinstance(options, list) else []):
-            if isinstance(o, dict) and o.get("requires") is not None:
-                p.add(("options", i, "requires"), APPROVAL_ONLY)
+            for key in ("requires", "unmet"):
+                if isinstance(o, dict) and o.get(key) is not None:
+                    p.add(("options", i, key), APPROVAL_ONLY)
     else:
         p.add(("mode",), "模式只能是 approval（确认）或 form（填写）")
 
@@ -1222,15 +1233,29 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         return Outcome(outputs, messages=[said])
     labels = {o["key"]: o.get("label", o["key"]) for o in node["options"]}
     shown = [o["key"] for o in node["options"] if _shown(o, get)]
+    # Why an option is not offered this time, when the node says (flow-apps.md, unmet;
+    # jadeflow 6th retest S-28: the prompt said 通过后交付 with no 通过 to pick).
+    for o in node["options"]:
+        if o["key"] not in shown and isinstance(o.get("unmet"), str) and o["unmet"].strip():
+            prompt += (
+                f"\n\n这次不能选「{labels[o['key']]}」：{refs.render(o['unmet'].strip(), get)}"
+            )
     changed_branch = node.get("changed_branch")
     # Options that lead back to the node are offered up to its visit limit; past it only the
-    # others are, so the run does not end on the limit (flow-apps.md, max_visits).
+    # others are, so the run does not end on the limit (flow-apps.md, max_visits). The round
+    # before the last says one is left (6th retest S-28).
     back = [k for k in node.get("_loops") or [] if k in shown]
     limit = node.get("_limit")
-    if back and isinstance(limit, int) and rounds >= limit:
+    if back and isinstance(limit, int) and rounds >= limit - 1 and limit > 1:
         names = "、".join(f"「{labels[k]}」" for k in back)
         left = [k for k in shown if k not in back]
-        if rounds == limit:
+        if rounds == limit - 1:
+            prompt += (
+                f"\n\n这一步一次运行最多处理 {limit} 次，这是第 {rounds} 次：{names}"
+                "这次选了以后，还能再选 1 次。"
+            )
+            details["limit"] = {"round": rounds, "max": limit, "hidden": []}
+        elif rounds == limit:
             prompt += (
                 f"\n\n这一步一次运行最多处理 {limit} 次，这是第 {limit} 次，也是最后一次可以选"
                 f"{names}：选了以后流程回到前面重做，再回到这里时只能选别的。"
@@ -1241,8 +1266,8 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
             if changed_branch in back:
                 changed_branch = None
             prompt += (
-                f"\n\n这一步一次运行最多处理 {limit} 次，这是第 {rounds} 次："
-                f"{names}会让流程回到前面重做，不再提供。"
+                f"\n\n{names}会让流程回到前面重做，这一步到第 {limit} 次为止可以选，"
+                "已经用完，这次不再提供。"
             )
             details["limit"] = {"round": rounds, "max": limit, "hidden": back}
     # What changed since this step last showed it (flow-apps.md, changes).

@@ -859,8 +859,10 @@ async def test_past_its_limit_a_person_gets_the_options_that_do_not_lead_back():
     # jadeflow 5th retest I-22: the run ended with an error on the 5th entry; now the options
     # that lead back are offered up to the limit and only the others after it.
     assert looping_options(reviewed()) == {"review": ["revise"]}
-    async with Platform([reply(), reply(), reply()]) as p:
-        await p.new_app("plan", reviewed(max_visits=2))
+    config = reviewed(max_visits=3)
+    config["graph"]["nodes"][1]["max_visits"] = 4
+    async with Platform([reply(), reply(), reply(), reply()]) as p:
+        await p.new_app("plan", config)
         run = await p.run("plan", {"question": "按城市统计客单价"})
         pending = run["pending"]
         assert pending["options"] == ["approve", "revise", "stop"]
@@ -869,23 +871,33 @@ async def test_past_its_limit_a_person_gets_the_options_that_do_not_lead_back():
         values = {"q1": "all", "q2": True}
         run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
         pending = run["pending"]
+        # The round before the last says one is left (jadeflow 6th retest S-28).
+        assert pending["options"] == ["approve", "revise", "stop"]
+        assert pending["prompt"] == (
+            "请检查方案，回答每道问题\n\n这一步一次运行最多处理 3 次，这是第 2 次："
+            "「按我的意见修改方案」这次选了以后，还能再选 1 次。"
+        )
+        assert pending["details"]["limit"] == {"round": 2, "max": 3, "hidden": []}
+        run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
+        pending = run["pending"]
         # The last visit with all of them, and a warning.
         assert pending["options"] == ["approve", "revise", "stop"]
         assert pending["prompt"] == (
-            "请检查方案，回答每道问题\n\n这一步一次运行最多处理 2 次，这是第 2 次，"
+            "请检查方案，回答每道问题\n\n这一步一次运行最多处理 3 次，这是第 3 次，"
             "也是最后一次可以选「按我的意见修改方案」：选了以后流程回到前面重做，"
             "再回到这里时只能选别的。"
         )
-        assert pending["details"]["limit"] == {"round": 2, "max": 2, "hidden": []}
+        assert pending["details"]["limit"] == {"round": 3, "max": 3, "hidden": []}
         run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
         assert run["status"] == "waiting", run["error"]
         pending = run["pending"]
         assert pending["options"] == ["approve", "stop"]
+        # No 最多处理 3 次，这是第 4 次 (S-28).
         assert pending["prompt"].endswith(
-            "\n\n这一步一次运行最多处理 2 次，这是第 3 次："
-            "「按我的意见修改方案」会让流程回到前面重做，不再提供。"
+            "\n\n「按我的意见修改方案」会让流程回到前面重做，这一步到第 3 次为止可以选，"
+            "已经用完，这次不再提供。"
         )
-        assert pending["details"]["limit"] == {"round": 3, "max": 2, "hidden": ["revise"]}
+        assert pending["details"]["limit"] == {"round": 4, "max": 3, "hidden": ["revise"]}
         # A changed answer no longer turns the decision into the hidden option.
         assert pending["changed_branch"] is None
         status, _ = await refused(p, run, decision="revise", values=values, comment="再改")
@@ -893,6 +905,40 @@ async def test_past_its_limit_a_person_gets_the_options_that_do_not_lead_back():
         run = await p.resume(run, decision="approve", values={"q1": "y2026", "q2": True})
         assert run["status"] == "done"
         assert (await review_output(p, run))["decision"] == "approve"
+
+
+async def test_an_option_not_offered_says_why_when_the_node_says():
+    # jadeflow 6th retest S-28: no 通过 to pick, and nothing said why.
+    config = reviewed()
+    options = config["graph"]["nodes"][2]["options"]
+    assert options[2]["key"] == "pass"
+    options[2]["unmet"] = "「{{start.question}}」还有没讲清楚的，先回答问题"
+    async with Platform([reply(), reply(ok=True)]) as p:
+        await p.new_app("plan", config)
+        run = await p.run("plan", {"question": "按城市统计客单价"})
+        assert run["pending"]["options"] == ["approve", "revise", "stop"]
+        assert run["pending"]["prompt"] == (
+            "请检查方案，回答每道问题\n\n这次不能选「直接通过」："
+            "「按城市统计客单价」还有没讲清楚的，先回答问题"
+        )
+        run = await p.resume(run, decision="revise", values={"q1": "all", "q2": True}, comment="改")
+        assert "pass" in run["pending"]["options"]
+        assert "不能选" not in run["pending"]["prompt"]
+
+
+async def test_why_an_option_is_not_offered_is_checked():
+    at = ("config", "graph", "nodes", "review", "options")
+    config = reviewed()
+    options = config["graph"]["nodes"][2]["options"]
+    options[0]["unmet"] = "没有 requires"
+    options[2]["unmet"] = "长" * 201
+    assert await problems(config) == {
+        (*at, 0, "unmet"): "unmet 是不显示这个选项时的说明，要和 requires 一起设",
+        (*at, 2, "unmet"): "unmet 要写成 1–200 个字符的文字",
+    }
+    options[0].pop("unmet")
+    options[2]["unmet"] = "说明"
+    assert (await check_config(config, ENV))["graph"]
 
 
 async def test_which_options_lead_back_to_a_person():

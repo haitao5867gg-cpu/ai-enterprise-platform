@@ -739,7 +739,11 @@ export function etlV3Config(): FlowConfig {
         },
         options: dataReviewNode.options.map((option) =>
           option.key === "approve"
-            ? { ...option, requires: ["{{dev_run.ok}}", "{{checks.ok}}"] }
+            ? {
+                ...option,
+                requires: ["{{dev_run.ok}}", "{{checks.ok}}"],
+                unmet: "试算或数据检查有错误，请改代码、改方案或终止",
+              }
             : option,
         ),
       },
