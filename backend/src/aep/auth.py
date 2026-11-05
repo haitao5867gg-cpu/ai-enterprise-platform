@@ -179,6 +179,7 @@ LABELS: dict[str, str] = {
     "POST /apps/{app}/keys": "新建 API 密钥",
     "PUT /apps/{app}/eval-set": "保存评测集",
     "POST /apps/{app}/eval-set/cases/from-run": "把运行存成评测用例",
+    "POST /apps/{app}/eval-set/import": "从表格导入评测用例",
     "PUT /runs/{run_id}/feedback": "评价运行",
     "DELETE /runs/{run_id}/feedback": "撤回评价",
     "POST /runs/{run_id}/rerun-from": "从某一步重跑",

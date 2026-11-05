@@ -1,12 +1,14 @@
 """Eval sets of apps (docs/api/evals.md, "评测集")."""
 
+import asyncio
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from aep import conversations as chat
+from aep import eval_import
 from aep.api.apps import Catalog, _invalid, _not_found
 from aep.auth import who
 from aep.eval_sets import MAX_CASES, MAX_CHECKS
@@ -163,3 +165,74 @@ async def case_from_run(
         raise HTTPException(409, READ_ONLY) from exc
     except CaseFromRunProblem as exc:
         raise HTTPException(exc.status, str(exc)) from exc
+
+
+def _row_problem(number: int, case: dict[str, Any], exc: ValidationError) -> str:
+    """One sentence on what is wrong with a table row (docs/api/evals.md, "从表格导入")."""
+    error = exc.errors()[0]
+    loc = [str(part) for part in error["loc"]]
+    where = f"第 {number} 行："
+    if loc[:1] == ["id"]:
+        return where + f"用例 id「{case.get('id')}」只能用小写字母、数字、- 和 _，最多 60 个字符"
+    if loc[:1] == ["title"]:
+        return where + "标题最多 100 个字"
+    if loc[:1] == ["expect"] and len(loc) == 1:
+        return where + f"检查最多 {MAX_CHECKS} 项"
+    if loc[:1] == ["expect"]:
+        return where + "检查的写法不对：" + error["msg"]
+    return where + ".".join(loc) + " " + error["msg"]
+
+
+@router.post("/{app}/eval-set/import")
+async def import_eval_set(
+    app: str,
+    catalog: Catalog,
+    request: Request,
+    file: Annotated[UploadFile | None, File()] = None,
+    mode: Annotated[str, Form()] = "append",
+) -> dict[str, Any]:
+    try:
+        current = await catalog.get_eval_set(app)
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    if not current["editable"]:
+        raise HTTPException(409, READ_ONLY)
+    if file is None:
+        raise HTTPException(422, "请选择一个 .xlsx 或 .csv 文件")
+    if mode not in ("append", "replace"):
+        raise HTTPException(422, "mode 只能是 append 或 replace")
+    data = await file.read(eval_import.MAX_BYTES + 1)
+    try:
+        rows = await asyncio.to_thread(eval_import.cases, file.filename or "", data)
+    except eval_import.ImportProblem as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    kept = current["cases"] if mode == "append" else []
+    taken = {c["id"] for c in kept}
+    added: list[dict[str, Any]] = []
+    for number, raw in rows:
+        try:
+            case = Case.model_validate(raw)
+        except ValidationError as exc:
+            raise HTTPException(422, _row_problem(number, raw, exc)) from exc
+        if case.id in taken:
+            raise HTTPException(422, f"第 {number} 行：用例 id「{case.id}」已经有了")
+        taken.add(case.id)
+        added.append(_case(case))
+    total = len(kept) + len(added)
+    if total > MAX_CASES:
+        raise HTTPException(422, f"导入后有 {total} 条用例，一个评测集最多 {MAX_CASES} 条")
+    try:
+        saved = await catalog.put_eval_set(
+            app,
+            [*kept, *added],
+            current["threshold"],
+            current["judge_model"],
+            who(request, None),
+        )
+    except AppNotFound as exc:
+        raise _not_found(app) from exc
+    except EvalSetReadOnly as exc:
+        raise HTTPException(409, READ_ONLY) from exc
+    except ConfigError as exc:
+        raise _invalid(exc) from exc
+    return saved | {"imported": len(added)}

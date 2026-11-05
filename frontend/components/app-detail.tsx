@@ -59,7 +59,12 @@ import {
 import { FlowNodeDesign } from "./flow-node-design";
 import { ErrorNotice } from "./ui";
 import { EvalSetPanel } from "./eval-set";
-import type { EvalSet } from "../lib/evals";
+import {
+  checkKinds,
+  shown,
+  type EvalSet,
+  type FieldAccuracy,
+} from "../lib/evals";
 import { AppMetadata } from "./app-metadata";
 import { AppManualPanel, useManual } from "./app-manual";
 import { dataNodeIssues } from "../lib/data-nodes";
@@ -80,6 +85,94 @@ const caseLabels: Record<string, string> = {
 };
 const scoreText = (value: number | null | undefined) =>
   value == null ? "—" : value.toFixed(2);
+
+const rateText = (passed: number, total: number) =>
+  total ? `${Math.round((passed / total) * 100)}%` : "—";
+
+// How each checked field did over the eval (docs/api/evals.md, "按字段的准确率"): for
+// classification fields, which values are often wrong and what the app said instead.
+function FieldAccuracyTable({ fields }: { fields: FieldAccuracy[] }) {
+  const t = useT();
+  return (
+    <div className="table-scroll eval-fields">
+      <table className="mapping-table">
+        <caption>{t("按字段")}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{t("字段")}</th>
+            <th scope="col">{t("检查方式")}</th>
+            <th scope="col">{t("通过 / 总数")}</th>
+            <th scope="col">{t("通过率")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {fields.map((field) => (
+            <tr key={`${field.path ?? ""}:${field.kind}`}>
+              <th scope="row">
+                <span className="monospace">{field.path ?? t("整个结果")}</span>
+                {(field.values?.length ?? 0) > 1 ||
+                (field.errors?.length ?? 0) > 0 ? (
+                  <details>
+                    <summary>{t("按取值看")}</summary>
+                    <ul className="eval-field-values">
+                      {field.values?.map((value) => (
+                        <li key={JSON.stringify(value.value)}>
+                          {t("{value}：{passed} / {total}", {
+                            value: shown(value.value, 40),
+                            passed: value.passed,
+                            total: value.total,
+                          })}
+                        </li>
+                      ))}
+                    </ul>
+                    {field.errors && field.errors.length > 0 && (
+                      <>
+                        <p className="muted">{t("常见的错")}</p>
+                        <ul className="eval-field-values">
+                          {field.errors.map((error) => (
+                            <li
+                              key={JSON.stringify([
+                                error.expected,
+                                error.actual,
+                              ])}
+                            >
+                              {t(
+                                "应为 {expected}，给了 {actual}（{count} 条）",
+                                {
+                                  expected: shown(error.expected, 40),
+                                  actual:
+                                    error.actual === undefined ||
+                                    error.actual === null
+                                      ? t("空")
+                                      : shown(error.actual, 40),
+                                  count: error.count,
+                                },
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                  </details>
+                ) : null}
+              </th>
+              <td>
+                {t(
+                  checkKinds[field.kind as keyof typeof checkKinds] ??
+                    field.kind,
+                )}
+              </td>
+              <td>
+                {field.passed} / {field.total}
+              </td>
+              <td>{rateText(field.passed, field.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function Evaluation({
   evaluation,
@@ -111,6 +204,9 @@ function Evaluation({
         </span>
       </div>
       {evaluation.error && <p className="field-error">{evaluation.error}</p>}
+      {evaluation.fields && evaluation.fields.length > 0 && (
+        <FieldAccuracyTable fields={evaluation.fields} />
+      )}
       <ul className="eval-cases" aria-label={t("评测用例")}>
         {evaluation.cases.map((item) => (
           <li key={item.id}>

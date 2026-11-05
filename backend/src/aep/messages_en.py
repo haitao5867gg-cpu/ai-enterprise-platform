@@ -125,6 +125,35 @@ MESSAGES: dict[str, str] = {
     "这次运行不是应用 {app} 的": "This run is not of app {app}",
     "运行结束后才能存成用例": "A run can be saved as a case once it has ended",
     "一个评测集最多 {count} 条用例": "An eval set holds at most {count} cases",
+    # Eval cases from a spreadsheet (aep.eval_import)
+    "第 {n} 列「{name}」认不出来：列名要写成 id、title、input.<字段>、"
+    "expect.<结果路径>、contains.<结果路径>、excludes.<结果路径>、"
+    "judge.<结果路径>、answer.<节点>、answer.<节点>.<字段>": (
+        "Column {n} “{name}” is not recognized: name columns id, title, input.<field>, "
+        "expect.<result path>, contains.<result path>, excludes.<result path>, "
+        "judge.<result path>, answer.<node> or answer.<node>.<field>"
+    ),
+    "第 {n} 列「{name}」和第 {m} 列重复了": "Column {n} “{name}” repeats column {m}",
+    "第 {row} 行第 {n} 列有值，但这一列没有列名": (
+        "Row {row} has a value in column {n}, which has no name"
+    ),
+    "表里没有用例": "The table has no cases",
+    "文件不能超过 5 MB": "The file must not be larger than 5 MB",
+    "只能导入 .xlsx 或 .csv 文件": "Only .xlsx or .csv files can be imported",
+    "读不出这个文件：{reason}": "Cannot read this file: {reason}",
+    "请选择一个 .xlsx 或 .csv 文件": "Choose an .xlsx or .csv file",
+    "mode 只能是 append 或 replace": "mode is append or replace",
+    "第 {row} 行：用例 id「{id}」只能用小写字母、数字、- 和 _，最多 60 个字符": (
+        "Row {row}: the case id “{id}” may only have lowercase letters, digits, - and _, "
+        "at most 60 characters"
+    ),
+    "第 {row} 行：标题最多 100 个字": "Row {row}: a title has at most 100 characters",
+    "第 {row} 行：检查最多 {count} 项": "Row {row}: at most {count} checks",
+    "第 {row} 行：检查的写法不对：{msg}": "Row {row}: a check is written wrong: {msg}",
+    "第 {row} 行：用例 id「{id}」已经有了": "Row {row}: the case id “{id}” is already taken",
+    "导入后有 {total} 条用例，一个评测集最多 {count} 条": (
+        "The import would make {total} cases; an eval set holds at most {count}"
+    ),
     "这个应用没有开对话，用例不能带历史": (
         "This app does not take conversations, so a case cannot have history"
     ),

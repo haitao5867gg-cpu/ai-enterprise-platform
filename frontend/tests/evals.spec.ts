@@ -195,6 +195,88 @@ test("cases are written by hand, checked, saved and kept read-only for the ETL a
   ).toBe(409);
 });
 
+test("cases are imported from a table and an eval counts each field", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  const app = id("evalimport");
+  const created = await newApp(request, app);
+  await page.goto(`/apps/${app}#release`);
+  const set = page.getByRole("region", { name: "评测集" });
+  await set.getByRole("button", { name: "从表格导入" }).click();
+  const form = set.getByRole("form", { name: "从表格导入" });
+  await expect(form).toContainText("input.question");
+  const file = form.getByLabel("表格文件（.xlsx 或 .csv，最多 5 MB）");
+
+  // A column the platform does not know: nothing is saved, the reason is shown.
+  await file.setInputFiles({
+    name: "bad.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("id,备注\nx,y\n"),
+  });
+  await form.getByRole("button", { name: "导入" }).click();
+  await expect(form.getByRole("alert")).toContainText(
+    "第 2 列「备注」认不出来",
+  );
+
+  await file.setInputFiles({
+    name: "cases.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(
+      "id,title,input.question,expect.answer,contains.answer\n" +
+        "refund,退货,我要退货,（模拟回答）我要退货,退货；模拟\n" +
+        ",,我要换货,（模拟回答）我要换货,\n",
+    ),
+  });
+  await form.getByRole("button", { name: "导入" }).click();
+  await expect(set.getByRole("status")).toContainText(
+    "导入了 2 条用例，现在共 2 条",
+  );
+  await expect(form).toHaveCount(0);
+  const table = set.getByRole("table", { name: "评测用例" });
+  await expect(table.getByRole("row")).toHaveCount(3);
+  await expect(table).toContainText("answer 包含 退货、模拟");
+  const saved = await (await request.get(`/api/apps/${app}/eval-set`)).json();
+  expect(saved.cases.map((item: { id: string }) => item.id)).toEqual([
+    "refund",
+    "row-2",
+  ]);
+
+  // Replace asks first, then keeps only the new rows.
+  await set.getByRole("button", { name: "从表格导入" }).click();
+  await form.getByLabel("替换全部用例").check();
+  await form.getByLabel("表格文件（.xlsx 或 .csv，最多 5 MB）").setInputFiles({
+    name: "one.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(
+      "id,input.question,expect.answer\nonly,我要退货,（模拟回答）我要退货\n",
+    ),
+  });
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain("替换会删掉现在的 2 条用例");
+    void dialog.accept();
+  });
+  await form.getByRole("button", { name: "导入" }).click();
+  await expect(set.getByRole("status")).toContainText("导入了 1 条用例");
+  await expect(table.getByRole("row")).toHaveCount(2);
+
+  // The eval shows how each checked field did.
+  const draft = await request.put(`/api/apps/${app}/draft`, {
+    data: { config: created.current.config },
+  });
+  expect(draft.status()).toBe(200);
+  await page.reload();
+  const release = page.getByRole("region", { name: "发布前评测" });
+  await release.getByRole("button", { name: "运行评测" }).click();
+  await expect(release).toContainText("评测通过", { timeout: 20_000 });
+  const fields = release.getByRole("table", { name: "按字段" });
+  await expect(fields.getByRole("row")).toHaveCount(2);
+  await expect(fields.getByRole("row").nth(1)).toContainText("answer");
+  await expect(fields.getByRole("row").nth(1)).toContainText("1 / 1");
+  await expect(fields.getByRole("row").nth(1)).toContainText("100%");
+});
+
 test("developer view: step time and tokens, rerun from a step on the draft, compare two runs", async ({
   page,
   request,

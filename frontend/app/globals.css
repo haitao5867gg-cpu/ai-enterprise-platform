@@ -5510,6 +5510,52 @@ fieldset.project-form-section > legend + * {
 }
 
 /* Eval sets, run feedback and the developer view (docs/api/evals.md) */
+.eval-fields {
+  margin: 12px 0 4px;
+}
+.eval-fields caption {
+  text-align: left;
+  font-weight: 600;
+  padding-bottom: 6px;
+}
+.eval-fields th[scope="row"] {
+  font-weight: normal;
+  vertical-align: top;
+}
+.eval-fields details {
+  margin-top: 4px;
+  font-size: 13px;
+}
+.eval-fields details p {
+  margin: 6px 0 2px;
+}
+.eval-field-values {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.eval-import {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.eval-import p {
+  margin: 0;
+}
+.eval-import-mode {
+  display: grid;
+  gap: 4px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.eval-import-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
 .eval-cases .eval-check-results {
   flex-basis: 100%;
   list-style: none;

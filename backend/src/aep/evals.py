@@ -42,6 +42,9 @@ class Check:
     name: str
     passed: bool | None  # None: skipped
     detail: str = ""
+    # Flow cases' checks: their path, and an equals check's expected and actual values
+    # (docs/api/evals.md, "按字段的准确率"). Not in reports when empty.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -341,12 +344,18 @@ def render(results: list[CaseResult], model: str | None) -> str:
     return "\n".join(lines)
 
 
+def _check(check: Check) -> dict[str, Any]:
+    return {k: v for k, v in asdict(check).items() if k != "extra"} | check.extra
+
+
 def report(results: list[CaseResult], model: str | None) -> dict[str, Any]:
     return {
         "at": datetime.now(UTC).isoformat(),
         "model": model,
         **summary(results),
-        "results": [asdict(r) | {"score": r.score} for r in results],
+        "results": [
+            asdict(r) | {"score": r.score, "checks": [_check(c) for c in r.checks]} for r in results
+        ],
     }
 
 

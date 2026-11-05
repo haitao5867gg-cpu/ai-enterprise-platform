@@ -44,6 +44,22 @@ export type CheckResult = {
   name: string;
   passed: boolean | null;
   detail: string;
+  // The result field the check looked at; for equals, the value it wanted and the one
+  // the run had (left out when the run had none). Not on 「运行完成」.
+  path?: string | null;
+  expected?: unknown;
+  actual?: unknown;
+};
+// How one checked field did over an eval (docs/api/evals.md, "按字段的准确率").
+export type FieldAccuracy = {
+  path: string | null;
+  kind: string;
+  total: number;
+  passed: number;
+  rate: number;
+  // Equals only: per expected value, and the most common wrong answers.
+  values?: { value: unknown; total: number; passed: number }[];
+  errors?: { expected: unknown; actual: unknown; count: number }[];
 };
 export type RunFeedback = {
   good: number;
@@ -52,7 +68,7 @@ export type RunFeedback = {
   cases: { app: string; case_id: string }[];
 };
 
-export const MAX_CASES = 50;
+export const MAX_CASES = 500;
 export const MAX_CHECKS = 20;
 export const SAME_MEANING = "意思和参考答案一致";
 
@@ -87,6 +103,22 @@ export const caseFromRun = (
     method: "POST",
     body: JSON.stringify({ run_id: runId, rating }),
   }) as Promise<EvalCase>;
+
+// Cases from a table (docs/api/evals.md, "从表格导入"): added after the ones there, or in
+// their place.
+export const importEvalSet = (
+  app: string,
+  file: File,
+  mode: "append" | "replace",
+) => {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("mode", mode);
+  return requestJson(`${base(app)}/import`, {
+    method: "POST",
+    body,
+  }) as Promise<EvalSet & { imported: number }>;
+};
 
 const runBase = (id: string) => `/runs/${encodeURIComponent(id)}`;
 export const rateRun = (

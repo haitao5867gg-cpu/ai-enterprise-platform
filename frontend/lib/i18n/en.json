@@ -1523,5 +1523,18 @@
   "，质量规则丢弃 {n} 行": ", {n} rows dropped by quality rules",
   "；": "; ",
   "👍 对": "👍 Right",
-  "👎 不对": "👎 Wrong"
+  "👎 不对": "👎 Wrong",
+  "不含": "Excludes",
+  "模型判断": "Model judges",
+  "按字段": "By field",
+  "字段": "Field",
+  "通过 / 总数": "Passed / total",
+  "通过率": "Pass rate",
+  "整个结果": "Whole result",
+  "按取值看": "By value",
+  "{value}：{passed} / {total}": "{value}: {passed} / {total}",
+  "常见的错": "Common mistakes",
+  "应为 {expected}，给了 {actual}（{count} 条）": "Expected {expected}, got {actual} ({count})",
+  "空": "nothing",
+  "检查方式": "Check"
 }

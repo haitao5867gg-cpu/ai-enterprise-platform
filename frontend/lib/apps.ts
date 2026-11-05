@@ -5,7 +5,7 @@ import type {
   Retrieval,
 } from "./knowledge";
 import type { FlowEdge, NodeDesign, NodeKind } from "./flow";
-import type { CheckResult } from "./evals";
+import type { CheckResult, FieldAccuracy } from "./evals";
 import { ApiError, isRecord, requestJson } from "./runs";
 
 // docs/api/apps-and-skills.md — names and payloads follow the backend contract.
@@ -399,7 +399,10 @@ export function isAgentConfig(config: AppConfig): config is AgentAppConfig {
 }
 // Whether people can talk to the app: an agent app always, a flow app that opened it.
 export function converses(config: AppConfig): boolean {
-  return isAgentConfig(config) || Boolean(isFlowConfig(config) && config.conversation?.enabled);
+  return (
+    isAgentConfig(config) ||
+    Boolean(isFlowConfig(config) && config.conversation?.enabled)
+  );
 }
 type WithoutBase<T> = T extends unknown
   ? Omit<T, keyof NodeBase | "type" | "on_error">
@@ -508,6 +511,8 @@ export type AppEval = {
     error: string | null;
     checks?: CheckResult[];
   }[];
+  // Per checked field, over the finished cases; not for the etl app.
+  fields?: FieldAccuracy[];
 };
 export type AppVersion = {
   version: number | null;
@@ -610,7 +615,9 @@ function isSummary(
     Number.isInteger(value.current_version) &&
     typeof value.has_draft === "boolean" &&
     typeof value.has_eval_set === "boolean" &&
-    (value.kind === "code" || value.kind === "flow" || value.kind === "agent") &&
+    (value.kind === "code" ||
+      value.kind === "flow" ||
+      value.kind === "agent") &&
     (value.created_at === null || typeof value.created_at === "string")
   );
 }
@@ -877,7 +884,13 @@ export async function exportAppVersion(
 // Copies an agent app into an equivalent flow app (docs/api/agent-apps.md, "转成编排应用").
 export const convertToFlow = async (
   app: string,
-  input: { app: string; title?: string; summary?: string; version?: number; actor?: string },
+  input: {
+    app: string;
+    title?: string;
+    summary?: string;
+    version?: number;
+    actor?: string;
+  },
 ): Promise<AppDetail> =>
   readAppDetail(
     await requestJson(`${pathFor(app)}/convert-to-flow`, {

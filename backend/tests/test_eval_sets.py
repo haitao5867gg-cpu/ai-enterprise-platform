@@ -410,7 +410,7 @@ async def test_saving_a_run_as_a_case_needs_a_finished_run_of_the_app():
         )
         full = await p.api.post(path, json={"run_id": other["run_id"]})
         assert full.status_code == 409
-        assert full.json()["detail"] == "一个评测集最多 50 条用例"
+        assert full.json()["detail"] == f"一个评测集最多 {eval_sets.MAX_CASES} 条用例"
 
 
 # The developer view
