@@ -156,7 +156,11 @@ async def test_aggregate_reads_the_result_table_in_the_project_environment():
     assert ranged_call["where"] == "month = '2026-10'"
     assert out.outputs["ok"] is False and out.branch == "failed"
     assert out.outputs["summary"] == "3 项检查：2 项通过，1 项不通过"
-    assert out.data == ["results", "report"]
+    assert out.data == ["results", "report", "problems"]
+    # What did not pass, for the model that rewrites the code (jadeflow 5th retest I-18).
+    assert out.outputs["failed"] is True
+    assert out.outputs["problems"].startswith("- 〔")
+    assert "不通过：实际 3，要求 ≥ 5，不满足" in out.outputs["problems"]
 
 
 async def test_reference_filters_and_conditions_are_joined_per_side():
@@ -924,6 +928,8 @@ async def test_only_if_skips_the_checks_without_calling_the_connector():
             "results": [],
             "summary": "前一步没有通过，没有做数据检查",
             "report": "前一步没有通过，没有做数据检查",
+            "failed": False,
+            "problems": "",
         }
         assert out.branch == "failed"
     assert calls == []
@@ -1310,3 +1316,43 @@ def test_the_columns_a_check_names():
         ("b", "right.where", ["z"]),
         ("b", "group_by", ["g"]),
     ]
+
+
+def test_what_did_not_pass_is_written_for_the_model_with_a_few_examples():
+    row = {f"c{i}": i for i in range(10)} | {"sku": "A1"}
+    results = [
+        {
+            "label": "行数",
+            "status": "passed",
+            "severity": "error",
+            "message": "共 3 行",
+            "rows": [],
+        },
+        {
+            "label": "每个物料每月一行",
+            "status": "failed",
+            "severity": "warn",
+            "message": "有 4 组重复",
+            "rows": [row, row, row, row],
+            "focus": ["sku"],
+        },
+        {
+            "label": "合计",
+            "status": "error",
+            "severity": "error",
+            "message": "查询出错",
+            "rows": [],
+        },
+    ]
+    assert checks.failed(results) and not checks.failed(results[:1])
+    example = "  例子：sku=A1，" + "，".join(f"c{i}={i}" for i in range(7))
+    assert checks.failing_text(results) == "\n".join(
+        [
+            "- 〔每个物料每月一行〕不通过（警告）：有 4 组重复",
+            example,
+            example,
+            example,
+            "- 〔合计〕出错：查询出错",
+        ]
+    )
+    assert checks.failing_text(results[:1]) == ""

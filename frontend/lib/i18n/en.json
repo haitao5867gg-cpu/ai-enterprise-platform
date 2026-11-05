@@ -1276,6 +1276,7 @@
   "超时": "Timed out",
   "超时秒数": "Timeout (seconds)",
   "超过这个时间还没结束，就取消它，这一步按超时失败。": "If it hasn't finished by then it is cancelled and this step fails with a timeout.",
+  "超过这个次数后，不再提供会让流程回到这一步的选项（比如“驳回”“改代码”），运行不会失败。": "Past this count, options that would bring the flow back to this step (such as Reject or Fix code) are no longer offered; the run does not fail.",
   "跳到主要内容": "Skip to main content",
   "跳过": "Skipped",
   "转成编排应用": "Convert to a flow app",

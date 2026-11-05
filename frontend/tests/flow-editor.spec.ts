@@ -458,6 +458,9 @@ test("a human node's extended settings are shown, kept on save and follow a rena
   await expect(extras).toContainText("previous：{{review.record}}");
   await expect(extras).toContainText("统计哪段时间？、要不要去掉测试订单？");
   await expect(extras).toContainText("「按我的意见修改方案」处理");
+  // Past its visit limit an approval step stops offering the options that come back
+  // instead of failing the run (jadeflow 5th retest I-22).
+  await expect(panel(page)).toContainText("不再提供会让流程回到这一步的选项");
 
   // Renaming the option renames changed_branch, comment_required and the edge.
   await panel(page)
@@ -487,6 +490,9 @@ test("a human node's extended settings are shown, kept on save and follow a rena
     .getByLabel("处理方式", { exact: true })
     .selectOption("form");
   await expect(extras).toHaveCount(0);
+  await expect(panel(page)).toContainText(
+    "循环里的节点超过这个次数时运行失败。",
+  );
 });
 
 test("draft trial run asks to save first, then runs the draft and is labelled", async ({
