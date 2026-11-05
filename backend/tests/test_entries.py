@@ -124,6 +124,8 @@ async def test_an_app_closed_to_other_apps_cannot_be_called():
     async with Platform(["订单 42 已发货"]) as p:
         await p.new_app("lookup", LOOKUP)
         await p.new_app("front", caller(call()))
+        called = (await p.api.get("/apps/lookup/access")).json()["apps"]
+        assert [(c["app"], c["via"]) for c in called["callers"]] == [("front", "node")]
         await p.api.put("/apps/lookup/access", json={"apps": False})
         refused = await save(p, "other", caller(call()))
         assert refused.status_code == 422

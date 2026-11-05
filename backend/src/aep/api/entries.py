@@ -1,6 +1,7 @@
 """The ways into an app, each of which can be closed (docs/api/app-access.md, "入口")."""
 
 from datetime import UTC, datetime
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -17,11 +18,23 @@ class Entry(BaseModel):
     last_used_at: datetime | None
 
 
+class Caller(BaseModel):
+    app: str
+    title: str
+    version: int
+    via: Literal["node", "agent"]
+
+
+class CalledEntry(Entry):
+    # The apps whose current version calls this one.
+    callers: list[Caller]
+
+
 class AppAccess(BaseModel):
     use: Entry
     api: Entry
     mcp: Entry
-    apps: Entry
+    apps: CalledEntry
 
 
 class SetAccess(BaseModel):
@@ -44,10 +57,15 @@ async def open_to_users(request: Request, app: str) -> None:
         require(request, "builder", CLOSED_TO_USERS)
 
 
-async def _access(service: RunService, app: str) -> AppAccess:
+async def _access(request: Request, app: str) -> AppAccess:
+    service = _service(request)
     found = await service.entries.get(app)
     used = await service.last_used(app)
-    return AppAccess(**{e: Entry(enabled=found.open(e), last_used_at=used.get(e)) for e in ENTRIES})
+    entries: dict[str, Any] = {
+        e: {"enabled": found.open(e), "last_used_at": used.get(e)} for e in ENTRIES
+    }
+    entries["apps"]["callers"] = await request.app.state.catalog.app_callers(app)
+    return AppAccess(**entries)
 
 
 async def _app(service: RunService, app: str) -> None:
@@ -59,7 +77,7 @@ async def _app(service: RunService, app: str) -> None:
 async def get_access(app: str, request: Request) -> AppAccess:
     service = _service(request)
     await _app(service, app)
-    return await _access(service, app)
+    return await _access(request, app)
 
 
 @router.put("/{app}/access")
@@ -71,4 +89,4 @@ async def set_access(app: str, body: SetAccess, request: Request) -> AppAccess:
         setattr(found, entry, value)
     found.updated_by, found.updated_at = who(request, None), datetime.now(UTC)
     await service.entries.put(found)
-    return await _access(service, app)
+    return await _access(request, app)
