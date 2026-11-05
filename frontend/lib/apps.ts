@@ -630,6 +630,48 @@ function isVersion(value: unknown): value is AppVersion {
   );
 }
 
+// Settings a flow node may leave out, with the value the runtime then uses
+// (docs/api/flow-apps.md, "节点类型"). A config written by hand, through the API or
+// by an import may leave them out; the pages read every node with them filled in.
+const OMITTED: { [T in FlowNode["type"]]?: Record<string, unknown> } = {
+  llm: { model: null, skills: [], output: { kind: "text" } },
+  classifier: { model: null, skills: [] },
+  llm_review: { model: null, skills: [] },
+  agent: { model: null, skills: [], max_steps: 8 },
+  tool: { args: {} },
+  knowledge: { top_k: 5, min_score: 0.3 },
+  human: { mode: "approval" },
+  code: { inputs: {}, timeout_seconds: 10 },
+  etl_profile: { sample_rows: 5 },
+  etl_plan_check: { hits: [], max_attempts: 3 },
+  etl_code_check: { max_attempts: 3 },
+  databricks_ingest: { max_rows: 200000 },
+  databricks_dev_run: { max_runs: 3, preview_rows: 20 },
+  data_check: { checks: [], include: [] },
+  app: { input: {}, outputs: [] },
+};
+function withOmitted(config: FlowConfig): FlowConfig {
+  return {
+    ...config,
+    graph: {
+      ...config.graph,
+      nodes: config.graph.nodes.map(
+        (node) =>
+          ({
+            ...structuredClone(OMITTED[node.type] ?? {}),
+            ...node,
+            title: node.title || node.id,
+          }) as FlowNode,
+      ),
+    },
+  };
+}
+function filled(version: AppVersion): AppVersion {
+  return isFlowConfig(version.config)
+    ? { ...version, config: withOmitted(version.config) }
+    : version;
+}
+
 export function readAppDetail(value: unknown): AppDetail {
   if (
     !isSummary(value) ||
@@ -650,7 +692,12 @@ export function readAppDetail(value: unknown): AppDetail {
   ) {
     throw new ApiError("应用详情格式不正确，请稍后重试。");
   }
-  return value as AppDetail;
+  const detail = value as AppDetail;
+  return {
+    ...detail,
+    current: filled(detail.current),
+    draft: detail.draft && filled(detail.draft),
+  };
 }
 
 const pathFor = (app: string) => `/apps/${encodeURIComponent(app)}`;
@@ -673,7 +720,7 @@ export async function getAppVersions(
   const value = await requestJson(`${pathFor(app)}/versions`, { signal });
   if (!Array.isArray(value) || !value.every(isVersion))
     throw new ApiError("应用版本格式不正确，请稍后重试。");
-  return value;
+  return value.map(filled);
 }
 async function changeApp(
   app: string,

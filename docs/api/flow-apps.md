@@ -71,7 +71,7 @@
 
 ### 节点类型
 
-每种类型的设置字段如下（公共字段不再重复）。“产出”是这个节点写进变量池的字段，“分支”是它的出边要用的 `branch` 名。
+每种类型的设置字段如下（公共字段不再重复）。“产出”是这个节点写进变量池的字段，“分支”是它的出边要用的 `branch` 名。可选的设置不写时按运行时的默认值处理（如 llm 的 `model` 为 null、`skills` 为 `[]`、`output` 为文字，`title` 不写时用节点 id）；手写、经接口或导入的配置可以不写这些键，编辑页读入时按同样的默认值补上，保存后写进配置。
 
 **knowledge 知识检索**的设置、产出和引用编号规则见 [knowledge.md](knowledge.md#编排应用知识检索节点)。
 
@@ -112,7 +112,7 @@
  "system": "你是售后客服……",           // 可选，最多 20000 字符；拼在 Skill 正文后面
  "prompt": "客户问：{{start.question}}", // 必填，最多 20000 字符
  "output": {"kind": "text"}
-        |  {"kind": "json", "fields": [{"key": "amount", "type": "string" | "number" | "boolean" | "array" | "object", "description": "退款金额"}]},
+        |  {"kind": "json", "fields": [{"key": "amount", "type": "string" | "number" | "boolean" | "array" | "object", "description": "退款金额"}]},   // 可选，不写为 {"kind": "text"}
  "quiet": false,                       // 可选，默认 false；true 时文本回答不写进运行过程
  "history": false}                     // 可选，默认 false；true 时带上会话历史（应用要打开对话，见“对话”）
 ```
