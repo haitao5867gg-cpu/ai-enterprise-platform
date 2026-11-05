@@ -438,6 +438,56 @@ test("llm 节点「回答不写进运行过程」保存后保留", async ({ page
   await expect(quiet).toHaveCount(0);
 });
 
+test("a node that leaves out optional settings opens like the runtime reads it", async ({
+  page,
+  request,
+}) => {
+  const app = id("editor");
+  const response = await request.post("/api/apps", {
+    data: { app, title: "编辑测试", from: { blank: true } },
+  });
+  expect(response.status()).toBe(201);
+  // A config written by hand, by the API or by an import may leave these out
+  // (docs/api/flow-apps.md); the runtime then uses no Skill, the default model,
+  // a text answer and the node id as the title.
+  await page.route(`**/api/apps/${app}`, async (route) => {
+    const fetched = await route.fetch();
+    const detail = (await fetched.json()) as AppDetail;
+    for (const version of [detail.current, detail.draft]) {
+      for (const node of (version?.config as FlowConfig | undefined)?.graph
+        .nodes ?? [])
+        if (node.type === "llm")
+          for (const key of ["title", "model", "skills", "output"])
+            delete (node as Record<string, unknown>)[key];
+    }
+    await route.fulfill({ response: fetched, json: detail });
+  });
+  await page.goto(`/apps/${app}`);
+  await nodeButton(page, "answer", "answer").click();
+  await expect(panel(page).getByLabel("输出方式", { exact: true })).toHaveValue(
+    "text",
+  );
+  await panel(page)
+    .getByRole("checkbox", { name: "回答不写进运行过程", exact: true })
+    .check();
+  // The end node reads the llm node's outputs to offer variables.
+  await nodeButton(page, "结束", "end").click();
+  await expect(panel(page)).toBeVisible();
+  await save(page);
+  await expect(page.locator(".asset-notice")).toContainText("草稿已保存");
+  expect(
+    (await draftConfig(request, app)).graph.nodes.find(
+      (node) => node.id === "answer",
+    ),
+  ).toMatchObject({
+    title: "answer",
+    model: null,
+    skills: [],
+    output: { kind: "text" },
+    quiet: true,
+  });
+});
+
 test("a human node's extended settings are shown, kept on save and follow a renamed option", async ({
   page,
   request,
