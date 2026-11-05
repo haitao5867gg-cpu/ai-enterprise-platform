@@ -20,9 +20,11 @@
 - 模型调用：一律经过 LiteLLM 网关（后端用 `aep.llm`），不在业务代码里直接调用某家 SDK。代码里只写模型别名（`mock`、`gpt`、`azure-gpt`、`claude-bedrock`、`qwen`、`deepseek`），别名在 `infra/litellm/config.yaml` 里维护；测试和 CI 一律用 `mock`。必须同时支持国产模型（通义、DeepSeek 等）和 Bedrock、OpenAI / Azure OpenAI。
 - 数据外发：发给模型的数据受数据外发策略约束：允许哪些模型别名，数据样本按什么级别外发（完整、脱敏、只发统计、只发结构）。策略有平台默认值，项目可以另设；由平台在调模型前统一执行，节点不各自处理。
 - 项目：平台资源，不属于某个应用。一个项目绑定代码仓库、工程布局、环境（每个环境的 catalog、schema、表名前缀、集群、运行身份、Workspace 根目录）、表登记（自己写的表和只读引用的表）、运行参数和检查规则。运行可以绑定一个项目，节点按项目配置读写，只能写登记为本项目所有的表。契约见 `docs/api/projects.md`。
-- 平台应用分两种，都在 `aep.runtime.registry.default_apps` 或 `apps` 表里登记，运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`：
+- 平台应用分三种，都在 `aep.runtime.registry.default_apps` 或 `apps` 表里登记，运行通过 Runs API（`/runs`）创建和恢复，接口契约见 `backend/src/aep/api/runs.py`：
   - 编排应用（flow）：节点和连线写在带版本的应用配置里，由 `aep.runtime.flow` 编译成 LangGraph 图；页面上可以新建、增删节点、导入导出。内置的 `hello` 和用户新建的应用都是这种。配置格式和接口见 `docs/api/flow-apps.md`，改格式先改这份契约。
+  - 智能体应用（agent）：一张表单配好的一个智能体（指令、模型、Skill、工具、知识库、可调用的其他应用），没有画流程这一步。平台由 `aep.runtime.agent_app` 把配置生成为固定的「开始 → 智能体 → 结束」编排图，交给 `aep.runtime.flow` 运行，不另起运行时，所以版本、评测、追踪、预算、外发策略都照旧。需要审批、分支时转成编排应用继续改。配置格式见 `docs/api/agent-apps.md`。
   - 代码应用（code）：`backend/src/aep/runtime/apps/` 下手写的一张 LangGraph 图，页面上只能调节点设置。现有 `etl`。
+  - 多轮对话：会话（`/conversations`）是同一个应用的一串运行，每轮是一次普通运行；智能体应用总能对话，编排应用在配置里打开 `conversation` 后也能。契约见 `docs/api/conversations.md`。
   - 节点里调模型只能用 `AppContext.llm_client`（编排应用的节点经 `aep.runtime.flow.nodes.Runtime`）。
 - 代码节点：用户写的 Python 只在沙箱连接器 `connectors/sandbox`（MCP，工具 `run_python`）里运行，绝不在 API 进程里执行。沙箱独自在内部网络上，API 经 `sandbox-relay` 访问它。编码 Agent 节点只在这次运行的项目仓库副本里读写文件，测试命令在沙箱里跑；代码只经“提交 PR”节点离开平台，Agent 自己不推送。
 - 观测：Langfuse 自托管（`make up-full` 启动）。一次 run 对应一条 trace（id 由 run_id 推出），每次执行（开始、确认后恢复、重启后恢复）是其中一段，节点由 LangGraph 回调上报，模型调用由网关上报，见 `aep.tracing`。新应用不用写追踪代码。没配 Langfuse Key 时追踪关闭，什么都不发出。
