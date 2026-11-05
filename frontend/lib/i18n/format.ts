@@ -95,6 +95,15 @@ export const triggerText = (t: T, trigger: RunTrigger) =>
     ? t("由「{title}」调用", { title: trigger.title })
     : t("定时：{title}", { title: trigger.title });
 
+export const conversationText = (
+  t: T,
+  conversation: NonNullable<RunSummary["conversation"]>,
+) =>
+  t("对话「{title}」第 {turn} 轮", {
+    title: conversation.title,
+    turn: conversation.turn,
+  });
+
 export function runTitle(t: T, run: RunSummary): string {
   return run.title || t("{app} 的运行", { app: run.app_title || run.app });
 }

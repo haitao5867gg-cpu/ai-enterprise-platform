@@ -34,7 +34,7 @@ export function copyMockEvalSet(from: string, to: string) {
   if (found) sets.set(to, { ...structuredClone(found), app: to });
 }
 
-function view(app: string, kind: "code" | "flow"): EvalSet {
+function view(app: string, kind: "code" | "flow" | "agent"): EvalSet {
   if (app === "etl")
     return {
       app,
@@ -57,7 +57,7 @@ function view(app: string, kind: "code" | "flow"): EvalSet {
     sets.get(app) ?? {
       app,
       source: null,
-      editable: kind === "flow",
+      editable: kind !== "code",
       threshold: 0.8,
       judge_model: null,
       cases: [],
@@ -113,11 +113,11 @@ function caseIssues(cases: unknown): ValidationIssue[] {
 export async function mockEvalSet(
   request: Request,
   app: string,
-  kind: "code" | "flow",
+  kind: "code" | "flow" | "agent",
   fromRun: boolean,
 ): Promise<Response> {
   if (request.method === "GET") return mockJson(view(app, kind));
-  if (app === "etl" || kind !== "flow") return mockError(READ_ONLY, 409);
+  if (app === "etl" || kind === "code") return mockError(READ_ONLY, 409);
   const body = await readBody(request);
   if (body instanceof Response) return body;
   if (fromRun) {

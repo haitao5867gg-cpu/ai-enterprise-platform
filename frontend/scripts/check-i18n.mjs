@@ -17,6 +17,16 @@ const en = JSON.parse(readFileSync(join(root, "lib/i18n/en.json"), "utf8"));
 // Files whose interface text is fully translated. Add a file once it is done.
 const TRANSLATED = [
   "app/layout.tsx",
+  "components/agent-design.tsx",
+  "components/app-chat-use.tsx",
+  "components/app-convert.tsx",
+  "components/app-entries.tsx",
+  "components/app-usage.tsx",
+  "components/chat.tsx",
+  "components/config-code.tsx",
+  "components/flow-conversation.tsx",
+  "lib/app-entries.ts",
+  "lib/conversations.ts",
   "components/app-detail.tsx",
   "components/app-manual.tsx",
   "components/citations.tsx",

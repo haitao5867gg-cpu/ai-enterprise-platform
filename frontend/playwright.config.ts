@@ -25,6 +25,7 @@ export default defineConfig({
         "uploads.spec.ts",
         "apps-skills.spec.ts",
         "flow-apps.spec.ts",
+        "agent-apps.spec.ts",
         "flow-editor.spec.ts",
         "flow-canvas.spec.ts",
         "knowledge.spec.ts",

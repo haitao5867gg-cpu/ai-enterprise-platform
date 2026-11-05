@@ -373,12 +373,15 @@ export function EvalSetPanel({
   config,
   options,
   onSaved,
+  revision = 0,
 }: {
   app: string;
   // The configuration whose start inputs and person's steps the cases answer.
   config: FlowConfig | null;
   options: AppDetail["options"];
   onSaved: (set: EvalSet) => void;
+  // Changes when a case was added elsewhere on the page (a debug chat's answer).
+  revision?: number;
 }) {
   const mayBuild = useMay("builder");
   const [set, setSet] = useState<EvalSet | null>(null);
@@ -413,7 +416,7 @@ export function EvalSetPanel({
         if (!controller.signal.aborted) setError(errorMessage(err));
       });
     return () => controller.abort();
-  }, [app, retry]);
+  }, [app, retry, revision]);
 
   if (!set)
     return (
@@ -530,7 +533,15 @@ export function EvalSetPanel({
                     <small className="muted monospace"> {item.id}</small>
                   )}
                 </td>
-                <td>{shown(item.input)}</td>
+                <td>
+                  {shown(item.input)}
+                  {item.history?.length ? (
+                    <small className="muted">
+                      {" "}
+                      带前 {item.history.length} 轮对话
+                    </small>
+                  ) : null}
+                </td>
                 <td>
                   {item.expect.length ? (
                     <ul className="eval-check-list">

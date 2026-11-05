@@ -390,6 +390,8 @@ test("knowledge-agent 模板：直接进入草稿编辑，选知识库、移除�
   const app = unique("agent-ui");
   await page.goto("/apps");
   await page.getByRole("button", { name: "新建应用", exact: true }).click();
+  // Flow templates are under 「编排」; a new app starts as an agent app.
+  await page.getByRole("radio", { name: /^编排/ }).check();
   await page.getByRole("radio", { name: /知识库智能体/ }).check();
   await page.getByRole("button", { name: "下一步", exact: true }).click();
   await page.getByLabel("标识", { exact: true }).fill(app);
@@ -451,11 +453,9 @@ test("knowledge-agent 模板：直接进入草稿编辑，选知识库、移除�
     },
   });
   await capture(page, "agent-node");
-  // Turning knowledge off writes null; both empty choices are rejected locally and by the mock API.
+  // Turning knowledge off writes null. With no tools either, the agent just chats from
+  // its instructions (docs/api/flow-apps.md, "智能体节点的新设置").
   await form.getByRole("switch", { name: "让智能体检索知识库" }).uncheck();
-  await expect(
-    form.getByText("至少选一个数据源工具或知识库", { exact: true }),
-  ).toBeVisible();
   await datasource.check();
   await save(page, app);
   const saved = (await details(request, app)).draft!.config as FlowConfig;
@@ -464,16 +464,12 @@ test("knowledge-agent 模板：直接进入草稿编辑，选知识库、移除�
   ) as AgentNode;
   expect(agent.knowledge).toBeNull();
   await datasource.uncheck();
-  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
-  await expect(page.getByRole("main").getByRole("alert").first()).toContainText(
-    "草稿没有保存",
-  );
-  agent.tools = [];
-  const rejected = await request.put(`/api/apps/${app}/draft`, {
-    data: { config: saved },
-  });
-  expect(rejected.status()).toBe(422);
-  expect(await rejected.text()).toContain("至少选一个数据源工具或知识库");
+  await save(page, app);
+  expect(
+    (
+      (await details(request, app)).draft!.config as FlowConfig
+    ).graph.nodes.find((node) => node.type === "agent"),
+  ).toMatchObject({ tools: [], knowledge: null });
 });
 
 test("新增节点默认值和 agent.hits 后续节点插入变量", async ({

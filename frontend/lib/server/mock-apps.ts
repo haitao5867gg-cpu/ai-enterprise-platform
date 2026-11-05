@@ -7,17 +7,27 @@ import {
   mockKnowledgeOptions,
 } from "./mock-knowledge";
 import type {
+  AgentAppConfig,
   AppConfig,
   AppDetail,
   AppNode,
   AppVersion,
+  CallableApp,
   Setting,
 } from "../apps";
 import type { SkillUsage } from "../skills";
 import type { DatasourceUsage, UsageVia } from "../datasources";
 import { isRecord } from "../runs";
-import { APP_ID_PATTERN, isFlowConfig, type FlowConfig } from "../apps";
 import {
+  APP_ID_PATTERN,
+  agentAsFlow,
+  isAgentConfig,
+  isCodeConfig,
+  isFlowConfig,
+  type FlowConfig,
+} from "../apps";
+import {
+  agentBlank,
   allSources,
   blankConfig,
   flowView,
@@ -37,7 +47,9 @@ import { allMockSources, mockToolService } from "./mock-datasources";
 import { mockModelChoices } from "./mock-models";
 import { buildMockManual } from "./mock-manual";
 import { mockSkillOptions, mockSkillVersionExists } from "./mock-skills";
-import { createMockEvalRun } from "./mock-runs";
+import { createMockEvalRun, mockRunsOf } from "./mock-runs";
+import type { AppEntries, AppUsage, Entry, RunEntry } from "../app-entries";
+import { ENTRIES, RUN_ENTRIES } from "../app-entries";
 import {
   copyMockEvalSet,
   mockEvalSet,
@@ -56,7 +68,7 @@ import {
 
 type StoredApp = {
   app: string;
-  kind: "code" | "flow";
+  kind: "code" | "flow" | "agent";
   title: string;
   summary: string;
   created_at: string | null;
@@ -283,7 +295,7 @@ function refresh(entry: StoredApp) {
   const config = entry.draft?.config;
   const failed =
     config &&
-    !isFlowConfig(config) &&
+    isCodeConfig(config) &&
     config.nodes.plan?.params.max_attempts === 1;
   evaluation.status = failed ? "failed" : "passed";
   evaluation.score = failed ? 0.6 : 0.9;
@@ -314,9 +326,18 @@ function startProject(config: FlowConfig) {
   return start?.type === "start" ? (start.project ?? null) : null;
 }
 
+// What an app's configuration runs as: an agent app's is its generated graph
+// (docs/api/agent-apps.md, "生成的图").
+function runnable(config: AppConfig): AppConfig {
+  return isAgentConfig(config) ? agentAsFlow(config) : config;
+}
+const envOf = (config: AppConfig) =>
+  isFlowConfig(config) || isAgentConfig(config) ? config.env.secrets : [];
+
 function detail(entry: StoredApp): AppDetail {
   refresh(entry);
-  const config = current(entry).config;
+  const stored = current(entry).config;
+  const config = runnable(stored);
   const flow = isFlowConfig(config)
     ? flowView(config, entry.title, entry.summary)
     : mockFlow(entry.app, [], true);
@@ -339,13 +360,16 @@ function detail(entry: StoredApp): AppDetail {
       ? (config.graph.nodes.find((node) => node.type === "start")?.inputs ?? [])
       : null,
     project: isFlowConfig(config) ? startProject(config) : null,
+    chat: isAgentConfig(stored)
+      ? stored.chat
+      : isFlowConfig(stored) && stored.conversation?.enabled
+        ? { opening: "", suggestions: [] }
+        : null,
     secrets: [
       ...new Set([
         ...Object.keys(entry.secrets),
-        ...(isFlowConfig(config) ? config.env.secrets : []),
-        ...(entry.draft && isFlowConfig(entry.draft.config)
-          ? entry.draft.config.env.secrets
-          : []),
+        ...envOf(config),
+        ...(entry.draft ? envOf(entry.draft.config) : []),
       ]),
     ].map((name) => ({
       name,
@@ -364,19 +388,193 @@ function detail(entry: StoredApp): AppDetail {
       })),
       knowledge_bases: knowledgeOptions(),
       rerank_models: mockKnowledgeOptions.rerank_models,
+      apps: callableApps(entry.app),
     },
+  };
+}
+// The apps an agent may call (docs/api/agent-apps.md, "调用应用"), with why not when not.
+function callableApps(self: string): CallableApp[] {
+  return [...store.values()]
+    .filter((other) => !other.archived && other.app !== self)
+    .map((other) => {
+      const config = runnable(current(other).config);
+      const reason =
+        other.kind === "code"
+          ? "代码应用不能被调用"
+          : !accessOf(other.app).apps.enabled
+            ? "没有开放「被其他应用调用」"
+            : isFlowConfig(config) &&
+                config.graph.nodes.some((node) => node.type === "human")
+              ? "有人工节点，不能被调用"
+              : null;
+      return {
+        app: other.app,
+        title: other.title,
+        kind: other.kind,
+        callable: reason === null,
+        reason,
+      };
+    })
+    .sort((a, b) => (a.app < b.app ? -1 : 1));
+}
+
+// Each app's entries (docs/api/app-access.md, "入口"): all open until switched off.
+const globalEntries = globalThis as typeof globalThis & {
+  aepMockEntries?: Map<string, Record<Entry, boolean>>;
+};
+const entrySwitches = (globalEntries.aepMockEntries ??= new Map());
+function accessOf(app: string): AppEntries {
+  const switches = entrySwitches.get(app);
+  const runs = mockRunsOf(app);
+  const last = (entry: Entry) =>
+    runs.find((run) => runEntry(run) === entry)?.created_at ?? null;
+  const state = (entry: Entry) => ({
+    enabled: switches?.[entry] ?? true,
+    last_used_at: last(entry),
+  });
+  return {
+    use: state("use"),
+    api: state("api"),
+    mcp: state("mcp"),
+    apps: { ...state("apps"), callers: callersOf(app) },
+  };
+}
+export const mockEntryOpen = (app: string, entry: Entry) =>
+  entrySwitches.get(app)?.[entry] ?? true;
+function callersOf(app: string): AppEntries["apps"]["callers"] {
+  return [...store.values()]
+    .filter((other) => !other.archived)
+    .flatMap((other) => {
+      const config = runnable(current(other).config);
+      if (!isFlowConfig(config)) return [];
+      const vias = new Set<"node" | "agent">();
+      for (const node of config.graph.nodes) {
+        if (node.type === "app" && node.app === app) vias.add("node");
+        if (
+          node.type === "agent" &&
+          node.apps?.some((item) => item.app === app && item.enabled !== false)
+        )
+          vias.add("agent");
+      }
+      return [...vias].map((via) => ({
+        app: other.app,
+        title: other.title,
+        version: other.current,
+        via,
+      }));
+    })
+    .sort((a, b) =>
+      a.app === b.app ? (a.via < b.via ? -1 : 1) : a.app < b.app ? -1 : 1,
+    );
+}
+// Which entry a run came by, as the backend counts it (docs/api/ops.md).
+function runEntry(run: { trigger?: { kind: string } | null; rerun_of?: string | null }): RunEntry {
+  if (run.trigger?.kind === "schedule") return "schedule";
+  if (run.trigger?.kind === "app") return "apps";
+  return "use";
+}
+// An app's usage (docs/api/ops.md, "应用的使用情况"); draft trials and evaluations
+// are not counted.
+function usageOf(app: string, days: 7 | 30 | 90): AppUsage {
+  const since = new Date(Date.now() - days * 86_400_000);
+  const runs = mockRunsOf(app).filter(
+    (run) => !run.draft && Date.parse(run.created_at ?? "") >= since.getTime(),
+  );
+  const done = runs.filter((run) => run.status === "done").length;
+  const failed = runs.filter((run) => run.status === "error").length;
+  const entries = Object.fromEntries(
+    RUN_ENTRIES.map((key) => [key, 0]),
+  ) as Record<RunEntry, number>;
+  for (const run of runs) entries[runEntry(run)] += 1;
+  const daily = new Map<string, number>();
+  for (let i = days - 1; i >= 0; i--)
+    daily.set(new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10), 0);
+  for (const run of runs) {
+    const day = (run.created_at ?? "").slice(0, 10);
+    if (daily.has(day)) daily.set(day, daily.get(day)! + 1);
+  }
+  const talks = new Map<string, number>();
+  for (const run of runs)
+    if (run.conversation)
+      talks.set(
+        run.conversation.conversation_id,
+        (talks.get(run.conversation.conversation_id) ?? 0) + 1,
+      );
+  const answered = runs.filter(
+    (run) => run.status === "done" && run.conversation,
+  );
+  const ungrounded = answered.filter(
+    (run) =>
+      typeof run.result === "object" &&
+      run.result !== null &&
+      (run.result as { grounded?: unknown }).grounded === false,
+  ).length;
+  const agent = isAgentConfig(
+    store.get(app) ? current(store.get(app)!).config : ({} as AppConfig),
+  );
+  // A mock turn makes one model call of made-up size.
+  const cost = (n: number) => Math.round(n * 0.0004 * 10_000) / 10_000;
+  return {
+    days,
+    since: since.toISOString(),
+    totals: {
+      runs: runs.length,
+      done,
+      error: failed,
+      cancelled: runs.filter((run) => run.status === "cancelled").length,
+      active: runs.filter(
+        (run) => run.status === "running" || run.status === "waiting",
+      ).length,
+      delivery_seconds_median: runs.length ? 2 : null,
+      wait_seconds_median: null,
+      first_pass_rate: runs.length ? done / runs.length : null,
+      model_cost_usd: cost(runs.length),
+      model_calls: runs.length,
+      unpriced_calls: 0,
+      prompt_tokens: runs.length * 320,
+      completion_tokens: runs.length * 100,
+      compute_seconds: 0,
+      compute_cost_usd: null,
+    },
+    daily: [...daily].map(([date, count]) => ({
+      date,
+      runs: count,
+      done: count,
+      error: 0,
+      model_cost_usd: cost(count),
+    })),
+    entries,
+    conversations: talks.size
+      ? {
+          count: talks.size,
+          turns_avg:
+            Math.round(([...talks.values()].reduce((a, b) => a + b, 0) / talks.size) * 10) /
+            10,
+        }
+      : agent
+        ? { count: 0, turns_avg: 0 }
+        : null,
+    answers: agent || answered.length
+      ? { answered: answered.length, ungrounded }
+      : null,
+    feedback: { good: 0, bad: 0 },
+    tools: [],
+    apps: [],
+    truncated: false,
   };
 }
 export function mockSkillUsage(name: string): SkillUsage[] {
   return [...store.values()]
     .filter((entry) => !entry.archived)
     .flatMap((entry) => {
-      const config = current(entry).config;
+      const config = runnable(current(entry).config);
       const nodes = isFlowConfig(config)
         ? config.graph.nodes
             .filter((node) => "skills" in node)
             .map((node) => [node.id, node] as const)
-        : Object.entries(config.nodes);
+        : isCodeConfig(config)
+          ? Object.entries(config.nodes)
+          : [];
       return nodes.flatMap(([node, value]) =>
         "skills" in value
           ? value.skills
@@ -406,7 +604,7 @@ export function mockDatasourceUsage(id: string): DatasourceUsage["apps"] {
   return [...store.values()]
     .filter((entry) => !entry.archived)
     .flatMap((entry) => {
-      const config = current(entry).config;
+      const config = runnable(current(entry).config);
       if (!isFlowConfig(config)) return [];
       const start = config.graph.nodes.find((node) => node.type === "start");
       const inputs = start?.type === "start" ? start.inputs : [];
@@ -455,7 +653,14 @@ export function mockAppTitle(app: string): string | undefined {
   return store.get(app)?.title;
 }
 
-export function mockAppSnapshot(app: string, version?: number, draft = false) {
+// What a run of the app uses; an agent app's configuration is given as the graph it
+// runs as, unless `raw` (a copy of the app).
+export function mockAppSnapshot(
+  app: string,
+  version?: number,
+  draft = false,
+  raw = false,
+) {
   const entry = store.get(app);
   if (!entry || entry.archived) return null;
   const snapshot = draft
@@ -465,7 +670,9 @@ export function mockAppSnapshot(app: string, version?: number, draft = false) {
       : entry.versions.find((item) => item.version === version);
   return snapshot
     ? {
-        config: structuredClone(snapshot.config),
+        config: structuredClone(
+          raw ? snapshot.config : runnable(snapshot.config),
+        ),
         version: snapshot.version,
         title: entry.title,
         summary: entry.summary,
@@ -473,8 +680,64 @@ export function mockAppSnapshot(app: string, version?: number, draft = false) {
       }
     : null;
 }
+// A few of the backend's checks of an agent app's configuration (docs/api/agent-apps.md).
+function validateAgent(app: string, config: unknown): ValidationIssue[] {
+  const at = (...loc: (string | number)[]) => ["body", "config", ...loc];
+  if (!isRecord(config) || !isRecord(config.agent) || !isRecord(config.chat))
+    return [{ loc: at(), msg: "智能体应用的配置要有 agent 和 chat" }];
+  const issues: ValidationIssue[] = [];
+  const { agent, chat } = config as unknown as AgentAppConfig;
+  if (typeof agent.instructions !== "string" || agent.instructions.length > 20000)
+    issues.push({ loc: at("agent", "instructions"), msg: "指令最多 20000 个字符" });
+  if (agent.model !== null && !models.includes(agent.model))
+    issues.push({ loc: at("agent", "model"), msg: "没有这个模型" });
+  if (!Number.isInteger(agent.max_steps) || agent.max_steps < 1 || agent.max_steps > 20)
+    issues.push({ loc: at("agent", "max_steps"), msg: "每轮最多 1–20 步" });
+  if (
+    !Number.isInteger(agent.history_turns) ||
+    agent.history_turns < 0 ||
+    agent.history_turns > 50
+  )
+    issues.push({ loc: at("agent", "history_turns"), msg: "历史轮数是 0–50" });
+  if (agent.knowledge?.knowledge_bases.some((id) => !knowledgeExists(id)))
+    issues.push({
+      loc: at("agent", "knowledge", "knowledge_bases"),
+      msg: "没有这个知识库，请重新选择",
+    });
+  const choices = callableApps(app);
+  (agent.apps ?? []).forEach((item, index) => {
+    const choice = choices.find((other) => other.app === item.app);
+    const reason =
+      item.app === app
+        ? "不能调用自己"
+        : !choice
+          ? "没有这个应用"
+          : choice.reason;
+    if (reason) issues.push({ loc: at("agent", "apps", index, "app"), msg: reason });
+    if (typeof item.when !== "string" || !item.when.trim() || item.when.length > 500)
+      issues.push({
+        loc: at("agent", "apps", index, "when"),
+        msg: "写清什么时候调用，最多 500 个字符",
+      });
+  });
+  if (typeof chat.opening !== "string" || chat.opening.length > 500)
+    issues.push({ loc: at("chat", "opening"), msg: "开场白最多 500 个字符" });
+  if (!Array.isArray(chat.suggestions) || chat.suggestions.length > 5)
+    issues.push({ loc: at("chat", "suggestions"), msg: "推荐问题最多 5 个" });
+  else
+    chat.suggestions.forEach((question, index) => {
+      if (typeof question !== "string" || !question.trim() || question.length > 100)
+        issues.push({
+          loc: at("chat", "suggestions", index),
+          msg: "推荐问题 1–100 个字符",
+        });
+    });
+  return issues;
+}
+
 function validateConfig(app: string, config: unknown): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  if (store.get(app)?.kind === "agent") return validateAgent(app, config);
   if (store.get(app)?.kind === "flow") {
     const errors = validateFlow(config);
     if (errors.length) return errors;
@@ -709,7 +972,7 @@ function createEntry(
   const now = new Date().toISOString();
   return {
     app: body.app as string,
-    kind: "flow",
+    kind: isAgentConfig(config) ? "agent" : "flow",
     title: (body.title as string).trim(),
     summary: typeof body.summary === "string" ? body.summary : "",
     created_at: now,
@@ -754,7 +1017,11 @@ function parseImport(
     // JSON is a YAML subset; keep the mock dependency-free. Exports use this subset too.
     const file: unknown = JSON.parse(body.yaml);
     if (!isRecord(file) || file.format !== "aep-app/1") throw new Error();
-    const issues = validateFlow(file.config);
+    // A file without `kind` is a flow app's, as before agent apps.
+    const issues =
+      file.kind === "agent"
+        ? validateAgent("", file.config)
+        : validateFlow(file.config);
     if (issues.length) return invalid(issues);
     return file;
   } catch {
@@ -787,28 +1054,41 @@ export async function mockApps(
     const from = body.from;
     let config: AppConfig | undefined;
     if (from.blank === true) config = blankConfig();
+    else if (from.blank_agent === true) config = agentBlank();
     else if (typeof from.template === "string")
       config = mockTemplates.find((item) => item.id === from.template)?.config;
     else if (typeof from.app === "string") {
       const source = mockAppSnapshot(
         from.app,
         from.version as number | undefined,
+        false,
+        true,
       );
-      if (source && !isFlowConfig(source.config))
+      if (source && isCodeConfig(source.config))
         return mockError("不能复制代码应用", 409);
       config = source?.config;
     }
     if (!config) return mockError("模板、应用或版本不存在", 404);
-    const needsKnowledge =
+    const agent = isAgentConfig(config);
+    // Like the backend: a template that needs a knowledge base or a data source starts
+    // blank, with the template as the draft to finish.
+    const needsSetup =
       typeof from.template === "string" &&
       mockTemplates
         .find((item) => item.id === from.template)
-        ?.needs.includes("knowledge_base");
-    const entry = createEntry(body, needsKnowledge ? blankConfig() : config);
+        ?.needs.some((need) =>
+          agent
+            ? need === "knowledge_base" || need === "datasource"
+            : need === "knowledge_base",
+        );
+    const entry = createEntry(
+      body,
+      needsSetup ? (agent ? agentBlank() : blankConfig()) : config,
+    );
     const template = mockTemplates.find((item) => item.id === from.template);
     // As the backend writes it; the asset catalog finds an app's template by it.
     if (template) entry.versions[0].note = `从模板「${template.title}」新建`;
-    if (needsKnowledge) entry.draft = draftVersion(config, body.actor);
+    if (needsSetup) entry.draft = draftVersion(config, body.actor);
     store.set(entry.app, entry);
     if (typeof from.app === "string") copyMockEvalSet(from.app, entry.app);
     return mockJson(detail(entry), 201);
@@ -825,9 +1105,16 @@ export async function mockApps(
     if (body instanceof Response) return body;
     const file = parseImport(body);
     if (file instanceof Response) return file;
-    const config = file.config as FlowConfig;
+    const config = file.config as AppConfig;
+    if (entry && (entry.kind === "agent") !== isAgentConfig(config))
+      return mockError(
+        entry.kind === "agent"
+          ? "这是编排应用的文件，不能导入智能体应用"
+          : "这是智能体应用的文件，不能导入编排应用",
+        409,
+      );
     const problems = missingReferences(
-      config,
+      runnable(config) as FlowConfig,
       Object.keys(entry?.secrets ?? {}),
     );
     let target = entry;
@@ -844,7 +1131,9 @@ export async function mockApps(
       target = createEntry(
         input,
         problems.some((problem) => problem.kind !== "secret")
-          ? blankConfig()
+          ? isAgentConfig(config)
+            ? agentBlank()
+            : blankConfig()
           : config,
       );
       if (problems.some((problem) => problem.kind !== "secret"))
@@ -858,6 +1147,55 @@ export async function mockApps(
   }
   if (!entry) return mockError("应用不存在", 404);
   refresh(entry);
+  if (path[2] === "access") {
+    if (request.method === "PUT") {
+      const body = await readBody(request);
+      if (body instanceof Response) return body;
+      const issues: ValidationIssue[] = Object.entries(body)
+        .filter(
+          ([key, value]) =>
+            !ENTRIES.includes(key as Entry) || typeof value !== "boolean",
+        )
+        .map(([key]) => ({ loc: ["body", key], msg: "入口开关要是 true 或 false" }));
+      if (issues.length) return invalid(issues);
+      entrySwitches.set(entry.app, {
+        ...(entrySwitches.get(entry.app) ?? {
+          use: true,
+          api: true,
+          mcp: true,
+          apps: true,
+        }),
+        ...(body as Partial<Record<Entry, boolean>>),
+      });
+    }
+    return mockJson(accessOf(entry.app));
+  }
+  if (path[2] === "usage") {
+    const days = Number(new URL(request.url).searchParams.get("days") ?? 30);
+    if (![7, 30, 90].includes(days))
+      return invalid([{ loc: ["query", "days"], msg: "统计期只能是 7、30 或 90 天" }]);
+    return mockJson(usageOf(entry.app, days as 7 | 30 | 90));
+  }
+  if (path[2] === "convert-to-flow") {
+    const source = current(entry).config;
+    if (!isAgentConfig(source))
+      return mockError("只有智能体应用能转成编排应用", 409);
+    const body = await readBody(request);
+    if (body instanceof Response) return body;
+    const input = {
+      ...body,
+      title: body.title ?? entry.title,
+      summary: body.summary ?? entry.summary,
+    };
+    const issues = metadataIssues(input, true);
+    if (issues.length) return invalid(issues);
+    if (store.has(body.app as string)) return mockError("应用标识已存在", 409);
+    const made = createEntry(input, agentAsFlow(source));
+    made.versions[0].note = `从智能体应用「${entry.title}」v${entry.current} 转成`;
+    store.set(made.app, made);
+    copyMockEvalSet(entry.app, made.app);
+    return mockJson(detail(made), 201);
+  }
   if (path[2] === "manual") {
     const query = new URL(request.url).searchParams;
     const snapshot = mockAppSnapshot(
@@ -994,7 +1332,7 @@ export async function mockApps(
       (item) => item.version === Number(path[3]),
     );
     if (!version) return mockError("应用版本不存在", 404);
-    const config = version.config as FlowConfig;
+    const config = runnable(version.config) as FlowConfig;
     const skills = config.graph.nodes.flatMap((node) =>
       "skills" in node ? node.skills : [],
     );
@@ -1012,7 +1350,8 @@ export async function mockApps(
           title: entry.title,
           summary: entry.summary,
           exported_from: { app: entry.app, version: version.version },
-          config,
+          ...(entry.kind === "agent" ? { kind: "agent" } : {}),
+          config: version.config,
           requires: {
             skills,
             knowledge_bases: knowledgeOptions()
@@ -1080,7 +1419,7 @@ export async function mockApps(
       return mockError("草稿已有评测在运行", 409);
     const config = entry.draft.config;
     const score =
-      !isFlowConfig(config) && config.nodes.plan.params.max_attempts === 1
+      isCodeConfig(config) && config.nodes.plan.params.max_attempts === 1
         ? 0.6
         : 0.9;
     const set = entry.app === "etl" ? undefined : mockEvalSetOf(entry.app);
@@ -1136,7 +1475,7 @@ export function appsReferencingKnowledge(kb: string): string[] {
   return [...store.values()]
     .filter((entry) => {
       if (entry.archived) return false;
-      const config = current(entry).config;
+      const config = runnable(current(entry).config);
       return isFlowConfig(config)
         ? config.graph.nodes.some((node) =>
             (node.type === "knowledge"
@@ -1146,7 +1485,8 @@ export function appsReferencingKnowledge(kb: string): string[] {
                 : []
             )?.includes(kb),
           )
-        : Object.values(config.nodes).some(
+        : isCodeConfig(config) &&
+          Object.values(config.nodes).some(
             (node) =>
               Array.isArray(node.params.knowledge_bases) &&
               node.params.knowledge_bases.includes(kb),
@@ -1203,7 +1543,7 @@ async function mockKeys(request: Request, app: string, keyId?: string) {
 // current version uses.
 export type MockCatalogApp = {
   app: string;
-  kind: "code" | "flow";
+  kind: "code" | "flow" | "agent";
   title: string;
   summary: string;
   version: number;
@@ -1219,7 +1559,7 @@ export function mockCatalogApps(): MockCatalogApp[] {
     .map((entry) => {
       const version = current(entry);
       const first = entry.versions.find((item) => item.version === 1);
-      const config = version.config;
+      const config = runnable(version.config);
       return {
         app: entry.app,
         kind: entry.kind,

@@ -4,7 +4,7 @@ import {
   type APIRequestContext,
   type Page,
 } from "@playwright/test";
-import { isFlowConfig, type AppDetail } from "../lib/apps";
+import { isCodeConfig, isFlowConfig, type AppDetail } from "../lib/apps";
 
 async function appDetail(
   request: APIRequestContext,
@@ -252,7 +252,7 @@ test("invalid integer values and backend 422 / 409 details are visible", async (
   );
   expect((await appDetail(request)).draft).toBeNull();
   const config = (await appDetail(request)).current.config;
-  if (isFlowConfig(config)) throw new Error("Expected code config");
+  if (!isCodeConfig(config)) throw new Error("Expected code config");
   config.nodes.plan.params.max_attempts = 9;
   const invalid = await request.put("/api/apps/etl/draft", {
     data: { config },
@@ -341,7 +341,7 @@ test("settings are generated from the contract, including published Skill versio
         help: "目标表的命名前缀",
       },
     );
-  if (isFlowConfig(data.current.config))
+  if (!isCodeConfig(data.current.config))
     throw new Error("Expected code config");
   Object.assign(data.current.config.nodes.plan.params, {
     language: "pyspark",
@@ -637,7 +637,7 @@ test("mock contract validates Skill limits, missing drafts, names and published 
     expect(Array.isArray((await result.json()).detail)).toBe(true);
   }
   const config = (await appDetail(request)).current.config;
-  if (isFlowConfig(config)) throw new Error("Expected code config");
+  if (!isCodeConfig(config)) throw new Error("Expected code config");
   config.nodes.plan.skills = [{ name: "etl-plan", version: 99 }];
   expect(
     (await request.put("/api/apps/etl/draft", { data: { config } })).status(),

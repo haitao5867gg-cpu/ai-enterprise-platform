@@ -44,6 +44,8 @@ test("intent template → input → after-sales rejection and approval → resul
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/apps");
   await page.getByRole("button", { name: "新建应用", exact: true }).click();
+  // Flow templates are under 「编排」; a new app starts as an agent app.
+  await page.getByRole("radio", { name: /^编排/ }).check();
   await page.getByRole("radio", { name: /意图分类路由/ }).check();
   await page.getByRole("button", { name: "下一步", exact: true }).click();
   await page.getByLabel("标识", { exact: true }).fill("Invalid_ID");
@@ -318,6 +320,8 @@ test("copy a hello version, rename and archive; historical runs remain readable"
   const app = id("copy");
   await page.goto("/apps");
   await page.getByRole("button", { name: "新建应用", exact: true }).click();
+  // Flow templates are under 「编排」; a new app starts as an agent app.
+  await page.getByRole("radio", { name: /^编排/ }).check();
   await page.getByRole("radio", { name: /复制已有编排应用/ }).check();
   await page.getByLabel("来源应用").selectOption("hello");
   await page.getByLabel("来源版本").selectOption("1");

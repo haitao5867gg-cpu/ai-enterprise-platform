@@ -8,6 +8,7 @@ import {
   formatTime,
   runTitle,
   stepText,
+  conversationText,
   timeAgo,
   triggerText,
   versionLabel,
@@ -224,6 +225,11 @@ export function RunList() {
                             </span>
                           )}
                         </Link>
+                        {run.conversation && (
+                          <span className="run-step">
+                            {conversationText(t, run.conversation)}
+                          </span>
+                        )}
                       </td>
                       <td className="run-cell">
                         {run.created_by || "—"}

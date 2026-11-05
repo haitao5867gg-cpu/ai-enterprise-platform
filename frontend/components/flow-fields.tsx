@@ -182,22 +182,36 @@ export function CheckField({
   checked,
   onChange,
   disabled,
+  help,
+  issues = [],
 }: {
   label: string;
   checked: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
+  help?: ReactNode;
+  issues?: string[];
 }) {
-  return (
+  const id = useId();
+  const box = (
     <label className="check-field">
       <input
         type="checkbox"
         checked={checked}
         disabled={disabled}
+        aria-describedby={help || issues.length ? `${id}-help` : undefined}
         onChange={(event) => onChange(event.target.checked)}
       />
       {label}
     </label>
+  );
+  if (!help && !issues.length) return box;
+  return (
+    <div className="check-field-block" id={`${id}-help`}>
+      {box}
+      {help && <small className="muted">{help}</small>}
+      <FieldIssues id={`${id}-issues`} messages={issues} />
+    </div>
   );
 }
 

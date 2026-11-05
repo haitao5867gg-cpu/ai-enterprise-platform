@@ -30,10 +30,12 @@ export function AppCreate({
 }) {
   const router = useRouter();
   const [templates, setTemplates] = useState<AppTemplate[]>([]);
-  const [source, setSource] = useState("blank");
+  // An agent app is set up with a form; a flow app is a drawn flow (docs/api/agent-apps.md).
+  const [kind, setKind] = useState<"agent" | "flow">("agent");
+  const [source, setSource] = useState("agent-blank");
   const [step, setStep] = useState(importing ? 2 : 1);
   const [copyApp, setCopyApp] = useState(
-    apps.find((app) => app.kind === "flow")?.app ?? "",
+    apps.find((app) => app.kind === "agent")?.app ?? "",
   );
   const [versions, setVersions] = useState<AppVersion[]>([]);
   const [version, setVersion] = useState("");
@@ -48,8 +50,7 @@ export function AppCreate({
     if (importing) return;
     const controller = new AbortController();
     getAppTemplates(controller.signal)
-      // Agent apps get their own way in with the agent app pages (docs/api/agent-apps.md).
-      .then((items) => setTemplates(items.filter((item) => item.kind !== "agent")))
+      .then(setTemplates)
       .catch((err) => {
         if (!controller.signal.aborted) setError(errorMessage(err));
       });
@@ -178,22 +179,73 @@ export function AppCreate({
         </div>
       ) : step === 1 ? (
         <>
-          <p className="muted">选择来源，再填写应用信息。</p>
+          <p className="muted">先选类型，再选从哪里开始，最后填名称。</p>
+          <div
+            className="template-grid app-kind-grid"
+            role="radiogroup"
+            aria-label="应用类型"
+          >
+            {(
+              [
+                {
+                  id: "agent",
+                  title: "智能体",
+                  summary:
+                    "填一张表单就能用，可以多轮对话。适合问答、助手、查资料查数据。",
+                },
+                {
+                  id: "flow",
+                  title: "编排",
+                  summary:
+                    "把步骤画成流程，可以加审批、分支和数据处理。适合步骤固定、要审批的业务流程。",
+                },
+              ] as const
+            ).map((item) => (
+              <label
+                className={`template-card ${kind === item.id ? "selected" : ""}`}
+                key={item.id}
+              >
+                <input
+                  type="radio"
+                  name="kind"
+                  value={item.id}
+                  checked={kind === item.id}
+                  onChange={() => {
+                    setKind(item.id);
+                    setSource(item.id === "agent" ? "agent-blank" : "blank");
+                    setCopyApp(
+                      apps.find((app) => app.kind === item.id)?.app ?? "",
+                    );
+                    setError("");
+                  }}
+                />
+                <strong>{item.title}</strong>
+                <span>{item.summary}</span>
+              </label>
+            ))}
+          </div>
           <div
             className="template-grid"
             role="radiogroup"
             aria-label="应用来源"
           >
             {[
-              {
-                id: "blank",
-                title: "空白应用",
-                summary: "从开始、模型回答、结束三个节点开始。",
-              },
-              ...templates,
+              ...(kind === "flow"
+                ? [
+                    {
+                      id: "blank",
+                      title: "空白应用",
+                      summary: "从开始、模型回答、结束三个节点开始。",
+                    },
+                  ]
+                : []),
+              ...templates.filter(
+                (item) => (item.kind ?? "flow") === kind,
+              ),
               {
                 id: "copy",
-                title: "复制已有编排应用",
+                title:
+                  kind === "agent" ? "复制已有智能体应用" : "复制已有编排应用",
                 summary: "选择一个已发布版本，作为新应用的起点。",
               },
             ].map((item) => (
@@ -233,9 +285,11 @@ export function AppCreate({
                     setVersion("");
                   }}
                 >
-                  <option value="">请选择编排应用</option>
+                  <option value="">
+                    {kind === "agent" ? "请选择智能体应用" : "请选择编排应用"}
+                  </option>
                   {apps
-                    .filter((item) => item.kind === "flow")
+                    .filter((item) => item.kind === kind)
                     .map((item) => (
                       <option key={item.app} value={item.app}>
                         {item.title} · {item.app}

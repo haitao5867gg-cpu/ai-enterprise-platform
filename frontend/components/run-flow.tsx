@@ -24,9 +24,12 @@ function JsonBlock({ value }: { value: unknown }) {
   return <pre className="flow-json">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-function AgentSteps({ output }: { output: unknown }) {
+// What an agent did, one line per step; also shown under a chat answer (chat.tsx).
+export function AgentSteps({ output }: { output: unknown }) {
   const t = useT();
   if (!isRecord(output) || !Array.isArray(output.steps)) return null;
+  if (!output.steps.length)
+    return <p className="muted">{t("这一轮没有调用工具。")}</p>;
   return (
     <ol className="agent-steps" aria-label={t("智能体步骤")}>
       {output.steps.filter(isRecord).map((step, i) => (
@@ -37,6 +40,18 @@ function AgentSteps({ output }: { output: unknown }) {
                 query: isRecord(step.args) ? String(step.args.query ?? "") : "",
                 n: typeof step.hits === "number" ? step.hits : 0,
               })}
+            </>
+          ) : step.tool === "call_app" ? (
+            <>
+              {t("调用应用「{app}」", { app: String(step.app ?? "") })}
+              {typeof step.run_id === "string" && (
+                <>
+                  {" "}
+                  <Link href={`/runs/${encodeURIComponent(step.run_id)}`}>
+                    {t("看那次运行")}
+                  </Link>
+                </>
+              )}
             </>
           ) : (
             String(step.tool ?? t("工具调用"))

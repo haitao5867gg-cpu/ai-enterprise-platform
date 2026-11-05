@@ -101,6 +101,16 @@ export type RunSummary = {
   policy?: RunPolicy;
   // What started it when no person did (docs/api/schedules.md); null otherwise.
   trigger?: RunTrigger | null;
+  // The conversation the run is a turn of, while it exists (docs/api/conversations.md).
+  conversation?: RunConversation | null;
+  // Its input, result and messages were cleared with its expired or deleted
+  // conversation; status, version, times and usage stay.
+  cleared?: boolean;
+};
+export type RunConversation = {
+  conversation_id: string;
+  title: string;
+  turn: number;
 };
 export type RunTrigger =
   | { kind: "schedule"; schedule_id: string; title: string }
