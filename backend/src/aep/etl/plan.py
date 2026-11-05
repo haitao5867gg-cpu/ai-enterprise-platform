@@ -17,6 +17,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any, Literal, TypedDict
 
 from pydantic import (
@@ -1112,18 +1113,72 @@ def _confirmed_text(given: Confirmed) -> str:
     return f"{given['actor'] or ''}已确认：{given['label']}——{given['value_label']}"
 
 
+def _shared(a: str, b: str) -> int:
+    """How long the longest run of characters is that ``a`` and ``b`` share."""
+    match = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    return match.size
+
+
+def _covered(part: str, text: str) -> float:
+    """How much of ``part`` is found in ``text``, in order (0–1)."""
+    if not part:
+        return 0.0
+    blocks = SequenceMatcher(None, part, text, autojunk=False).get_matching_blocks()
+    return sum(b.size for b in blocks) / len(part)
+
+
+# How much of an answer a reworded rule or option has to hold to restate it, and of an
+# answered question a reworded question (6th retest I-20: the model reworded both, the
+# platform did not recognise them, and the answered question was asked again).
+MIN_COVERED = 0.75
+MIN_ALIKE = 0.9
+
+
+def _restates(text: str, given: Confirmed) -> float:
+    """How well ``text`` restates what people answered (0: not at all): most of the
+    answer is in it, and a long answer, or 4 characters of the question in a row."""
+    held, label = bare(text).lower(), bare(given["label"]).lower()
+    value = bare(given["value_label"]).lower()
+    covered = _covered(value, held)
+    shared = _shared(held, label)
+    if covered >= MIN_COVERED and (len(value) >= 4 or shared >= min(4, len(label))):
+        return covered + shared / 100
+    return 0.0
+
+
+def _answer_to(question: Question, answered: Mapping[str, Confirmed]) -> Confirmed | None:
+    """The answer to a question people already answered: by its text; a question the
+    model reworded a little (``MIN_ALIKE``: "第 1 个问题" is not "第 3 个问题"); or one
+    whose option the model marked 已确认 restating the answer."""
+    key = bare(question.text)
+    if key and key in answered:
+        return answered[key]
+    held, best, found = key.lower(), 0.0, None
+    marked = [o.label for o in question.options or [] if o.label and "已确认" in o.label]
+    for given in answered.values():
+        label = bare(given["label"]).lower()
+        alike = SequenceMatcher(None, held, label, autojunk=False).ratio()
+        if alike < MIN_ALIKE:
+            value = bare(given["value_label"]).lower()
+            took = any(_covered(value, bare(m).lower()) >= MIN_COVERED for m in marked)
+            alike = 0.5 if took and _shared(held, label) >= min(4, len(label)) else 0.0
+        if alike > best:
+            best, found = alike, given
+    return found
+
+
 def _confirm(plan: EtlPlanV2, answered: Mapping[str, Confirmed]) -> None:
     """A question a person already answered (in any round: compared by its text, never by
-    id) becomes a rule with ``basis`` confirmed, unless the plan has that rule already."""
+    id, a reworded one too) becomes a rule with ``basis`` confirmed, unless the plan has
+    that rule already."""
     kept = []
     for q in plan.questions:
-        key = bare(q.text)
-        given = answered.get(key) if key else None
+        given = _answer_to(q, answered)
         if given is None:
             kept.append(q)
             continue
         text = _confirmed_text(given)
-        if not any(r.basis == "confirmed" and bare(r.text) == bare(text) for r in plan.rules):
+        if not any(r.basis == "confirmed" and bare(text) in bare(r.text) for r in plan.rules):
             _new_rule(plan, text, "confirmed", q)._platform = True
     plan.questions = kept
 
@@ -1133,21 +1188,44 @@ def _only_answers_confirm(
 ) -> None:
     """``confirmed`` is the platform's word for what a person answered on the review page
     (jadeflow retest I-17: a model marked its own rule confirmed and skipped the question).
-    A rule the model marked confirmed that no answer of this run backs becomes an
-    assumption; an answer the plan no longer shows as a confirmed rule is put back as
-    the platform's words."""
-    backed = {bare(_confirmed_text(given)): given for given in answered.values()}
+    A rule the model marked confirmed keeps it when it restates an answer of this run (in
+    any round), with the platform's words added after it (6th retest I-20: a reworded rule
+    became an assumption, a second rule was added, and the review had the answered question
+    asked again); one that restates none becomes an assumption. An answer no confirmed rule
+    of the plan restates is put back as the platform's words."""
+    backed: dict[str, Confirmed] = {bare(_confirmed_text(g)): g for g in answered.values()}
+    shown: set[str] = set()
     changed = []
     for rule in plan.rules:
-        if rule.basis == "confirmed" and not rule._platform and bare(rule.text) not in backed:
+        if rule.basis != "confirmed":
+            continue
+        held = bare(rule.text)
+        found = next((k for k in backed if k and k in held), None)
+        if found is None and not rule._platform:
+            scored = [(_restates(rule.text, g), k) for k, g in backed.items()]
+            score, key = max(scored, default=(0.0, ""))
+            if score:
+                found = key
+                said = _confirmed_text(backed[key])
+                rule._parts = [(rule._text_at, rule.text)]
+                rule.text = f"{rule.text.rstrip()}（{said}）"
+        if found is not None:
+            shown.add(found)
+        elif not rule._platform:
             rule.basis = "assumption"
             changed.append(rule.id)
+        if found is not None and not rule._platform and not rule._parts:
+            # The platform's words, kept from an earlier round: only the model's part is
+            # checked as the model's text.
+            said = _confirmed_text(backed[found])
+            rest = rule.text.replace(f"（{said}）", "").replace(said, "").strip()
+            rule._parts = [(rule._text_at, rest)] if rest else []
+            rule._platform = not rest
     if changed:
         cleaned.append(
-            f"规则 {'、'.join(changed)} 写了已确认，但这次运行里没有人回答过对应的问题，"
+            f"规则 {'、'.join(changed)} 写了已确认，但对不上确认页的任何一个回答，"
             "改成了假设：已确认只由平台按确认页的回答写"
         )
-    shown = {bare(r.text) for r in plan.rules if r.basis == "confirmed"}
     for key, given in backed.items():
         if key not in shown:
             rule = Rule(id=_free("r", _ids(plan)), text=_confirmed_text(given), basis="confirmed")
@@ -1586,6 +1664,8 @@ LIMITS = [
     "不加 catalog 和 schema；源表写探查结果里的表名。",
     "检查的表达式和条件里不能有子查询（SELECT）、分号和注释；要和另一张表比，用 reconcile "
     "或 rows 加 lookup。",
+    "检查的表达式和条件里不能有窗口函数（OVER），条件（where）里也不能有 sum、count 这类聚合："
+    "条件按一行一行判断；要按组比合计、个数，用 aggregate 加 group_by 或 reconcile。",
     "检查里只能用表里有的列；运行参数写成 ${param.<key>}。",
     "规则的依据不能由方案自己写成 confirmed（已确认）：已确认只由平台按确认页的回答写。",
     "平台做不到的写法不要硬写：写成一道问题，说明需求要的是什么、平台能怎么替代。",

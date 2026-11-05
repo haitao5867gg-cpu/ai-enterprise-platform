@@ -1145,6 +1145,16 @@ def test_what_a_check_may_say():
          "\"found\": false}"),
         (check("a", "rows", table="t", where="x = ${month}"), ("where",),
          "运行参数要写成 ${param.<key>}（key 是项目参数的标识）"),
+        # jadeflow 6th retest S-26: Databricks refused it on every dev run.
+        (check("a", "rows", table="t", where="abs(sum(r) OVER (PARTITION BY g) - 1) > 0.01"),
+         ("where",), "条件不能有窗口函数（OVER）：Databricks 不允许。要按组比合计、个数，"
+         "用 aggregate 检查加 group_by，或者 reconcile 按组对账"),
+        (check("a", "aggregate", table="t", expr="max(x) over ()", op="eq", value=1), ("expr",),
+         "聚合表达式不能有窗口函数（OVER）：Databricks 不允许。要按组比合计、个数，"
+         "用 aggregate 检查加 group_by，或者 reconcile 按组对账"),
+        (check("a", "unique", table="t", columns=["k"], where="COUNT(*) > 1"), ("where",),
+         "条件不能有聚合函数（COUNT）：条件按一行一行判断，Databricks 不允许在里面聚合。"
+         "要查合计、个数，写进 aggregate 检查的聚合表达式，按组时加 group_by"),
         (check("a", "rows", table="t", where="x", severity="fatal"), ("severity",),
          "severity 只能是 error、warn、info"),
         (check("a", "aggregate", table="t", expr="sum(x", op="eq", value=1), ("expr",),
@@ -1177,6 +1187,17 @@ def test_what_a_check_may_say():
     ]  # fmt: skip
     for c, loc, message in cases:
         assert (loc, message) in said(c), (c, said(c))
+    # An aggregate in the expression, the words in a literal or a quoted name, and scalar
+    # functions are fine.
+    fine = [
+        check(
+            "a", "aggregate", table="t", expr="count(*)", where="max_ratio > 1", op="eq", value=1
+        ),
+        check("a", "rows", table="t", where="note = 'sum(x) over (y)' AND `max`(a) > 1"),
+        check("a", "rows", table="t", where="greatest(a, b) > 1 AND summary > 0"),
+    ]
+    for c in fine:
+        assert said(c) == [], (c, said(c))
 
 
 async def test_saving_checks_the_settings():

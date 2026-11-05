@@ -205,7 +205,13 @@ export type HumanNode = NodeBase & {
 } & (
     | {
         mode: "approval";
-        options: { key: string; label: string; requires?: unknown }[];
+        options: {
+          key: string;
+          label: string;
+          requires?: unknown;
+          // Said in the prompt when `requires` does not hold (flow-apps.md, unmet).
+          unmet?: string;
+        }[];
         comment_required?: string[];
         // The questions: a list, or one reference such as {{check_plan.questions}}.
         fields?: unknown;

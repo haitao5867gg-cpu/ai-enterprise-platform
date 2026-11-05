@@ -444,6 +444,35 @@ def _table(value: dict[str, Any], key: str, loc: Loc, add: Callable[[Loc, str], 
         )
 
 
+# A condition is tested row by row, and a check's expression gives one value (per group):
+# Databricks refuses a window function in either and an aggregate in a condition (jadeflow
+# 6th retest S-26: a check failed on every dev run with 窗口函数不能用在 WHERE 里).
+_WINDOW = re.compile(r"\bover\s*\(", re.IGNORECASE)
+_AGGREGATES = (
+    "sum count count_if avg mean min max max_by min_by stddev stddev_pop stddev_samp variance "
+    "var_pop var_samp collect_list collect_set approx_count_distinct percentile "
+    "percentile_approx median mode first last any_value bool_and bool_or every"
+).split()
+_AGGREGATE = re.compile(rf"(?<![\w.])({'|'.join(_AGGREGATES)})\s*\(", re.IGNORECASE)
+
+
+def _unrunnable(text: str, label: str, condition: bool) -> str | None:
+    """A window function, or an aggregate in a condition, outside literals and quoted
+    names."""
+    rest = _QUOTED.sub(" ", _LITERAL.sub(" ", text))
+    if _WINDOW.search(rest):
+        return (
+            f"{label}不能有窗口函数（OVER）：Databricks 不允许。要按组比合计、个数，"
+            "用 aggregate 检查加 group_by，或者 reconcile 按组对账"
+        )
+    if condition and (found := _AGGREGATE.search(rest)):
+        return (
+            f"{label}不能有聚合函数（{found.group(1)}）：条件按一行一行判断，Databricks 不允许"
+            "在里面聚合。要查合计、个数，写进 aggregate 检查的聚合表达式，按组时加 group_by"
+        )
+    return None
+
+
 def _expression(
     value: dict[str, Any],
     key: str,
@@ -479,6 +508,8 @@ def _expression(
         add((*loc, key), problem.replace("读取筛选", label))
     elif "${" in PARAM.sub("", text):
         add((*loc, key), "运行参数要写成 ${param.<key>}（key 是项目参数的标识）")
+    elif (wrong := _unrunnable(text, label, key != "expr")) is not None:
+        add((*loc, key), wrong)
 
 
 def _columns(

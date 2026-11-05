@@ -166,6 +166,7 @@
   "不填时为新建的人。": "Defaults to whoever created it.",
   "不对的话请驳回并写明。": "If they are wrong, reject and say why.",
   "不是 MCP 服务": "Not an MCP service",
+  "不显示时的说明": "Why it is not shown",
   "不满足时：{action}": "When violated: {action}",
   "不用 key": "no key needed",
   "不用项目": "No project",

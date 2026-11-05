@@ -764,19 +764,52 @@ def test_only_answers_make_a_rule_confirmed():
     plan, cleaned = check(brief_plan(rules=[own]))
     assert [(r.id, r.basis) for r in plan.rules] == [("r5", "assumption")]
     assert cleaned == [
-        "规则 r5 写了已确认，但这次运行里没有人回答过对应的问题，改成了假设："
+        "规则 r5 写了已确认，但对不上确认页的任何一个回答，改成了假设："
         "已确认只由平台按确认页的回答写"
     ]
-    # An answer the plan no longer shows as confirmed (the model reworded it) is put back
-    # in the platform's words; the reworded rule is the model's assumption.
+    # 6th retest I-20: a rule the model reworded from an answer stays confirmed, with the
+    # platform's words after it, and the answer is not added a second time.
     reworded = rule("S8 的拼法按建议做（已确认）", "confirmed", id="r5")
     memory = answered(("S8 的拼法按建议做吗？", "按建议", "张三"))
     plan, cleaned = check(brief_plan(rules=[reworded]), answered=memory)
-    assert [(r.id, r.text, r.basis) for r in plan.rules] == [
-        ("r5", "S8 的拼法按建议做（已确认）", "assumption"),
-        ("r1", "张三已确认：S8 的拼法按建议做吗？——按建议", "confirmed"),
+    said = "S8 的拼法按建议做（已确认）（张三已确认：S8 的拼法按建议做吗？——按建议）"
+    assert [(r.id, r.text, r.basis) for r in plan.rules] == [("r5", said, "confirmed")]
+    assert cleaned == []
+    # Kept in the next round as it is: still confirmed, nothing added.
+    plan, cleaned = check(brief_plan(rules=[rule(said, "confirmed", id="r2")]), answered=memory)
+    assert [(r.id, r.text, r.basis) for r in plan.rules] == [("r2", said, "confirmed")]
+    # One answer the model wrote as two rules: both restate it.
+    memory = answered(("基数为空时写空值还是写 0？", "写空值", "张三"))
+    two = [
+        rule("Forecast 月份基数为空时写空值（已确认）", "confirmed", id="r1"),
+        rule("Actual 月份基数为空时也写空值（已确认）", "confirmed", id="r2"),
     ]
-    assert len(cleaned) == 1
+    plan, cleaned = check(brief_plan(rules=two), answered=memory)
+    assert [r.basis for r in plan.rules] == ["confirmed", "confirmed"]
+    assert all(
+        r.text.endswith("（张三已确认：基数为空时写空值还是写 0？——写空值）") for r in plan.rules
+    )
+    # A rule on the same question with another decision does not restate the answer.
+    other = rule("基数为空时写 0（已确认）", "confirmed", id="r1")
+    plan, cleaned = check(brief_plan(rules=[other]), answered=memory)
+    assert [(r.text, r.basis) for r in plan.rules] == [
+        ("基数为空时写 0（已确认）", "assumption"),
+        ("张三已确认：基数为空时写空值还是写 0？——写空值", "confirmed"),
+    ]
+
+
+def test_a_question_asked_again_in_other_words_is_answered():
+    # 6th retest I-20: the model asked answered questions again, marking the option it
+    # took from the answer 已确认.
+    memory = answered(("基数为空时写空值还是写 0？", "写空值", "张三"))
+    again = question("q1", "Forecast 基数为空时怎么写？", "写空值（已确认）", "写 0")
+    plan, _ = check(brief_plan(questions=[again]), answered=memory)
+    assert plan.questions == []
+    assert plan.rules[-1].text == "张三已确认：基数为空时写空值还是写 0？——写空值"
+    # A few words changed: the same question.
+    close = question("q1", "基数为空时写空值还是写0", "a", "b")
+    plan, _ = check(brief_plan(questions=[close]), answered=memory)
+    assert plan.questions == []
 
 
 def test_answered_questions_go_before_the_sixth_becomes_a_rule():

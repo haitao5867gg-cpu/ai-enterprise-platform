@@ -1174,6 +1174,14 @@ function HumanFields({
                     </span>
                   </ReadOnlySetting>
                 )}
+                {typeof option.unmet === "string" && option.unmet !== "" && (
+                  <ReadOnlySetting
+                    label={t("不显示时的说明")}
+                    issues={issuesUnder(issues, `options.${i}.unmet`)}
+                  >
+                    {option.unmet}
+                  </ReadOnlySetting>
+                )}
                 <CheckField
                   label={t("必须写意见")}
                   checked={required.includes(option.key)}

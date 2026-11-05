@@ -861,6 +861,12 @@ test("模板“数据 ETL（湖仓，绑定项目）”：试算后数据检查�
   await expect(
     panel(page).locator(".read-only-setting").filter({ hasText: "显示条件" }),
   ).toContainText("（都成立时才显示这个选项）");
+  // Why 通过 is not offered is said in the prompt (jadeflow 6th retest S-28).
+  await expect(
+    panel(page)
+      .locator(".read-only-setting")
+      .filter({ hasText: "不显示时的说明" }),
+  ).toContainText("试算或数据检查有错误，请改代码、改方案或终止");
   await select(page, "checks");
   await expect(panel(page)).toContainText("数据检查");
 });

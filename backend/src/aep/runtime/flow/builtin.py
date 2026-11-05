@@ -1045,8 +1045,9 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "数字或代码不对时选改代码或改方案并写明意见；不做了就终止并写明原因。"
     )
     review["prompt"] = (
-        "请看开发环境试算的结果、数据检查、代码和方案。通过后交付；改代码、改方案时写明意见，"
-        "可以挂在某一列、某条质量规则、某条数据检查或某个文件上；终止时写明原因。"
+        "请看开发环境试算的结果、数据检查、代码和方案。试算和数据检查都通过时可以选通过，"
+        "交付结果；改代码、改方案时写明意见，可以挂在某一列、某条质量规则、某条数据检查或"
+        "某个文件上；终止时写明原因。"
     )
     review["show"] = "{{review_code.report}}\n\n{{dev_run.report}}\n\n{{checks.report}}"
     review["data"] |= {
@@ -1055,6 +1056,8 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "code_review": "{{review_code.findings}}",
     }
     review["options"][0]["requires"] = ["{{dev_run.ok}}", "{{checks.ok}}"]
+    # Said in the prompt when 通过 is not offered (jadeflow 6th retest S-28).
+    review["options"][0]["unmet"] = "试算或数据检查有错误，请改代码、改方案或终止"
     # 按检查结果改代码 (jadeflow 5th retest I-18): no comment to write, the checks that did
     # not pass and their examples go to the model; offered only when some did not pass.
     review["options"].insert(

@@ -7,7 +7,7 @@ import hashlib
 import json
 
 from aep.runtime import human
-from aep.runtime.flow import builtin, diff
+from aep.runtime.flow import builtin, diff, nodes
 from aep.runtime.flow.check import check_config
 from aep.runtime.flow.graph import looping_options
 from tests.conftest import said
@@ -725,6 +725,80 @@ async def test_what_changed_since_the_last_round_and_what_was_not_asked_for():
         assert run["pending"]["details"]["changes"] == []
 
 
+async def test_what_changed_after_a_later_step_sent_the_work_back():
+    # jadeflow 6th retest I-3: a plan sent back from 审核试算结果 listed every change
+    # without a reason; the remarks written there and the answers given at 确认方案 count.
+    changes = {
+        "of": "{{ask.brief}}",
+        "lists": [{"path": "metrics", "key": "id", "label": "name", "name": "指标"}],
+    }
+    second = {
+        "metrics": [
+            {"id": "m4", "name": "客单价", "unit": "元"},
+            {"id": "m5", "label": "去掉测试订单后的订单数"},
+            {"id": "m6", "name": "件数"},
+        ],
+        "dimensions": BRIEF["dimensions"],
+    }
+    results = {
+        "id": "results",
+        "type": "human",
+        "title": "审核结果",
+        "mode": "approval",
+        "prompt": "看结果",
+        "options": [
+            {"key": "deliver", "label": "交付"},
+            {"key": "fix_plan", "label": "退回改方案"},
+        ],
+        "comment_required": ["fix_plan"],
+    }
+    config = reviewed(changes=changes)
+    config["graph"]["nodes"].append(results)
+    config["graph"]["edges"] = [
+        e if e.get("branch") != "approve" else e | {"to": "results"}
+        for e in config["graph"]["edges"]
+    ] + [
+        {"from": "results", "branch": "deliver", "to": "end"},
+        {"from": "results", "branch": "fix_plan", "to": "ask"},
+    ]
+    async with Platform([reply(), reply(brief=second)]) as p:
+        await p.new_app("plan", config)
+        run = await p.run("plan", {"question": "按城市统计客单价"})
+        run = await p.resume(run, decision="approve", values={"q1": "all", "q2": True})
+        assert run["pending"]["details"]["node"] == "results"
+        run = await p.resume(run, decision="fix_plan", comment="客单价要带单位")
+        found = run["pending"]["details"]["changes"]
+        assert [(c["key"], c["kind"], c["because"], c["mentioned"]) for c in found] == [
+            ("m4", "changed", "remarks", True),
+            ("m5", "changed", "answer", True),
+            ("m6", "added", None, False),
+        ]
+
+
+async def test_remarks_from_before_the_last_showing_do_not_count():
+    state = {
+        "visits": {"ask": 2, "review": 1},
+        "private": {
+            "results": {"said": [{"step": 2, "passed_on": True, "comment": "早先的意见"}]},
+            "review": {
+                "said": [{"step": 3, "passed_on": False, "answers": [{"label": "问"}]}],
+                "shown_step": 3,
+            },
+        },
+    }
+    assert nodes.feedback_since(state, state["private"]["review"]) is None
+    state["private"]["results"]["said"].append(
+        {"step": 5, "passed_on": True, "comment": " 后来的意见 ", "notes": [{"item": "m"}]}
+    )
+    assert nodes.feedback_since(state, state["private"]["review"]) == {
+        "comment": "后来的意见",
+        "notes": [{"item": "m"}],
+        "answers": [{"label": "问"}],
+    }
+    # A step shown before the platform kept who said what has its own last remarks.
+    assert nodes.feedback_since(state, {"feedback": {"comment": "旧"}}) == {"comment": "旧"}
+
+
 async def test_the_changes_setting_is_checked():
     bad = {
         "of": "{{ask.brief}} 和别的",
@@ -785,8 +859,10 @@ async def test_past_its_limit_a_person_gets_the_options_that_do_not_lead_back():
     # jadeflow 5th retest I-22: the run ended with an error on the 5th entry; now the options
     # that lead back are offered up to the limit and only the others after it.
     assert looping_options(reviewed()) == {"review": ["revise"]}
-    async with Platform([reply(), reply(), reply()]) as p:
-        await p.new_app("plan", reviewed(max_visits=2))
+    config = reviewed(max_visits=3)
+    config["graph"]["nodes"][1]["max_visits"] = 4
+    async with Platform([reply(), reply(), reply(), reply()]) as p:
+        await p.new_app("plan", config)
         run = await p.run("plan", {"question": "按城市统计客单价"})
         pending = run["pending"]
         assert pending["options"] == ["approve", "revise", "stop"]
@@ -795,23 +871,33 @@ async def test_past_its_limit_a_person_gets_the_options_that_do_not_lead_back():
         values = {"q1": "all", "q2": True}
         run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
         pending = run["pending"]
+        # The round before the last says one is left (jadeflow 6th retest S-28).
+        assert pending["options"] == ["approve", "revise", "stop"]
+        assert pending["prompt"] == (
+            "请检查方案，回答每道问题\n\n这一步一次运行最多处理 3 次，这是第 2 次："
+            "「按我的意见修改方案」这次选了以后，还能再选 1 次。"
+        )
+        assert pending["details"]["limit"] == {"round": 2, "max": 3, "hidden": []}
+        run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
+        pending = run["pending"]
         # The last visit with all of them, and a warning.
         assert pending["options"] == ["approve", "revise", "stop"]
         assert pending["prompt"] == (
-            "请检查方案，回答每道问题\n\n这一步一次运行最多处理 2 次，这是第 2 次，"
+            "请检查方案，回答每道问题\n\n这一步一次运行最多处理 3 次，这是第 3 次，"
             "也是最后一次可以选「按我的意见修改方案」：选了以后流程回到前面重做，"
             "再回到这里时只能选别的。"
         )
-        assert pending["details"]["limit"] == {"round": 2, "max": 2, "hidden": []}
+        assert pending["details"]["limit"] == {"round": 3, "max": 3, "hidden": []}
         run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
         assert run["status"] == "waiting", run["error"]
         pending = run["pending"]
         assert pending["options"] == ["approve", "stop"]
+        # No 最多处理 3 次，这是第 4 次 (S-28).
         assert pending["prompt"].endswith(
-            "\n\n这一步一次运行最多处理 2 次，这是第 3 次："
-            "「按我的意见修改方案」会让流程回到前面重做，不再提供。"
+            "\n\n「按我的意见修改方案」会让流程回到前面重做，这一步到第 3 次为止可以选，"
+            "已经用完，这次不再提供。"
         )
-        assert pending["details"]["limit"] == {"round": 3, "max": 2, "hidden": ["revise"]}
+        assert pending["details"]["limit"] == {"round": 4, "max": 3, "hidden": ["revise"]}
         # A changed answer no longer turns the decision into the hidden option.
         assert pending["changed_branch"] is None
         status, _ = await refused(p, run, decision="revise", values=values, comment="再改")
@@ -819,6 +905,40 @@ async def test_past_its_limit_a_person_gets_the_options_that_do_not_lead_back():
         run = await p.resume(run, decision="approve", values={"q1": "y2026", "q2": True})
         assert run["status"] == "done"
         assert (await review_output(p, run))["decision"] == "approve"
+
+
+async def test_an_option_not_offered_says_why_when_the_node_says():
+    # jadeflow 6th retest S-28: no 通过 to pick, and nothing said why.
+    config = reviewed()
+    options = config["graph"]["nodes"][2]["options"]
+    assert options[2]["key"] == "pass"
+    options[2]["unmet"] = "「{{start.question}}」还有没讲清楚的，先回答问题"
+    async with Platform([reply(), reply(ok=True)]) as p:
+        await p.new_app("plan", config)
+        run = await p.run("plan", {"question": "按城市统计客单价"})
+        assert run["pending"]["options"] == ["approve", "revise", "stop"]
+        assert run["pending"]["prompt"] == (
+            "请检查方案，回答每道问题\n\n这次不能选「直接通过」："
+            "「按城市统计客单价」还有没讲清楚的，先回答问题"
+        )
+        run = await p.resume(run, decision="revise", values={"q1": "all", "q2": True}, comment="改")
+        assert "pass" in run["pending"]["options"]
+        assert "不能选" not in run["pending"]["prompt"]
+
+
+async def test_why_an_option_is_not_offered_is_checked():
+    at = ("config", "graph", "nodes", "review", "options")
+    config = reviewed()
+    options = config["graph"]["nodes"][2]["options"]
+    options[0]["unmet"] = "没有 requires"
+    options[2]["unmet"] = "长" * 201
+    assert await problems(config) == {
+        (*at, 0, "unmet"): "unmet 是不显示这个选项时的说明，要和 requires 一起设",
+        (*at, 2, "unmet"): "unmet 要写成 1–200 个字符的文字",
+    }
+    options[0].pop("unmet")
+    options[2]["unmet"] = "说明"
+    assert (await check_config(config, ENV))["graph"]
 
 
 async def test_which_options_lead_back_to_a_person():
@@ -882,10 +1002,75 @@ def test_what_follows_from_an_answer_is_asked_for_too():
     now = plan_items([], [confirmed])
     answers = [{"label": "负数怎么处理？", "value_label": "原样保留"}]
     found = diff.changes(before, now, PLAN_LISTS, {"comment": "", "answers": answers})
+    # The rule it replaced is about the question too (负数怎么处理 is about 负数).
     assert [(c["kind"], c["because"], c["mentioned"]) for c in found] == [
         ("added", "answer", True),
-        ("removed", None, False),
+        ("removed", "answer", True),
     ]
+    other = plan_items([], [{"id": "r1", "text": "金额保留两位小数", "basis": "assumption"}])
+    found = diff.changes(other, now, PLAN_LISTS, {"comment": "", "answers": answers})
+    assert [(c["kind"], c["because"]) for c in found] == [("added", "answer"), ("removed", None)]
+
+
+def test_an_answer_counts_before_the_words_a_comment_shares():
+    # jadeflow 6th retest I-3: a rule written from an answer shared 「Forecast 月份」 with the
+    # comment and was said to be named in it.
+    rule = {
+        "id": "r2",
+        "text": "Forecast 月份基数为空时写空值（已确认：基数为空写空还是写 0？——写空值）",
+        "basis": "confirmed",
+    }
+    before = plan_items([{"id": "chk_neg", "label": "本版本 Forecast 月份没有负数"}], [])
+    now = plan_items([], [rule])
+    said = {
+        "comment": "去掉检查「本版本 Forecast 月份没有负数」",
+        "notes": [],
+        "answers": [{"label": "基数为空写空还是写 0？", "value_label": "写空值"}],
+    }
+    found = diff.changes(before, now, PLAN_LISTS, said)
+    assert [(c["list"], c["kind"], c["because"]) for c in found] == [
+        ("检查", "removed", "remarks"),
+        ("规则", "added", "answer"),
+    ]
+
+
+def test_a_long_text_says_the_words_that_changed_and_like_changes_are_one_line():
+    lists = [{"path": "metrics", "key": "id", "label": "name", "name": "指标"}]
+    month = "FY26 {m} 月 Forecast：当月计费重量合计乘以分摊比例，四舍五入到整数"
+
+    def metrics(text: str, count: int = 4) -> dict:
+        found = [
+            {"id": f"m{i}", "name": f"{i} 月", "definition": text.format(m=i)}
+            for i in range(1, count + 1)
+        ]
+        return diff.items({"metrics": found}, lists)
+
+    reworded = month.replace("四舍五入到整数", "四舍五入保留整数")
+    found = diff.changes(metrics(month), metrics(reworded), lists, None)
+    # Four metrics, the same words changed: one line, each kept under items.
+    assert [(c["label"], c["fields"]) for c in found] == [
+        ("1 月 等 4 条", "definition：「到」→「保留」")
+    ]
+    assert [i["key"] for i in found[0]["items"]] == ["m1", "m2", "m3", "m4"]
+    # The same field, other words in each: one line too, saying they differ.
+    before = metrics(month)
+    now = metrics(month)
+    for i, item in enumerate(now["metrics"].values(), start=1):
+        item["fields"]["definition"] = (
+            month.format(m=i) + "（不含退货）" * (i % 2) + "。" * (i // 2)
+        )
+    found = diff.changes(before, now, lists, None)
+    assert [(c["label"], c["fields"]) for c in found] == [
+        ("1 月 等 4 条", "都改了definition（每条不同）")
+    ]
+    assert found[0]["items"][0]["fields"] == "definition：加了「（不含退货）」"
+    # Two alike are two lines; many words changed say only the field.
+    found = diff.changes(metrics(month, 2), metrics(reworded, 2), lists, None)
+    assert [c["fields"] for c in found] == ["definition：「到」→「保留」"] * 2
+    assert "items" not in found[0]
+    other = "第 {m} 个财月的预测：各线路计费重量先求和，再乘以上一版的分摊比例"
+    found = diff.changes(metrics(month, 1), metrics(other, 1), lists, None)
+    assert [c["fields"] for c in found] == ["definition"]
 
 
 def test_a_reworded_or_renumbered_rule_is_one_change_or_none():
@@ -905,11 +1090,11 @@ def test_a_reworded_or_renumbered_rule_is_one_change_or_none():
         ],
     )
     found = diff.changes(before, now, PLAN_LISTS, None)
+    # A check only given another id is no change (jadeflow 6th retest I-3).
     assert [(c["list"], c["kind"], c["label"], c["fields"]) for c in found] == [
-        ("检查", "changed", "合计和源表一致", "id（chk_a → chk_total）"),
         ("规则", "changed", rule.replace("写 0", "写成 0"), "改了文字、basis（doc → confirmed）"),
     ]
-    assert [c["because"] for c in found] == [None, None]
+    assert [c["because"] for c in found] == [None]
     # Unlike texts stay one removed and one added.
     other = plan_items([], [{"id": "r9", "text": "按平台取固定值", "basis": "doc"}])
     found = diff.changes(before, other, PLAN_LISTS, None)

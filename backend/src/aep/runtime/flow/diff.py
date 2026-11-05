@@ -27,6 +27,18 @@ MIN_SHARED = 5
 # at least this alike (jadeflow 5th retest I-3: a rule with a few words changed was listed
 # as one removed and one added).
 MIN_ALIKE = 0.6
+# A long text that changed is described by its changed words when there are at most this
+# many changes of at most this many characters each.
+MAX_TEXT_CHANGES = 2
+MAX_TEXT_PART = 20
+# Items of one list in which the same fields changed are listed once from this many on.
+MIN_GROUPED = 3
+# The words that make a question a question; what is left of it says what it is about
+# (负数怎么处理 → 负数; jadeflow 6th retest I-3: a rule removed for an answer).
+ASKING = re.compile(
+    r"怎么处理|如何处理|怎么算|怎么写|怎么取|怎么办|如何|怎么|是否|还是|要不要|需不需要|"
+    r"哪一种|哪种|哪个|什么|多少|吗|呢|\W+"
+)
 
 
 def normalize(value: Any) -> Any:
@@ -46,9 +58,28 @@ def short(text: str, most: int = 60) -> str:
     return text if len(text) <= most else text[: most - 1] + "…"
 
 
+def text_change(old: str, new: str) -> str:
+    """The words that changed between two texts, when they are few: ``「按月」→「按自然月」``,
+    ``加了「（不含退货）」``, ``去掉了「试点」``; "" when more changed (jadeflow 6th retest
+    I-3: 12 metrics said only 改了 definition)."""
+    ops = SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+    changed = [(tag, old[i1:i2], new[j1:j2]) for tag, i1, i2, j1, j2 in ops if tag != "equal"]
+    if not changed or len(changed) > MAX_TEXT_CHANGES:
+        return ""
+    if any(len(a) > MAX_TEXT_PART or len(b) > MAX_TEXT_PART for _, a, b in changed):
+        return ""
+    said = {
+        "replace": lambda a, b: f"「{a}」→「{b}」",
+        "insert": lambda a, b: f"加了「{b}」",
+        "delete": lambda a, b: f"去掉了「{a}」",
+    }
+    return "，".join(said[tag](a.strip() or a, b.strip() or b) for tag, a, b in changed)
+
+
 def field_changes(before: dict[str, Any], after: dict[str, Any]) -> str:
     """Which fields changed, in one short phrase: ``where、tolerance（0 → 0.005）``; a value
-    is shown only when both sides are short and plain."""
+    is shown only when both sides are short and plain, and a long text by the words that
+    changed when they are few (``definition：「按月」→「按自然月」``)."""
     parts = []
     for key in sorted(set(before) | set(after)):
         old, new = before.get(key), after.get(key)
@@ -59,6 +90,9 @@ def field_changes(before: dict[str, Any], after: dict[str, Any]) -> str:
             new_text = "无" if new is None else str(new)
             if len(old_text) + len(new_text) <= 40:
                 parts.append(f"{key}（{old_text} → {new_text}）")
+                continue
+            if isinstance(old, str) and isinstance(new, str) and (words := text_change(old, new)):
+                parts.append(f"{key}：{words}")
                 continue
         parts.append(key)
     return "、".join(parts)
@@ -153,12 +187,37 @@ def _answered(key: str, label: str, fields: list[Any], feedback: dict[str, Any])
     return False
 
 
+def about(question: str) -> str:
+    """What a question is about: the longest part of it between the asking words
+    (``负数怎么处理？`` → ``负数``)."""
+    parts = [bare(p) for p in ASKING.split(question)]
+    return max(parts, key=len, default="")
+
+
+def _near_answer(label: str, fields: list[Any], feedback: dict[str, Any]) -> bool:
+    """Whether the item is about a question the person answered: what the question is
+    about (``about``), up to ``MIN_SHARED`` characters of it in a row, is in the item (a
+    rule removed or rewritten for an answer, 6th retest I-3)."""
+    held = bare(" ".join([label, *(s for f in fields for s in _strings(f))]))
+    for answer in feedback.get("answers") or []:
+        topic = about(str(answer.get("label") or "")) if isinstance(answer, dict) else ""
+        if len(topic) >= 2 and _shared(held, topic) >= min(MIN_SHARED, len(topic)):
+            return True
+    return False
+
+
 def _because(key: str, label: str, fields: list[Any], feedback: dict[str, Any] | None) -> Any:
+    """Why the item changed as far as the person is concerned. A question they answered
+    that is in the item comes first (6th retest I-3: a rule written from an answer shared a
+    few words with the comment and was said to be named in it), then the comment and
+    notes, then a question the item is about."""
     if feedback is None:
         return None
+    if _answered(key, label, fields, feedback):
+        return "answer"
     if _named(key, label, fields, feedback):
         return "remarks"
-    return "answer" if _answered(key, label, fields, feedback) else False
+    return "answer" if _near_answer(label, fields, feedback) else False
 
 
 def _pairs(old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]) -> list[tuple[str, str]]:
@@ -183,29 +242,23 @@ def _pairs(old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]) -> li
     return pairs
 
 
-def _changed(was: dict[str, Any], now: dict[str, Any], spec: dict[str, Any], reworded: bool) -> str:
-    """What changed in an item, without the list's ``ignore`` fields ("" when nothing did).
-    A reworded item (paired by ``_pairs``) starts with 改了文字 when its name changed, and
-    its key and name fields are not listed again."""
+def _changed(
+    was: dict[str, Any], now: dict[str, Any], spec: dict[str, Any], reworded: bool
+) -> tuple[str, tuple[str, ...]]:
+    """What changed in an item, without the list's ``ignore`` fields ("" when nothing did),
+    and the names of what changed (文字 for a reworded name). A reworded item (paired by
+    ``_pairs``) starts with 改了文字 when its name changed, and its key and name fields are
+    not listed again; one only given another key is no change (6th retest I-3)."""
     ignore = set(spec.get("ignore") or [])
     if reworded:
         ignore |= {spec["key"], spec.get("label") or spec["key"]}
-    rest = field_changes(
-        {k: v for k, v in was["fields"].items() if k not in ignore},
-        {k: v for k, v in now["fields"].items() if k not in ignore},
-    )
-    if not reworded:
-        return rest
-    if was["label"] != now["label"]:
-        return "、".join(p for p in ("改了文字", rest) if p)
-    # Only the key changed (a check given another id): say so.
-    return "、".join(
-        p for p in (f"{spec['key']}（{_key(was, spec)} → {_key(now, spec)}）", rest) if p
-    )
-
-
-def _key(item: dict[str, Any], spec: dict[str, Any]) -> str:
-    return short(str(item["fields"].get(spec["key"], "")), 30)
+    old = {k: v for k, v in was["fields"].items() if k not in ignore}
+    new = {k: v for k, v in now["fields"].items() if k not in ignore}
+    rest = field_changes(old, new)
+    names = tuple(k for k in sorted(set(old) | set(new)) if old.get(k) != new.get(k))
+    if not reworded or was["label"] == now["label"]:
+        return rest, names
+    return "、".join(p for p in ("改了文字", rest) if p), ("文字", *names)
 
 
 def changes(
@@ -235,28 +288,62 @@ def changes(
         for key, item in new.items():
             was = old.get(twin.get(key, key))
             if was is None:
-                found.append(("added", key, item["label"], "", [item["fields"]]))
-            elif said := _changed(was, item, spec, key in twin):
-                found.append(("changed", key, item["label"], said, [was["fields"], item["fields"]]))
+                found.append(("added", key, item["label"], "", (), [item["fields"]]))
+                continue
+            said, names = _changed(was, item, spec, key in twin)
+            if said:
+                versions = [was["fields"], item["fields"]]
+                found.append(("changed", key, item["label"], said, names, versions))
         found += [
-            ("removed", key, item["label"], "", [item["fields"]])
+            ("removed", key, item["label"], "", (), [item["fields"]])
             for key, item in old.items()
             if key not in new and key not in paired
         ]
-        for kind, key, label, said, versions in found:
+        listed: list[tuple[dict[str, Any], tuple[str, ...]]] = []
+        for kind, key, label, said, names, versions in found:
             because = _because(key, label, versions, feedback)
+            entry = {
+                "list": spec.get("name") or spec["path"],
+                "kind": kind,
+                "key": key,
+                "label": label,
+                "fields": said,
+                "mentioned": None if because is None else because is not False,
+                "because": because or None,
+            }
+            listed.append((entry, names))
+        out += _grouped(listed)
+    return out[:MAX_CHANGES]
+
+
+def _grouped(listed: list[tuple[dict[str, Any], tuple[str, ...]]]) -> list[dict[str, Any]]:
+    """Items of a list in which the same fields changed for the same reason, from
+    ``MIN_GROUPED`` on, as one entry at the first one's place (6th retest I-3: 12 metrics,
+    one line each). Its ``label`` names the first and how many, ``fields`` is what they
+    share (``都改了 definition（每条不同）`` when the words differ) and ``items`` lists
+    each one's ``key``, ``label`` and ``fields``."""
+    same: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for entry, names in listed:
+        if entry["kind"] == "changed":
+            same.setdefault((names, entry["because"], entry["mentioned"]), []).append(entry)
+    out = []
+    for entry, names in listed:
+        group = same.get((names, entry["because"], entry["mentioned"])) or []
+        if entry["kind"] != "changed" or len(group) < MIN_GROUPED:
+            out.append(entry)
+        elif entry is group[0]:
+            said = {g["fields"] for g in group}
             out.append(
-                {
-                    "list": spec.get("name") or spec["path"],
-                    "kind": kind,
-                    "key": key,
-                    "label": label,
-                    "fields": said,
-                    "mentioned": None if because is None else because is not False,
-                    "because": because or None,
+                entry
+                | {
+                    "label": f"{short(entry['label'], 30)} 等 {len(group)} 条",
+                    "fields": said.pop()
+                    if len(said) == 1
+                    else f"都改了{'、'.join(names)}（每条不同）",
+                    "items": [{k: g[k] for k in ("key", "label", "fields")} for g in group],
                 }
             )
-    return out[:MAX_CHANGES]
+    return out
 
 
 def check_lists(lists: Any) -> list[tuple[tuple[str | int, ...], str]]:
