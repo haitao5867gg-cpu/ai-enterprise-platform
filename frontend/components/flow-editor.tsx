@@ -992,10 +992,17 @@ export function FlowEditor({
                 <NumberField
                   label={t("一次运行最多执行次数")}
                   min={1}
-                  max={10}
+                  max={50}
                   value={node.max_visits ?? 3}
                   issues={issuesUnder(nodeIssues, "max_visits")}
-                  help={t("循环里的节点超过这个次数时运行失败。")}
+                  help={
+                    node.type === "human" &&
+                    (node.mode ?? "approval") === "approval"
+                      ? t(
+                          "超过这个次数后，不再提供会让流程回到这一步的选项（比如“驳回”“改代码”），运行不会失败。",
+                        )
+                      : t("循环里的节点超过这个次数时运行失败。")
+                  }
                   onChange={(max_visits) => change({ ...node, max_visits })}
                 />
               </details>

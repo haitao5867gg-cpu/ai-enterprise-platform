@@ -816,8 +816,25 @@ PROJECT_CODEGEN_PROMPT = (
         "静态检查发现的问题（为空时忽略）：{{check_code.problems}}\n",
         "静态检查发现的问题（为空时忽略）：{{check_code.problems}}\n"
         "模型审查发现的问题（为空时忽略，要逐条改掉）：{{review_code.problems}}\n",
+    ).replace(
+        "审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}\n",
+        "审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}\n"
+        "上一次试算后没通过的数据检查和例子（为空时忽略；按方案找出代码哪里算错了再改，"
+        "和审核意见冲突时以意见为准）：\n{{checks.problems}}\n",
     )
 )
+# What the code is reviewed against besides the project's conventions for code (jadeflow
+# 5th retest I-18: a sum written as max, a gate turned around; the checks caught them, but
+# a person had to write how to fix each).
+CODE_REVIEW_RULES = [
+    {
+        "key": "matches_plan",
+        "title": "代码和已确认的方案一致",
+        "instruction": "汇总方式（求和、取最大值、计数……）、分组的粒度、每列的算法和判断的先后"
+        "顺序、读哪些表和怎么筛选，都要和已确认的方案写的一致：方案写的是一种做法，代码做的是"
+        "另一种，就是违反。where 写表名和代码里的位置（函数、列），quote 写方案里的原话。",
+    },
+]
 # What the plan of a project's run is reviewed against (jadeflow 4th retest I-12, S-22,
 # I-10), besides the project's own conventions for plans. Prompt rules alone were not
 # followed; a review that asks only these is.
@@ -937,7 +954,7 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "decided": "{{review.decisions}}\n{{plan_stuck.decisions}}",
         "max_attempts": 2,
         "on_stuck": "pass",
-        "max_visits": 20,
+        "max_visits": 40,
         "on_error": _retry(1, 2),
     }
     nodes.insert(nodes.index(found["check_plan"]) + 1, review_plan)
@@ -945,25 +962,26 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "id": "review_code",
         "type": "llm_review",
         "title": "审查代码",
-        "note": "按项目写代码时的约定审查代码，并核对人在审核试算结果时对代码提的要求都还在"
-        "（都没有时跳过，不调模型）。有问题就让模型带着问题重写；连续 2 次没改过来就照常试算，"
-        "把问题列在审核页上。",
+        "note": "另调一次模型审查代码：和已确认的方案是否一致（汇总方式、分组、列的算法和"
+        "判断顺序），项目写代码时的约定，以及人在审核试算结果时对代码提的要求是不是都还在。"
+        "有问题就让模型带着问题重写；连续 2 次没改过来就照常试算，把问题列在审核页上。",
         "model": None,
         "skills": [],
         "subject": "{{check_code.code}}",
         "context": "已确认的方案：\n{{check_plan.plan}}\n\n{{project.brief}}",
-        "rules": ["{{project.code_rules}}"],
+        "rules": [*CODE_REVIEW_RULES, "{{project.code_rules}}"],
         # What people asked of the code in this run stays in it (I-21).
         "decided": "{{data_review.decisions}}\n{{code_stuck.decisions}}",
         "max_attempts": 2,
         "on_stuck": "pass",
-        "max_visits": 20,
+        "max_visits": 40,
         "on_error": _retry(1, 2),
     }
     nodes.insert(nodes.index(found["check_code"]) + 1, review_code)
-    # A rewrite for a reviewer is one more visit of the step it goes back to.
+    # A rewrite for a reviewer is one more visit of the step it goes back to; a round of
+    # 改代码 may visit the code steps 5 times (2 reviews, 2 dev run retries).
     for node in (found["plan"], found["check_plan"], found["codegen"], found["check_code"]):
-        node["max_visits"] = 20
+        node["max_visits"] = 40
     found["review"]["show"] = "{{review_plan.report}}\n\n{{check_plan.message}}"
     found["review"]["data"]["review"] = "{{review_plan.findings}}"
     # What the rewrite changed since the person last saw the plan, and what they did not
@@ -995,7 +1013,7 @@ def _etl_lakehouse_project() -> dict[str, Any]:
             "keys": "{{check_plan.result_keys}}",
         },
         "only_if": "{{dev_run.ok}}",
-        "max_visits": 9,
+        "max_visits": 24,
         "on_error": _retry(2, 5),
     }
     nodes.insert(nodes.index(found["data_review"]), checks)
@@ -1015,6 +1033,15 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "code_review": "{{review_code.findings}}",
     }
     review["options"][0]["requires"] = ["{{dev_run.ok}}", "{{checks.ok}}"]
+    # 按检查结果改代码 (jadeflow 5th retest I-18): no comment to write, the checks that did
+    # not pass and their examples go to the model; offered only when some did not pass.
+    review["options"].insert(
+        2, {"key": "fix_checks", "label": "按检查结果改代码", "requires": "{{checks.failed}}"}
+    )
+    # 8 rounds of 改代码 (I-22: 4 were used up by a normal acceptance run, and the run ended
+    # on the 5th entry with nobody looking); after them the step offers only the rest.
+    review["max_visits"] = 8
+    found["dev_run"]["max_visits"] = 24
     for end in (found["end"], found["stopped"]):
         end["outputs"].append({"key": "checks", "from": ["{{checks.report}}"]})
     # Releasing (jadeflow retest I-19): only asked when the project has a prod environment
@@ -1083,6 +1110,8 @@ def _etl_lakehouse_project() -> dict[str, Any]:
                 {"from": "can_release", "to": "release_review", "branch": "yes"},
                 {"from": "can_release", "to": "end", "branch": "else"},
             ]
+        elif edge["from"] == "data_review" and edge.get("branch") == "fix_code":
+            edges += [edge, {"from": "data_review", "to": "codegen", "branch": "fix_checks"}]
         else:
             edges.append(edge)
     config["graph"]["edges"] = edges

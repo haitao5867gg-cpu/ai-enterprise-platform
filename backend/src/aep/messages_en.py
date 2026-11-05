@@ -564,6 +564,11 @@ NODE_TYPES: dict[str, str] = {
     "校验方案": "Check plan",
     "检查并打包": "Check and package",
     "检查报告（Markdown）": "Check report (Markdown)",
+    "有没有不通过或出错的检查（任何级别）": "Whether any check failed or errored (any severity)",
+    "不通过或出错的检查，一条一行带几行例子，给改代码的模型": (
+        "The checks that failed or errored, one per line with a few example rows, for the "
+        "model that fixes the code"
+    ),
     "模型审查": "Model review",
     "模型的回答（输出方式为文本时）": "The model's answer (when the output is text)",
     "模型自己决定调用哪些工具、调用几次，直到给出回答": (

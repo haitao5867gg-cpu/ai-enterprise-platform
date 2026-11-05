@@ -316,7 +316,7 @@ async def make(tmp_path):
 
 async def test_a_bound_run_is_planned_checked_and_delivered(make, monkeypatch):
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
-    lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE], [PASSED], [PREVIEW])
+    lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED], [PASSED], [PREVIEW])
     run_id, view = await lake.start()
 
     # The project's reference tables were profiled, the forecast through its filter.
@@ -411,7 +411,7 @@ async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, 
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", repeated)
     # After the note the code is reviewed for it (jadeflow 5th retest I-21).
     lake = await make(
-        [reply(v3_plan()), REVIEWED, GOOD_CODE, GOOD_CODE, REVIEWED],
+        [reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED, GOOD_CODE, REVIEWED],
         [PASSED, PASSED],
         [PREVIEW, PREVIEW],
     )
@@ -421,7 +421,8 @@ async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, 
     assert view["step"]["node"] == "data_review", view["error"]
     # The dev run passed; the repeated key fails a check, so 通过 is not offered.
     assert pending["details"]["data"]["status"] == "passed"
-    assert pending["options"] == ["fix_code", "fix_plan", "stop"]
+    # 按检查结果改代码 is offered as a check failed (5th retest I-18).
+    assert pending["options"] == ["fix_code", "fix_checks", "fix_plan", "stop"]
     keys = pending["details"]["data"]["checks"][0]
     assert (keys["id"], keys["status"]) == ("keys", "failed")
     assert keys["rows"] == [{"sku": "A1", "month": "2026-10", "count": 2}]
@@ -442,10 +443,38 @@ async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, 
     assert pending["details"]["data"]["checks_summary"] == "2 项检查：2 项通过"
 
 
+async def test_the_checks_that_failed_go_back_to_the_code_without_a_word(make, monkeypatch):
+    # jadeflow 5th retest I-18: a person read the examples of a failed check and wrote in an
+    # engineer's words what to change; 按检查结果改代码 gives the model the checks instead.
+    repeated = GOOD_ROWS + [{"sku": "A1", "month": "2026-10", "qty": 0}]
+    put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", repeated)
+    lake = await make(
+        [reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED, GOOD_CODE, REVIEWED],
+        [PASSED, PASSED],
+        [PREVIEW, PREVIEW],
+    )
+    run_id, view = await lake.start(golden="")
+    view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
+    assert view["pending"]["options"] == ["fix_code", "fix_checks", "fix_plan", "stop"]
+    first = lake.prompt(2)  # The first code was written before any check.
+    assert "上一次试算后没通过的数据检查和例子" in first
+    assert "〔每个物料每月一行〕" not in first
+    put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
+    view = await lake.submit(run_id, "fix_checks")
+    assert view["status"] == "waiting", view["error"]
+    rewrite = lake.prompt(2)
+    assert "- 〔每个物料每月一行〕" in rewrite
+    assert "  例子：sku=A1，month=2026-10，count=2" in rewrite
+    # It is a decision of the run like any other, kept for the later rewrites.
+    assert "【第 1 轮 · 审核试算结果 · 按检查结果改代码】" in rewrite
+    # The checks pass now: the option is gone.
+    assert view["pending"]["options"] == ["approve", "fix_code", "fix_plan", "stop"]
+
+
 async def test_a_failed_dev_run_skips_the_checks(make, monkeypatch):
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
     failed = {"write_errors": ["ibf_table2: 写表失败：没有权限"]}
-    lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE], [failed], [])
+    lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED], [failed], [])
     run_id, view = await lake.start()
     profiled = len(lake.calls)  # The profile counts the filtered reference's rows.
     view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
@@ -541,10 +570,10 @@ def test_template_follows_the_contract():
         "needless_questions",
     ]
     assert review_plan["rules"][-1] == "{{project.plan_rules}}"
-    assert (review_code["subject"], review_code["rules"]) == (
-        "{{check_code.code}}",
-        ["{{project.code_rules}}"],
-    )
+    # The code is also reviewed against the confirmed plan (5th retest I-18).
+    assert review_code["subject"] == "{{check_code.code}}"
+    assert [r["key"] for r in review_code["rules"][:-1]] == ["matches_plan"]
+    assert review_code["rules"][-1] == "{{project.code_rules}}"
     # What people decided in this run is kept and not reviewed as a problem (5th retest
     # I-20, I-21); the steps that rewrite are given all of it too.
     assert review_plan["decided"] == "{{review.decisions}}\n{{plan_stuck.decisions}}"
@@ -555,7 +584,19 @@ def test_template_follows_the_contract():
         assert (node["max_attempts"], node["on_stuck"]) == (2, "pass")
     # Each rewrite for a reviewer is one more visit of the steps in the loop.
     for key in ("plan", "check_plan", "review_plan", "codegen", "check_code", "review_code"):
-        assert nodes[key]["max_visits"] == 20
+        assert nodes[key]["max_visits"] == 40
+    # A person reviews the dev run at most 8 times; dev runs and checks follow it.
+    assert nodes["data_review"]["max_visits"] == 8
+    assert (nodes["dev_run"]["max_visits"], nodes["checks"]["max_visits"]) == (24, 24)
+    # Failed checks go back to the code with their examples (5th retest I-18).
+    fix_checks = nodes["data_review"]["options"][2]
+    assert fix_checks == {
+        "key": "fix_checks",
+        "label": "按检查结果改代码",
+        "requires": "{{checks.failed}}",
+    }
+    assert ("data_review", "fix_checks", "codegen") in edges
+    assert "{{checks.problems}}" in nodes["codegen"]["prompt"]
     assert ("check_plan", "ok", "review_plan") in edges
     assert ("review_plan", "ok", "review") in edges
     assert ("review_plan", "retry", "plan") in edges
@@ -575,7 +616,7 @@ async def test_the_release_step_follows_the_project(make, monkeypatch):
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
 
     async def reviewed(params: dict[str, Any] | None = None) -> tuple[ProjectLake, str, dict]:
-        lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE], [PASSED], [PREVIEW])
+        lake = await make([reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED], [PASSED], [PREVIEW])
         run_id, view = await lake.start(params=params)
         view = await lake.submit(run_id, "approve", seen=view["pending"]["details"]["seen"])
         assert view["step"]["node"] == "data_review", view["error"]
@@ -678,9 +719,8 @@ async def test_the_plan_and_the_code_are_reviewed(make, monkeypatch):
     # The code was reviewed against the project's convention for code, laid out by table,
     # and rewritten with the problem before the dev run.
     review = requests[5]["body"]["messages"][-1]["content"]
-    assert review.startswith(
-        "审查清单：\n- 〔by_version〕读预测表先按统计月筛选：所有读 prev.sales.forecast 的地方"
-    )
+    assert review.startswith("审查清单：\n- 〔matches_plan〕代码和已确认的方案一致：汇总方式")
+    assert "- 〔by_version〕读预测表先按统计月筛选：所有读 prev.sales.forecast 的地方" in review
     assert "要审查的内容：\n### ibf_table2\n\nrows = source(" in review
     rewrite = requests[6]["body"]["messages"][-1]["content"]
     assert (

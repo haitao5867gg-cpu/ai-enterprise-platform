@@ -1559,6 +1559,33 @@ def _flat(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# How many example rows of a check that did not pass a model is given, and their columns.
+FAILING_ROWS = 3
+FAILING_COLUMNS = 8
+
+
+def failed(results: list[dict[str, Any]]) -> bool:
+    """Whether some check did not pass (failed or errored, any severity)."""
+    return any(r["status"] in ("failed", "error") for r in results)
+
+
+def failing_text(results: list[dict[str, Any]]) -> str:
+    """The checks that did not pass, one line each with a few example rows, for the model
+    that rewrites the code (jadeflow 5th retest I-18: a person had to read the examples
+    and tell the model in engineer's words what to change)."""
+    lines = []
+    for r in results:
+        if r["status"] not in ("failed", "error"):
+            continue
+        lines.append(f"- 〔{r['label']}〕{_shown(r)}：{r['message']}")
+        rows = [_flat(row) for row in r["rows"][:FAILING_ROWS]]
+        for row in rows:
+            first = [c for c in r.get("focus") or [] if c in row]
+            columns = (first + [c for c in row if c not in first])[:FAILING_COLUMNS]
+            lines.append("  例子：" + "，".join(f"{c}={row[c]}" for c in columns))
+    return "\n".join(lines)
+
+
 def report(results: list[dict[str, Any]]) -> str:
     """The checks as a person reads them (Markdown): one line each, examples after."""
     lines = ["## 数据检查", "", summary(results)]

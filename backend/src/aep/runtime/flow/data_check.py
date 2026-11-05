@@ -205,10 +205,17 @@ async def run_data_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     only_if = node.get("only_if")
     if only_if is not None and refs.resolve(only_if, get) is not True:
         return Outcome(
-            {"ok": False, "results": [], "summary": SKIPPED, "report": SKIPPED},
+            {
+                "ok": False,
+                "results": [],
+                "summary": SKIPPED,
+                "report": SKIPPED,
+                "failed": False,
+                "problems": "",
+            },
             branch="failed",
             messages=[{"role": "assistant", "content": SKIPPED}],
-            data=["results", "report"],
+            data=["results", "report", "problems"],
         )
     source = await rt.source(refs.resolve(node["datasource"], get))
     if source.kind != "databricks":
@@ -252,10 +259,17 @@ async def run_data_check(node: dict[str, Any], state: dict[str, Any], rt: Runtim
     ok = checks.passed(results)
     said = checks.summary(results)
     return Outcome(
-        {"ok": ok, "results": results, "summary": said, "report": checks.report(results)},
+        {
+            "ok": ok,
+            "results": results,
+            "summary": said,
+            "report": checks.report(results),
+            "failed": checks.failed(results),
+            "problems": checks.failing_text(results),
+        },
         branch="passed" if ok else "failed",
         messages=[{"role": "assistant", "content": said}],
-        data=["results", "report"],
+        data=["results", "report", "problems"],
     )
 
 
@@ -270,12 +284,14 @@ TYPES: dict[str, NodeType] = {
         check_data_check,
         run_data_check,
         lambda node: ["passed", "failed"],
-        lambda node: ["ok", "results", "summary", "report"],
+        lambda node: ["ok", "results", "summary", "report", "failed", "problems"],
         outputs=(
             ("ok", "是否通过（没有严重级别为 error 的检查不通过或出错）"),
             ("results", "每条检查的结果"),
             ("summary", "一句话总结"),
             ("report", "检查报告（Markdown）"),
+            ("failed", "有没有不通过或出错的检查（任何级别）"),
+            ("problems", "不通过或出错的检查，一条一行带几行例子，给改代码的模型"),
         ),
         defaults={"datasource": "", "checks": [], "include": []},
         error_handling=True,

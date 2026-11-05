@@ -219,7 +219,9 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
 
     async def run(state: FlowState, config: RunnableConfig) -> dict[str, Any]:
         visits = (state.get("visits") or {}).get(node_id, 0)
-        if visits >= limit:
+        # A person who has an option that does not lead back is asked even past the limit,
+        # without the ones that do (run_human).
+        if visits >= limit and not node.get("_past_limit"):
             raise FlowError(node, f"已经运行了 {visits} 次，达到上限 {limit} 次", "max_visits")
         configurable = (config or {}).get("configurable") or {}
         run_id = configurable.get("thread_id")
@@ -264,14 +266,67 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
     return run
 
 
+def _approval(node: dict[str, Any]) -> bool:
+    return node["type"] == "human" and node.get("mode", "approval") == "approval"
+
+
+def looping_options(config: dict[str, Any]) -> dict[str, list[str]]:
+    """For each human node in approval mode, the options whose edge leads back to it with no
+    other person deciding on the way (改代码, 驳回: through model and tool steps only), in
+    the order of its options. An option whose way back passes another human node (改方案,
+    which comes back only after the plan is confirmed again) is not one."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for edge in config["graph"]["edges"]:
+        out[edge["from"]].add(edge["to"])
+    people = {n["id"] for n in nodes(config) if n["type"] == "human"}
+
+    def comes_back(start: str, goal: str) -> bool:
+        seen, todo = {start}, [start]
+        while todo:
+            here = todo.pop()
+            if here == goal:
+                return True
+            if here in people:
+                continue
+            for there in out[here] - seen:
+                seen.add(there)
+                todo.append(there)
+        return False
+
+    found: dict[str, list[str]] = {}
+    for node in nodes(config):
+        if not _approval(node):
+            continue
+        targets = {
+            e.get("branch"): e["to"] for e in config["graph"]["edges"] if e["from"] == node["id"]
+        }
+        keys = [o["key"] for o in node.get("options") or [] if isinstance(o, dict)]
+        back = [k for k in keys if k in targets and comes_back(targets[k], node["id"])]
+        if back:
+            found[node["id"]] = back
+    return found
+
+
 def build(config: dict[str, Any], rt: Runtime) -> StateGraph:
     """The app's graph; ``config`` passed ``check_config``."""
     graph = StateGraph(FlowState)
     out: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for edge in config["graph"]["edges"]:
         out[edge["from"]].append(edge)
+    loops = looping_options(config)
     for node in nodes(config):
-        graph.add_node(node["id"], _node_fn(node, rt), metadata=design(node, rt).metadata())
+        run = node
+        if _approval(node):
+            # A human node is told which options lead back to it and how often it may run:
+            # past the limit it offers only the others instead of ending the run, if there
+            # are others (jadeflow 5th retest I-22).
+            back = loops.get(node["id"], [])
+            run = node | {
+                "_loops": back,
+                "_limit": node.get("max_visits", DEFAULT_MAX_VISITS),
+                "_past_limit": any(o["key"] not in back for o in node["options"]),
+            }
+        graph.add_node(node["id"], _node_fn(run, rt), metadata=design(node, rt).metadata())
     first = start_node(config)["id"]
     ids = [node["id"] for node in nodes(config)]
     graph.add_conditional_edges(START, _jump(first, set(ids)), {i: i for i in ids})  # type: ignore[arg-type]

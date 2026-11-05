@@ -1222,6 +1222,29 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         return Outcome(outputs, messages=[said])
     labels = {o["key"]: o.get("label", o["key"]) for o in node["options"]}
     shown = [o["key"] for o in node["options"] if _shown(o, get)]
+    changed_branch = node.get("changed_branch")
+    # Options that lead back to the node are offered up to its visit limit; past it only the
+    # others are, so the run does not end on the limit (flow-apps.md, max_visits).
+    back = [k for k in node.get("_loops") or [] if k in shown]
+    limit = node.get("_limit")
+    if back and isinstance(limit, int) and rounds >= limit:
+        names = "、".join(f"「{labels[k]}」" for k in back)
+        left = [k for k in shown if k not in back]
+        if rounds == limit:
+            prompt += (
+                f"\n\n这一步一次运行最多处理 {limit} 次，这是第 {limit} 次，也是最后一次可以选"
+                f"{names}：选了以后流程回到前面重做，再回到这里时只能选别的。"
+            )
+            details["limit"] = {"round": rounds, "max": limit, "hidden": []}
+        elif left:
+            shown = left
+            if changed_branch in back:
+                changed_branch = None
+            prompt += (
+                f"\n\n这一步一次运行最多处理 {limit} 次，这是第 {rounds} 次："
+                f"{names}会让流程回到前面重做，不再提供。"
+            )
+            details["limit"] = {"round": rounds, "max": limit, "hidden": back}
     # What changed since this step last showed it (flow-apps.md, changes).
     kept: dict[str, Any] | None = None
     if _set(node, "changes"):
@@ -1244,7 +1267,7 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         comment_required=[k for k in node.get("comment_required", []) if k in shown],
         option_labels={k: labels[k] for k in shown},
         fields=asked or None,
-        changed_branch=node.get("changed_branch"),
+        changed_branch=changed_branch,
         seen=extended,
     )
     outcome = _decided(node, answer, asked, details, rounds, labels)

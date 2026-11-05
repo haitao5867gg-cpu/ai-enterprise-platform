@@ -8,8 +8,10 @@ import json
 
 from aep.runtime import human
 from aep.runtime.flow import builtin
+from aep.runtime.flow.check import check_config
+from aep.runtime.flow.graph import looping_options
 from tests.conftest import said
-from tests.test_flow_apps import Platform, end, flow, node, problems
+from tests.test_flow_apps import ENV, Platform, end, flow, node, problems
 
 Q1 = {
     "key": "q1",
@@ -771,3 +773,65 @@ async def test_every_decision_of_the_run_is_kept_in_order():
             "\n【第 2 轮 · 确认方案 · 确认方案，开始做】"
             "「统计哪段时间？」选「源库现有的 12 个月」；「要不要去掉测试订单？」选「是」"
         )
+
+
+# The visit limit
+
+
+async def test_past_its_limit_a_person_gets_the_options_that_do_not_lead_back():
+    # jadeflow 5th retest I-22: the run ended with an error on the 5th entry; now the options
+    # that lead back are offered up to the limit and only the others after it.
+    assert looping_options(reviewed()) == {"review": ["revise"]}
+    async with Platform([reply(), reply(), reply()]) as p:
+        await p.new_app("plan", reviewed(max_visits=2))
+        run = await p.run("plan", {"question": "按城市统计客单价"})
+        pending = run["pending"]
+        assert pending["options"] == ["approve", "revise", "stop"]
+        assert "limit" not in pending["details"]
+        assert "最多处理" not in pending["prompt"]
+        values = {"q1": "all", "q2": True}
+        run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
+        pending = run["pending"]
+        # The last visit with all of them, and a warning.
+        assert pending["options"] == ["approve", "revise", "stop"]
+        assert pending["prompt"] == (
+            "请检查方案，回答每道问题\n\n这一步一次运行最多处理 2 次，这是第 2 次，"
+            "也是最后一次可以选「按我的意见修改方案」：选了以后流程回到前面重做，"
+            "再回到这里时只能选别的。"
+        )
+        assert pending["details"]["limit"] == {"round": 2, "max": 2, "hidden": []}
+        run = await p.resume(run, decision="revise", values=values, comment="再改改", seen=None)
+        assert run["status"] == "waiting", run["error"]
+        pending = run["pending"]
+        assert pending["options"] == ["approve", "stop"]
+        assert pending["prompt"].endswith(
+            "\n\n这一步一次运行最多处理 2 次，这是第 3 次："
+            "「按我的意见修改方案」会让流程回到前面重做，不再提供。"
+        )
+        assert pending["details"]["limit"] == {"round": 3, "max": 2, "hidden": ["revise"]}
+        # A changed answer no longer turns the decision into the hidden option.
+        assert pending["changed_branch"] is None
+        status, _ = await refused(p, run, decision="revise", values=values, comment="再改")
+        assert status == 422
+        run = await p.resume(run, decision="approve", values={"q1": "y2026", "q2": True})
+        assert run["status"] == "done"
+        assert (await review_output(p, run))["decision"] == "approve"
+
+
+async def test_which_options_lead_back_to_a_person():
+    assert looping_options(builtin.HELLO.config) == {"review": ["reject"]}
+    lake = looping_options(builtin.TEMPLATES["etl-lakehouse-project"].config)
+    # 改代码 and 按检查结果改代码 come back through model and tool steps only; 改方案 comes
+    # back only after the plan is confirmed again, so it is offered past the limit.
+    assert lake["data_review"] == ["fix_code", "fix_checks"]
+    assert lake["review"] == ["revise"]
+    # A release that fails comes back to try again.
+    assert lake["release_review"] == ["release"]
+
+
+async def test_a_visit_limit_is_at_most_fifty():
+    config = reviewed(max_visits=51)
+    assert await problems(config) == {
+        ("config", "graph", "nodes", "review", "max_visits"): "最多运行次数要在 1–50 之间"
+    }
+    assert (await check_config(reviewed(max_visits=50), ENV))["graph"]

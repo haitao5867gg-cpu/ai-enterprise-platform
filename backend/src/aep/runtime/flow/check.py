@@ -29,8 +29,9 @@ MAX_VARS = 50
 MAX_SECRETS = 20
 DEFAULT_MAX_VISITS = 3
 # 20 since loops got review nodes (llm_review): a rewrite for a reviewer is one more
-# visit of the step it goes back to.
-MAX_VISITS = 20
+# visit of the step it goes back to; 50 since a human node's last visit no longer ends
+# the run (jadeflow 5th retest I-22) and people get more rounds, each a few model visits.
+MAX_VISITS = 50
 VAR_TYPES = {"string": str, "number": (int, float), "boolean": bool}
 # Settings that hold no references.
 NOT_SETTINGS = {"id", "type", "title", "note", "ui", "on_error", "max_visits"}
