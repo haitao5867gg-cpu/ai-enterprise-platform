@@ -54,7 +54,9 @@ import {
   copyMockEvalSet,
   mockEvalSet,
   mockEvalSetOf,
+  mockFieldSummary,
   mockHasEvalSet,
+  mockImportEvalSet,
 } from "./mock-evals";
 import {
   invalid,
@@ -315,11 +317,18 @@ function refresh(entry: StoredApp) {
           name: `${check.path || "结果"} ${check.kind === "judge" ? "模型判断" : check.kind === "equals" ? "等于" : check.kind === "contains" ? "包含" : "不含"}`,
           passed: true,
           detail: "",
+          path: check.path,
+          ...(check.kind === "equals"
+            ? { expected: check.value, actual: check.value }
+            : {}),
         })),
       ];
     }
   });
-  if (set) evaluation.score = 1;
+  if (set) {
+    evaluation.score = 1;
+    evaluation.fields = mockFieldSummary(evaluation.cases);
+  }
 }
 function startProject(config: FlowConfig) {
   const start = config.graph.nodes.find((node) => node.type === "start");
@@ -468,7 +477,10 @@ function callersOf(app: string): AppEntries["apps"]["callers"] {
     );
 }
 // Which entry a run came by, as the backend counts it (docs/api/ops.md).
-function runEntry(run: { trigger?: { kind: string } | null; rerun_of?: string | null }): RunEntry {
+function runEntry(run: {
+  trigger?: { kind: string } | null;
+  rerun_of?: string | null;
+}): RunEntry {
   if (run.trigger?.kind === "schedule") return "schedule";
   if (run.trigger?.kind === "app") return "apps";
   return "use";
@@ -488,7 +500,10 @@ function usageOf(app: string, days: 7 | 30 | 90): AppUsage {
   for (const run of runs) entries[runEntry(run)] += 1;
   const daily = new Map<string, number>();
   for (let i = days - 1; i >= 0; i--)
-    daily.set(new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10), 0);
+    daily.set(
+      new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10),
+      0,
+    );
   for (const run of runs) {
     const day = (run.created_at ?? "").slice(0, 10);
     if (daily.has(day)) daily.set(day, daily.get(day)! + 1);
@@ -548,15 +563,18 @@ function usageOf(app: string, days: 7 | 30 | 90): AppUsage {
       ? {
           count: talks.size,
           turns_avg:
-            Math.round(([...talks.values()].reduce((a, b) => a + b, 0) / talks.size) * 10) /
-            10,
+            Math.round(
+              ([...talks.values()].reduce((a, b) => a + b, 0) / talks.size) *
+                10,
+            ) / 10,
         }
       : agent
         ? { count: 0, turns_avg: 0 }
         : null,
-    answers: agent || answered.length
-      ? { answered: answered.length, ungrounded }
-      : null,
+    answers:
+      agent || answered.length
+        ? { answered: answered.length, ungrounded }
+        : null,
     feedback: { good: 0, bad: 0 },
     tools: [],
     apps: [],
@@ -687,11 +705,21 @@ function validateAgent(app: string, config: unknown): ValidationIssue[] {
     return [{ loc: at(), msg: "智能体应用的配置要有 agent 和 chat" }];
   const issues: ValidationIssue[] = [];
   const { agent, chat } = config as unknown as AgentAppConfig;
-  if (typeof agent.instructions !== "string" || agent.instructions.length > 20000)
-    issues.push({ loc: at("agent", "instructions"), msg: "指令最多 20000 个字符" });
+  if (
+    typeof agent.instructions !== "string" ||
+    agent.instructions.length > 20000
+  )
+    issues.push({
+      loc: at("agent", "instructions"),
+      msg: "指令最多 20000 个字符",
+    });
   if (agent.model !== null && !models.includes(agent.model))
     issues.push({ loc: at("agent", "model"), msg: "没有这个模型" });
-  if (!Number.isInteger(agent.max_steps) || agent.max_steps < 1 || agent.max_steps > 20)
+  if (
+    !Number.isInteger(agent.max_steps) ||
+    agent.max_steps < 1 ||
+    agent.max_steps > 20
+  )
     issues.push({ loc: at("agent", "max_steps"), msg: "每轮最多 1–20 步" });
   if (
     !Number.isInteger(agent.history_turns) ||
@@ -713,8 +741,13 @@ function validateAgent(app: string, config: unknown): ValidationIssue[] {
         : !choice
           ? "没有这个应用"
           : choice.reason;
-    if (reason) issues.push({ loc: at("agent", "apps", index, "app"), msg: reason });
-    if (typeof item.when !== "string" || !item.when.trim() || item.when.length > 500)
+    if (reason)
+      issues.push({ loc: at("agent", "apps", index, "app"), msg: reason });
+    if (
+      typeof item.when !== "string" ||
+      !item.when.trim() ||
+      item.when.length > 500
+    )
       issues.push({
         loc: at("agent", "apps", index, "when"),
         msg: "写清什么时候调用，最多 500 个字符",
@@ -726,7 +759,11 @@ function validateAgent(app: string, config: unknown): ValidationIssue[] {
     issues.push({ loc: at("chat", "suggestions"), msg: "推荐问题最多 5 个" });
   else
     chat.suggestions.forEach((question, index) => {
-      if (typeof question !== "string" || !question.trim() || question.length > 100)
+      if (
+        typeof question !== "string" ||
+        !question.trim() ||
+        question.length > 100
+      )
         issues.push({
           loc: at("chat", "suggestions", index),
           msg: "推荐问题 1–100 个字符",
@@ -1097,6 +1134,8 @@ export async function mockApps(
   const entry = isNewImport ? undefined : store.get(path[1]);
   if (!isNewImport && (!entry || entry.archived))
     return mockError("应用不存在", 404);
+  if (entry && path[2] === "eval-set" && path[3] === "import")
+    return mockImportEvalSet(request, entry.app, entry.kind);
   if (entry && path[2] === "eval-set")
     return mockEvalSet(request, entry.app, entry.kind, path[3] === "cases");
   if (isNewImport || (path[2] === "draft" && path[3] === "import")) {
@@ -1156,7 +1195,10 @@ export async function mockApps(
           ([key, value]) =>
             !ENTRIES.includes(key as Entry) || typeof value !== "boolean",
         )
-        .map(([key]) => ({ loc: ["body", key], msg: "入口开关要是 true 或 false" }));
+        .map(([key]) => ({
+          loc: ["body", key],
+          msg: "入口开关要是 true 或 false",
+        }));
       if (issues.length) return invalid(issues);
       entrySwitches.set(entry.app, {
         ...(entrySwitches.get(entry.app) ?? {
@@ -1173,7 +1215,9 @@ export async function mockApps(
   if (path[2] === "usage") {
     const days = Number(new URL(request.url).searchParams.get("days") ?? 30);
     if (![7, 30, 90].includes(days))
-      return invalid([{ loc: ["query", "days"], msg: "统计期只能是 7、30 或 90 天" }]);
+      return invalid([
+        { loc: ["query", "days"], msg: "统计期只能是 7、30 或 90 天" },
+      ]);
     return mockJson(usageOf(entry.app, days as 7 | 30 | 90));
   }
   if (path[2] === "convert-to-flow") {
@@ -1486,11 +1530,11 @@ export function appsReferencingKnowledge(kb: string): string[] {
             )?.includes(kb),
           )
         : isCodeConfig(config) &&
-          Object.values(config.nodes).some(
-            (node) =>
-              Array.isArray(node.params.knowledge_bases) &&
-              node.params.knowledge_bases.includes(kb),
-          );
+            Object.values(config.nodes).some(
+              (node) =>
+                Array.isArray(node.params.knowledge_bases) &&
+                node.params.knowledge_bases.includes(kb),
+            );
     })
     .map((entry) => `${entry.title}（${entry.app}）`);
 }

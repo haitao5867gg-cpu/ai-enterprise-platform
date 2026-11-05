@@ -19,7 +19,7 @@ from psycopg_pool import AsyncConnectionPool
 from aep.evals import Check
 from aep.runtime.store import DEFAULT_TENANT
 
-MAX_CASES = 50
+MAX_CASES = 500
 MAX_CHECKS = 20
 MAX_ANSWERS = 10  # how many times a case's run may wait for a person
 SHORT_TEXT = 50  # longer texts become a judge check when a run is saved as a case
@@ -173,27 +173,30 @@ async def score_flow_case(case: dict[str, Any], run: dict[str, Any], judge: Judg
     for check in case.get("expect") or []:
         name = check_name(check)
         kind = check["kind"]
+        extra: dict[str, Any] = {"path": check.get("path")}
+        if kind == "equals":
+            extra["expected"] = check.get("value")
         if not done:
-            checks.append(Check(kind, name, False, "运行没有完成"))
+            checks.append(Check(kind, name, False, "运行没有完成", extra))
             continue
         value = at_path(result, check.get("path"))
         if value is _MISSING:
-            checks.append(Check(kind, name, False, f"结果里没有 {check.get('path')}"))
+            checks.append(Check(kind, name, False, f"结果里没有 {check.get('path')}", extra))
             continue
         if kind == "equals":
             ok = value == check.get("value")
             detail = "" if ok else f"实际是 {as_text(value)[:200]}"
-            checks.append(Check(kind, name, ok, detail))
+            checks.append(Check(kind, name, ok, detail, extra | {"actual": shown(value)}))
         elif kind in ("contains", "excludes"):
             text = as_text(value)
             hits = [w for w in check.get("values") or [] if _found(text, w)]
             if kind == "contains":
                 missing = [w for w in check.get("values") or [] if w not in hits]
                 detail = f"没有出现 {'、'.join(missing)}" if missing else ""
-                checks.append(Check(kind, name, not missing, detail))
+                checks.append(Check(kind, name, not missing, detail, extra))
             else:
                 detail = f"出现了 {'、'.join(hits)}" if hits else ""
-                checks.append(Check(kind, name, not hits, detail))
+                checks.append(Check(kind, name, not hits, detail, extra))
         else:
             reference = check.get("reference")
             ok, why = await judge(
@@ -201,8 +204,86 @@ async def score_flow_case(case: dict[str, Any], run: dict[str, Any], judge: Judg
                 check.get("criteria") or SAME_MEANING,
                 None if reference is None else as_text(reference),
             )
-            checks.append(Check(kind, name, ok, why[:300]))
+            checks.append(Check(kind, name, ok, why[:300], extra))
     return checks
+
+
+SHOWN = 200  # how much of an actual value a check result keeps
+
+
+def shown(value: Any) -> Any:
+    """An actual value as a check result keeps it: scalars as they are, long texts cut,
+    objects and lists as cut JSON text."""
+    if isinstance(value, str):
+        return value if len(value) <= SHOWN else value[:SHOWN] + "…"
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    text = as_text(value)
+    return text if len(text) <= SHOWN else text[:SHOWN] + "…"
+
+
+# Per-field accuracy
+
+
+MAX_ERRORS = 10
+
+
+def _scalar(value: Any) -> bool:
+    return value is None or isinstance(value, str | bool | int | float)
+
+
+def _key(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def field_summary(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """How each checked field did over the finished cases of an eval: per ``(path,
+    kind)``, the cases checked and passed; for equals, per expected value and the most
+    common mistakes (docs/api/evals.md, "按字段的准确率")."""
+    groups: dict[tuple[str | None, str], dict[str, Any]] = {}
+    for case in cases:
+        if case.get("status") not in ("done", "error"):
+            continue
+        for check in case.get("checks") or []:
+            if "path" not in check:
+                continue  # 「运行完成」, or a result from before fields were kept
+            kind, path = check["kind"], check["path"]
+            group = groups.setdefault(
+                (path, kind),
+                {"path": path, "kind": kind, "total": 0, "passed": 0, "values": {}, "errors": {}},
+            )
+            group["total"] += 1
+            group["passed"] += bool(check.get("passed"))
+            if kind != "equals" or not _scalar(check.get("expected")):
+                continue
+            expected = check["expected"]
+            value = group["values"].setdefault(
+                _key(expected), {"value": expected, "total": 0, "passed": 0}
+            )
+            value["total"] += 1
+            value["passed"] += bool(check.get("passed"))
+            if not check.get("passed"):
+                actual = check.get("actual")
+                error = group["errors"].setdefault(
+                    _key([expected, actual]), {"expected": expected, "actual": actual, "count": 0}
+                )
+                error["count"] += 1
+    out = []
+    for group in groups.values():
+        item = {
+            "path": group["path"],
+            "kind": group["kind"],
+            "total": group["total"],
+            "passed": group["passed"],
+            "rate": round(group["passed"] / group["total"], 3),
+        }
+        if group["kind"] == "equals":
+            item["values"] = sorted(group["values"].values(), key=lambda v: -v["total"])
+            item["errors"] = sorted(group["errors"].values(), key=lambda e: -e["count"])[
+                :MAX_ERRORS
+            ]
+        out.append(item)
+    return out
 
 
 JUDGE_PROMPT = """你在给一个 AI 应用的输出打分。只判断它是否满足标准，不要改写它。

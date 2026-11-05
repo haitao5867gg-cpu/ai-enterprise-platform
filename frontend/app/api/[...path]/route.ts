@@ -123,6 +123,7 @@ async function handle(request: Request, context: Context) {
     // An app's eval set (docs/api/evals.md).
     [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set$/, ["GET", "PUT"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set\/cases\/from-run$/, ["POST"]],
+    [/^apps\/[a-z][a-z0-9-]{1,63}\/eval-set\/import$/, ["POST"]],
     // An app's ways in and how it is used (docs/api/app-access.md "入口", ops.md).
     [/^apps\/[a-z][a-z0-9-]{1,63}\/access$/, ["GET", "PUT"]],
     [/^apps\/[a-z][a-z0-9-]{1,63}\/usage$/, ["GET"]],
@@ -176,7 +177,8 @@ async function handle(request: Request, context: Context) {
   const isUpload =
     request.method === "POST" &&
     (endpoint === "datasources/files" ||
-      /^knowledge-bases\/[^/]+\/documents$/.test(endpoint));
+      /^knowledge-bases\/[^/]+\/documents$/.test(endpoint) ||
+      /^apps\/[^/]+\/eval-set\/import$/.test(endpoint));
   const methods = routes.find(([pattern]) => pattern.test(endpoint))?.[1];
   if (!methods) return jsonError("Not found", 404);
   if (!methods.includes(request.method)) {

@@ -109,7 +109,8 @@ NOT_CHAT = "这个应用没有开对话，用例不能带历史"
 
 
 def _check_out(check: evals.Check) -> dict[str, Any]:
-    return {"kind": check.layer, "name": check.name, "passed": check.passed, "detail": check.detail}
+    out = {"kind": check.layer, "name": check.name, "passed": check.passed, "detail": check.detail}
+    return out | check.extra
 
 
 def _now() -> str:
@@ -1090,6 +1091,8 @@ class AppCatalog:
                 for c in cases
             ],
         }
+        if path is None:
+            state["fields"] = []
         await self._runs.versions.set_draft_eval(app, draft.revision, state)
         task = asyncio.create_task(
             self._evaluate(app, draft, cases, state, path is None, judge_model)
@@ -1177,6 +1180,8 @@ class AppCatalog:
                         "error": result.error,
                         "checks": [_check_out(c) for c in result.checks],
                     }
+                    if flow:
+                        state["fields"] = eval_sets.field_summary(state["cases"])
                     await save()
                     return result
 

@@ -15,6 +15,7 @@ import {
   checkText,
   cleanCase,
   getEvalSet,
+  importEvalSet,
   MAX_CASES,
   MAX_CHECKS,
   putEvalSet,
@@ -368,6 +369,123 @@ function CaseDialog({
   );
 }
 
+// Cases from a spreadsheet (docs/api/evals.md, "从表格导入"): one row per case, the
+// columns named after where their values go.
+function ImportForm({
+  app,
+  count,
+  inputs,
+  humans,
+  onImported,
+  onClose,
+}: {
+  app: string;
+  count: number;
+  inputs: Input[];
+  humans: HumanNode[];
+  onImported: (set: EvalSet, imported: number) => void;
+  onClose: () => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [mode, setMode] = useState<"append" | "replace">("append");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const example = [
+    "id",
+    "title",
+    ...(inputs.length
+      ? inputs.map((input) => `input.${input.key}`)
+      : ["input.question"]),
+    "expect.<结果字段>",
+    ...humans
+      .slice(0, 2)
+      .map((node) =>
+        node.mode === "form" && node.fields[0]
+          ? `answer.${node.id}.${node.fields[0].key}`
+          : `answer.${node.id}`,
+      ),
+  ].join(", ");
+
+  async function submit() {
+    if (!file) return;
+    if (
+      mode === "replace" &&
+      count > 0 &&
+      !window.confirm(`替换会删掉现在的 ${count} 条用例，继续吗？`)
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      const saved = await importEvalSet(app, file, mode);
+      onImported(saved, saved.imported);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="eval-import"
+      aria-label="从表格导入"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <p className="muted">
+        一行一条用例，第一行写列名：id、title、input.&lt;输入&gt;、expect.&lt;结果字段&gt;
+        （等于）、contains. 或 excludes.&lt;结果字段&gt;（多个词用分号隔开）、
+        judge.&lt;结果字段&gt;（判断标准）、answer.&lt;人工节点&gt;（选项）、
+        answer.&lt;人工节点&gt;.&lt;字段&gt;。例如：
+        <span className="monospace"> {example}</span>
+      </p>
+      <div className="eval-check-row">
+        <label className="asset-field">
+          表格文件（.xlsx 或 .csv，最多 5 MB）
+          <input
+            type="file"
+            accept=".xlsx,.csv"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+        </label>
+        <fieldset className="eval-import-mode">
+          <legend>导入方式</legend>
+          <label>
+            <input
+              type="radio"
+              name="eval-import-mode"
+              checked={mode === "append"}
+              onChange={() => setMode("append")}
+            />{" "}
+            加在现有用例后面
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="eval-import-mode"
+              checked={mode === "replace"}
+              onChange={() => setMode("replace")}
+            />{" "}
+            替换全部用例
+          </label>
+        </fieldset>
+      </div>
+      <div className="eval-import-actions">
+        <button className="button primary" disabled={busy || !file}>
+          {busy ? "正在导入…" : "导入"}
+        </button>
+        <button type="button" className="text-button" onClick={onClose}>
+          取消
+        </button>
+      </div>
+      {error && <ErrorNotice message={error} />}
+    </form>
+  );
+}
+
 export function EvalSetPanel({
   app,
   config,
@@ -389,6 +507,7 @@ export function EvalSetPanel({
   const [threshold, setThreshold] = useState("0.8");
   const [judge, setJudge] = useState("");
   const [editing, setEditing] = useState<number | "new" | null>(null);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -505,7 +624,38 @@ export function EvalSetPanel({
             新增用例
           </button>
         )}
+        {editable && !importing && (
+          <button
+            type="button"
+            className="button secondary"
+            disabled={busy || dirty}
+            title={dirty ? "先保存或撤销没保存的修改，再导入" : undefined}
+            onClick={() => {
+              setImporting(true);
+              setNotice("");
+            }}
+          >
+            从表格导入
+          </button>
+        )}
       </div>
+      {editable && importing && (
+        <ImportForm
+          app={app}
+          count={set.cases.length}
+          inputs={inputs}
+          humans={humans}
+          onClose={() => setImporting(false)}
+          onImported={(saved, imported) => {
+            take(saved);
+            setImporting(false);
+            setError("");
+            setNotice(
+              `导入了 ${imported} 条用例，现在共 ${saved.cases.length} 条。草稿要重新评测，通过后才能发布。`,
+            );
+          }}
+        />
+      )}
       <p className="muted">
         {cases.length
           ? `共 ${cases.length} 条用例。草稿评测的总分达到门槛才能发布。`
