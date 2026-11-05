@@ -70,6 +70,8 @@ class RunRecord:
     conversation_turn: int | None = None
     # When its content (input, state, error) was cleared with its conversation.
     cleared_at: datetime | None = None
+    # How it came in (aep.entries.RUN_ENTRIES); None for runs from before that was kept.
+    entry: str | None = None
 
 
 class TurnTaken(Exception):
@@ -92,6 +94,7 @@ class RunStore(Protocol):
         trigger: dict[str, Any] | None = None,
         conversation_id: str | None = None,
         conversation_turn: int | None = None,
+        entry: str | None = None,
     ) -> RunRecord:
         """Raises ``TurnTaken`` when that turn of the conversation exists already."""
         ...
@@ -143,6 +146,14 @@ class RunStore(Protocol):
         """The conversation's turns, the first first."""
         ...
 
+    async def of_app(self, app: str, since: datetime, limit: int) -> list[RunRecord]:
+        """The app's runs created since ``since``, the newest first, at most ``limit``."""
+        ...
+
+    async def called_since(self, since: datetime) -> list[RunRecord]:
+        """Runs another app's run started (their ``trigger`` is an app's) since ``since``."""
+        ...
+
     async def clear(self, run_ids: list[str]) -> None:
         """Clear what these runs were about (input, error) and mark them cleared; their
         status, version, times and usage stay."""
@@ -162,7 +173,7 @@ class RunStat:
     reran: bool  # another run was copied from this one
 
 
-def _counted(record: RunRecord) -> bool:
+def counted(record: RunRecord) -> bool:
     # A draft's trial and evaluation runs belong to no version (as for notifications).
     return not (record.app_version is None and record.config is not None)
 
@@ -190,6 +201,7 @@ class MemoryRunStore:
         trigger: dict[str, Any] | None = None,
         conversation_id: str | None = None,
         conversation_turn: int | None = None,
+        entry: str | None = None,
     ) -> RunRecord:
         if conversation_id is not None and any(
             r.conversation_id == conversation_id and r.conversation_turn == conversation_turn
@@ -211,6 +223,7 @@ class MemoryRunStore:
             trigger=trigger,
             conversation_id=conversation_id,
             conversation_turn=conversation_turn,
+            entry=entry,
         )
         self._runs[record.run_id] = record
         return record
@@ -252,11 +265,22 @@ class MemoryRunStore:
                 r.run_id in copied,
             )
             for r in self._runs.values()
-            if r.created_at >= since and _counted(r)
+            if r.created_at >= since and counted(r)
         ]
 
     async def apps_of(self, run_ids: list[str]) -> dict[str, str]:
         return {key: self._runs[key].app for key in run_ids if key in self._runs}
+
+    async def of_app(self, app: str, since: datetime, limit: int) -> list[RunRecord]:
+        found = [r for r in self._runs.values() if r.app == app and r.created_at >= since]
+        return sorted(found, key=lambda r: r.created_at, reverse=True)[:limit]
+
+    async def called_since(self, since: datetime) -> list[RunRecord]:
+        return [
+            r
+            for r in self._runs.values()
+            if (r.trigger or {}).get("kind") == "app" and r.created_at >= since
+        ]
 
     async def in_conversation(self, conversation_id: str) -> list[RunRecord]:
         found = [r for r in self._runs.values() if r.conversation_id == conversation_id]
@@ -346,6 +370,8 @@ CREATE TABLE IF NOT EXISTS runs (
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS conversation_id text",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS conversation_turn integer",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS cleared_at timestamptz",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS entry text",
+    "CREATE INDEX IF NOT EXISTS runs_app_created ON runs (app, created_at DESC)",
     # One run per turn: two messages sent at once cannot both be the next turn.
     "CREATE UNIQUE INDEX IF NOT EXISTS runs_conversation_turn_idx"
     " ON runs (conversation_id, conversation_turn) WHERE conversation_id IS NOT NULL",
@@ -355,7 +381,7 @@ COLUMNS = (
     "run_id::text, app, status, input, tenant_id, error, app_version, config, created_at,"
     " updated_at, created_by, step, waiting_since, wait_seconds, error_type, cancelled_by,"
     " rerun_of::text, outcome, policy, project, start_at, trigger, conversation_id,"
-    " conversation_turn, cleared_at"
+    " conversation_turn, cleared_at, entry"
 )
 
 
@@ -388,14 +414,16 @@ class PostgresRunStore:
         trigger: dict[str, Any] | None = None,
         conversation_id: str | None = None,
         conversation_turn: int | None = None,
+        entry: str | None = None,
     ) -> RunRecord:
         async with self._pool.connection() as conn:
             try:
                 cur = await conn.execute(
                     "INSERT INTO runs (run_id, app, status, input, app_version, config,"
                     " created_by, wait_seconds, rerun_of, policy, project, start_at, trigger,"
-                    " conversation_id, conversation_turn)"
-                    " VALUES (%s, %s, 'running', %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s)"
+                    " conversation_id, conversation_turn, entry)"
+                    " VALUES (%s, %s, 'running', %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s,"
+                    " %s)"
                     f" RETURNING {COLUMNS}",
                     (
                         uuid.uuid4(),
@@ -411,6 +439,7 @@ class PostgresRunStore:
                         Jsonb(trigger) if trigger is not None else None,
                         conversation_id,
                         conversation_turn,
+                        entry,
                     ),
                 )
             except UniqueViolation as exc:
@@ -475,6 +504,23 @@ class PostgresRunStore:
             cur = await conn.execute(
                 f"SELECT {COLUMNS} FROM runs WHERE conversation_id = %s ORDER BY conversation_turn",
                 (conversation_id,),
+            )
+            return [_record(row) for row in await cur.fetchall()]
+
+    async def of_app(self, app: str, since: datetime, limit: int) -> list[RunRecord]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {COLUMNS} FROM runs WHERE app = %s AND created_at >= %s"
+                " ORDER BY created_at DESC LIMIT %s",
+                (app, since, limit),
+            )
+            return [_record(row) for row in await cur.fetchall()]
+
+    async def called_since(self, since: datetime) -> list[RunRecord]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {COLUMNS} FROM runs WHERE trigger->>'kind' = 'app' AND created_at >= %s",
+                (since,),
             )
             return [_record(row) for row in await cur.fetchall()]
 

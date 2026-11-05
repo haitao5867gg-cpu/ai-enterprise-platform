@@ -128,6 +128,8 @@ class AppShape:
     inputs: list[dict[str, Any]] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     project: str | None = None
+    # Whether it lets other apps call it (docs/api/app-access.md, "入口").
+    callable: bool = True
 
 
 @dataclass(frozen=True)

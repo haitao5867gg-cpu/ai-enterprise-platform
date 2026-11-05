@@ -36,6 +36,9 @@ from aep.api import (
     catalog as catalog_api,
 )
 from aep.api import (
+    entries as entries_api,
+)
+from aep.api import (
     ops as ops_api,
 )
 from aep.app_access import ApiKeys, PostgresApiKeyStore
@@ -48,6 +51,7 @@ from aep.connector_check import ConnectorCheck
 from aep.conversations import PostgresConversationStore
 from aep.databricks import DevTarget
 from aep.datasources import PostgresDataSourceStore, register_defaults
+from aep.entries import PostgresEntryStore
 from aep.eval_sets import PostgresEvalSetStore
 from aep.feedback import PostgresFeedbackStore
 from aep.health import check_llm_gateway, check_postgres, check_redis, demo_checks
@@ -135,6 +139,8 @@ def create_app() -> FastAPI:
         await project_store.setup()
         conversation_store = PostgresConversationStore(pool)
         await conversation_store.setup()
+        entry_store = PostgresEntryStore(pool)
+        await entry_store.setup()
         tools = McpTools(settings.tool_timeout_seconds)
         asset_repo = AssetRepo.from_settings(settings, tools)
         tracer = tracing.Tracer.from_settings(settings)
@@ -160,6 +166,7 @@ def create_app() -> FastAPI:
             flows=flow_store,
             secrets=secret_store,
             conversations=conversation_store,
+            entries=entry_store,
         )
         # Flow apps' eval sets and people's feedback on runs (docs/api/evals.md).
         eval_set_store = PostgresEvalSetStore(pool)
@@ -331,6 +338,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(notifications.router)
     app.include_router(app_access.router)
+    app.include_router(entries_api.router)
     app.include_router(schedules.router)
     app.include_router(catalog_api.router)
     app.include_router(ops_api.router)

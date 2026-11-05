@@ -51,6 +51,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from aep import conversations as chat
+from aep import entries as ways
 from aep import policy, projects, tracing
 from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
@@ -344,6 +345,7 @@ class RunService:
         flows: FlowAppStore | None = None,
         secrets: SecretStore | None = None,
         conversations: chat.ConversationStore | None = None,
+        entries: ways.EntryStore | None = None,
     ) -> None:
         self._store = store
         self._checkpointer = checkpointer
@@ -354,6 +356,7 @@ class RunService:
         self.flows = flows or MemoryFlowAppStore()
         self.secrets = secrets or MemorySecretStore()
         self.conversations = conversations or chat.MemoryConversationStore()
+        self.entries = entries or ways.MemoryEntryStore()
         # One message at a time per conversation in this process (the store's unique turn
         # catches two processes).
         self._turn_locks: dict[str, asyncio.Lock] = {}
@@ -490,6 +493,7 @@ class RunService:
         title = (await self.app_titles()).get(app, app)
         if kind != "flow":
             return flownodes.AppShape(app, kind, title)
+        callable_ = (await self.entries.get(app)).apps
         await self.ensure_versions(app)
         found = await self.versions.version(app, await self.versions.current(app))
         if found is None:
@@ -502,7 +506,13 @@ class RunService:
             if n["type"] == "end":
                 outputs += [o["key"] for o in n.get("outputs") or [] if o["key"] not in outputs]
         return flownodes.AppShape(
-            app, kind, title, list(start.get("inputs") or []), outputs, start.get("project")
+            app,
+            kind,
+            title,
+            list(start.get("inputs") or []),
+            outputs,
+            start.get("project"),
+            callable_,
         )
 
     async def _callers(self, record: RunRecord) -> list[str]:
@@ -537,6 +547,8 @@ class RunService:
         if len(chain) >= MAX_CALL_DEPTH:
             raise fail(flownodes.INPUT_ERROR, f"应用最多嵌套调用 {MAX_CALL_DEPTH} 层")
         record = await self._store.called_by(caller.run_id, node)
+        if record is None and not shape.callable:
+            raise fail(flownodes.INPUT_ERROR, ways.not_callable(title))
         if record is None:
             bound = caller.project
             project = (
@@ -711,6 +723,7 @@ class RunService:
         start_at: dict[str, Any] | None = None,
         trigger: dict[str, Any] | None = None,
         conversation: tuple[chat.Conversation, int] | None = None,
+        entry: str | None = None,
     ) -> RunRecord:
         """Start a run of the app's current version, or of ``app_version``; with ``config``
         (a draft's configuration, for its eval) or ``draft`` (the draft as it is now) the
@@ -718,7 +731,8 @@ class RunService:
         ``requester`` is who asks for it, as they say; ``project`` the project it binds
         (``project_id``, ``environment``, ``params``; docs/api/projects.md); ``trigger``
         what started it when no person did (docs/api/schedules.md); ``conversation`` the
-        conversation and turn it is (use :meth:`send`)."""
+        conversation and turn it is (use :meth:`send`); ``entry`` the way it came in
+        (aep.entries), else told by its trigger, else ``other``."""
         app_version, config, bound, rules = await self._prepare(
             app, input, app_version, config, draft, project
         )
@@ -739,6 +753,7 @@ class RunService:
                 trigger,
                 conversation[0].conversation_id if conversation else None,
                 conversation[1] if conversation else None,
+                entry or ways.started(trigger, start_at) or "other",
             )
         except TurnTaken as exc:
             raise ConversationBusy(str(exc)) from exc
@@ -1122,6 +1137,8 @@ class RunService:
             requester=requester,
             rerun_of=source.run_id,
             project=project,
+            # Someone on the platform runs it again.
+            entry="use",
         )
 
     async def _same_project(self, source: RunRecord) -> dict[str, Any] | None:
@@ -1213,6 +1230,26 @@ class RunService:
                     answer["values"] = given["values"]
                 out[item["id"]] = answer
         return out
+
+    async def of_app(self, app: str, since: datetime, limit: int) -> list[RunRecord]:
+        return await self._store.of_app(app, since, limit)
+
+    async def called_since(self, since: datetime) -> list[RunRecord]:
+        return await self._store.called_since(since)
+
+    async def values(self, record: RunRecord) -> dict[str, Any]:
+        """What the run's state holds now: its result, each node's outputs (``vars``)."""
+        state = await (await self._graph(record)).aget_state(_config(record.run_id))
+        return state.values or {}
+
+    async def last_used(self, app: str) -> dict[str, datetime | None]:
+        """When a run of the app last came in by each entry (docs/api/app-access.md)."""
+        found: dict[str, datetime | None] = dict.fromkeys(ways.ENTRIES)
+        for record in await self._store.of_app(app, datetime.min.replace(tzinfo=UTC), 2000):
+            way = ways.of(record)
+            if way in found and found[way] is None:
+                found[way] = record.created_at
+        return found
 
     async def turn_context(self, run_id: str) -> dict[str, Any] | None:
         """For a turn of a conversation, what an eval case saved from it keeps: the
@@ -1323,7 +1360,11 @@ class RunService:
         )
 
     async def send(
-        self, conversation: chat.Conversation, message: str, requester: str | None
+        self,
+        conversation: chat.Conversation,
+        message: str,
+        requester: str | None,
+        entry: str = "use",
     ) -> RunRecord:
         """Start the conversation's next turn with this message. Raises
         ``ConversationBusy`` while its last turn runs or waits for a person."""
@@ -1344,6 +1385,7 @@ class RunService:
                 requester=requester,
                 project=conversation.project,
                 conversation=(conversation, turn),
+                entry=entry,
             )
         await self.conversations.update(
             key,

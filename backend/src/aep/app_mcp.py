@@ -30,6 +30,7 @@ from aep.app_access import (
     start,
 )
 from aep.conversations import MESSAGE
+from aep.entries import CLOSED_ENTRY
 from aep.runtime.catalog import AppCatalog
 from aep.runtime.service import (
     ConversationBusy,
@@ -219,6 +220,7 @@ class AppTools:
                     args,
                     conversation_id=str(conversation_id) if conversation_id else None,
                     new_conversation=new_conversation,
+                    entry="mcp",
                 )
                 view = await settle(service, record.run_id, TOOL_WAIT)
             elif params.name == "get_run":
@@ -297,6 +299,9 @@ class AppMcpEndpoint:
             return await response(scope, receive, send)
         if key.app != app:
             response = JSONResponse({"detail": f"这个密钥不能调用应用 {app}"}, 403)
+            return await response(scope, receive, send)
+        if not (await state.run_service.entries.get(app)).mcp:
+            response = JSONResponse({"detail": CLOSED_ENTRY}, 403)
             return await response(scope, receive, send)
         scope.setdefault("state", {})[STATE] = {
             "key": key,

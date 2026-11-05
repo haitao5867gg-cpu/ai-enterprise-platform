@@ -197,6 +197,7 @@ LABELS: dict[str, str] = {
     "POST /catalog/{kind}/{asset_id}/pull-request": "把资产提交到资产仓库",
     "PUT /ops/settings": "修改算力单价",
     "PUT /apps/{app}/budget": "设置应用模型预算",
+    "PUT /apps/{app}/access": "修改应用入口",
     "DELETE /apps/{app}/budget": "删除应用模型预算",
 }
 
@@ -229,7 +230,10 @@ def required(method: str, path: str) -> str | None:
     # The app API answers to API keys only (docs/api/app-access.md), checked there.
     if _under(path, "/v1"):
         return None
-    if path.startswith("/apps/{app}/keys") or path == "/runs/{run_id}/rerun-from":
+    if path.startswith("/apps/{app}/keys") or path in (
+        "/runs/{run_id}/rerun-from",
+        "/apps/{app}/usage",
+    ):
         return "builder"
     if any(_under(path, p) for p in ("/users", "/audit", "/webhooks", "/notification-channels")):
         return "admin"
