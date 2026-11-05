@@ -15,6 +15,9 @@ export type StepChange = {
   // Why, when it was asked for: named in the remarks, or follows from an answer
   // (jadeflow 5th retest I-3).
   because: "remarks" | "answer" | null;
+  // Items of the list in which the same fields changed, listed as one entry
+  // (jadeflow 6th retest I-3); [] for a single item.
+  items: { key: string; label: string; fields: string }[];
 };
 
 const KINDS = ["added", "removed", "changed"] as const;
@@ -42,15 +45,30 @@ export function readChanges(value: unknown): StepChange[] {
               item.because === "remarks" || item.because === "answer"
                 ? item.because
                 : null,
+            items: Array.isArray(item.items)
+              ? item.items.filter(isRecord).map((one) => ({
+                  key: String(one.key ?? ""),
+                  label: String(one.label ?? one.key ?? ""),
+                  fields: typeof one.fields === "string" ? one.fields : "",
+                }))
+              : [],
           },
         ]
       : [],
   );
 }
 
+// How many items an entry stands for.
+function count(item: StepChange): number {
+  return Math.max(item.items.length, 1);
+}
+
 export function StepChanges({ changes }: { changes: StepChange[] }) {
   if (!changes.length) return null;
-  const unasked = changes.filter((item) => item.mentioned === false).length;
+  const total = changes.reduce((sum, item) => sum + count(item), 0);
+  const unasked = changes
+    .filter((item) => item.mentioned === false)
+    .reduce((sum, item) => sum + count(item), 0);
   return (
     <section
       className="panel step-changes"
@@ -59,7 +77,7 @@ export function StepChanges({ changes }: { changes: StepChange[] }) {
     >
       <h2>
         <Icon name="alert" size={16} />
-        和你上次看到的版本比，改了 {changes.length} 处
+        和你上次看到的版本比，改了 {total} 处
       </h2>
       {unasked > 0 && (
         <p>其中 {unasked} 处意见里没有提到，请确认是不是要这样改。</p>
@@ -77,6 +95,21 @@ export function StepChanges({ changes }: { changes: StepChange[] }) {
             )}
             {item.because === "answer" && (
               <span className="app-tag answered">按你的回答</span>
+            )}
+            {item.items.length > 1 && (
+              <details className="change-items">
+                <summary>看这 {item.items.length} 条</summary>
+                <ul>
+                  {item.items.map((one) => (
+                    <li key={one.key}>
+                      「{one.label}」
+                      {one.fields && (
+                        <span className="muted">：{one.fields}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
           </li>
         ))}

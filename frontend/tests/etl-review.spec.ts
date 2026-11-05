@@ -366,13 +366,26 @@ test("data review sends the plan back: the plan review says so at its top", asyn
   await expect(returned).toContainText(
     "ads_sales_city_member_m.avg_order_value：按支付金额算",
   );
-  // The plan's changes are listed, not held against remarks made at another step.
+  // The plan's changes are held against the remarks made here and the answers given
+  // (jadeflow 6th retest I-3); items changed alike are one line.
   const changed = page.getByRole("note", {
     name: "和上次看到的版本比改了什么",
   });
-  await expect(changed).toContainText("和你上次看到的版本比，改了 3 处");
-  await expect(changed).not.toContainText("意见里没");
-  await expect(changed).not.toContainText("按你的回答");
+  await expect(changed).toContainText("和你上次看到的版本比，改了 6 处");
+  await expect(changed).toContainText(
+    "其中 4 处意见里没有提到，请确认是不是要这样改。",
+  );
+  await expect(
+    changed.getByRole("listitem").filter({ hasText: "已确认：" }),
+  ).toContainText("按你的回答");
+  const metrics = changed
+    .getByRole("listitem")
+    .filter({ hasText: "客单价 等 3 条" });
+  await expect(metrics).toContainText("都改了definition（每条不同）");
+  await metrics.getByText("看这 3 条").click();
+  await expect(metrics).toContainText(
+    "「客单价」：definition：「下单」→「支付」",
+  );
 });
 
 test("template v3: write modes and proposed checks on the plan, a failed check has no 通过, a note on it sends the code back", async ({

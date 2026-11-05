@@ -950,12 +950,36 @@ function fingerprint(pending: unknown): string {
 }
 
 // What the rewritten plan changed since the person last saw it (the review step's
-// `changes`): held against their remarks only when they sent it back from this step.
+// `changes`): held against the remarks that sent it back, from this step or from
+// 审核试算结果 (jadeflow 6th retest I-3), and the answers given.
 function planChanges(state: EtlV2State): Record_[] {
   if (state.rounds.review === 1) return [];
-  const revised = state.confirmed?.decision === "revise";
+  const returned =
+    state.confirmed?.decision === "approve" &&
+    state.reviewed?.decision === "fix_plan";
+  const revised = state.confirmed?.decision === "revise" || returned;
   const mentioned = (yes: boolean) => (revised ? yes : null);
+  // Sent back from 审核试算结果, the metrics' definitions were reworded too: one entry.
+  const reworded = ["avg_order_value", "order_count", "member_count"];
   return [
+    ...(returned
+      ? [
+          {
+            list: "指标",
+            kind: "changed",
+            key: reworded[0],
+            label: "客单价 等 3 条",
+            fields: "都改了definition（每条不同）",
+            mentioned: false,
+            because: null,
+            items: reworded.map((key, i) => ({
+              key,
+              label: ["客单价", "订单数", "会员数"][i],
+              fields: i ? "definition" : "definition：「下单」→「支付」",
+            })),
+          },
+        ]
+      : []),
     {
       list: "目标表",
       kind: "changed",

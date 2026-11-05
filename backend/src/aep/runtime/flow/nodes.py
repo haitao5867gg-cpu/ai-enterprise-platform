@@ -1253,7 +1253,8 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
         lists = node["changes"]["lists"]
         mine = (state.get("private") or {}).get(node["id"]) or {}
         kept = diff.items(refs.resolve(node["changes"]["of"], get), lists)
-        details["changes"] = diff.changes(mine.get("shown"), kept, lists, mine.get("feedback"))
+        said = feedback_since(state, mine)
+        details["changes"] = diff.changes(mine.get("shown"), kept, lists, said)
     # A question only for options not offered now is not asked (flow-apps.md, only_for).
     asked = [
         q if not q.get("only_for") else q | {"only_for": [k for k in q["only_for"] if k in shown]}
@@ -1276,26 +1277,55 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     mine = (state.get("private") or {}).get(node["id"]) or {}
     history = [*(mine.get("history") or []), decision_line(outcome.outputs["record"])]
     outcome.outputs["decisions"] = "\n".join(history)
-    outcome.private = {"history": history}
+    # What the person said, for a later step that shows what changed: the remarks of a
+    # decision that passes them on, and the questions answered (what follows from an
+    # answer was asked for), with when (flow-apps.md, changes; jadeflow 6th retest I-3: a
+    # plan sent back from a later step was listed without a reason).
+    step = sum((state.get("visits") or {}).values())
+    said = {
+        "step": step,
+        "passed_on": bool(outcome.outputs.get("feedback")),
+        "comment": outcome.outputs.get("comment"),
+        "notes": outcome.outputs.get("notes"),
+        "answers": [
+            {"label": a["label"], "value_label": a["value_label"]}
+            for a in outcome.outputs["record"]["answers"]
+        ],
+    }
+    outcome.private = {"history": history, "said": [*(mine.get("said") or []), said]}
     if kept is not None:
-        # Kept for the next round: what was shown, and what the person said when they sent
-        # it back (a decision that passes their remarks on), to tell what they asked for.
-        # The questions they answered too: what follows from an answer was asked for.
-        sent_back = bool(outcome.outputs.get("feedback"))
-        feedback = (
-            {
-                "comment": outcome.outputs.get("comment"),
-                "notes": outcome.outputs.get("notes"),
-                "answers": [
-                    {"label": a["label"], "value_label": a["value_label"]}
-                    for a in outcome.outputs["record"]["answers"]
-                ],
-            }
-            if sent_back
-            else None
-        )
-        outcome.private |= {"shown": kept, "feedback": feedback}
+        # Kept for the next round: what was shown, and when.
+        outcome.private |= {"shown": kept, "shown_step": step}
     return outcome
+
+
+def feedback_since(state: dict[str, Any], mine: dict[str, Any]) -> dict[str, Any] | None:
+    """What people said since a human node last showed its content (``mine`` is its private
+    state), at any human node of the run: the comments and notes of decisions that passed
+    remarks on, and every question answered; None when no decision since passed remarks on
+    (nothing was asked for). A node shown before steps kept ``said`` has its own last
+    remarks (``feedback``)."""
+    if not isinstance(mine.get("shown_step"), int):
+        return mine.get("feedback")
+    entries = sorted(
+        (
+            said
+            for other in (state.get("private") or {}).values()
+            if isinstance(other, dict) and isinstance(other.get("said"), list)
+            for said in other["said"]
+            if isinstance(said, dict) and (said.get("step") or 0) >= mine["shown_step"]
+        ),
+        key=lambda said: said.get("step") or 0,
+    )
+    sent = [said for said in entries if said.get("passed_on")]
+    if not sent:
+        return None
+    comments = [said["comment"].strip() for said in sent if isinstance(said.get("comment"), str)]
+    return {
+        "comment": "\n".join(c for c in comments if c),
+        "notes": [n for said in sent for n in said.get("notes") or []],
+        "answers": [a for said in entries for a in said.get("answers") or []],
+    }
 
 
 def decisions_made(state: dict[str, Any]) -> int:

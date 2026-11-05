@@ -6052,6 +6052,13 @@ fieldset.project-form-section > legend + * {
 .step-changes .answered {
   margin-left: 8px;
 }
+.step-changes .change-items summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.step-changes .change-items ul {
+  margin: 2px 0 4px;
+}
 /* Follows from a question the person answered (jadeflow 5th retest I-3). */
 .step-changes .answered {
   color: #2f6b45;
