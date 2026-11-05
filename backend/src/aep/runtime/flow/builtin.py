@@ -807,15 +807,17 @@ PROJECT_PLAN_PROMPT = PLAN_PROMPT.replace(
 PROJECT_PLAN_PROMPT = PROJECT_PLAN_PROMPT.replace(
     "平台校验发现的问题（为空时忽略）：{{check_plan.problems}}\n",
     "平台校验发现的问题（为空时忽略）：{{check_plan.problems}}\n"
-    "模型审查发现的问题（为空时忽略；要逐条改掉，要写成问题的写进 questions）："
-    "{{review_plan.problems}}\n",
+    "模型审查发现的问题（为空时忽略；要逐条改掉，要写成问题的写进 questions。人的意见和平台校验"
+    "排在审查前面：审查要的写法过不了平台校验、或者和人的意见冲突时，不要照审查写，"
+    "把需求写成一道问题）：{{review_plan.problems}}\n",
 )
 PROJECT_CODEGEN_PROMPT = (
     "项目说明（表名前缀、引用表、运行参数、约定）：\n{{project.brief}}\n\n"
     + CODEGEN_PROMPT.replace(
         "静态检查发现的问题（为空时忽略）：{{check_code.problems}}\n",
         "静态检查发现的问题（为空时忽略）：{{check_code.problems}}\n"
-        "模型审查发现的问题（为空时忽略，要逐条改掉）：{{review_code.problems}}\n",
+        "模型审查发现的问题（为空时忽略，要逐条改掉；和人的要求、静态检查或数据检查冲突时，"
+        "以它们为准）：{{review_code.problems}}\n",
     ).replace(
         "审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}\n",
         "审核试算结果时的意见（为空时忽略）：{{data_review.feedback}}\n"
@@ -830,9 +832,12 @@ CODE_REVIEW_RULES = [
     {
         "key": "matches_plan",
         "title": "代码和已确认的方案一致",
-        "instruction": "汇总方式（求和、取最大值、计数……）、分组的粒度、每列的算法和判断的先后"
-        "顺序、读哪些表和怎么筛选，都要和已确认的方案写的一致：方案写的是一种做法，代码做的是"
-        "另一种，就是违反。where 写表名和代码里的位置（函数、列），quote 写方案里的原话。",
+        "instruction": "逐条对照已确认方案里的每一条规则、每一列的算法和目标表的写法，找到代码里"
+        "实现它的那几行：汇总方式（求和、取最大值、计数……）、分组的粒度、每列的算法和判断的先后"
+        "顺序、空值怎么写、读哪些表和怎么筛选，都要和方案写的一致。方案写的是一种做法，代码做的是"
+        "另一种，或者方案写得很具体（如「全部为空时写空值」）而代码没有照做，就是违反。where 写"
+        "规则编号或列名，excerpt 写代码里对应的那一行，quote 写方案里的原话。方案的写法有两种"
+        "读法时，以检查结果和人的决定为准，不要按另一种读法要求改代码。",
     },
 ]
 # What the plan of a project's run is reviewed against (jadeflow 4th retest I-12, S-22,
@@ -868,6 +873,20 @@ PLAN_REVIEW_RULES = [
         "（都要做、都不做或写法相同），或者人已经回答过（见「人已经做的决定」），就是违反。"
         "where 写问题的 id，fix 写按一致的说法或人的回答写成规则。",
     },
+]
+
+
+# The lists of a plan compared between versions: for the person who confirms it, what
+# changed since they last saw it (jadeflow 4th retest I-3); for the plan review, what to
+# look at again (6th retest I-20), questions too.
+PLAN_LISTS: list[dict[str, Any]] = [
+    {"path": "checks", "key": "id", "label": "label", "name": "检查"},
+    {"path": "targets", "key": "name", "label": "name", "name": "目标表"},
+    {"path": "brief.metrics", "key": "name", "label": "name", "name": "指标"},
+    # Rules are renumbered between versions; a new id alone is no change (5th retest
+    # I-3), and a rule with a few words changed is paired by its text.
+    {"path": "rules", "key": "text", "label": "text", "name": "规则", "ignore": ["id"]},
+    {"path": "questions", "key": "text", "label": "text", "name": "问题", "ignore": ["id"]},
 ]
 
 
@@ -952,6 +971,10 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "rules": [*PLAN_REVIEW_RULES, "{{project.plan_rules}}"],
         # What people decided is not reviewed as a problem, and must be kept (I-20).
         "decided": "{{review.decisions}}\n{{plan_stuck.decisions}}",
+        # Its fixes must pass the plan check (6th retest I-23), and after a first review
+        # only what changed is looked at again (I-20: confirmed parts reviewed anew).
+        "limits": "{{check_plan.limits}}",
+        "changes": {"lists": copy.deepcopy(PLAN_LISTS)},
         "max_attempts": 2,
         "on_stuck": "pass",
         "max_visits": 40,
@@ -972,6 +995,8 @@ def _etl_lakehouse_project() -> dict[str, Any]:
         "rules": [*CODE_REVIEW_RULES, "{{project.code_rules}}"],
         # What people asked of the code in this run stays in it (I-21).
         "decided": "{{data_review.decisions}}\n{{code_stuck.decisions}}",
+        # The checks on the last dev run outrank the reviewer (6th retest I-24).
+        "evidence": "{{checks.report}}",
         "max_attempts": 2,
         "on_stuck": "pass",
         "max_visits": 40,
@@ -990,14 +1015,7 @@ def _etl_lakehouse_project() -> dict[str, Any]:
     # ask for (jadeflow 4th retest I-3).
     found["review"]["changes"] = {
         "of": "{{check_plan.plan}}",
-        "lists": [
-            {"path": "checks", "key": "id", "label": "label", "name": "检查"},
-            {"path": "targets", "key": "name", "label": "name", "name": "目标表"},
-            {"path": "brief.metrics", "key": "name", "label": "name", "name": "指标"},
-            # Rules are renumbered between versions; a new id alone is no change (5th
-            # retest I-3), and a rule with a few words changed is paired by its text.
-            {"path": "rules", "key": "text", "label": "text", "name": "规则", "ignore": ["id"]},
-        ],
+        "lists": copy.deepcopy(PLAN_LISTS[:4]),
     }
     found["dev_run"]["note"] = (
         "把 bundle 部署成已有集群上的 Job，在项目的开发环境运行：结果写到环境的 catalog 和 schema，"

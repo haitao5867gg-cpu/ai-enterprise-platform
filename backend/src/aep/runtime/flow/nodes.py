@@ -1298,6 +1298,17 @@ async def run_human(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     return outcome
 
 
+def decisions_made(state: dict[str, Any]) -> int:
+    """How many decisions people made at the run's human nodes so far (each keeps every
+    round's decision line, ``history``): a step that counts its tries starts again after a
+    person decided (jadeflow 6th retest I-23)."""
+    return sum(
+        len(mine.get("history") or [])
+        for mine in (state.get("private") or {}).values()
+        if isinstance(mine, dict) and isinstance(mine.get("history"), list)
+    )
+
+
 def decision_line(record: dict[str, Any]) -> str:
     """One round of a human node in one line: which round, which step, the option, every
     answer (the suggested ones too: they are decisions as well), notes and the comment."""

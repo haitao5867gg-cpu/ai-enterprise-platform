@@ -1574,6 +1574,35 @@ OUTPUT_FORMAT_V2 = """只输出一个 JSON 对象，不要输出其他文字，�
 
 MAX_PLAN_CHECKS = 10
 PLAN_CHECK_KINDS = ("aggregate", "reconcile", "unique", "rows")
+
+# What the plan check holds a plan to, in words, for a step whose suggestions must pass it
+# (jadeflow 6th retest I-23: a review asked for a subquery the check refuses, and the plan
+# got stuck). Version 2 has the first, the confirmed and the last lines.
+LIMITS = [
+    "只能用探查结果里列出的源表和列；目标表名要按项目的表名前缀写。",
+    "建议的数据检查只能是 aggregate（聚合后和一个值比较）、reconcile（两张表按组对账）、"
+    "unique（键不重复）、rows（找出不该有的行；要看另一张表里有没有对应的行时加 lookup）四种。",
+    "检查只能读方案写的目标表和方案读的源表，表名照方案里写的：目标表写目标表名，"
+    "不加 catalog 和 schema；源表写探查结果里的表名。",
+    "检查的表达式和条件里不能有子查询（SELECT）、分号和注释；要和另一张表比，用 reconcile "
+    "或 rows 加 lookup。",
+    "检查里只能用表里有的列；运行参数写成 ${param.<key>}。",
+    "规则的依据不能由方案自己写成 confirmed（已确认）：已确认只由平台按确认页的回答写。",
+    "平台做不到的写法不要硬写：写成一道问题，说明需求要的是什么、平台能怎么替代。",
+]
+
+
+def limits_text(version: int | None) -> str:
+    """``LIMITS`` for a plan of ``version`` (none for version 1), one line each."""
+    if version == 3:
+        lines = LIMITS
+    elif version == 2:
+        lines = [LIMITS[0], LIMITS[-2], LIMITS[-1]]
+    else:
+        lines = []
+    return "\n".join(f"- {line}" for line in lines)
+
+
 UNBOUND = "这次运行没有绑定项目，不能用运行参数"
 
 

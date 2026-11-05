@@ -409,7 +409,8 @@ async def test_a_bound_run_is_planned_checked_and_delivered(make, monkeypatch):
 async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, monkeypatch):
     repeated = GOOD_ROWS + [{"sku": "A1", "month": "2026-10", "qty": 0}]
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", repeated)
-    # After the note the code is reviewed for it (jadeflow 5th retest I-21).
+    # After the note the code is reviewed for it (jadeflow 5th retest I-21): the code is the
+    # same, so only whether the note was carried out (6th retest I-24).
     lake = await make(
         [reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED, GOOD_CODE, REVIEWED],
         [PASSED, PASSED],
@@ -437,7 +438,11 @@ async def test_a_failed_check_cannot_be_passed_and_a_note_on_it_goes_back(make, 
     assert view["status"] == "waiting", view["error"]
     said = "【第 1 轮 · 审核试算结果 · 改代码】数据检查「每个物料每月一行」："
     said += "同一个物料同一个月只能有一行"
-    assert said in lake.prompt()
+    review = lake.prompt()
+    assert said in review and "只查上一次审查之后新加的这些决定有没有做到：\n" + said in review
+    # The checks on the last dev run outrank the reviewer (6th retest I-24).
+    assert "检查结果（在真实数据或真实运行上得到的，比你的判断可靠）：\n## 数据检查" in review
+    assert said in lake.prompt(2)
     pending = view["pending"]
     assert pending["options"] == ["approve", "fix_code", "fix_plan", "stop"]
     assert pending["details"]["data"]["checks_summary"] == "2 项检查：2 项通过"
@@ -449,7 +454,8 @@ async def test_the_checks_that_failed_go_back_to_the_code_without_a_word(make, m
     repeated = GOOD_ROWS + [{"sku": "A1", "month": "2026-10", "qty": 0}]
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", repeated)
     lake = await make(
-        [reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED, GOOD_CODE, REVIEWED],
+        # The same code again: its review is not asked again (6th retest I-24).
+        [reply(v3_plan()), REVIEWED, GOOD_CODE, REVIEWED, GOOD_CODE],
         [PASSED, PASSED],
         [PREVIEW, PREVIEW],
     )
@@ -462,7 +468,7 @@ async def test_the_checks_that_failed_go_back_to_the_code_without_a_word(make, m
     put_table(monkeypatch, f"{CATALOG}.{SCHEMA}", "ibf_table2", GOOD_ROWS)
     view = await lake.submit(run_id, "fix_checks")
     assert view["status"] == "waiting", view["error"]
-    rewrite = lake.prompt(2)
+    rewrite = lake.prompt()
     assert "- 〔每个物料每月一行〕" in rewrite
     assert "  例子：sku=A1，month=2026-10，count=2" in rewrite
     # It is a decision of the run like any other, kept for the later rewrites.
@@ -692,7 +698,10 @@ async def test_the_plan_and_the_code_are_reviewed(make, monkeypatch):
         }
     )
     plan = reply(v3_plan())
-    replies = [plan, open_item, plan, open_item, GOOD_CODE, no_filter, GOOD_CODE, REVIEWED]
+    # The same plan again keeps its verdict without a model call (6th retest I-24); the
+    # rewritten code differs and is reviewed again.
+    fixed = reply({"targets": {"ibf_table2": "# 按统计月筛选\n" + BODY}})
+    replies = [plan, open_item, plan, GOOD_CODE, no_filter, fixed, REVIEWED]
     lake = await make(replies, [PASSED], [PREVIEW])
     run_id, view = await lake.start()
     requests = lake.gateway.requests
@@ -702,11 +711,15 @@ async def test_the_plan_and_the_code_are_reviewed(make, monkeypatch):
     assert "- 〔data_rules〕按数据自己加的处理规则要写成问题：" in review
     assert "- 〔checks_hold〕建议的检查在结果正确时要能通过：" in review
     assert "需求：整理 Table 2" in review and "## 项目：IBF 预测" in review
+    # Its fixes must pass the plan check (6th retest I-23).
+    assert (
+        "平台限制（内容必须遵守，你给的改法也不能违反）：\n- 只能用探查结果里列出的源表" in review
+    )
+    assert "不能有子查询（SELECT）" in review
     rewrite = requests[2]["body"]["messages"][-1]["content"]
     said = "- 〔资料写明还没定的事要写成问题〕（规则 r1）资料说统计月的取法还没定，方案直接定了"
-    assert "模型审查发现的问题（为空时忽略；要逐条改掉，要写成问题的写进 questions）：" + said in (
-        rewrite
-    )
+    assert "要写成问题的写进 questions。人的意见和平台校验排在审查前面" in rewrite
+    assert "把需求写成一道问题）：" + said in rewrite
     # Not fixed twice: the person confirming the plan sees the problem.
     assert view["step"]["node"] == "review", view["error"]
     details = view["pending"]["details"]
@@ -715,24 +728,25 @@ async def test_the_plan_and_the_code_are_reviewed(make, monkeypatch):
     said = [m["content"] for m in view["messages"] if m["node"] == "review_plan"]
     assert said == [
         "审查方案发现 1 处问题，让上一步带着问题重写（第 1/2 次）",
-        "审查方案连续 2 次发现问题，没改过来，交给后面确认的人看",
+        "审查方案连续 2 次发现问题，没改过来，交给后面确认的人看"
+        "（内容和上次审查时一样，沿用上次的结论，没有再调模型）",
     ]
 
     view = await lake.submit(run_id, "approve", seen=details["seen"])
     assert view["step"]["node"] == "data_review", view["error"]
     # The code was reviewed against the project's convention for code, laid out by table,
     # and rewritten with the problem before the dev run.
-    review = requests[5]["body"]["messages"][-1]["content"]
-    assert review.startswith("审查清单：\n- 〔matches_plan〕代码和已确认的方案一致：汇总方式")
+    review = requests[4]["body"]["messages"][-1]["content"]
+    assert review.startswith("审查清单：\n- 〔matches_plan〕代码和已确认的方案一致：逐条对照")
     assert "- 〔by_version〕读预测表先按统计月筛选：所有读 prev.sales.forecast 的地方" in review
     assert "要审查的内容：\n### ibf_table2\n\nrows = source(" in review
-    rewrite = requests[6]["body"]["messages"][-1]["content"]
+    rewrite = requests[5]["body"]["messages"][-1]["content"]
     assert (
-        "模型审查发现的问题（为空时忽略，要逐条改掉）："
+        "以它们为准）："
         "- 〔读预测表先按统计月筛选〕（ibf_table2）读预测表没有按统计月筛选 怎么改：加上 where"
     ) in rewrite
     assert "- **读预测表先按统计月筛选**（写代码时）" in rewrite
-    assert len(requests) == 8
+    assert len(requests) == 7
     data = view["pending"]["details"]["data"]
     assert data["code_review"] == []
     assert not view["pending"]["details"]["show"].startswith("### 审查代码")

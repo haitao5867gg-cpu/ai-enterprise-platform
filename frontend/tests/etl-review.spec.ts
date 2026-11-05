@@ -501,6 +501,15 @@ test("template v3: write modes and proposed checks on the plan, a failed check h
   await expect(
     review.getByRole("note", { name: "模型审查代码没改过来的问题" }),
   ).toHaveCount(0);
+  // A finding against the checks is shown as a hint, not sent back (6th retest I-24).
+  const hint = review.getByRole("note", {
+    name: "模型审查代码交给你判断的意见",
+  });
+  await expect(hint).toContainText("有 1 条意见和排在审查前面的依据相反");
+  await expect(hint).toContainText(
+    "代码和已确认的方案一致（member_level 那一列）：方案写等级为空时按普通会员算",
+  );
+  await expect(hint).toContainText("和检查结果相反");
   await expect(checks).toContainText("3 项检查：3 项通过");
   await expect(review.getByRole("alert")).toHaveCount(0);
   await page

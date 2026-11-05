@@ -102,6 +102,12 @@ export type ReviewNode = NodeBase &
     instruction?: string;
     // What people already decided in this run (jadeflow 5th retest I-20, I-21).
     decided?: string;
+    // What outranks the review besides people's decisions (6th retest I-23, I-24): limits
+    // the content must keep to, results more reliable than the reviewer.
+    limits?: string;
+    evidence?: string;
+    // The lists compared item by item to tell the reviewer what changed.
+    changes?: { lists: unknown[] };
     rules: ReviewRule[];
     max_attempts?: number;
     on_stuck?: "pass" | "branch" | "fail";

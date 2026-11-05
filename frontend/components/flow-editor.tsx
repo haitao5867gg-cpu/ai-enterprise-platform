@@ -67,6 +67,8 @@ const formKeys: Record<FlowNode["type"], string[]> = {
     "context",
     "instruction",
     "decided",
+    "limits",
+    "evidence",
     "rules",
     "max_attempts",
     "on_stuck",

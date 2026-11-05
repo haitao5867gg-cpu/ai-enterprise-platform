@@ -1714,7 +1714,7 @@ async def test_node_types_list_the_data_group():
     }
     plan_check = types["etl_plan_check"]
     added = ["references", "summary", "brief", "questions", "answer", "uncited", "cleaned"]
-    added += ["result_table", "result_keys", "checks", "dropped"]
+    added += ["result_table", "result_keys", "checks", "dropped", "limits"]
     keys = ["ok", "plan", "problems", "message", "sources", "targets", *added]
     assert [o["key"] for o in plan_check["outputs"]] == keys
     assert TYPES["etl_plan_check"].produces({}) == keys
