@@ -225,6 +225,20 @@ async def test_checks_score_the_result():
     assert eval_sets.suggested_checks("就一句") == [
         {"kind": "equals", "path": None, "value": "就一句"}
     ]
+    # What a model wrote gets a judge however short; an empty one stays equals.
+    worded = {"reply", "note", "order"}
+    assert eval_sets.suggested_checks(
+        {"reply": "共 1350 元。", "note": "", "n": 2}, set(), worded
+    ) == [
+        {
+            "kind": "judge",
+            "path": "reply",
+            "criteria": "意思和参考答案一致",
+            "reference": "共 1350 元。",
+        },
+        {"kind": "equals", "path": "note", "value": ""},
+        {"kind": "equals", "path": "n", "value": 2},
+    ]
     assert eval_sets.case_id("run_ABCdef123456", {"run-ef123456"}) == "run-ef123456-2"
 
 

@@ -390,6 +390,9 @@ async def test_an_agent_app_turns_into_a_flow_app_that_answers_the_same():
 
 # Eval cases with history (docs/api/evals.md)
 
+SAME = "意思和参考答案一致"
+JUDGED = json.dumps({"pass": True, "reason": "意思一样"})
+
 
 async def eval_draft(p: Platform, app: str) -> dict:
     started = await p.api.post(f"/apps/{app}/draft/eval", json={})
@@ -414,17 +417,20 @@ async def test_a_turn_saved_as_a_case_replays_as_that_turn():
             {"message": "出差住宿标准是多少？", "reply": "一线城市 600 元。"}
         ]
         assert case["turn"] == 2 and case["restored"] == {}
-        # How the turn went (steps, hits) changes every run: no checks for it.
+        # How the turn went (steps, hits) changes every run: no checks for it. The reply is
+        # what the model wrote, worded differently every run: a judge, however short.
         assert case["expect"] == [
-            {"kind": "equals", "path": "reply", "value": "二线城市 450 元。"},
+            {"kind": "judge", "path": "reply", "criteria": SAME, "reference": "二线城市 450 元。"},
             {"kind": "equals", "path": "grounded", "value": True},
         ]
 
         await save(p, "helper", made["current"]["config"])
-        p.gateway.replies = ["二线城市 450 元。"]
+        p.gateway.replies = ["二线城市是 450 元。", JUDGED]
         result = await eval_draft(p, "helper")
         assert (result["status"], result["score"]) == ("passed", 1.0), result
-        assert sent(p, -1) == [
+        judged = json.dumps(p.gateway.requests[-1]["body"], ensure_ascii=False)
+        assert "二线城市是 450 元。" in judged and "二线城市 450 元。" in judged
+        assert sent(p, -2) == [
             ("user", "出差住宿标准是多少？"),
             ("assistant", "一线城市 600 元。"),
             ("user", "那二线城市呢？"),
@@ -472,8 +478,9 @@ async def test_a_run_outside_a_conversation_replays_as_one():
         assert saved.status_code == 201, saved.text
         case = saved.json()
         assert (case["history"], case["turn"], case["restored"]) == ([], None, {})
+        assert [c["kind"] for c in case["expect"]] == ["judge"]
         await p.api.put("/apps/chat/draft", json={"config": llm_chat(prompt)})
-        p.gateway.replies = ["答"]
+        p.gateway.replies = ["答", JUDGED]
         result = await eval_draft(p, "chat")
         assert (result["status"], result["score"]) == ("passed", 1.0), result
         assert sent(p, 0) == sent(p, 1) == [("user", "第 0 轮：单次")]
@@ -491,10 +498,10 @@ async def test_a_turn_without_a_reply_stays_a_message_in_the_case():
         assert saved.status_code == 201, saved.text
         assert saved.json()["history"] == [{"message": "一", "reply": None}]
         await p.api.put("/apps/chat/draft", json={"config": llm_chat()})
-        p.gateway.replies = ["答二"]
+        p.gateway.replies = ["答二", JUDGED]
         result = await eval_draft(p, "chat")
         assert (result["status"], result["score"]) == ("passed", 1.0), result
-        assert sent(p, -1) == sent(p, 1) == [("user", "一"), ("user", "二")]
+        assert sent(p, -2) == sent(p, 1) == [("user", "一"), ("user", "二")]
 
 
 async def test_case_history_is_checked():
@@ -556,6 +563,8 @@ async def test_a_masked_turn_saved_as_a_case_keeps_what_its_tokens_stand_for():
             {"message": "第一个客户是谁？", "reply": f"第一个客户的邮箱是 {token}"}
         ]
         assert case["restored"] == {token: EMAIL} and case["turn"] == 2
+        # Sent masked: a judge would be shown the address the model never saw, so the
+        # model's short reply stays with equals.
         assert case["expect"] == [
             {"kind": "equals", "path": "reply", "value": f"他的邮箱是 {EMAIL}"}
         ]

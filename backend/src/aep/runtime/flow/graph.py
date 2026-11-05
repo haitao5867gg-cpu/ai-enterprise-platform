@@ -132,6 +132,27 @@ def execution_outputs(config: dict[str, Any]) -> set[str]:
     return found
 
 
+# Nodes whose ``text`` is what a model wrote.
+MODEL_WRITERS = ("llm", "agent")
+
+
+def model_text_outputs(config: dict[str, Any]) -> set[str]:
+    """The result fields an end node takes straight from what a model wrote (an llm or
+    agent node's ``text``): worded differently on every run, so a run saved as an eval
+    case gets a judge for them however short they are (docs/api/evals.md)."""
+    writers = {n["id"] for n in nodes(config) if n["type"] in MODEL_WRITERS}
+    found: set[str] = set()
+    for node in nodes(config):
+        if node["type"] != "end":
+            continue
+        for output in node.get("outputs") or []:
+            sources = output.get("from") or []
+            wrote = [refs.whole(s) if isinstance(s, str) else None for s in sources]
+            if wrote and all(r is not None and r[0] in writers and r[1] == "text" for r in wrote):
+                found.add(output["key"])
+    return found
+
+
 async def execute(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
     """Run the node, retrying and handling failure as its ``on_error`` says."""
     spec = TYPES[node["type"]]
