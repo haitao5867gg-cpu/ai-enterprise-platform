@@ -7,7 +7,7 @@
 ## 概念
 
 - **模型**：网关上的一个别名（`alias`），节点和知识库按别名调用它。来源有两种：
-  - `config`：写在 `infra/litellm/config.yaml` 里的（`mock`、`company`、`company-embed` 等）。页面上只读，改它们仍然改配置文件和 `.env`。
+  - `config`：写在 `infra/litellm/config.yaml` 里的（`mock`、`company`、`company-qwen`、`company-embed` 等）。页面上只读，改它们仍然改配置文件和 `.env`。
   - `page`：在页面上新增的。网关把它存在自己的数据库里（LiteLLM 的 `store_model_in_db`），加上、改完立刻能调，不用重启。
 - **用途**（`purpose`）：`chat`（对话，节点用）、`embedding`（向量，知识库用）、`rerank`（重排）。页面上只能新增 `chat` 和 `embedding`；重排模型仍在配置文件里加。
 - **key 不进平台**：页面上填的 key 直接交给网关，网关加密后存进它自己的库（用 `LITELLM_SALT_KEY` 加密）。平台的库、日志和接口都不保存、不返回 key，只记 key 是「页面上填的」还是「服务器环境变量 `XXX_API_KEY`」。这和「凭据留在连接器那边」是同一条约定。

@@ -82,6 +82,23 @@ model_list:
       aep_purpose: chat
       aep_provider: openai_compatible
 
+  # A second model on the same company gateway, for apps that do better with Qwen
+  # (2026-11-12 comparison for zh/en translation and English word lookup: fewest
+  # made-up word forms, right zh/en detection). The gateway takes the same
+  # `thinking: disabled` switch for Qwen; without it Qwen thinks first and is ~4x slower.
+  - model_name: company-qwen
+    litellm_params:
+      model: os.environ/COMPANY_QWEN_MODEL
+      api_base: os.environ/COMPANY_API_BASE
+      api_key: os.environ/COMPANY_API_KEY
+      extra_body:
+        thinking:
+          type: disabled
+    model_info:
+      aep_display_name: 公司网关 Qwen
+      aep_purpose: chat
+      aep_provider: openai_compatible
+
   # The platform asks for 1024-dimension vectors; LiteLLM passes `dimensions` on to
   # openai/ models only for OpenAI's text-embedding-3, so it is allowed here.
   - model_name: company-embed

@@ -316,6 +316,7 @@ services:
       QWEN_MODEL: ${QWEN_MODEL:-dashscope/qwen-plus}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek/deepseek-chat}
       COMPANY_MODEL: ${COMPANY_MODEL:-openai/deepseek-v4.1-flash-new}
+      COMPANY_QWEN_MODEL: ${COMPANY_QWEN_MODEL:-openai/qwen3.8-max}
       COMPANY_EMBED_MODEL: ${COMPANY_EMBED_MODEL:-openai/text-embedding-v4}
       COMPANY_RERANK_MODEL: ${COMPANY_RERANK_MODEL:-hosted_vllm/gte-rerank-v2}
       # Models added on the model page (docs/api/models.md): kept in a database of the
