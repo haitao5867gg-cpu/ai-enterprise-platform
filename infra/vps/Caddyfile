@@ -14,6 +14,11 @@
 		-Server
 	}
 
+	# 这台服务器自己加的路由（infra/vps/sites/*.caddy，不进仓库），比如挂在平台旁边、
+	# 经应用 API 调平台应用的小网页。每个文件自己决定要不要口令；没有文件时什么都不加。
+	# 用带路径的 handle / handle_path 写，比下面不带路径的整站入口优先。
+	import /etc/caddy/sites/*.caddy
+
 	@external path /api/v1/* /api/mcp/*
 	handle @external {
 		reverse_proxy web:3000 {

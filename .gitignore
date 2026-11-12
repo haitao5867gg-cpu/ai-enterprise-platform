@@ -19,3 +19,5 @@ evals/reports/
 
 # VPS deploy (infra/vps/deploy.sh): Caddy access password hash
 infra/vps/auth.caddy
+# VPS: this server's own extra Caddy routes (infra/vps/README.md)
+infra/vps/sites/*.caddy

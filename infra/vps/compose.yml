@@ -21,6 +21,8 @@ services:
       # 多个 -f 时相对路径按第一个文件（仓库根目录）解析。auth.caddy 由 deploy.sh 生成，
       # 含口令的 bcrypt 散列，不进仓库。
       - ./infra/vps/auth.caddy:/etc/caddy/auth.caddy:ro
+      # 这台服务器自己加的路由，见 Caddyfile 里的 import 和 infra/vps/README.md。
+      - ./infra/vps/sites:/etc/caddy/sites:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
