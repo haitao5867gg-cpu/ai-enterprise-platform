@@ -106,6 +106,31 @@ python3 infra/vps/accept-agents.py ~/accept-agents.md
 
 它直接调本机的 API（`127.0.0.1:8000`），新建几个名字以「验收·」开头的应用，检查多轮对话、智能体调用应用、存为评测用例和评测、入口开关、使用情况、编排应用打开对话、转成编排应用、只依据资料回答，全部通过时退出码为 0，报告写进给的文件。智能体应用、它调用的应用和那次会话留着，可以在页面上看；其余的归档。
 
+### 在平台旁边挂别的网页
+
+有时要在同一台服务器上放一个给外人用的小网页，比如经应用 API 调平台上某个应用的翻译页。
+它是这台服务器自己的东西，不进仓库：
+
+1. 把网页服务跑成一个容器，接到平台的 Docker 网络上（`docker network ls` 里以 `_default`
+   结尾、和仓库目录同名的那个），不用对外开端口。它调平台时直接用 `http://api:8000`
+   加应用的 API 密钥，密钥只放在服务器上。
+2. 在 `infra/vps/sites/` 下放一个 `.caddy` 文件（这个目录里的 `.caddy` 文件不进仓库），写这个
+   网页的路由，例如挂在 `/translate/`：
+
+   ```caddy
+   redir /translate /translate/ 308
+   handle_path /translate/* {
+   	reverse_proxy translate-page:8080
+   }
+   ```
+
+   带路径的 `handle_path` 比整站入口优先，所以这个路径不要求访问口令；要口令就在块里自己写
+   `basic_auth`。
+3. 让 Caddy 重新读配置：`$DC exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`。
+
+`deploy.sh` 用 `up` 更新，不会删掉这样的容器；但 `$DC down` 会因为网络上还有它而报错，先
+`docker rm -f` 它再 `down`。
+
 ## 安全和合规
 
 - 访问口令（Caddy）是第一道门，口令不要发在聊天里。平台自己的登录默认关着，这时所有人共用口令，
