@@ -476,6 +476,13 @@ MESSAGES: dict[str, str] = {
         "Apps with data engineering nodes cannot be packaged yet"
     ),
     "要选择项目的应用暂时不能打成流程包": "Apps that need a project cannot be packaged yet",
+    "有节点的数据源要到运行时才知道是哪个，运行包上没法提前绑定，暂时不能打成流程包": (
+        "A node's data source is only known when the app runs, so a runtime cannot bind it "
+        "in advance; the app cannot be packaged yet"
+    ),
+    "流程包超过 5 MB（{size} MB），请减少 Skill 的内容或个数": (
+        "The package exceeds 5 MB ({size} MB); trim the skills it uses"
+    ),
     "Skill「{name}」第 {version} 版不在平台上": (
         "Version {version} of skill “{name}” is not on the platform"
     ),

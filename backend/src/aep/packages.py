@@ -52,6 +52,8 @@ KNOWLEDGE = "用到知识库的应用暂时不能打成流程包"
 FILE_SOURCE = "用到上传文件数据源的应用暂时不能打成流程包"
 DATA_NODES = "有数据工程节点的应用暂时不能打成流程包"
 NEEDS_PROJECT = "要选择项目的应用暂时不能打成流程包"
+OPEN_SOURCE = "有节点的数据源要到运行时才知道是哪个，运行包上没法提前绑定，暂时不能打成流程包"
+TOO_BIG = "流程包超过 5 MB（{size} MB），请减少 Skill 的内容或个数"
 # Nodes that need the platform's Databricks workspace or projects.
 DATA_NODE_TYPES = (
     "etl_profile",
@@ -66,11 +68,15 @@ DATA_NODE_TYPES = (
 
 
 def unsupported(
-    nodes: list[dict[str, Any]], knowledge: list[str], source_kinds: list[str | None]
+    nodes: list[dict[str, Any]],
+    knowledge: list[str],
+    source_kinds: list[str | None],
+    open_sources: bool = False,
 ) -> str | None:
     """Why a flow-shaped configuration cannot be packaged yet, or None. ``nodes`` are its
-    nodes, ``knowledge`` the bases it names and ``source_kinds`` the kinds of the data
-    sources it uses. Code apps are refused before this is asked."""
+    nodes, ``knowledge`` the bases it names, ``source_kinds`` the kinds of the data
+    sources it uses and ``open_sources`` whether a node's source is only known when it
+    runs. Code apps are refused before this is asked."""
     if any(n["type"] == "human" and n.get("mode", "approval") == "approval" for n in nodes):
         return APPROVAL
     if any(n["type"] == "app" or (n["type"] == "agent" and n.get("apps")) for n in nodes):
@@ -84,7 +90,14 @@ def unsupported(
     # A runtime has no projects; a flow that may run without one is fine.
     if any(n["type"] == "start" and n.get("project") == "required" for n in nodes):
         return NEEDS_PROJECT
+    if open_sources:
+        return OPEN_SOURCE
     return None
+
+
+def serialize(package: dict[str, Any]) -> bytes:
+    """The package file as it is downloaded (and as a runtime takes it, up to 5 MB)."""
+    return json.dumps(package, ensure_ascii=False, indent=2).encode()
 
 
 # Signing
@@ -334,6 +347,7 @@ class Packages:
                 nodes,
                 flowfiles.knowledge_ids(shape),
                 [d["kind"] for d in needed["datasources"]],
+                flowfiles.unresolved_datasources(shape),
             )
         return {
             "platform": {"min_version": __version__},
@@ -365,7 +379,7 @@ class Packages:
             )
         flow = await self._runs.flows.get(app)
         assert flow is not None
-        return signer.sign(
+        signed = signer.sign(
             {
                 "format": FORMAT,
                 "package_id": str(uuid.uuid4()),
@@ -381,3 +395,7 @@ class Packages:
                 "requirements": requirements,
             }
         )
+        size = len(serialize(signed))
+        if size > MAX_BYTES:
+            raise Unsupported(TOO_BIG.format(size=f"{size / 1024 / 1024:.1f}"))
+        return signed

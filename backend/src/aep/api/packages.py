@@ -4,7 +4,6 @@ itself, for an external app to run on its own machine.
 Contract: docs/api/runtime.md (运行要求清单, 流程包).
 """
 
-import json
 from typing import Annotated, Any
 from urllib.parse import quote
 
@@ -22,6 +21,7 @@ from aep.packages import (
     Signer,
     Unsupported,
     hosts,
+    serialize,
 )
 from aep.runtime.catalog import AppNotFound
 from aep.runtime.versions import VersionNotFound
@@ -106,7 +106,7 @@ async def package(app: str, version: int, packages: PackagesDep, settings: Setti
         raise HTTPException(422, str(exc)) from exc
     name = quote(f"{app}-v{version}.aep-package.json", safe="")
     return Response(
-        json.dumps(built, ensure_ascii=False, indent=2),
+        serialize(built),
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"},
     )

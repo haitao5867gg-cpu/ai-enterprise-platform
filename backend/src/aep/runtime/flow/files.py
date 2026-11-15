@@ -133,6 +133,16 @@ def datasource_tools(config: dict[str, Any]) -> dict[str, list[str]]:
     return found
 
 
+def unresolved_datasources(config: dict[str, Any]) -> bool:
+    """Whether some data source setting names none ``datasource_uses`` can tell before the
+    run: a reference to another node's output, an input without a default, or a constant
+    that is not set."""
+    for _, value in _datasource_settings(config):
+        if isinstance(value, str) and value.strip() and _resolve(config, value) is None:
+            return True
+    return False
+
+
 # Node types that call a model; a node that names none uses the default chat model.
 MODEL_NODES = ("llm", "classifier", "agent", "llm_review")
 

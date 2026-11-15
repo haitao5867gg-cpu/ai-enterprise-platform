@@ -150,6 +150,33 @@ def test_what_step_one_cannot_package_in_order() -> None:
     assert packages.unsupported([data, required], [], []) == packages.DATA_NODES
     assert packages.unsupported([required], [], []) == packages.NEEDS_PROJECT
     assert packages.unsupported([{"type": "start", "project": "optional"}], [], []) is None
+    assert packages.unsupported([required], [], [], True) == packages.NEEDS_PROJECT
+    assert packages.unsupported([form], [], [], True) == packages.OPEN_SOURCE
+
+
+def test_sources_only_known_when_the_app_runs() -> None:
+    def flow(datasource: str, inputs: list | None = None, consts: list | None = None) -> dict:
+        return {
+            "env": {"vars": consts or []},
+            "graph": {
+                "nodes": [
+                    {"id": "start", "type": "start", "inputs": inputs or []},
+                    {"id": "a", "type": "tool", "datasource": datasource, "tool": "t"},
+                ]
+            },
+        }
+
+    src = [{"key": "src", "type": "datasource"}]
+    assert flowfiles.unresolved_datasources(flow("{{start.src}}", src))
+    assert flowfiles.unresolved_datasources(flow("{{lookup.result}}"))
+    assert flowfiles.unresolved_datasources(flow("{{env.stock}}"))
+    assert not flowfiles.unresolved_datasources(flow("ds-1"))
+    assert not flowfiles.unresolved_datasources(flow("{{start.src}}", [{**src[0], "default": "d"}]))
+    assert not flowfiles.unresolved_datasources(
+        flow("{{env.stock}}", consts=[{"key": "stock", "value": "ds-2"}])
+    )
+    agent = {"graph": {"nodes": [{"id": "x", "type": "agent", "tools": [{"datasource": ""}]}]}}
+    assert not flowfiles.unresolved_datasources(agent)
 
 
 # Signing
@@ -345,6 +372,38 @@ async def test_signed_package_of_a_version():
             assert (refused.status_code, refused.json()["detail"]) == (422, detail)
         assert (await p.api.get("/apps/orders/versions/9/package")).status_code == 404
         assert (await p.api.get("/apps/nope/versions/1/package")).status_code == 404
+
+
+async def test_a_package_over_5_mb_is_refused():
+    async with Packaging() as p:
+        await orders(p)
+        big = SkillContent("很长", "长" * 19000, {f"r{i}.md": "字" * 19000 for i in range(10)})
+        for n in range(10):
+            await p.skills.create(f"long-{n}", big)
+            await p.skills.publish(f"long-{n}", "第一版", None)
+        config = order_flow(p.crm)
+        config["graph"]["nodes"].insert(
+            2,
+            {
+                "id": "say",
+                "type": "llm",
+                "title": "说明",
+                "skills": [{"name": f"long-{n}", "version": 1} for n in range(10)],
+                "prompt": "{{lookup.result}}",
+            },
+        )
+        config["graph"]["edges"] = [
+            {"from": "start", "to": "lookup"},
+            {"from": "lookup", "to": "say"},
+            {"from": "say", "to": "end"},
+        ]
+        await p.new_app("huge", config)
+        got = await p.api.get("/apps/huge/versions/2/package")
+        assert got.status_code == 422, got.status_code
+        detail = got.json()["detail"]
+        assert detail.startswith("流程包超过 5 MB（") and detail.endswith(
+            "请减少 Skill 的内容或个数"
+        )
 
 
 async def test_no_signing_key_means_no_packages():
