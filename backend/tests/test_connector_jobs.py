@@ -184,6 +184,18 @@ async def test_a_job_past_its_time_is_cancelled():
         assert p.connector.cancelled == ["j1"]
 
 
+async def test_a_status_answer_after_the_jobs_time_does_not_count():
+    settings = SETTINGS.model_copy(update={"tool_job_seconds": 0.1})
+    async with Jobs(settings) as p:
+        # Done at the first status call, but that call answers only after the job's time.
+        p.connector.slow = 1.0
+        args = {"name": "{{start.name}}", "steps": 1}
+        await p.new_app("video", render_flow(p.render, args=args))
+        run = await p.run("video", {"name": "a"})
+        assert failure(run) == ("timeout", "长任务超过 0.1 秒还没做完，已经取消")
+        assert p.connector.cancelled == ["j1"]
+
+
 async def test_cancelling_the_run_cancels_its_job():
     async with Jobs() as p:
         args = {"name": "{{start.name}}", "steps": 10**6}

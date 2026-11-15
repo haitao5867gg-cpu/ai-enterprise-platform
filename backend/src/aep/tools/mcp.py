@@ -155,6 +155,11 @@ class McpTools:
         self._timeout = timeout_seconds
         self._resolve = resolve or (lambda url: url)
 
+    @property
+    def timeout_seconds(self) -> float:
+        """How long a call may take when its caller names no time."""
+        return self._timeout
+
     async def list_tools(self, url: str, timeout_seconds: float | None = None) -> list[ToolInfo]:
         """The server's tools, following pages up to ``MAX_TOOL_PAGES``, at most ``MAX_TOOLS``,
         each name once."""

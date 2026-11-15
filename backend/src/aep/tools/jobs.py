@@ -12,7 +12,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import anyio
 
@@ -136,15 +136,19 @@ async def follow(
                 raise JobFailed("任务被连接器取消了")
             elapsed = time.monotonic() - started
             if elapsed >= limit_seconds:
-                await _cancel(tools, url, job.job_id)
-                raise JobTimedOut(limit_seconds)
+                await _time_out(tools, url, job.job_id, limit_seconds)
             pause = FAST_SECONDS if elapsed < FAST_FOR else SLOW_SECONDS
-            await anyio.sleep(min(pause, max(limit_seconds - elapsed, 0.0)))
+            await anyio.sleep(min(pause, limit_seconds - elapsed))
             if watch.stopped is not None and await watch.stopped():
                 await _cancel(tools, url, job.job_id)
                 raise JobStopped()
+            # A status call ends with the job's time: an answer after it does not count.
+            left = limit_seconds - (time.monotonic() - started)
+            if left <= 0:
+                await _time_out(tools, url, job.job_id, limit_seconds)
+            seconds = min(call_seconds or tools.timeout_seconds, left)
             try:
-                reply = await tools.call(url, STATUS_TOOL, {"job_id": job.job_id}, call_seconds)
+                reply = await tools.call(url, STATUS_TOOL, {"job_id": job.job_id}, seconds)
             except ConnectorUnavailable:
                 now = time.monotonic()
                 unreachable_since = unreachable_since or now
@@ -173,6 +177,11 @@ async def _stopped(stopped: Callable[[], Awaitable[bool]]) -> bool:
         except Exception:  # noqa: BLE001 - an unanswered question is no cancel
             return False
     return False
+
+
+async def _time_out(tools: McpTools, url: str, job_id: str, limit_seconds: float) -> NoReturn:
+    await _cancel(tools, url, job_id)
+    raise JobTimedOut(limit_seconds)
 
 
 async def _cancel(tools: McpTools, url: str, job_id: str) -> None:

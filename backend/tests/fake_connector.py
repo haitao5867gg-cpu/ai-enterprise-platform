@@ -585,7 +585,8 @@ class JobConnector:
     the end when ``fail``); ``quick`` is done at once; ``plain`` is an ordinary tool.
     ``keys`` are the job keys the calls carried, ``cancelled`` the jobs the platform
     cancelled; ``down`` is how many of the next calls find it unreachable (see
-    :meth:`resolve`), and ``forget`` makes it forget every job, as after a restart."""
+    :meth:`resolve`), ``forget`` makes it forget every job, as after a restart, and
+    ``slow`` is how many seconds each status call takes."""
 
     def __init__(self) -> None:
         self.jobs: dict[str, dict] = {}
@@ -597,6 +598,7 @@ class JobConnector:
         self.down = 0
         self.forget = False
         self.bad = False
+        self.slow = 0.0
 
     def resolve(self, server: MCPServer) -> MCPServer:
         """The server to connect to, or a refused connection while ``down``."""
@@ -659,9 +661,11 @@ class JobConnector:
             return {"file": name}
 
         @server.tool()
-        def aep_job_status(job_id: str) -> dict:
+        async def aep_job_status(job_id: str) -> dict:
             """Where a job is."""
             self.status_calls += 1
+            if self.slow:
+                await anyio.sleep(self.slow)
             if self.forget or job_id not in self.jobs:
                 raise ToolError("没有这个任务")
             job = self.jobs[job_id]
