@@ -203,7 +203,13 @@
 
 ## 安装文件
 
-第一步先给固定的安装文件 `infra/runtime/`：`docker-compose.yml`（运行模式的 API、Postgres、Redis、模型网关、代码沙箱和它的中转）、`.env.example`、安装说明。清单里的连接器由外部应用照说明加进 compose。按清单自动生成安装文件放到后面。
+第一步先给固定的安装文件 `infra/runtime/`，装法见 [infra/runtime/README.md](../../infra/runtime/README.md)：
+
+- `compose.yml`：运行模式的 API、Postgres、Redis、模型网关、代码沙箱和它的中转，加上对外的 Caddy。Caddy 只转发 `/v1/*` 和 `/mcp/apps/*`，管理接口只绑本机 `127.0.0.1:8000`。
+- `env.example`、`install.sh`（首次问域名、平台公钥、模型网关，然后构建并启动；以后 `git pull` 后再运行）。
+- `aep-runtime.sh`：在运行包机器上调本节的管理接口（装包、看应用、自检、绑定、切换版本、填密钥、建 API 密钥）。
+
+清单里的连接器由外部应用写进 `infra/runtime/compose.app.yml`（不进仓库），`install.sh` 发现了就一起启动；连接器地址要加进 `AEP_CONNECTOR_HOSTS`。按清单自动生成安装文件放到后面。
 
 ## 后续（另写契约）
 

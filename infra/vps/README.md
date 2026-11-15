@@ -15,7 +15,7 @@
 |---|---|---|
 | 内存 | 4G + 4G 交换区 | 空闲约 2–2.6G；跑任务、部署到 Databricks 时再多几百 MB；构建镜像最吃内存，靠交换区 |
 | 磁盘 | 25G | 镜像约 8–10G，加数据库和上传文件 |
-| 系统 | Debian 12 | 其他带 systemd 的 Debian/Ubuntu 也行，`setup-server.sh` 只在 Debian 12 上验证过 |
+| 系统 | Debian 12 或 Ubuntu 24.04 | `setup-server.sh` 在这两个系统上验证过 |
 | 出网 | 模型网关、Databricks 工作区、Docker Hub、GitHub、PyPI、npm | 平台要直接访问它们 |
 
 ## 步骤

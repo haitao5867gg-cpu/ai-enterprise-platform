@@ -1,0 +1,33 @@
+# 运行包对外唯一入口（infra/runtime/README.md）：自动申请证书，只转发外部应用调用的
+# 两个入口 /v1/* 和 /mcp/apps/*，由后端检查应用的 API 密钥（docs/api/app-access.md）。
+# 装包、绑定、自检等管理接口不对外，只在本机 127.0.0.1:8000（infra/runtime/aep-runtime.sh）。
+{$AEP_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		-Server
+	}
+
+	# 外部应用自己加的路由（infra/runtime/sites/*.caddy，不进仓库），比如它的页面。
+	# 用带路径的 handle / handle_path 写，比下面的兜底优先。
+	import /etc/caddy/sites/*.caddy
+
+	@app path /v1/* /mcp/apps /mcp/apps/*
+	handle @app {
+		reverse_proxy api:8000 {
+			# 运行进度是流式响应，不缓冲。
+			flush_interval -1
+		}
+	}
+
+	handle /healthz {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		respond 404
+	}
+}
