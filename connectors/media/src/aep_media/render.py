@@ -191,6 +191,8 @@ async def _probe_all(
             async with asyncio.TaskGroup() as group:
                 for path in paths:
                     group.create_task(one(path))
+    except ExceptionGroup as failed:
+        raise failed.exceptions[0] from None
     except TimeoutError:
         raise MediaError(
             f"检查素材超过 {settings.media_check_seconds:g} 秒还没完：素材太多，或者有文件读得太慢"

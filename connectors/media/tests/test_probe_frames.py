@@ -1,8 +1,10 @@
+import asyncio
 import os
 
 import pytest
 from conftest import LIB, path_of
 
+from aep_media import frames as frames_module
 from aep_media.frames import frames
 from aep_media.paths import MediaError
 from aep_media.probe import jpeg_size, probe
@@ -107,3 +109,28 @@ async def test_frames_at_times_every_and_evenly(root, media, ff):
     with pytest.raises(MediaError, match="音频没有画面"):
         await frames(media, ff, path_of(root, "配音.m4a"), at=None, every_seconds=None,
                      count=6, max_frames=30, width=200)  # fmt: skip
+
+
+async def test_one_failed_frame_stops_the_others(root, media, ff, monkeypatch):
+    started, stopped = [], []
+
+    async def snapshot(ff, path, at, out, *, width=None):
+        started.append(at)
+        if at == 0:
+            raise MediaError("取不出第 0 秒的画面")
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            stopped.append(at)
+            raise
+        return 1, 1
+
+    monkeypatch.setattr(frames_module, "snapshot", snapshot)
+    with pytest.raises(MediaError, match="取不出第 0 秒的画面"):
+        await frames(
+            media, ff, path_of(root, "横屏.mp4"),
+            at=[0, 1, 2, 3, 3.5], every_seconds=None, count=6, max_frames=30, width=320,
+            task="j_x",
+        )  # fmt: skip
+    # Every frame that started beside it was stopped before the error came back.
+    assert 1 in stopped and sorted(stopped) == sorted(t for t in started if t != 0)

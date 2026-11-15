@@ -82,5 +82,11 @@ async def frames(
             "image": media.file_ref(out),
         }
 
-    taken = await asyncio.gather(*(one(i, t) for i, t in enumerate(points)))
-    return {"duration_seconds": found["duration_seconds"], "frames": list(taken)}
+    # One frame failing stops the others (and the ones still waiting) before the
+    # error is reported, so no ffmpeg keeps running for a failed job.
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(one(i, t)) for i, t in enumerate(points)]
+    except ExceptionGroup as failed:
+        raise failed.exceptions[0] from None
+    return {"duration_seconds": found["duration_seconds"], "frames": [t.result() for t in tasks]}
