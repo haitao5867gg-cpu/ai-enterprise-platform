@@ -108,7 +108,10 @@ class Jobs:
                 job.status, job.error, job.message = "error", RESTARTED, None
                 self._save(job)
             self.jobs[job.job_id] = job
-            if job.key:
+            # A retried key has several records: it stands for the newest one (job ids
+            # are random, so the file order says nothing).
+            newest = self.jobs.get(self.keys.get(job.key or "", ""))
+            if job.key and (newest is None or job.created >= newest.created):
                 self.keys[job.key] = job.job_id
 
     # Asking ----------------------------------------------------------------------------

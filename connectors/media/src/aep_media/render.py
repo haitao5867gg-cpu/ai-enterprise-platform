@@ -347,10 +347,12 @@ def _fit_to(clips: list[Clip], total: float) -> list[Clip]:
         kept.append(clip)
         used += clip.duration
     if used < total - 1e-6:
+        # The selected stretch stays as it is; its last frame is held for the rest.
         last = kept[-1]
-        last.duration += total - used
-        if last.kind == "video" and last.source_duration is not None:
-            last.hold = max(0.0, last.duration - (last.source_duration - last.start))
+        extra = total - used
+        last.duration += extra
+        if last.kind == "video":
+            last.hold += extra
     return kept
 
 
@@ -538,7 +540,10 @@ async def encode_shot(
     if clip.kind == "image":
         source = ["-loop", "1", "-framerate", str(spec.fps), "-t", f"{seconds + 1:.3f}"]
     else:
-        source = ["-ss", f"{clip.start:.3f}", "-t", f"{seconds + 1:.3f}"]
+        # Only the selected stretch is read: a held shot freezes on its last frame
+        # instead of running on into footage after it.
+        read = seconds - clip.hold if clip.hold > 0 else seconds + 1
+        source = ["-ss", f"{clip.start:.3f}", "-t", f"{max(read, 1 / spec.fps):.3f}"]
     chain = (
         f"[0:v]setpts=PTS-STARTPTS,fps={spec.fps},{_fit_filter(spec, clip)},setsar=1,"
         f"format=yuv420p,tpad=stop_mode=clone:stop_duration={clip.hold + 1:.3f},"
@@ -613,7 +618,8 @@ def sounds(spec: Spec, shots: list[Shot]) -> list[dict[str, Any]]:
     for shot in shots:
         clip = shot.clip
         if clip.volume > 0 and clip.has_audio and clip.source_duration:
-            length = min(shot.seconds(spec.fps), clip.source_duration - clip.start)
+            played = shot.seconds(spec.fps) - clip.hold
+            length = min(played, clip.source_duration - clip.start)
             if length > 0.01:
                 found.append(_sound(clip.path, shot.start, clip.start, length, clip.volume))
     for track in spec.tracks:

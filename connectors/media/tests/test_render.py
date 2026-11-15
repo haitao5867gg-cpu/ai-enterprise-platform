@@ -216,6 +216,33 @@ async def test_duration_cuts_the_shots_or_holds_the_last(root, media, ff, settin
     assert (held.clips[0].duration, held.clips[0].hold) == (3, 1)
 
 
+def difference(a: bytes, b: bytes) -> float:
+    return sum(abs(x - y) for x, y in zip(a, b, strict=True)) / len(a)
+
+
+async def test_a_longer_video_freezes_the_selected_stretch(root, media, ff, settings):
+    # One second chosen from a four-second source, made three seconds long: the rest is
+    # its last frame, not the footage after it.
+    video = path_of(root, "横屏.mp4")
+    args = {
+        **SMALL,
+        "clips": [{"source": video, "start": 1, "duration": 1, "volume": 1}],
+        "duration": 3,
+    }
+    spec = await read_spec(media, ff, settings, args)
+    assert (spec.clips[0].duration, spec.clips[0].hold) == (3, 2)
+    _, _, out = await run(media, ff, settings, args)
+    assert frame_count(out) == 90
+    size = (360, 640)
+    moving = difference(pixels(out, 0.2, *size), pixels(out, 0.8, *size))
+    frozen = difference(pixels(out, 1.2, *size), pixels(out, 2.9, *size))
+    # Only the encoder's own noise (a key frame redraws the still picture a little).
+    assert frozen < moving / 3
+    # Its sound stops with the picture.
+    assert loudness(out, 0.1, 0.8) > -40
+    assert loudness(out, 1.2, 1.6) < -80
+
+
 async def test_sound_tracks_start_loop_and_stop(root, media, ff, settings):
     video = path_of(root, "无声.mp4")
     args = {

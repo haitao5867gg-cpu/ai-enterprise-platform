@@ -144,6 +144,27 @@ async def test_a_restarted_connector_knows_finished_jobs(root):
     await jobs.close()
 
 
+async def test_a_retried_key_is_found_as_its_newest_job(root):
+    media = Media(root)
+    media.prepare()
+    records = media.work / ".jobs"
+    # Ids are random, so the newer record can sort first.
+    for job_id, status, created in (("j_a", "done", 2), ("j_b", "error", 1)):
+        (records / f"{job_id}.json").write_text(
+            f'{{"job_id": "{job_id}", "tool": "render", "key": "k", "status": "{status}",'
+            f' "created": {time.time() - 60 + created}}}',
+            encoding="utf-8",
+        )
+    assert Jobs(media, slots=1, keep_hours=1).find("k").job_id == "j_a"
+    for job_id, status, created in (("j_a", "error", 1), ("j_b", "done", 2)):
+        (records / f"{job_id}.json").write_text(
+            f'{{"job_id": "{job_id}", "tool": "render", "key": "k", "status": "{status}",'
+            f' "created": {time.time() - 60 + created}}}',
+            encoding="utf-8",
+        )
+    assert Jobs(media, slots=1, keep_hours=1).find("k").job_id == "j_b"
+
+
 async def test_old_work_files_and_records_are_swept(root):
     media = Media(root)
     media.prepare()
