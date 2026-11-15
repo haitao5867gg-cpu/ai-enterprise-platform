@@ -11,7 +11,13 @@
 - **运行要求清单**：外部机器要准备什么。一部分由平台从配置里推出来（模型别名、数据源和工具、密钥、Skill），一部分由发布的人在应用上填（机器、网络、安装说明）。
 - **绑定**：清单里的数据源和工具服务，外部应用要在运行包上登记一个自己的连接器。登记时用清单里的同一个 `datasource_id`，所以流程配置不用改。
 - **自检**：运行包按清单逐项检查。必需项缺一个，这个应用就不能经 `/v1` 发起运行。
-- **第一步不支持**（打包时 422）：代码应用（如 `etl`）、用到知识库的应用、调用其他应用的智能体、用到上传文件数据源（`kind: file`）的应用。
+- **第一步不支持**（打包时 422），按下面的顺序报第一条：
+  1. 代码应用（如 `etl`）：「代码应用暂时不能打成流程包」
+  2. 有确认模式的人工节点（`type: human`，`mode: approval`）：「有要审批者确认的步骤，运行包上没有审批的地方，暂时不能打成流程包」。表单模式可以，外部页面经 `/v1/runs/{run_id}/answer` 填
+  3. 调用其他应用：编排里的调用应用节点（`type: app`），或智能体配置里的 `apps`：「调用其他应用的应用暂时不能打成流程包」
+  4. 用到知识库：「用到知识库的应用暂时不能打成流程包」
+  5. 用到上传文件数据源（`kind: file`）：「用到上传文件数据源的应用暂时不能打成流程包」
+  6. 有数据工程节点（`etl_profile`、`etl_plan_check`、`etl_code_check`、`databricks_ingest`、`databricks_dev_run`、`databricks_release`、`data_check`、`git_pr`），它们要用平台的 Databricks 工作区和项目：「有数据工程节点的应用暂时不能打成流程包」
 
 ## 运行要求清单
 
@@ -25,9 +31,10 @@
   "datasources": [
     {"datasource_id": "uuid", "name": "素材搜索", "kind": "mcp",
      "tools": ["search_videos", "download_video"]}
-                                            // tools：调用工具节点和智能体用到的工具名；数据源类型
-                                            // （postgres 等）另外照旧要求 ETL 的 6 个工具
+                                            // tools：调用工具节点和智能体用到的工具名，按第一次出现的顺序；
+                                            // 智能体那项选了「全部工具」时不加，连接器有什么就用什么
   ],
+  "sandbox": false,                         // 有代码节点（type: code）：运行包要有代码沙箱（AEP_SANDBOX_URL）
   "skills": [{"name": "coach-video-style", "version": 2}],   // 内容随包带
   "secrets": ["crm_token"],                 // 只有名字
   "machine": {"cpu_cores": 4, "memory_gb": 8, "disk_gb": 100} | null,
@@ -38,7 +45,7 @@
 }
 ```
 
-- `models`、`default_model`、`datasources`、`skills`、`secrets` 由平台从这个版本的配置推出，和导出文件（`aep-app/1`）的 `requires` 用同一套规则。导出文件的 `requires` 也加上 `models` 和每个数据源的 `tools`；导入时不认识的键照旧忽略，旧文件照旧能导入。
+- `models`、`default_model`、`datasources`、`sandbox`、`skills`、`secrets` 由平台从这个版本的配置推出，和导出文件（`aep-app/1`）的 `requires` 用同一套规则。导出文件的 `requires` 也加上 `models` 和每个数据源的 `tools`；导入时不认识的键照旧忽略，旧文件照旧能导入。
 - `machine`、`network`、`notes` 存在应用上，不跟版本走；打包时拷进包里。
 
 平台这边的接口（搭建者）：
@@ -170,7 +177,7 @@
 
 自检：
 
-- **必需项**：平台版本、包里的 Skill 已装、每个模型别名在本机网关上（`default_model` 为 true 时还要有默认对话模型）、每个数据源已绑定且连得上且有清单列出的工具、每个密钥有值。
+- **必需项**：平台版本、包里的 Skill 已装、每个模型别名在本机网关上（`default_model` 为 true 时还要有默认对话模型）、每个数据源已绑定且连得上且有清单列出的工具、`sandbox` 为 true 时代码沙箱连得上且有 `run_python`、每个密钥有值。
 - **只提示的**：机器（CPU 核数、内存、`AEP_MEDIA_DIR` 所在磁盘的总空间，低于要求就不通过）、网络（每个主机名 5 秒内能连上 443 端口）。
 - 什么时候查：启动时、装包后、绑定或改密钥后、每 24 小时、`fresh=true` 时。其余时候返回上一次的结果。`fresh=true` 时每个模型别名再发一个最小的请求（最多 1 个 token），不通过的写「别名在，但调用失败：……」。
 
@@ -191,7 +198,7 @@
 
 ## 安装文件
 
-第一步先给固定的安装文件 `infra/runtime/`：`docker-compose.yml`（运行模式的 API、Postgres、Redis、模型网关）、`.env.example`、安装说明。清单里的连接器由外部应用照说明加进 compose。按清单自动生成安装文件放到后面。
+第一步先给固定的安装文件 `infra/runtime/`：`docker-compose.yml`（运行模式的 API、Postgres、Redis、模型网关、代码沙箱和它的中转）、`.env.example`、安装说明。清单里的连接器由外部应用照说明加进 compose。按清单自动生成安装文件放到后面。
 
 ## 后续（另写契约）
 
@@ -201,7 +208,7 @@
 
 ## 测试
 
-- 清单：模型别名和 `default_model`、数据源和用到的工具、Skill、密钥、发布的人填的部分；第一步不支持的四种情况。
+- 清单：模型别名和 `default_model`、数据源和用到的工具、`sandbox`、Skill、密钥、发布的人填的部分；第一步不支持的六种情况和它们的顺序。
 - 打包和验签：签名能被公钥验过；改动包里任何一个字段都验不过；`key_id` 不认识、没设密钥、`min_version` 太新。
 - 运行模式：放行的接口能用，其余 404；内置应用不登记。
 - 装包：新装、同一个包再装（200 不改）、加版本、切换版本、Skill 冲突、类型冲突、版本号冲突。
