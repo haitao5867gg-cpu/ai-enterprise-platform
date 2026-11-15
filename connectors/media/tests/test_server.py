@@ -5,6 +5,7 @@ import time
 from conftest import path_of
 from mcp import Client
 
+from aep_media import probe as probe_module
 from aep_media.config import Settings
 from aep_media.jobs import RESTARTED, Jobs
 from aep_media.paths import Media
@@ -65,6 +66,21 @@ async def test_tools_answer_over_mcp(root):
         assert failed.is_error and "音频没有画面" in failed.content[0].text
         missing = await call(client, "aep_job_status", {"job_id": "j_nope"})
         assert missing.is_error and "没有这个任务" in missing.content[0].text
+    await jobs.close()
+
+
+async def test_a_probe_answers_within_the_check_time(root, monkeypatch):
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(probe_module, "snapshot", slow)
+    server, jobs = build(Settings(media_dir=root, media_check_seconds=0.5))
+    async with Client(server) as client:
+        started = time.monotonic()
+        late = await call(client, "probe", {"source": path_of(root, "横屏.mp4"),
+                                            "thumbnail": True})  # fmt: skip
+        assert late.is_error and "探测超过 0.5 秒还没完" in late.content[0].text
+        assert time.monotonic() - started < 5
     await jobs.close()
 
 

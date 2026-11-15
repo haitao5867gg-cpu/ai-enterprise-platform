@@ -50,12 +50,12 @@
 
 #### `probe`：探测
 
-参数：`{"source": Source, "thumbnail": false}`。普通工具，30 秒内返回。
+参数：`{"source": Source, "thumbnail": false}`。普通工具，最多 `AEP_MEDIA_CHECK_SECONDS`（默认 20）秒，在平台的工具调用超时（30 秒）之前返回；超了报「探测超过 20 秒还没完：文件读得太慢」。
 
 ```jsonc
 {"kind": "video" | "audio" | "image",          // 按扩展名，同媒体库
  "duration_seconds": 12.4 | null,              // 图片为 null
- "width": 720 | null, "height": 1280 | null,   // 按显示方向（手机竖拍带旋转标记的已经转过来）；音频为 null
+ "width": 720 | null, "height": 1280 | null,   // 按显示的样子（手机竖拍带旋转标记的已经转过来，宽像素的按显示宽度）；音频为 null
  "orientation": "portrait" | "landscape" | "square" | null,
  "fps": 29.97 | null,
  "has_video": true, "has_audio": true,
@@ -137,6 +137,7 @@
  "duration_seconds": 52.0, "width": 1080, "height": 1920, "size_bytes": 31457280}
 ```
 
+- **画面形状**：先按显示的样子摆正（旋转标记、宽像素都算上），再按 `fit` 放进成片，抽帧和缩略图也一样。
 - **时间**：每个镜头按帧对齐，接起来的总长和各镜头时长之和最多差一帧，字幕和配音不会越接越偏。
 - **素材不够长**：视频从 `start` 截 `duration` 截不满时，差 0.5 秒以内就停在最后一帧补齐；差更多报「第 3 个镜头：素材只有 4.2 秒，从 3.0 秒起截不出 2.5 秒」。
 - **音轨**：比成片长的截掉，短的就到它结束为止（`loop` 除外）。
@@ -163,7 +164,7 @@
 | `AEP_MEDIA_DIR` | `/data/media` | 媒体卷的挂载点，和平台一样 |
 | `AEP_MEDIA_MCP_HOST` / `AEP_MEDIA_MCP_PORT` | `0.0.0.0` / `8008` | |
 | `AEP_MEDIA_MAX_JOBS` | 1 | 同时渲染几个任务 |
-| `AEP_MEDIA_CHECK_SECONDS` | 20 | 渲染前检查素材最多几秒，要比平台的工具调用超时短 |
+| `AEP_MEDIA_CHECK_SECONDS` | 20 | 探测、渲染前检查素材最多几秒，要比平台的工具调用超时短 |
 | `AEP_MEDIA_MAX_SECONDS` | 600 | 成片最长几秒 |
 | `AEP_MEDIA_WORK_HOURS` | 24 | 工作文件、缓存和任务记录留多久 |
 | `AEP_MEDIA_FFMPEG_THREADS` | 0 | 每个 ffmpeg 进程的线程数，0 让 ffmpeg 自己定 |

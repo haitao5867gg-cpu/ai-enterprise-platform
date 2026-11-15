@@ -1,5 +1,6 @@
 """``probe``: what a file is, how long and how big, and a thumbnail."""
 
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,20 @@ def _rate(value: Any) -> float | None:
     except (ValueError, ZeroDivisionError):
         return None
     return round(rate, 3) if rate > 0 else None
+
+
+def _pixel_ratio(stream: dict[str, Any]) -> Fraction:
+    """How wide a stored pixel is shown (anamorphic video); 1 when not given."""
+    top, _, bottom = str(stream.get("sample_aspect_ratio") or "").partition(":")
+    try:
+        ratio = Fraction(int(top), int(bottom))
+    except (ValueError, ZeroDivisionError):
+        return Fraction(1)
+    return ratio if ratio > 0 else Fraction(1)
+
+
+# Before any scaling: stored pixels made square, so the picture keeps its shown shape.
+SQUARE = "scale='trunc(iw*sar/2)*2':ih,setsar=1"
 
 
 def _rotation(stream: dict[str, Any]) -> int:
@@ -76,6 +91,9 @@ async def inspect(ff: FFmpeg, path: Path) -> dict[str, Any]:
     width = height = None
     if kind != "audio" and picture is not None:
         width, height = int(picture["width"]), int(picture["height"])
+        ratio = _pixel_ratio(picture)
+        if ratio != 1:
+            width = int(width * ratio / 2) * 2  # as SQUARE makes it
         if _rotation(picture) in (90, 270):
             width, height = height, width
     duration = None
@@ -117,7 +135,8 @@ async def snapshot(
     for when in (at, max(0.0, at - 1.0)):
         seek = ["-ss", f"{when:.3f}"] if when > 0 else []
         await ff.run(
-            [*seek, "-i", str(path), "-frames:v", "1", "-vf", scale, "-q:v", "3", str(out)],
+            [*seek, "-i", str(path), "-frames:v", "1", "-vf", f"{SQUARE},{scale}"]
+            + ["-q:v", "3", str(out)],
             timeout=60,
         )
         if out.exists() and out.stat().st_size:

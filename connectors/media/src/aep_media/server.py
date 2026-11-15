@@ -1,5 +1,6 @@
 """MCP Streamable HTTP: ``probe``, ``frames``, ``render`` and the long-job tools."""
 
+import asyncio
 from typing import Annotated, Any
 
 import uvicorn
@@ -57,10 +58,16 @@ def build(settings: Settings | None = None) -> tuple[MCPServer, Jobs]:
         shown, rotation applied), orientation, fps, codecs and size. With
         ``thumbnail`` a JPG 480 px on the long edge from second 1 is made and returned
         as a file reference."""
+        # An ordinary tool: it must answer before the platform's tool call gives up.
         try:
-            return await probe_file(media, ff, source, thumbnail)
+            async with asyncio.timeout(settings.media_check_seconds):
+                return await probe_file(media, ff, source, thumbnail)
         except MediaError as exc:
             raise ToolError(str(exc)) from None
+        except TimeoutError:
+            raise ToolError(
+                f"探测超过 {settings.media_check_seconds:g} 秒还没完：文件读得太慢"
+            ) from None
 
     @server.tool(annotations=SAFE)
     async def frames(

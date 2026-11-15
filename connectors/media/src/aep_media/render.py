@@ -21,7 +21,7 @@ from typing import Any
 from aep_media.config import Settings
 from aep_media.ffmpeg import FFmpeg
 from aep_media.paths import CACHE, Media, MediaError
-from aep_media.probe import inspect
+from aep_media.probe import SQUARE, inspect
 
 Report = Callable[[float, str], None]
 
@@ -590,7 +590,7 @@ async def encode_shot(
         read = seconds - clip.hold if clip.hold > 0 else seconds + 1
         source = ["-ss", f"{clip.start:.3f}", "-t", f"{max(read, 1 / spec.fps):.3f}"]
     chain = (
-        f"[0:v]setpts=PTS-STARTPTS,fps={spec.fps},{_fit_filter(spec, clip)},setsar=1,"
+        f"[0:v]setpts=PTS-STARTPTS,fps={spec.fps},{SQUARE},{_fit_filter(spec, clip)},setsar=1,"
         f"format=yuv420p,tpad=stop_mode=clone:stop_duration={clip.hold + 1:.3f},"
         f"trim=end_frame={shot.frames},setpts=PTS-STARTPTS"
     )

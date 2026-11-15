@@ -231,6 +231,22 @@ async def test_sources_are_checked_together_within_a_bound(root, media, ff, monk
     assert time.monotonic() - started < 3
 
 
+async def test_wide_pixels_keep_their_shape_in_the_video(root, media, ff, settings):
+    from test_probe_frames import anamorphic
+
+    args = {**SMALL, "clips": [{"source": anamorphic(root), "duration": 1}]}
+    _, _, out = await run(media, ff, settings, args)
+    frame = pixels(out, 0.5, 360, 640)
+
+    def row(y: int) -> int:
+        return max(frame[y * 360 * 3 : (y + 1) * 360 * 3])
+
+    # 16:9 in a 360-wide frame is about 202 rows high, centred: black above and below.
+    assert row(320) > 100
+    assert row(205) < 30 and row(435) < 30
+    assert row(225) > 100 and row(415) > 100
+
+
 async def test_the_video_is_limited_in_length(root, media, ff):
     settings = Settings(media_dir=root, media_max_seconds=5)
     video = path_of(root, "横屏.mp4")

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 
 import pytest
 from conftest import LIB, path_of
@@ -134,3 +135,26 @@ async def test_one_failed_frame_stops_the_others(root, media, ff, monkeypatch):
         )  # fmt: skip
     # Every frame that started beside it was stopped before the error came back.
     assert 1 in stopped and sorted(stopped) == sorted(t for t in started if t != 0)
+
+
+def anamorphic(root) -> str:
+    """720x576 stored, shown 16:9 (wide pixels), like PAL widescreen footage."""
+    folder = root / LIB / "wide"
+    folder.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "testsrc2=size=720x576:rate=25:duration=2", "-vf", "setsar=64/45",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(folder / "宽银幕.mp4")],
+        check=True,
+    )  # fmt: skip
+    return f"{LIB}/wide/宽银幕.mp4"
+
+
+async def test_wide_pixels_are_shown_at_their_shape(root, media, ff):
+    video = anamorphic(root)
+    found = await probe(media, ff, video, thumbnail=True)
+    assert (found["width"], found["height"]) == (1024, 576)
+    assert jpeg_size(root / found["thumbnail"]["aep_file"]["path"]) == (480, 270)
+    taken = await frames(media, ff, video, at=[1], every_seconds=None, count=6,
+                         max_frames=30, width=512)  # fmt: skip
+    assert (taken["frames"][0]["width"], taken["frames"][0]["height"]) == (512, 288)
