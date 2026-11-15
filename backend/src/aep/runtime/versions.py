@@ -75,6 +75,13 @@ class AppVersionStore(Protocol):
         self, app: str, note: str, actor: str | None, revision: str | None = None
     ) -> AppVersion: ...
     async def activate(self, app: str, version: int) -> None: ...
+    async def install(
+        self, app: str, version: int, config: dict[str, Any], note: str, actor: str | None
+    ) -> None: ...
+
+
+class VersionExists(Exception):
+    """That version number is already taken."""
 
 
 class MemoryAppVersionStore:
@@ -145,6 +152,18 @@ class MemoryAppVersionStore:
     async def activate(self, app: str, version: int) -> None:
         if await self.version(app, version) is None:
             raise VersionNotFound(f"{app} v{version}")
+        self._current[app] = version
+
+    async def install(
+        self, app: str, version: int, config: dict[str, Any], note: str, actor: str | None
+    ) -> None:
+        """Add a version under a given number and make it current (a package installed on a
+        runtime keeps the platform's number, docs/api/runtime.md); VersionExists if taken."""
+        if await self.version(app, version) is not None:
+            raise VersionExists(f"{app} v{version}")
+        versions = self._versions.setdefault(app, [])
+        versions.append(AppVersion(app, version, config, note, actor))
+        versions.sort(key=lambda v: v.version, reverse=True)
         self._current[app] = version
 
 
@@ -341,4 +360,24 @@ class PostgresAppVersionStore:
             await conn.execute(
                 "UPDATE app_heads SET current = %s WHERE tenant_id = %s AND app = %s",
                 (version, DEFAULT_TENANT, app),
+            )
+
+    async def install(
+        self, app: str, version: int, config: dict[str, Any], note: str, actor: str | None
+    ) -> None:
+        """Add a version under a given number and make it current (a package installed on a
+        runtime keeps the platform's number, docs/api/runtime.md); VersionExists if taken."""
+        async with self._pool.connection() as conn, conn.transaction():
+            await self._lock(conn, app)
+            cur = await conn.execute(
+                "INSERT INTO app_versions (tenant_id, app, version, config, note, created_by)"
+                " VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (DEFAULT_TENANT, app, version, Jsonb(config), note, actor),
+            )
+            if cur.rowcount == 0:
+                raise VersionExists(f"{app} v{version}")
+            await conn.execute(
+                "INSERT INTO app_heads (tenant_id, app, current) VALUES (%s, %s, %s)"
+                " ON CONFLICT (tenant_id, app) DO UPDATE SET current = excluded.current",
+                (DEFAULT_TENANT, app, version),
             )

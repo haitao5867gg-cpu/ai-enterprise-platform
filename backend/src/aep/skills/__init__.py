@@ -169,6 +169,7 @@ class SkillStore(Protocol):
     async def discard_draft(self, name: str) -> None: ...
     async def publish(self, name: str, note: str, actor: str | None) -> Skill: ...
     async def register_builtins(self) -> int: ...
+    async def install(self, name: str, content: SkillContent) -> bool: ...
 
 
 class MemorySkillStore:
@@ -238,6 +239,19 @@ class MemorySkillStore:
         )
         versions.insert(0, content)
         return self._skill(name)  # type: ignore[return-value]
+
+    async def install(self, name: str, content: SkillContent) -> bool:
+        """Add a published version under its own number (a package installed on a runtime,
+        docs/api/runtime.md); False when that number is already there."""
+        check_name(name)
+        check_content(content)
+        assert content.version is not None
+        versions = self._versions.setdefault(name, [])
+        if any(c.version == content.version for c in versions):
+            return False
+        versions.append(content)
+        versions.sort(key=lambda c: c.version or 0, reverse=True)
+        return True
 
 
 SCHEMA = [
@@ -424,3 +438,26 @@ class PostgresSkillStore:
                 ),
             )
         return await self.get(name)  # type: ignore[return-value]
+
+    async def install(self, name: str, content: SkillContent) -> bool:
+        """Add a published version under its own number (a package installed on a runtime,
+        docs/api/runtime.md); False when that number is already there."""
+        check_name(name)
+        check_content(content)
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "INSERT INTO skill_versions"
+                " (tenant_id, name, version, description, body, refs, note, created_by)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (
+                    DEFAULT_TENANT,
+                    name,
+                    content.version,
+                    content.description,
+                    content.body,
+                    Jsonb(content.references),
+                    content.note,
+                    content.created_by,
+                ),
+            )
+            return cur.rowcount > 0

@@ -31,6 +31,7 @@ from aep.api import (
     packages,
     projects,
     runs,
+    runtime_packages,
     schedules,
     skills,
 )
@@ -58,6 +59,7 @@ from aep.eval_sets import PostgresEvalSetStore
 from aep.feedback import PostgresFeedbackStore
 from aep.health import check_llm_gateway, check_postgres, check_redis, demo_checks
 from aep.i18n import translated_http_error
+from aep.installs import PostgresInstallStore, Runtime
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
@@ -109,6 +111,8 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # A runtime runs installed packages only (docs/api/runtime.md, 运行模式).
+        runtime_mode = settings.mode == "runtime"
         await asyncio.to_thread(warm)
         llm_client = llm.make_client(settings)
         # One pool for run records and LangGraph checkpoints; the saver needs
@@ -154,7 +158,7 @@ def create_app() -> FastAPI:
         service = RunService(
             store,
             checkpointer,
-            default_apps(),
+            {} if runtime_mode else default_apps(),
             AppContext(
                 llm_client,
                 settings,
@@ -234,6 +238,23 @@ def create_app() -> FastAPI:
         needs_store = PostgresRuntimeNeedsStore(pool)
         await needs_store.setup()
         app.state.packages = Packages(service, catalog, sources, needs_store)
+        runtime: Runtime | None = None
+        if runtime_mode:
+            install_store = PostgresInstallStore(pool)
+            await install_store.setup()
+            runtime = Runtime(
+                service,
+                catalog,
+                sources,
+                tools,
+                app.state.connector_check,
+                settings,
+                llm_client,
+                install_store,
+            )
+            app.state.runtime = runtime
+            service.ready_check = runtime.ready
+            catalog.secrets_changed = runtime.recheck
         # Every platform asset in one list (docs/api/catalog.md).
         asset_meta = PostgresAssetMetaStore(pool)
         await asset_meta.setup()
@@ -272,7 +293,9 @@ def create_app() -> FastAPI:
         app.state.media = media_store
         knowledge_worker = KnowledgeWorker(knowledge_store, llm_client)
         app.state.knowledge_worker = knowledge_worker
-        knowledge_task = asyncio.create_task(knowledge_worker.run())
+        background: list[asyncio.Task] = []
+        if not runtime_mode:
+            background.append(asyncio.create_task(knowledge_worker.run()))
         # Runs started on a schedule (docs/api/schedules.md).
         schedule_store = PostgresScheduleStore(pool)
         await schedule_store.setup()
@@ -284,7 +307,8 @@ def create_app() -> FastAPI:
         )
         app.state.schedules = schedule_store
         app.state.scheduler = scheduler
-        schedule_task = asyncio.create_task(scheduler.run())
+        if not runtime_mode:
+            background.append(asyncio.create_task(scheduler.run()))
 
         async def clean_conversations() -> None:
             """Delete expired conversations now and then (docs/api/conversations.md)."""
@@ -299,11 +323,15 @@ def create_app() -> FastAPI:
                     log.exception("could not clear expired conversations")
                 await asyncio.sleep(settings.conversation_cleanup_hours * 3600)
 
-        cleanup_task = asyncio.create_task(clean_conversations())
+        background.append(asyncio.create_task(clean_conversations()))
+        if runtime is not None:
+            await runtime.check_all()
+            background.append(asyncio.create_task(runtime.keep_checking()))
+            log.info("running as a runtime: installed packages only")
         try:
             yield
         finally:
-            for task in (schedule_task, knowledge_task, cleanup_task):
+            for task in background:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -335,6 +363,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(StarletteHTTPException, translated_http_error)
     # Connector tests and each data source's health (kept for a minute in this process).
     app.state.connector_check = ConnectorCheck()
+    app.state.mode = settings.mode
     app.include_router(auth.router)
     app.include_router(runs.router)
     app.include_router(conversations.router)
@@ -355,6 +384,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog_api.router)
     app.include_router(ops_api.router)
     app.include_router(packages.router)
+    app.include_router(runtime_packages.router)
     # Each app as an MCP tool; it checks API keys itself.
     app.mount("/mcp/apps", AppMcpEndpoint())
     # Links back to a run (notices, the app API).

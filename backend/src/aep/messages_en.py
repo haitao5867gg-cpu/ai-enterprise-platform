@@ -483,6 +483,46 @@ MESSAGES: dict[str, str] = {
     "流程包超过 5 MB（{size} MB），请减少 Skill 的内容或个数": (
         "The package exceeds 5 MB ({size} MB); trim the skills it uses"
     ),
+    "运行包里没有这个接口": "A runtime does not serve this",
+    "这台机器不是运行包（AEP_MODE=runtime）": "This machine is not a runtime (AEP_MODE=runtime)",
+    "不是流程包文件": "This is not a package file",
+    "流程包不能超过 5 MB": "A package cannot exceed 5 MB",
+    "运行包没有配置平台公钥（AEP_PLATFORM_PUBLIC_KEYS）": (
+        "The runtime has no platform public key (AEP_PLATFORM_PUBLIC_KEYS)"
+    ),
+    "这个包不是用这台运行包认识的平台密钥签的": (
+        "The package was not signed with a platform key this runtime knows"
+    ),
+    "流程包的签名不对，可能被改过": "The package's signature is wrong; it may have been changed",
+    "这个包要求平台 {wanted} 以上，这台运行包是 {have}，请先升级镜像": (
+        "The package needs platform {wanted} or later and this runtime is {have}; "
+        "upgrade the image first"
+    ),
+    "这台运行包读不了包里的应用配置：{problem}": (
+        "This runtime cannot read the app configuration in the package: {problem}"
+    ),
+    "Skill「{name}」第 {version} 版和这台机器上已有的不一样": (
+        "Version {version} of skill “{name}” differs from the one on this machine"
+    ),
+    "这台机器上已经有一个同名的{kind}": (
+        "This machine already has an app of the other kind by that name"
+    ),
+    "第 {version} 版已经装过了，平台重新打的包要用新版本": (
+        "Version {version} is already installed; a repackaged app needs a new version"
+    ),
+    "这台运行包没有装应用 {app}": "App {app} is not installed on this runtime",
+    "这个应用在运行包上没有装完，请重新装一次流程包": (
+        "The app's install on this runtime did not finish; install the package again"
+    ),
+    "没有装过第 {version} 版": "Version {version} was never installed",
+    "这个应用不需要这个数据源": "The app does not need this data source",
+    "这台机器上已经有名为「{name}」的数据源": (
+        "This machine already has a data source named “{name}”"
+    ),
+    "连接器缺少工具：{tools}": "The connector lacks these tools: {tools}",
+    "这个应用还不能运行：缺 {missing}（运行包自检没通过）": (
+        "The app cannot run yet: missing {missing} (the runtime's self-check did not pass)"
+    ),
     "Skill「{name}」第 {version} 版不在平台上": (
         "Version {version} of skill “{name}” is not on the platform"
     ),

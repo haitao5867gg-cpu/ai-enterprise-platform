@@ -158,6 +158,8 @@ class AppCatalog:
         self._models = models
         # The model page's dropdown entries (aep.models.ModelService.choices), when wired.
         self.model_choices: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
+        # Told when an app's secret is set or cleared (a runtime checks the app again).
+        self.secrets_changed: Callable[[str], Awaitable[None]] | None = None
         self._evals: dict[str, asyncio.Task] = {}
         self._starting: dict[str, asyncio.Lock] = {}
 
@@ -791,10 +793,14 @@ class AppCatalog:
     async def set_secret(self, app: str, name: str, value: str) -> None:
         await self._flow(app)
         await self._runs.secrets.set(app, name, value)
+        if self.secrets_changed is not None:
+            await self.secrets_changed(app)
 
     async def delete_secret(self, app: str, name: str) -> None:
         await self._flow(app)
         await self._runs.secrets.delete(app, name)
+        if self.secrets_changed is not None:
+            await self.secrets_changed(app)
 
     # Files
 

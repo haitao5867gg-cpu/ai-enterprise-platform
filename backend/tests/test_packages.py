@@ -26,8 +26,8 @@ CODE = "def main(inputs):\n    return {'total': 1}\n"
 class Packaging:
     """The tools-test platform with packages wired and a signing key (or none)."""
 
-    def __init__(self, key: str = SEED) -> None:
-        self.platform = Platform(["x"])
+    def __init__(self, key: str = SEED, servers: dict | None = None) -> None:
+        self.platform = Platform(["x"], servers)
         self.settings = SETTINGS.model_copy(update={"package_signing_key": key})
 
     async def __aenter__(self) -> Platform:
