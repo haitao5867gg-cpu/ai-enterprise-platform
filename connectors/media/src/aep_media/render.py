@@ -592,12 +592,14 @@ async def encode_shot(
         f"format=yuv420p,tpad=stop_mode=clone:stop_duration={clip.hold + 1:.3f},"
         f"trim=end_frame={shot.frames},setpts=PTS-STARTPTS"
     )
-    subtitles = out.with_suffix(".ass")
+    # Two renders may encode the same shot at once: each has its own working files.
+    own = f"{out.stem}.{secrets.token_hex(4)}"
+    subtitles = out.with_name(f"{own}.part.ass")
     if shot.subtitles:
         subtitles.write_text(shot.subtitles, encoding="utf-8")
         chain += f",ass={subtitles.name}"
     chain += "[v]"
-    temporary = out.with_name(f"{out.stem}.{secrets.token_hex(4)}.part.mp4")
+    temporary = out.with_name(f"{own}.part.mp4")
     try:
         await ff.run(
             [

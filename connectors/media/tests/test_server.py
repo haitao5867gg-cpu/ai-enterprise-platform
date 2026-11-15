@@ -135,7 +135,7 @@ async def test_renders_queue_and_cancel(root):
         assert third["job_id"] not in (first["job_id"], second["job_id"])
         await call(client, "aep_job_cancel", {"job_id": third["job_id"]})
     await jobs.close()
-    assert not any(name.endswith(".part.mp4") for name in os.listdir(root / "_work" / ".cache"))
+    assert not any(".part." in name for name in os.listdir(root / "_work" / ".cache"))
 
 
 async def test_a_restarted_connector_knows_finished_jobs(root):

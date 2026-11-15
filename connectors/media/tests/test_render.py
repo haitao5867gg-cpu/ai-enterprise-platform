@@ -11,7 +11,7 @@ from aep_media import render as render_module
 from aep_media.config import Settings
 from aep_media.paths import MediaError
 from aep_media.probe import inspect
-from aep_media.render import plan, read_spec, render_spec, wrap
+from aep_media.render import encode_shot, plan, read_spec, render_spec, wrap
 
 SMALL = {"width": 360, "height": 640, "fps": 30, "output": {"name": "成片.mp4", "quality": "draft"}}
 
@@ -334,6 +334,39 @@ def test_long_lines_wrap_evenly_at_punctuation():
     assert wrap("每天少吃三百大卡就能看到变化了", 10) == ["每天少吃三百大卡", "就能看到变化了"]
     # Latin letters count half and words are not split.
     assert wrap("keep a calorie deficit every day", 9) == ["keep a calorie", "deficit every day"]
+
+
+async def test_one_shot_encoded_twice_at_once_keeps_its_own_files(
+    root, media, ff, settings, monkeypatch
+):
+    # The second encode starts only after the first has finished and cleaned up.
+    real, calls, first_done = ff.run, [], asyncio.Event()
+
+    async def run(args, **options):
+        calls.append(args)
+        if len(calls) == 2:
+            await first_done.wait()
+        await real(args, **options)
+
+    monkeypatch.setattr(ff, "run", run)
+
+    async def first():
+        await encode_shot(ff, spec, shot, out, lambda _: None)
+        first_done.set()
+
+    args = {
+        **SMALL,
+        "clips": [{"source": path_of(root, "横屏.mp4"), "duration": 1}],
+        "subtitles": {"cues": [{"start": 0, "end": 1, "text": "第一句"}]},
+    }
+    spec = await read_spec(media, ff, settings, args)
+    [shot] = plan(spec)
+    out = media.work / ".cache" / "shot_same.mp4"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.gather(first(), encode_shot(ff, spec, shot, out, lambda _: None))
+    assert len(calls) == 2
+    assert frame_count(out) == 30
+    assert sorted(p.name for p in out.parent.iterdir()) == ["shot_same.mp4"]
 
 
 async def test_only_the_changed_shot_is_encoded_again(root, media, ff, settings):
