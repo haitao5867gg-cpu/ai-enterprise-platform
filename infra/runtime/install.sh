@@ -16,13 +16,18 @@ DC=(docker compose -f infra/runtime/compose.yml)
 docker compose version >/dev/null 2>&1 || { echo "✗ 没有 docker compose，先运行 infra/vps/setup-server.sh"; exit 1; }
 
 # .env 里设置 KEY=VALUE：替换已有的（包括注释掉的）第一行，没有就追加。
+# 临时文件用 mktemp 建（权限 600），和 .env 一样别人读不到。
 set_env() {
+  local tmp rc=0
+  tmp=$(mktemp "$ENV.XXXXXX")
   V="$2" awk -v k="$1" '
     BEGIN { v = ENVIRON["V"]; done = 0 }
     !done && $0 ~ "^#? *" k "=" { print k "=" v; done = 1; next }
     { print }
     END { if (!done) print k "=" v }
-  ' "$ENV" > "$ENV.tmp" && cat "$ENV.tmp" > "$ENV" && rm -f "$ENV.tmp"
+  ' "$ENV" > "$tmp" && cat "$tmp" > "$ENV" || rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }
 get_env() { grep -E "^$1=" "$ENV" | tail -1 | cut -d= -f2- || true; }
 ask() { local v; read -r -p "$1" v; echo "$v"; }
