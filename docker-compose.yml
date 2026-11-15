@@ -164,6 +164,24 @@ services:
       timeout: 5s
       retries: 20
 
+  # Media processing (docs/api/media-processing.md): ffmpeg over MCP. It reads the media
+  # libraries on the shared volume and writes only its own work folder there.
+  connector-media:
+    build: ./connectors/media
+    environment:
+      AEP_MEDIA_DIR: /data/media
+      AEP_MEDIA_MCP_HOST: 0.0.0.0
+      AEP_MEDIA_MCP_PORT: 8008
+    volumes:
+      - media-data:/data/media
+    ports:
+      - "127.0.0.1:8008:8008"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   connector-files:
     build: ./connectors/files
     environment:
@@ -357,7 +375,8 @@ services:
       # Sample sources, registered through the existing startup mechanism.
       AEP_DEFAULT_DATASOURCES: >-
         [{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"},
-         {"name": "MySQL 示例库", "kind": "mysql", "connector_url": "http://connector-mysql:8002/mcp", "description": "本地 MySQL 示例源库：sales（客户、商品、订单）和 retail（零售订单，演示用），都含脏数据"}]
+         {"name": "MySQL 示例库", "kind": "mysql", "connector_url": "http://connector-mysql:8002/mcp", "description": "本地 MySQL 示例源库：sales（客户、商品、订单）和 retail（零售订单，演示用），都含脏数据"},
+         {"name": "媒体处理", "kind": "mcp", "connector_url": "http://connector-media:8008/mcp", "description": "探测、抽帧和渲染媒体库里的视频、音频和图片（ffmpeg）"}]
       # Eval sets, for the eval a draft app version must pass before it is published.
       AEP_EVALS_DIR: /evals
       AEP_EVAL_DATASOURCE: ${AEP_EVAL_DATASOURCE:-示例库}

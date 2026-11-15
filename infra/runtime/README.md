@@ -13,6 +13,7 @@
 | `litellm` | 外部应用自己的模型网关，key 在本机 `.env` |
 | `postgres`、`redis` | 运行包自己的数据库，和平台的分开 |
 | `connector-sandbox`、`sandbox-relay` | 代码节点的沙箱，不能上网 |
+| `connector-media` | 媒体处理（ffmpeg），读媒体库、渲染视频；流程用到时绑定 `http://connector-media:8008/mcp` |
 
 没有平台页面、示例源库和 Langfuse。外部应用自己的服务（页面、连接器）写在
 `infra/runtime/compose.app.yml`，它自己的对外路由写在 `infra/runtime/sites/*.caddy`。这两样都不进仓库，`install.sh` 发现了就一起启动。
