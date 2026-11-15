@@ -12,7 +12,7 @@ from aep.runtime.store import MemoryRunStore, RunRecord, current_progress
 from aep.tools import jobs
 from tests import fake_connector
 from tests.conftest import SETTINGS
-from tests.test_flow_tools import Platform
+from tests.test_flow_tools import Platform, answer, call
 
 
 @pytest.fixture(autouse=True)
@@ -35,10 +35,10 @@ class Progress(MemoryRunStore):
 
 
 class Jobs(Platform):
-    def __init__(self, settings=SETTINGS) -> None:
+    def __init__(self, settings=SETTINGS, replies: list[str] | None = None) -> None:
         self.connector = fake_connector.JobConnector()
         server = self.connector.build()
-        super().__init__([], settings=settings)
+        super().__init__(replies or [], settings=settings)
         self.store = Progress()
         self.service._store = self.store
         tools = self.service._ctx.tools
@@ -216,6 +216,80 @@ async def test_a_run_cancelled_elsewhere_stops_its_job():
         await p.service.wait_idle()
         assert p.connector.cancelled == ["j1"]
         assert (await p.api.get(f"/runs/{run_id}")).json()["status"] == "cancelled"
+
+
+async def started_run(p: Jobs, app_name: str) -> str:
+    """A run of the app whose job has been asked about twice."""
+    resp = await p.api.post("/runs", json={"app": app_name, "input": {"name": "a"}})
+    run_id = resp.json()["run_id"]
+    while p.connector.status_calls < 2:
+        await asyncio.sleep(0.005)
+    return run_id
+
+
+async def test_a_cancelled_run_is_not_retried_by_the_node():
+    async with Jobs() as p:
+        flow = render_flow(p.render, args={"name": "{{start.name}}", "steps": 10**6})
+        flow["graph"]["nodes"][1]["on_error"] = {
+            "retry": {"max": 2, "interval_seconds": 0},
+            "then": "default",
+            "default": {"result": "没渲染"},
+        }
+        await p.new_app("video", flow)
+        run_id = await started_run(p, "video")
+        await p.store.set_status(run_id, "cancelled", "不要了", expected=("running",))
+        await p.service.wait_idle()
+        run = (await p.api.get(f"/runs/{run_id}")).json()
+        assert (run["status"], run["error"]) == ("cancelled", "不要了")
+        # No new job for a retry, and the default was not used either.
+        assert p.connector.started == 1 and p.connector.cancelled == ["j1"]
+        assert run["result"] is None
+
+
+async def test_an_agent_stops_when_its_run_is_cancelled():
+    replies = [call("t1", name="a", steps=10**6), answer("渲染好了")]
+    async with Jobs(replies=replies) as p:
+        flow = render_flow(p.render)
+        flow["graph"]["nodes"][1] = {
+            "id": "render",
+            "type": "agent",
+            "title": "剪辑渲染",
+            "model": None,
+            "skills": [],
+            "task": "把 {{start.name}} 渲染出来",
+            "tools": [{"datasource": p.render, "tools": ["render"]}],
+            "max_steps": 4,
+        }
+        flow["graph"]["nodes"][2]["outputs"] = [{"key": "out", "from": ["{{render.text}}"]}]
+        await p.new_app("video", flow)
+        run_id = await started_run(p, "video")
+        await p.store.set_status(run_id, "cancelled", "不要了", expected=("running",))
+        await p.service.wait_idle()
+        assert (await p.api.get(f"/runs/{run_id}")).json()["status"] == "cancelled"
+        assert p.connector.cancelled == ["j1"]
+        # The agent did not go back to its model with the cancel as a tool error.
+        assert len(p.gateway.requests) == 1
+
+
+async def test_a_stopping_process_leaves_the_job_for_the_next_start():
+    async with Jobs() as p:
+        args = {"name": "{{start.name}}", "steps": 6}
+        await p.new_app("video", render_flow(p.render, args=args))
+        run_id = await started_run(p, "video")
+        # The process stops: its runs' tasks are cancelled, the runs stay running.
+        p.service._running[run_id].cancel()
+        await p.service.wait_idle()
+        assert p.connector.cancelled == []
+        assert (await p.service.get(run_id)).record.status == "running"
+
+        assert await p.service.recover() == 1
+        await p.service.wait_idle()
+        run = (await p.api.get(f"/runs/{run_id}")).json()
+        assert run["status"] == "done", run["error"]
+        assert run["result"]["out"] == {"file": "a.mp4"}
+        # The node ran again with the same key and picked its job up.
+        assert len(p.connector.keys) == 2 and len(set(p.connector.keys)) == 1
+        assert p.connector.started == 1
 
 
 async def test_job_keys_differ_by_visit_and_arguments():

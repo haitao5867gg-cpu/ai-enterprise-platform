@@ -32,6 +32,7 @@ from aep.runtime.design import NodeDesign
 from aep.runtime.flow import refs
 from aep.runtime.flow.check import DEFAULT_MAX_VISITS, branches
 from aep.runtime.flow.nodes import ERROR, INPUT_ERROR, TYPES, NodeFailure, Outcome, Runtime
+from aep.runtime.store import RunStopped
 
 # The branch key of an edge without a branch.
 NEXT = "next"
@@ -233,7 +234,7 @@ def _node_fn(node: dict[str, Any], rt: Runtime) -> Any:
                 extra[key] = configurable[key]
         try:
             outcome = await execute(node, {**state, **extra}, rt)
-        except (GraphBubbleUp, FlowError):
+        except (GraphBubbleUp, FlowError, RunStopped):
             raise
         except Exception as exc:
             raise FlowError(node, str(exc) or type(exc).__name__) from exc

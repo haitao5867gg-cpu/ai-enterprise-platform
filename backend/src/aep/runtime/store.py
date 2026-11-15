@@ -91,6 +91,12 @@ class TurnTaken(Exception):
     """Another run already is that turn of the conversation."""
 
 
+class RunStopped(Exception):
+    """The run was cancelled: raised at a node boundary, or by a node whose long job saw
+    the cancel (docs/api/connector-jobs.md), to stop the run there. Nothing in the node
+    handles it as a failure (no retry, no default, no error branch)."""
+
+
 class RunStore(Protocol):
     async def setup(self) -> None: ...
     async def create(

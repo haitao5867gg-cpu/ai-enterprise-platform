@@ -41,6 +41,7 @@ from aep.projects import project_value
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.runtime.flow.schema import input_schema
+from aep.runtime.store import RunStopped
 from aep.skills import SkillContent, SkillStore
 from aep.tools import jobs
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo, tool_message
@@ -411,7 +412,8 @@ class Runtime:
         except jobs.JobTimedOut as exc:
             raise NodeFailure("timeout", str(exc)) from exc
         except jobs.JobStopped as exc:
-            raise NodeFailure("tool_error", "运行已经取消，长任务也已取消") from exc
+            # Not a failure: the run stops here, past the node's on_error.
+            raise RunStopped(run_id) from exc
 
     def _watch(self, run_id: str, node_id: str) -> jobs.Watch:
         report, cancelled = self.report_progress, self.run_cancelled

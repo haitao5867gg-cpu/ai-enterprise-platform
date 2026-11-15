@@ -49,7 +49,8 @@ class JobTimedOut(Exception):
 
 
 class JobStopped(Exception):
-    """The run was cancelled (seen from another process) while the job ran."""
+    """The run was cancelled (seen from another process) while the job ran; the job is
+    cancelled too. The caller stops the run, not just the node."""
 
 
 @dataclass(frozen=True)
@@ -155,10 +156,23 @@ async def follow(
             unreachable_since = None
             job = parse(reply)
     except anyio.get_cancelled_exc_class():
-        # The run was cancelled in this process: tell the connector, then stop.
+        # The run was cancelled in this process, or the process is stopping. Only a
+        # cancelled run's job is cancelled: after a restart the node runs again and picks
+        # its job up by its key. Without a run to ask, nothing will pick it up.
         with anyio.CancelScope(shield=True):
-            await _cancel(tools, url, job.job_id)
+            if watch.stopped is None or await _stopped(watch.stopped):
+                await _cancel(tools, url, job.job_id)
         raise
+
+
+async def _stopped(stopped: Callable[[], Awaitable[bool]]) -> bool:
+    """Whether the run was cancelled; False when that cannot be told in time."""
+    with anyio.move_on_after(CANCEL_SECONDS):
+        try:
+            return await stopped()
+        except Exception:  # noqa: BLE001 - an unanswered question is no cancel
+            return False
+    return False
 
 
 async def _cancel(tools: McpTools, url: str, job_id: str) -> None:

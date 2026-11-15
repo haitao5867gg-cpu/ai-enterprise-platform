@@ -68,7 +68,7 @@ from aep.runtime.flow.store import (
     SecretStore,
 )
 from aep.runtime.registry import AppBuilder, AppContext
-from aep.runtime.store import RunRecord, RunStatus, RunStore, TurnTaken
+from aep.runtime.store import RunRecord, RunStatus, RunStopped, RunStore, TurnTaken
 from aep.runtime.versions import AppVersionStore, MemoryAppVersionStore
 from aep.skills import MemorySkillStore, SkillStore
 
@@ -134,10 +134,6 @@ class NotRetryable(Exception):
 
 class NotFailed(NotRetryable):
     """The run is not failed (any more): someone may have retried it already."""
-
-
-class RunStopped(Exception):
-    """The run was cancelled; raised at a node boundary to stop it there."""
 
 
 class NotConversable(Exception):
