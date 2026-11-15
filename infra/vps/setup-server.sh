@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 新装的 Debian 12 上以 root 运行一次（infra/vps/README.md 第 2 步）：
+# 新装的 Debian 12 或 Ubuntu 24.04 上以 root 运行一次（infra/vps/README.md 第 2 步）：
 #   建部署用户 aep（沿用 root 的 SSH 公钥）、关闭密码登录、防火墙只开 22/80/443、
 #   加 4G 交换区、装 Docker 并限制容器日志大小、开启自动安全更新和 fail2ban。
 # 前提：已经在自己电脑上 ssh-copy-id 过，root 能用密钥登录。可以重复运行。
@@ -8,7 +8,10 @@ trap 'echo "✗ 第 $LINENO 行出错，脚本停止。把上面的输出贴出�
 
 [ "$(id -u)" -eq 0 ] || { echo "✗ 请用 root 运行"; exit 1; }
 . /etc/os-release
-[ "${ID:-}" = debian ] || echo "! 只在 Debian 12 上验证过，当前是 ${PRETTY_NAME:-未知系统}"
+case "${ID:-}" in
+  debian|ubuntu) ;;
+  *) echo "✗ 只支持 Debian 和 Ubuntu，当前是 ${PRETTY_NAME:-未知系统}"; exit 1 ;;
+esac
 if ! grep -qsE '^(ssh-|ecdsa-|sk-)' /root/.ssh/authorized_keys; then
   echo "✗ /root/.ssh/authorized_keys 里没有公钥。先在自己电脑上运行："
   echo "    ssh-copy-id root@<VPS 的 IP>"
@@ -21,8 +24,11 @@ SWAP_SIZE=${SWAP_SIZE:-4G}
 
 echo "== 系统更新和基础软件"
 export DEBIAN_FRONTEND=noninteractive
+# Ubuntu 的 needrestart 装完软件会问重启哪些服务：自动重启，不停下来问。
+export NEEDRESTART_MODE=a
 apt-get update -q
-apt-get upgrade -yq
+# 配置文件有新版本时保留本机改过的，不停下来问。
+apt-get upgrade -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
 apt-get install -yq ca-certificates curl git make ufw fail2ban unattended-upgrades openssl sudo
 
 echo "== 交换区 $SWAP_SIZE（4G 内存构建镜像时需要）"
@@ -60,6 +66,8 @@ CONF
 # 有的 VPS 镜像改过 sshd_config，去掉了读 sshd_config.d 的那一行。
 grep -qE '^Include /etc/ssh/sshd_config.d/' /etc/ssh/sshd_config \
   || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
+# Ubuntu 24.04 的 sshd 由 ssh.socket 按需拉起，升级后没在运行时 /run/sshd 不存在，sshd -t 会报错。
+install -d -m 755 /run/sshd
 sshd -t
 # 生效前先核对（sshd -T 读的是配置文件）：公钥登录没打开就撤回，不关密码，免得锁在外面。
 # 先存下再 grep：pipefail 下 grep -q 提前退出会让 sshd 收到 SIGPIPE，整条管道算失败。
@@ -70,7 +78,8 @@ if ! grep -qi '^pubkeyauthentication yes' <<<"$effective"; then
   grep -rn -Ei "match|pubkey|authenticationmethods|include" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ || true
   exit 1
 fi
-systemctl reload ssh
+# 没在运行（Ubuntu 按需拉起）时 reload 会失败，这时直接启动。
+systemctl reload-or-restart ssh
 grep -qi '^passwordauthentication no' <<<"$(sshd -T)" || echo "! 密码登录没有关掉，请检查 /etc/ssh/sshd_config"
 
 echo "== 防火墙：22、80、443"
@@ -83,16 +92,16 @@ ufw allow 443/udp
 ufw --force enable
 
 echo "== fail2ban 和自动安全更新"
-systemctl enable --now fail2ban
+systemctl enable --now fail2ban || echo "! fail2ban 没有起来，跳过（不影响部署）"
 dpkg-reconfigure -f noninteractive unattended-upgrades
 
 echo "== Docker"
 if ! command -v docker >/dev/null; then
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+  curl -fsSL https://download.docker.com/linux/${ID}/gpg -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc]" \
-    "https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+    "https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
     > /etc/apt/sources.list.d/docker.list
   apt-get update -q
   apt-get install -yq docker-ce docker-ce-cli containerd.io docker-buildx-plugin \

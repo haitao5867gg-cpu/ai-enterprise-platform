@@ -21,3 +21,6 @@ evals/reports/
 infra/vps/auth.caddy
 # VPS: this server's own extra Caddy routes (infra/vps/README.md)
 infra/vps/sites/*.caddy
+# Runtime install (infra/runtime/README.md): the external app's own services and routes
+infra/runtime/compose.app.yml
+infra/runtime/sites/*.caddy

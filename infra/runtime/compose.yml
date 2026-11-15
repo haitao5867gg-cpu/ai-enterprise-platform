@@ -1,0 +1,186 @@
+# 运行包（AEP_MODE=runtime）的单机安装（infra/runtime/README.md）。在仓库根目录：
+#   bash infra/runtime/install.sh
+# 它用的是这个文件：docker compose -f infra/runtime/compose.yml ...
+# 和平台同一套镜像，只起运行流程要的服务：数据库、Redis、模型网关、API（运行模式）、
+# 代码沙箱和对外的 Caddy。没有平台页面、示例源库、Langfuse。
+# 外部应用自己的服务（页面、连接器）写在 infra/runtime/compose.app.yml（不进仓库），
+# install.sh 发现它就一起启动，和这里的服务在同一个网络上。
+name: aep-runtime
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # 对外唯一入口：自动 HTTPS，只转发 /v1 和 /mcp/apps（只认应用的 API 密钥，
+  # docs/api/app-access.md）。装包、绑定、自检这些管理接口只在本机 127.0.0.1:8000。
+  caddy:
+    <<: *restart
+    image: caddy:2.10-alpine
+    environment:
+      AEP_DOMAIN: ${AEP_DOMAIN:?在 infra/runtime/.env 里设置 AEP_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 外部应用自己加的路由（infra/runtime/sites/*.caddy，不进仓库），比如它的页面。
+      - ./sites:/etc/caddy/sites:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    <<: *restart
+    build: ../../backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AEP_MODE: runtime
+      AEP_ENV: runtime
+      AEP_DATABASE_URL: postgresql://aep:${POSTGRES_PASSWORD:?}@postgres:5432/aep
+      AEP_REDIS_URL: redis://redis:6379/0
+      AEP_LLM_GATEWAY_URL: http://litellm:4000
+      AEP_LLM_GATEWAY_KEY: ${LITELLM_MASTER_KEY:?}
+      AEP_UPLOADS_DIR: /data/uploads
+      AEP_MEDIA_DIR: /data/media
+      AEP_SANDBOX_URL: http://sandbox-relay:8004/mcp
+      AEP_WEB_URL: https://${AEP_DOMAIN}
+    volumes:
+      - uploads:/data/uploads
+      - media-data:/data/media
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+      sandbox-relay:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
+  # 外部应用自己的模型网关：别名（company、vision 等）在 infra/litellm/config.yaml，
+  # 地址和 key 在 .env，平台不经手。
+  litellm:
+    <<: *restart
+    build: ../litellm
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?}
+      # 每个别名的模型 id 都要有值，没配 key 的别名只是调不通（同根目录 docker-compose.yml）。
+      OPENAI_MODEL: ${OPENAI_MODEL:-openai/gpt-5}
+      AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-azure/gpt-5}
+      AZURE_API_VERSION: ${AZURE_API_VERSION:-2025-04-01-preview}
+      BEDROCK_CLAUDE_MODEL: ${BEDROCK_CLAUDE_MODEL:-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0}
+      AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
+      QWEN_MODEL: ${QWEN_MODEL:-dashscope/qwen-plus}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek/deepseek-chat}
+      COMPANY_MODEL: ${COMPANY_MODEL:-openai/deepseek-v4.1-flash-new}
+      COMPANY_QWEN_MODEL: ${COMPANY_QWEN_MODEL:-openai/qwen3.8-max}
+      COMPANY_EMBED_MODEL: ${COMPANY_EMBED_MODEL:-openai/text-embedding-v4}
+      COMPANY_RERANK_MODEL: ${COMPANY_RERANK_MODEL:-hosted_vllm/gte-rerank-v2}
+      DATABASE_URL: postgresql://aep:${POSTGRES_PASSWORD:?}@postgres:5432/litellm
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    <<: *restart
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: aep
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: aep
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aep -d aep"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    <<: *restart
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # 代码节点的 Python 只在这里跑：独自在内部网络上，不能上网，没有数据库和 API。
+  # API 经 sandbox-relay 访问它（connectors/sandbox/README.md）。
+  connector-sandbox:
+    <<: *restart
+    build: ../../connectors/sandbox
+    environment:
+      AEP_SANDBOX_MCP_HOST: 0.0.0.0
+      AEP_SANDBOX_MCP_PORT: 8004
+    networks:
+      - sandbox
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  sandbox-relay:
+    <<: *restart
+    build: ../../connectors/sandbox
+    command: ["aep-sandbox-relay"]
+    networks:
+      - default
+      - sandbox
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      connector-sandbox:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+networks:
+  sandbox:
+    internal: true
+
+volumes:
+  postgres-data:
+  uploads:
+  media-data:
+  caddy-data:
+  caddy-config:
