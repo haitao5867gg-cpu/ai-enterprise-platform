@@ -346,9 +346,7 @@ async def test_connection_problems_are_categories_only(platform, host, code):
     )
 
     result = resp.json()
-    assert result["problems"] == [
-        {"code": code, "message": PROBLEM_TEXT[code].format(seconds="2")}
-    ]
+    assert result["problems"] == [{"code": code, "message": PROBLEM_TEXT[code].format(seconds="2")}]
     assert result["problems"][0]["message"].startswith(CONNECTION_WORDS[code])
     assert result["latency_ms"] is None and result["tools"] == []
     for raw in ("http://", "connector.test", "Errno", "MCPError", "All connection", "Unexpected"):
