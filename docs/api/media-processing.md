@@ -171,15 +171,14 @@
 
 ## 平台这边
 
-这一节由下一个 PR 实现（连接器先合并）。
-
 ### 上传后探测
 
-平台设了 `AEP_MEDIA_CONNECTOR_URL`（编排里是 `http://connector-media:8008/mcp`）时，上传的素材先是 `processing`。平台后台挨个调 `probe`（带 `thumbnail: true`），写上 `duration_seconds`、`width`、`height`、`orientation` 和缩略图，变成 `ready`。
+平台设了 `AEP_MEDIA_CONNECTOR_URL`（平台编排和运行包里都是 `http://connector-media:8008/mcp`）时，上传的素材（平台页面和 `/v1` 都算）先是 `processing`。平台后台按上传先后挨个调 `probe`（视频和图片带 `thumbnail: true`），写上 `duration_seconds`、`width`、`height`（`orientation` 由宽高得出）和缩略图，变成 `ready`。
 
 - `probe` 报工具错误：素材变成 `error`，`error` 是「探测失败：」加上原因，比如「探测失败：不是有效的视频：…」。
 - 连不上连接器：素材留在 `processing`，过一分钟再试。平台重启后接着探测没做完的素材。
 - 没设 `AEP_MEDIA_CONNECTOR_URL`：同现在，上传后直接 `ready`，没有时长和宽高。
+- 还在 `processing` 的素材不能做运行的素材输入（422，[media.md](media.md)“素材输入”）。外部页面经 `/v1` 上传后，轮询素材详情，等到 `ready` 再发起运行，一般一两秒。
 
 ### 缩略图
 
@@ -188,7 +187,7 @@
 - `GET /media-libraries/{library_id}/items/{item_id}/thumbnail` → JPG；没有时 404「这个素材没有缩略图」。
 - `/v1/apps/{app}/media-libraries/{library_id}/items/{item_id}/thumbnail`：规则同 `/v1` 下载素材。
 
-缩略图存在平台自己的目录里，和素材一起删。页面上的视频卡片先显示缩略图，点开再播放。
+缩略图在媒体卷上这个库的 `_thumbnails/<item_id>.jpg`，和素材一起删。页面上的视频卡片先显示缩略图，点开再播放。
 
 ### 产出的文件存进媒体库
 
@@ -214,12 +213,14 @@
 
 没设 `save_media` 时，结果原样交给后面的节点，文件引用还指着工作文件，24 小时后被删。抽的帧一般这样用。
 
+单节点测试不是运行，不存库，结果原样。
+
 智能体节点调工具时，结果里的文件引用不存库，原样给模型看。
 
 ## 本地编排和运行包
 
 - `docker-compose.yml` 和 `infra/runtime/compose.yml` 加 `connector-media`，挂 `media-data` 卷。平台编排的 `AEP_DEFAULT_DATASOURCES` 加「媒体处理」。
-- 平台这边的 PR 再给两边的 API 设 `AEP_MEDIA_CONNECTOR_URL`。这个地址和文件连接器一样总是允许（[datasources.md](datasources.md)“白名单”），所以运行包不用改 `AEP_CONNECTOR_HOSTS` 就能绑定它。
+- 两边的 API 都设了 `AEP_MEDIA_CONNECTOR_URL`。这个地址和文件连接器一样总是允许（[datasources.md](datasources.md)“白名单”），所以运行包不用改 `AEP_CONNECTOR_HOSTS` 就能绑定它。
 
 ## 测试
 
@@ -234,7 +235,7 @@
 
 - 上传后探测：`processing` 变成 `ready`，写上时长和宽高；探测报错时变成 `error`；连不上时留在 `processing`，恢复后探测完；没配连接器时直接 `ready`。
 - 缩略图：平台和 `/v1` 都能下载，没有时 404，删素材时一起删。
-- `save_media`：保存时检查库的权限；结果里的引用换成素材摘要，`source.kind` 为 `run`；路径不在 `_work`、软链接、扩展名不对、超过大小时整批不存，节点以 `tool_error` 失败；节点重新执行不重复存；没设时结果原样；`/v1` 的 `files` 和 `GET /runs/{id}/media` 列出存进的素材。
+- `save_media`：保存时检查库的权限；结果里的引用换成素材摘要，`source.kind` 为 `run`；路径不在 `_work`、软链接、扩展名不对、空文件、超过大小、超过个数时整批不存，节点以 `tool_error` 失败；节点重新执行不重复存；单节点测试不存；存的时候连不上连接器就直接 `ready`；`/v1` 的 `files` 和 `GET /runs/{id}/media` 列出存进的素材。
 
 ## 以后
 

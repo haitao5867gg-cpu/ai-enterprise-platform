@@ -71,6 +71,10 @@ class MediaItem:
     usable: bool = True
     source: dict[str, Any] = field(default_factory=lambda: {"kind": "upload"})
     uploaded_by: str | None = None
+    # A JPG next to the item, made when it was probed (docs/api/media-processing.md).
+    has_thumbnail: bool = False
+    # A file a run's tool made, saved once per run and work file (save_media).
+    import_key: str | None = None
     tenant_id: str = DEFAULT_TENANT
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
@@ -109,7 +113,7 @@ def _newest_first(item: MediaItem) -> tuple[float, str]:
 
 
 ITEM_FIELDS = ("description", "tags", "usable", "source")
-PROBE_FIELDS = ("status", "error", "duration_seconds", "width", "height")
+PROBE_FIELDS = ("status", "error", "duration_seconds", "width", "height", "has_thumbnail")
 
 
 class MediaStore(Protocol):
@@ -133,6 +137,8 @@ class MediaStore(Protocol):
     async def run_items(
         self, run_id: str, library_ids: list[str], limit: int
     ) -> list[MediaItem]: ...
+    async def processing(self, limit: int) -> list[MediaItem]: ...
+    async def imported(self, library_id: str, import_key: str) -> MediaItem | None: ...
 
 
 class DuplicateId(Exception):
@@ -256,6 +262,20 @@ class MemoryMediaStore:
         ]
         return sorted(found, key=lambda i: (i.created_at, i.name))[:limit]
 
+    async def processing(self, limit: int) -> list[MediaItem]:
+        found = [i for i in self._items.values() if i.status == "processing"]
+        return sorted(found, key=lambda i: (i.created_at, i.name))[:limit]
+
+    async def imported(self, library_id: str, import_key: str) -> MediaItem | None:
+        return next(
+            (
+                i
+                for i in self._items.values()
+                if i.library_id == library_id and i.import_key == import_key
+            ),
+            None,
+        )
+
 
 def _made_by(item: MediaItem, run_id: str) -> bool:
     return item.source.get("kind") == "run" and item.source.get("run_id") == run_id
@@ -302,6 +322,13 @@ CREATE TABLE IF NOT EXISTS media_items (
     # The files a run made (docs/api/media.md, 结果里的文件).
     "CREATE INDEX IF NOT EXISTS media_items_run ON media_items ((source->>'run_id'))"
     " WHERE source->>'kind' = 'run'",
+    # Thumbnails and files saved from a run's tools (docs/api/media-processing.md).
+    "ALTER TABLE media_items ADD COLUMN IF NOT EXISTS has_thumbnail boolean NOT NULL DEFAULT false",
+    "ALTER TABLE media_items ADD COLUMN IF NOT EXISTS import_key text",
+    "CREATE INDEX IF NOT EXISTS media_items_import ON media_items (library_id, import_key)"
+    " WHERE import_key IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS media_items_processing ON media_items (created_at)"
+    " WHERE status = 'processing'",
 ]
 
 LIBRARY_COLUMNS = (
@@ -316,7 +343,7 @@ LIBRARY_COUNTS = """
 ITEM_COLUMNS = (
     "item_id::text, library_id::text, name, kind, size_bytes, rel_path, status, error,"
     " duration_seconds, width, height, description, tags, usable, source, uploaded_by,"
-    " tenant_id, created_at, updated_at"
+    " has_thumbnail, import_key, tenant_id, created_at, updated_at"
 )
 
 
@@ -449,8 +476,9 @@ class PostgresMediaStore:
                 cur = await conn.execute(
                     "INSERT INTO media_items (item_id, library_id, name, kind, size_bytes,"
                     " rel_path, status, error, duration_seconds, width, height, description,"
-                    " tags, usable, source, uploaded_by)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    " tags, usable, source, uploaded_by, has_thumbnail, import_key)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
+                    " %s, %s)"
                     f" RETURNING {ITEM_COLUMNS}",
                     (
                         uuid.UUID(item.item_id),
@@ -469,6 +497,8 @@ class PostgresMediaStore:
                         item.usable,
                         Jsonb(item.source),
                         item.uploaded_by,
+                        item.has_thumbnail,
+                        item.import_key,
                     ),
                 )
                 added.append(_item(await cur.fetchone()))
@@ -574,3 +604,25 @@ class PostgresMediaStore:
                 (DEFAULT_TENANT, run_id, keys, limit),
             )
             return [_item(row) for row in await cur.fetchall()]
+
+    async def processing(self, limit: int) -> list[MediaItem]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {ITEM_COLUMNS} FROM media_items WHERE tenant_id = %s"
+                " AND status = 'processing' ORDER BY created_at, name LIMIT %s",
+                (DEFAULT_TENANT, limit),
+            )
+            return [_item(row) for row in await cur.fetchall()]
+
+    async def imported(self, library_id: str, import_key: str) -> MediaItem | None:
+        key = _uuid(library_id)
+        if key is None:
+            return None
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {ITEM_COLUMNS} FROM media_items WHERE library_id = %s"
+                " AND tenant_id = %s AND import_key = %s LIMIT 1",
+                (key, DEFAULT_TENANT, import_key),
+            )
+            row = await cur.fetchone()
+            return _item(row) if row else None

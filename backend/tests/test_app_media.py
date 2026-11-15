@@ -30,11 +30,13 @@ class Media(Platform):
     """The tools-test platform with two media libraries, files on a temporary disk and
     API keys."""
 
-    def __init__(self, tmp_path: Path) -> None:
-        super().__init__([])
+    def __init__(
+        self, tmp_path: Path, servers: dict[str, Any] | None = None, **settings: Any
+    ) -> None:
         self.settings = SETTINGS.model_copy(
-            update={"media_dir": tmp_path / "media", "media_max_file_mb": 1}
+            update={"media_dir": tmp_path / "media", "media_max_file_mb": 1, **settings}
         )
+        super().__init__([], servers, self.settings)
         self.media = self.service.media
         self.keys = ApiKeys(MemoryApiKeyStore())
         self.app = app

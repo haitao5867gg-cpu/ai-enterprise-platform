@@ -39,8 +39,10 @@ from aep.media.files import (
     remove_files,
     remove_library,
     save_files,
+    thumbnail_path,
     validate_files,
 )
+from aep.media.probe import Prober
 from aep.media.store import (
     DuplicateName,
     ItemLimit,
@@ -67,6 +69,12 @@ router = APIRouter(prefix="/media-libraries", tags=["media"], route_class=chines
 
 def get_store(request: Request) -> MediaStore:
     return request.app.state.media
+
+
+def get_prober(request: Request) -> Prober | None:
+    """Probes uploads when the media processing connector is set; None otherwise."""
+    prober = getattr(request.app.state, "media_prober", None)
+    return prober if prober is not None and prober.enabled else None
 
 
 Store = Annotated[MediaStore, Depends(get_store)]
@@ -154,6 +162,7 @@ class ItemOut(BaseModel):
     usable: bool
     source: Source
     uploaded_by: str | None
+    has_thumbnail: bool
     created_at: datetime
     updated_at: datetime
 
@@ -207,6 +216,7 @@ def item_out(item: MediaItem) -> ItemOut:
         usable=item.usable,
         source=_source(item.source),
         uploaded_by=item.uploaded_by,
+        has_thumbnail=item.has_thumbnail,
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -308,7 +318,14 @@ async def upload_items(
 ) -> list[ItemOut]:
     library = await _library(store, library_id)
     return await upload(
-        store, settings, library, files, description, tags, who(request, uploaded_by)
+        store,
+        settings,
+        library,
+        files,
+        description,
+        tags,
+        who(request, uploaded_by),
+        get_prober(request),
     )
 
 
@@ -320,8 +337,10 @@ async def upload(
     description: str | None,
     tags: str | None,
     uploaded_by: str | None,
+    prober: Prober | None = None,
 ) -> list[ItemOut]:
-    """Check a whole batch, then save it into the library (also the app API's upload)."""
+    """Check a whole batch, then save it into the library (also the app API's upload).
+    With a ``prober`` the items start ``processing`` and are probed in the background."""
     if not files:
         raise HTTPException(422, "请选择至少一个视频、音频或图片文件")
     if len(files) > MAX_FILES:
@@ -339,6 +358,7 @@ async def upload(
             description=(description or "").strip(),
             tags=labels,
             uploaded_by=uploaded_by,
+            status="processing" if prober is not None else "ready",
         )
     except UploadError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -358,6 +378,8 @@ async def upload(
     finally:
         if not registered:
             await asyncio.to_thread(remove_files, items, settings.media_dir)
+    if prober is not None:
+        prober.kick()
     return [item_out(item) for item in added]
 
 
@@ -399,3 +421,14 @@ async def item_file(library_id: str, item_id: str, store: Store, settings: Confi
         media_type=media_type(item.name),
         headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(item.name, safe='')}"},
     )
+
+
+@router.get("/{library_id}/items/{item_id}/thumbnail")
+async def item_thumbnail(
+    library_id: str, item_id: str, store: Store, settings: Config
+) -> FileResponse:
+    item = await _item(store, library_id, item_id)
+    path = thumbnail_path(settings.media_dir, item)
+    if not item.has_thumbnail or not await asyncio.to_thread(path.is_file):
+        raise HTTPException(404, "这个素材没有缩略图")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})

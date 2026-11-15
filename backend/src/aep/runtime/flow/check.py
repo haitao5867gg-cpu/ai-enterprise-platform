@@ -331,6 +331,8 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
     for node in by_id.values():
         if node["type"] == "start":
             flowmedia.check_inputs(node, (media or {}).get("libraries", []), add)
+        elif node["type"] == "tool":
+            flowmedia.check_saves(node, (media or {}).get("libraries", []), add)
     chat = conversation is not None and conversation["enabled"] is True
     for node_id, node in by_id.items():
         if node.get("history") is True and not chat:

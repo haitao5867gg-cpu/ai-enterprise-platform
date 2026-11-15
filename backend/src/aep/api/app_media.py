@@ -96,7 +96,14 @@ async def upload_items(
     library = await _bound(request, app, library_id, write=True)
     name = request.state.api_key.name
     return await media.upload(
-        _store(request), settings, library, files, description, tags, f"API：{name}"
+        _store(request),
+        settings,
+        library,
+        files,
+        description,
+        tags,
+        f"API：{name}",
+        media.get_prober(request),
     )
 
 
@@ -128,3 +135,11 @@ async def item_file(
 ) -> FileResponse:
     await _bound(request, app, library_id)
     return await media.item_file(library_id, item_id, _store(request), settings)
+
+
+@router.get("/{library_id}/items/{item_id}/thumbnail")
+async def item_thumbnail(
+    app: str, library_id: str, item_id: str, request: Request, settings: Config
+) -> FileResponse:
+    await _bound(request, app, library_id)
+    return await media.item_thumbnail(library_id, item_id, _store(request), settings)

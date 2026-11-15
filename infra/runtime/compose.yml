@@ -47,6 +47,8 @@ services:
       AEP_LLM_GATEWAY_KEY: ${LITELLM_MASTER_KEY:?}
       AEP_UPLOADS_DIR: /data/uploads
       AEP_MEDIA_DIR: /data/media
+      # 上传的素材由媒体处理连接器探测、出缩略图（docs/api/media-processing.md）。
+      AEP_MEDIA_CONNECTOR_URL: http://connector-media:8008/mcp
       AEP_SANDBOX_URL: http://sandbox-relay:8004/mcp
       AEP_WEB_URL: https://${AEP_DOMAIN}
     volumes:

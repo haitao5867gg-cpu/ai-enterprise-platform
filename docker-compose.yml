@@ -368,6 +368,8 @@ services:
       AEP_KNOWLEDGE_DIR: /data/knowledge
       # Media libraries' files (docs/api/media.md).
       AEP_MEDIA_DIR: /data/media
+      # Uploads are probed and get thumbnails there (docs/api/media-processing.md).
+      AEP_MEDIA_CONNECTOR_URL: ${AEP_MEDIA_CONNECTOR_URL:-http://connector-media:8008/mcp}
       AEP_FILES_CONNECTOR_URL: ${AEP_FILES_CONNECTOR_URL:-http://connector-files:8003}
       AEP_SANDBOX_URL: ${AEP_SANDBOX_URL:-http://sandbox-relay:8004/mcp}
       # The assets repository's pull requests go through the Git connector (docs/api/git.md).
