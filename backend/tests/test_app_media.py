@@ -205,6 +205,12 @@ async def test_binding_and_media_inputs_are_checked_when_saved(tmp_path):
             "只有开始节点的输入可以是素材"
         )
 
+        # Malformed inputs are reported, not a server error.
+        for inputs in ([None], 42):
+            broken = copy.deepcopy(good)
+            broken["graph"]["nodes"][0]["inputs"] = inputs
+            assert await problems(p, broken)
+
 
 async def test_a_media_input_takes_an_item_and_puts_out_its_summary(tmp_path):
     async with Media(tmp_path) as p:
@@ -227,6 +233,13 @@ async def test_a_media_input_takes_an_item_and_puts_out_its_summary(tmp_path):
         assert run["result"]["said"].startswith('配音是 {"item_id": "')
         # The run keeps the id it was given.
         assert run["input"] == {"voiceover": voice.item_id}
+
+        # An optional media input left blank stays empty.
+        await p.new_app("maybe", coach_flow(p.voices, p.footage, required=False))
+        for blank in ("", "  "):
+            run = await p.run("maybe", {"voiceover": blank})
+            assert run["status"] == "done", run["error"]
+            assert run["result"]["voice"] == ""
 
 
 async def test_what_a_media_input_refuses(tmp_path):
@@ -499,3 +512,20 @@ async def test_a_runtime_makes_the_libraries_a_package_binds():
     assert "媒体库「教练素材」" in (await m.runtime.ready("coach") or "")
     # Installing the same package again changes nothing; a new install would make it again.
     assert (await m.install(package)).status_code == 200
+
+
+async def test_a_long_library_name_keeps_the_part_that_tells_them_apart():
+    long_name = "教练" * 25
+    async with Packaging() as p:
+        voices = (await p.service.media.create_library(long_name)).library_id
+        footage = (await p.service.media.create_library("教练素材")).library_id
+        await p.new_app("coach", coach_flow(voices, footage))
+        package = (await p.api.get("/apps/coach/versions/2/package")).json()
+
+    m = Machine()
+    await m.service.media.create_library(long_name)
+    resp = await m.install(package)
+    assert resp.status_code == 201, resp.text
+    names = {lib.library_id: lib.name for lib in await m.service.media.libraries()}
+    assert names[voices] == long_name[:43] + "（coach）"
+    assert len(names[voices]) == 50

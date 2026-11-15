@@ -436,7 +436,14 @@ class Runtime:
         if await store.library(library.library_id) is not None:
             return
         name = (library.name or f"媒体库 {library.library_id[:8]}")[:MAX_LIBRARY_NAME]
-        for candidate in (name, f"{name}（{app}）", f"{name}（{app} {library.library_id[:8]}）"):
+        for suffix in (
+            "",
+            f"（{app}）",
+            f"（{app} {library.library_id[:8]}）",
+            f"（{library.library_id}）",
+        ):
+            # The base gives way so the part that tells the libraries apart is kept.
+            candidate = name[: max(1, MAX_LIBRARY_NAME - len(suffix))] + suffix
             try:
                 await store.create_library(
                     candidate[:MAX_LIBRARY_NAME], library_id=library.library_id

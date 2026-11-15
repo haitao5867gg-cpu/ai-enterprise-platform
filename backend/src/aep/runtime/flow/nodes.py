@@ -777,8 +777,11 @@ async def run_start(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     given = state.get("input") or {}
     values = {f["key"]: given.get(f["key"], f.get("default")) for f in fields}
     for f in fields:
-        if f.get("type") == flowmedia.MEDIA and isinstance(values[f["key"]], str):
-            values[f["key"]] = await _media_summary(f, values[f["key"]], rt)
+        value = values[f["key"]]
+        if f.get("type") != flowmedia.MEDIA or not isinstance(value, str):
+            continue
+        # An optional media input left blank stays empty, as the run's checks allowed.
+        values[f["key"]] = await _media_summary(f, value.strip(), rt) if value.strip() else ""
     text = _first_text(fields, values)
     said = {"role": "user", "content": text, "actor": state.get("requester")}
     return Outcome(values, messages=[said] if text else [])

@@ -79,8 +79,13 @@ async def check_binding(raw: Any, store: MediaStore | None, add: Add) -> dict[st
 def check_inputs(start: dict[str, Any], bound: list[dict[str, Any]], add: Add) -> None:
     """A start node's media inputs name libraries the app binds."""
     ids = {b["library_id"] for b in bound}
-    for i, f in enumerate(start.get("inputs") or []):
-        library = f.get("library") if isinstance(f, dict) else None
+    inputs = start.get("inputs")
+    if not isinstance(inputs, list):
+        return  # reported by the start node's own checks
+    for i, f in enumerate(inputs):
+        if not isinstance(f, dict):
+            continue
+        library = f.get("library")
         if f.get("type") == MEDIA and isinstance(library, str) and library and library not in ids:
             where: list[str | int] = ["graph", "nodes", start["id"], "inputs", i, "library"]
             add(where, "素材输入要选一个绑定到应用的媒体库")
