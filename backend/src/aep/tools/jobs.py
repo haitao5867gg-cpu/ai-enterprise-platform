@@ -145,19 +145,24 @@ async def follow(
                 await _time_out(tools, url, job.job_id, limit_seconds)
             seconds = min(call_seconds or tools.timeout_seconds, left)
             reply: Any = None
+            failure: Exception | None = None
             try:
                 reply = await tools.call(url, STATUS_TOOL, {"job_id": job.job_id}, seconds)
-            except ConnectorUnavailable:
+            except ConnectorUnavailable as exc:
                 now = time.monotonic()
                 unreachable_since = unreachable_since or now
                 if now - unreachable_since >= UNREACHABLE_SECONDS:
-                    raise
+                    failure = exc
             except ToolError as exc:
-                raise JobFailed(f"查任务进度失败：{_said(exc)}") from exc
-            # Asked after the call: a cancel wins over what the call answered, even done.
-            if watch.stopped is not None and await watch.stopped():
+                failure = JobFailed(f"查任务进度失败：{_said(exc)}")
+                failure.__cause__ = exc
+            # Asked after the call, whatever it came to: a cancel wins over its answer
+            # (even done) and over its error, so a cancelled run never meets error handling.
+            if watch.stopped is not None and await _stopped(watch.stopped):
                 await _cancel(tools, url, job.job_id)
                 raise JobStopped()
+            if failure is not None:
+                raise failure
             if reply is None:
                 continue
             unreachable_since = None

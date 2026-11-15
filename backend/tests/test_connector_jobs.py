@@ -312,6 +312,31 @@ async def test_a_cancel_wins_over_a_job_done_meanwhile():
         assert len(p.gateway.requests) == 1
 
 
+async def test_a_cancel_wins_over_a_status_call_that_failed_meanwhile():
+    async with Jobs() as p:
+        flow = render_flow(p.render, args={"name": "{{start.name}}", "steps": 10**6})
+        flow["graph"]["nodes"][1]["on_error"] = {
+            "retry": {"max": 2, "interval_seconds": 0},
+            "then": "default",
+            "default": {"result": "没渲染"},
+        }
+        await p.new_app("video", flow)
+        # The next status call fails, and the run is cancelled while it is in flight.
+        p.connector.slow = 0.3
+        p.connector.forget = True
+        resp = await p.api.post("/runs", json={"app": "video", "input": {"name": "a"}})
+        run_id = resp.json()["run_id"]
+        while p.connector.status_calls < 1:
+            await asyncio.sleep(0.005)
+        await p.store.set_status(run_id, "cancelled", "不要了", expected=("running",))
+        await p.service.wait_idle()
+        run = (await p.api.get(f"/runs/{run_id}")).json()
+        assert (run["status"], run["error"]) == ("cancelled", "不要了")
+        # Not retried as a failure: no second job, no default result.
+        assert p.connector.started == 1 and p.connector.cancelled == ["j1"]
+        assert run["result"] is None
+
+
 async def test_a_stopping_process_leaves_the_job_for_the_next_start():
     async with Jobs() as p:
         args = {"name": "{{start.name}}", "steps": 10**6}
