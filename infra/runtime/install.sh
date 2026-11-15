@@ -80,8 +80,11 @@ done
 echo "== 启动"
 "${DC[@]}" up -d --remove-orphans --wait --wait-timeout 900
 # Caddyfile 是挂载进去的，git pull 换成新文件后运行中的容器还看着旧的，要重启才能挂上。
+# 主文件没变时也让 Caddy 重新读一遍配置：sites/*.caddy 可能加了或改了。
 if [ "$("${DC[@]}" exec -T caddy cat /etc/caddy/Caddyfile | sha256sum)" != "$(sha256sum < infra/runtime/Caddyfile)" ]; then
   "${DC[@]}" restart caddy
+else
+  "${DC[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 fi
 docker image prune -f >/dev/null
 

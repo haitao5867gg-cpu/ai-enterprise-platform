@@ -67,9 +67,10 @@ case "$cmd" in
     [ $# -eq 2 ] || usage
     read -r -s -p "密钥 $2 的值（输入时不显示）: " value
     echo
-    # 经标准输入传给 curl，不出现在命令行里。
-    json value "$value" | call PUT "/apps/$1/secrets/$2" -H 'Content-Type: application/json' \
-      --data-binary @-
+    # 只经标准输入传给 python3 和 curl（printf 是内建命令），不出现在任何进程的参数里。
+    printf '%s' "$value" \
+      | python3 -c 'import json, sys; print(json.dumps({"value": sys.stdin.read()}))' \
+      | call PUT "/apps/$1/secrets/$2" -H 'Content-Type: application/json' --data-binary @-
     unset value
     echo "✓ 已保存"
     ;;
