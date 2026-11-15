@@ -1626,5 +1626,7 @@
   "这个输入没有选媒体库": "This input has no media library",
   "选一个媒体库": "Choose a library",
   "音频": "Audio",
-  "库里还没有能用的素材，请搭建者先上传。": "The library has nothing usable yet. Ask a builder to upload some."
+  "库里还没有能用的素材，请搭建者先上传。": "The library has nothing usable yet. Ask a builder to upload some.",
+  "还有 {n} 个素材没列出来。": "{n} more items aren't listed yet.",
+  "再列出一些": "List more"
 }

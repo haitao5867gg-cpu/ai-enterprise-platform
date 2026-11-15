@@ -72,6 +72,8 @@ export function mediaMeta(
     .join(" · ");
 }
 
+const PICK_PAGE = 50;
+
 // A start input of type media on the new-run page: pick an item of the input's library
 // (newest first, searchable), or upload one and use it.
 export function MediaPicker({
@@ -95,47 +97,74 @@ export function MediaPicker({
   // Uploading to a library is for builders (docs/api/auth.md); others only pick.
   const mayUpload = useMay("builder");
   const [query, setQuery] = useState("");
+  // The items that can be picked, and how far through the library's list they reach.
   const [items, setItems] = useState<MediaItem[] | null>(null);
+  const [read, setRead] = useState({ fetched: 0, total: 0 });
+  const [loadingMore, setLoadingMore] = useState(false);
   const [chosen, setChosen] = useState<MediaItem | null>(null);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
   const [revision, setRevision] = useState(0);
   const file = useRef<HTMLInputElement>(null);
   const abort = useRef<(() => void) | null>(null);
+  const listing = useRef<AbortController | null>(null);
+  // An upload ends after other inputs may have changed: use the form's latest handler.
+  const latestChange = useRef(onChange);
+  useEffect(() => {
+    latestChange.current = onChange;
+  });
   useEffect(() => () => abort.current?.(), []);
   const accepted = kinds?.length ? kinds : undefined;
   const oneKind = accepted?.length === 1 ? accepted[0] : undefined;
+  const pickable = (page: MediaItem[]) =>
+    page.filter(
+      (item) =>
+        (!accepted || accepted.includes(item.kind)) && item.status === "ready",
+    );
+  function fetchPage(offset: number) {
+    listing.current?.abort();
+    const controller = new AbortController();
+    listing.current = controller;
+    return listMediaItems(
+      library,
+      { q: query.trim(), kind: oneKind, limit: PICK_PAGE, offset },
+      controller.signal,
+    ).then(
+      (page) => {
+        if (controller.signal.aborted) return null;
+        setRead({ fetched: offset + page.items.length, total: page.total });
+        setError("");
+        return pickable(page.items);
+      },
+      (err) => {
+        if (controller.signal.aborted) return null;
+        throw err;
+      },
+    );
+  }
   useEffect(() => {
     if (!library) return;
-    const controller = new AbortController();
     const timer = setTimeout(() => {
-      listMediaItems(
-        library,
-        { q: query.trim(), kind: oneKind, limit: 50 },
-        controller.signal,
-      )
-        .then((page) => {
-          if (controller.signal.aborted) return;
-          setItems(
-            page.items.filter(
-              (item) =>
-                (!accepted || accepted.includes(item.kind)) &&
-                item.status === "ready",
-            ),
-          );
-          setError("");
-        })
-        .catch((err) => {
-          if (!controller.signal.aborted) setError(errorMessage(err));
-        });
+      fetchPage(0)
+        .then((found) => found && setItems(found))
+        .catch((err) => setError(errorMessage(err)));
     }, 250);
     return () => {
       clearTimeout(timer);
-      controller.abort();
+      listing.current?.abort();
+      setLoadingMore(false);
     };
     // `accepted` is derived from `kinds`; its text stands in for it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [library, query, oneKind, accepted?.join(","), revision]);
+  function loadMore() {
+    setLoadingMore(true);
+    fetchPage(read.fetched)
+      .then((found) => found && setItems((had) => [...(had ?? []), ...found]))
+      .catch((err) => setError(errorMessage(err)))
+      .finally(() => setLoadingMore(false));
+  }
+  const unread = Math.max(read.total - read.fetched, 0);
   // The chosen item, also when it is not in the list (copied from an earlier run).
   const listed = value
     ? items?.find((item) => item.item_id === value)
@@ -175,7 +204,7 @@ export function MediaPicker({
     job.done
       .then(([item]) => {
         setChosen(item);
-        onChange(item.item_id);
+        latestChange.current(item.item_id);
         setRevision((n) => n + 1);
       })
       .catch((err) => setError(errorMessage(err)))
@@ -242,7 +271,20 @@ export function MediaPicker({
           </>
         )}
       </div>
-      {items?.length === 0 && !query && (
+      {items !== null && unread > 0 && (
+        <p className="field-hint">
+          {t("还有 {n} 个素材没列出来。", { n: unread })}{" "}
+          <button
+            type="button"
+            className="text-button"
+            disabled={disabled || loadingMore}
+            onClick={loadMore}
+          >
+            {loadingMore ? t("正在加载…") : t("再列出一些")}
+          </button>
+        </p>
+      )}
+      {items?.length === 0 && !query && unread === 0 && (
         <p className="field-hint">
           {mayUpload
             ? t("库里还没有能用的素材，先上传一个。")

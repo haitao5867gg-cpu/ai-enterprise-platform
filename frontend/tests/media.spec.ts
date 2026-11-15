@@ -267,3 +267,84 @@ test("a flow app binds a library, its runs pick an item, and the run page lists 
     `/api/media-libraries/${library.library_id}/items/${voice.item_id}/file`,
   );
 });
+
+test("the run's media picker lists a big library page by page", async ({
+  page,
+  request,
+}) => {
+  const made = await request.post("/api/media-libraries", {
+    data: { name: unique("大库") },
+  });
+  expect(made.status(), await made.text()).toBe(201);
+  const library = (await made.json()) as MediaLibrary;
+  for (let batch = 0; batch < 3; batch++) {
+    const form = new FormData();
+    for (let i = 0; i < (batch < 2 ? 20 : 15); i++)
+      form.append(
+        "files",
+        new File(["voice"], `配音${batch * 20 + i}.m4a`, { type: "audio/mp4" }),
+      );
+    const sent = await request.post(
+      `/api/media-libraries/${library.library_id}/items`,
+      { multipart: form },
+    );
+    expect(sent.status(), await sent.text()).toBe(202);
+  }
+  const app = unique("big");
+  expect(
+    (
+      await request.post("/api/apps", {
+        data: { app, title: "大库应用", from: { blank: true } },
+      })
+    ).status(),
+  ).toBe(201);
+  const detail = (await (
+    await request.get(`/api/apps/${app}`)
+  ).json()) as AppDetail;
+  const config = structuredClone(
+    (detail.draft ?? detail.current).config,
+  ) as FlowConfig;
+  const start = config.graph.nodes.find((node) => node.type === "start")!;
+  if (start.type !== "start") throw new Error("no start node");
+  start.inputs = [
+    ...start.inputs.map((input) => ({ ...input, required: false })),
+    {
+      key: "voiceover",
+      label: "配音",
+      type: "media",
+      required: true,
+      library: library.library_id,
+      kinds: ["audio"],
+    },
+  ];
+  config.media = {
+    libraries: [{ library_id: library.library_id, access: "read" }],
+  };
+  expect(
+    (
+      await request.put(`/api/apps/${app}/draft`, { data: { config } })
+    ).status(),
+  ).toBe(200);
+  expect(
+    (
+      await request.post(`/api/apps/${app}/draft/publish`, {
+        data: { note: "配音输入" },
+      })
+    ).status(),
+  ).toBe(200);
+
+  await page.goto(`/runs/new?app=${app}`);
+  const form = page.getByRole("form", { name: "新建运行" });
+  const picker = form.locator("#input-voiceover");
+  await expect(picker.locator("option")).toHaveCount(51);
+  await expect(form).toContainText("还有 5 个素材没列出来。");
+  await expect(form).not.toContainText("库里还没有能用的素材");
+  await form.getByRole("button", { name: "再列出一些" }).click();
+  await expect(picker.locator("option")).toHaveCount(56);
+  await expect(form).not.toContainText("没列出来");
+  // The oldest item, only reached through the second page, can be picked.
+  const oldest = picker.locator("option", { hasText: /^配音0\.m4a/ });
+  await expect(oldest).toHaveCount(1);
+  await picker.selectOption((await oldest.getAttribute("value"))!);
+  await expect(form.locator("audio")).toHaveCount(1);
+});
