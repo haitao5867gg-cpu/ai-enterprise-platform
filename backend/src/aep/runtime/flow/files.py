@@ -45,6 +45,44 @@ def _items(value: Any) -> list[dict[str, Any]]:
     return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
+def _datasource_settings(config: dict[str, Any]) -> list[tuple[dict[str, Any], Any]]:
+    """Every node's data source setting with the node it is on (an agent has one per
+    tools entry, given as that entry)."""
+    settings: list[tuple[dict[str, Any], Any]] = []
+    for node in _items(_obj(_obj(config).get("graph")).get("nodes")):
+        if node.get("type") in DATASOURCE_NODES:
+            settings.append((node, node.get("datasource")))
+        elif node.get("type") == "agent":
+            settings += [(entry, entry.get("datasource")) for entry in _items(node.get("tools"))]
+    return settings
+
+
+def _resolve(
+    config: dict[str, Any], value: Any
+) -> tuple[str, Literal["literal", "default_input"]] | None:
+    """The data source one setting names, by id (``canon_id``), and how (see
+    ``datasource_uses``); None when it names none this way."""
+    if not isinstance(value, str):
+        return None
+    config = _obj(config)
+    ref = refs.whole(value)
+    if ref is None:
+        return (canon_id(value), "literal") if value.strip() and "{{" not in value else None
+    if ref[0] == refs.ENV:
+        consts = {v.get("key"): v.get("value") for v in _items(_obj(config.get("env")).get("vars"))}
+        const = consts.get(ref[1])
+        return (canon_id(const), "literal") if isinstance(const, str) and const.strip() else None
+    nodes = _items(_obj(config.get("graph")).get("nodes"))
+    start = next((n for n in nodes if n.get("type") == "start"), {})
+    if ref[0] != start.get("id"):
+        return None
+    for f in _items(start.get("inputs")):
+        default = f.get("default")
+        if f.get("key") == ref[1] and isinstance(default, str) and default.strip():
+            return canon_id(default), "default_input"
+    return None
+
+
 def datasource_uses(config: dict[str, Any]) -> dict[str, Literal["literal", "default_input"]]:
     """The data sources the app uses, by id (``canon_id``), and how: ``literal`` when a
     setting names it (directly or as a constant, ``{{env.x}}``), ``default_input`` when
@@ -54,26 +92,16 @@ def datasource_uses(config: dict[str, Any]) -> dict[str, Literal["literal", "def
     config = _obj(config)
     nodes = _items(_obj(config.get("graph")).get("nodes"))
     start = next((n for n in nodes if n.get("type") == "start"), {})
-    consts = {v.get("key"): v.get("value") for v in _items(_obj(config.get("env")).get("vars"))}
-    settings: list[Any] = []
-    for node in nodes:
-        if node.get("type") in DATASOURCE_NODES:
-            settings.append(node.get("datasource"))
-        elif node.get("type") == "agent":
-            settings += [entry.get("datasource") for entry in _items(node.get("tools"))]
     found: dict[str, Literal["literal", "default_input"]] = {}
     referenced: set[str] = set()
-    for value in settings:
+    for _, value in _datasource_settings(config):
         if not isinstance(value, str):
             continue
         ref = refs.whole(value)
-        if ref is None:
-            if value.strip() and "{{" not in value:
-                found[canon_id(value)] = "literal"
-        elif ref[0] == refs.ENV:
-            const = consts.get(ref[1])
-            if isinstance(const, str) and const.strip():
-                found[canon_id(const)] = "literal"
+        if ref is None or ref[0] == refs.ENV:
+            resolved = _resolve(config, value)
+            if resolved is not None:
+                found[resolved[0]] = "literal"
         elif ref[0] == start.get("id"):
             referenced.add(ref[1])
     for f in _items(start.get("inputs")):
@@ -82,6 +110,48 @@ def datasource_uses(config: dict[str, Any]) -> dict[str, Literal["literal", "def
             if isinstance(default, str) and default.strip():
                 found.setdefault(canon_id(default), "default_input")
     return found
+
+
+def datasource_tools(config: dict[str, Any]) -> dict[str, list[str]]:
+    """Per data source the app uses (``datasource_uses``), the tools its tool nodes and
+    agents name, in first-use order. An agent entry with all of a source's tools
+    (``tools: null``) names none: it uses whatever the connector has
+    (docs/api/runtime.md, 运行要求清单)."""
+    found: dict[str, list[str]] = {source: [] for source in datasource_uses(config)}
+    for setting, value in _datasource_settings(config):
+        resolved = _resolve(config, value)
+        if resolved is None or resolved[0] not in found:
+            continue
+        if "type" not in setting:  # an agent's tools entry
+            named = setting.get("tools")
+        else:
+            named = [setting.get("tool")] if setting["type"] == "tool" else []
+        for tool in named if isinstance(named, list) else []:
+            if isinstance(tool, str) and tool.strip() and "{{" not in tool:
+                if tool not in found[resolved[0]]:
+                    found[resolved[0]].append(tool)
+    return found
+
+
+# Node types that call a model; a node that names none uses the default chat model.
+MODEL_NODES = ("llm", "classifier", "agent", "llm_review")
+
+
+def model_refs(config: dict[str, Any]) -> tuple[list[str], bool]:
+    """The model aliases the app's nodes name, in first-use order, and whether some node
+    that calls a model names none (it then uses the default chat model)."""
+    aliases: list[str] = []
+    default = False
+    for node in flowgraph.nodes(config):
+        if node["type"] not in MODEL_NODES:
+            continue
+        model = node.get("model")
+        if isinstance(model, str) and model.strip():
+            if model not in aliases:
+                aliases.append(model)
+        else:
+            default = True
+    return aliases, default
 
 
 def knowledge_ids(config: dict[str, Any]) -> list[str]:
@@ -110,12 +180,36 @@ def dump(
     An agent app's file says ``kind: agent`` and holds its own configuration
     (docs/api/agent-apps.md, "新建、模板、导出导入")."""
     agent = kind == agent_app.KIND
+    data = {
+        "format": FORMAT,
+        **({"kind": agent_app.KIND} if agent else {}),
+        "title": title,
+        "summary": summary,
+        "exported_from": {"app": app, "version": version},
+        "config": config,
+        "requires": requires(config, sources, knowledge_bases, kind),
+    }
+    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+
+
+def requires(
+    config: dict[str, Any],
+    sources: dict[str, dict[str, Any]],
+    knowledge_bases: dict[str, dict[str, Any]],
+    kind: str = "flow",
+) -> dict[str, Any]:
+    """What a configuration needs from the platform it runs on: the file's ``requires``,
+    and the derived part of a package's requirements list (docs/api/runtime.md).
+    ``sources`` and ``knowledge_bases`` describe resources by id."""
+    agent = kind == agent_app.KIND
     shape = agent_app.as_flow(config) if agent else config
-    requires: dict[str, Any] = {
+    models, _ = model_refs(shape)
+    out: dict[str, Any] = {
         "skills": [{"name": n, "version": v} for n, v in flowgraph.skill_refs(shape)],
+        "models": [{"alias": alias} for alias in models],
         "datasources": [
-            sources.get(d, {"datasource_id": d, "name": None, "kind": None})
-            for d in datasource_ids(shape)
+            {**sources.get(d, {"datasource_id": d, "name": None, "kind": None}), "tools": tools}
+            for d, tools in datasource_tools(shape).items()
         ],
         "knowledge_bases": [
             knowledge_bases.get(kb_id, {"kb_id": kb_id, "name": None})
@@ -124,17 +218,8 @@ def dump(
         "secrets": list((config.get("env") or {}).get("secrets") or []),
     }
     if agent:
-        requires["apps"] = [a["app"] for a in config["agent"].get("apps") or []]
-    data = {
-        "format": FORMAT,
-        **({"kind": agent_app.KIND} if agent else {}),
-        "title": title,
-        "summary": summary,
-        "exported_from": {"app": app, "version": version},
-        "config": config,
-        "requires": requires,
-    }
-    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        out["apps"] = [a["app"] for a in config["agent"].get("apps") or []]
+    return out
 
 
 def load(text: str) -> dict[str, Any]:

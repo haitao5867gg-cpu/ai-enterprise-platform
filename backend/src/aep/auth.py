@@ -155,6 +155,7 @@ LABELS: dict[str, str] = {
     "POST /apps/{app}/draft/eval": "评测草稿",
     "POST /apps/{app}/draft/publish": "发布应用",
     "POST /apps/{app}/versions/{version}/activate": "切换应用版本",
+    "PUT /apps/{app}/runtime-requirements": "修改运行要求",
     "POST /skills": "新建 Skill",
     "PUT /skills/{name}/draft": "保存 Skill 草稿",
     "DELETE /skills/{name}/draft": "放弃 Skill 草稿",
@@ -242,6 +243,11 @@ def required(method: str, path: str) -> str | None:
     if path.startswith("/apps/{app}/keys") or path in (
         "/runs/{run_id}/rerun-from",
         "/apps/{app}/usage",
+        # Packages for runtimes hold whole configurations (docs/api/runtime.md).
+        "/apps/{app}/runtime-requirements",
+        "/apps/{app}/versions/{version}/requirements",
+        "/apps/{app}/versions/{version}/package",
+        "/packages/public-key",
     ):
         return "builder"
     if any(_under(path, p) for p in ("/users", "/audit", "/webhooks", "/notification-channels")):

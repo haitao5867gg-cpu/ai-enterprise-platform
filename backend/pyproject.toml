@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "AI Enterprise Platform API"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=46",
     "duckdb>=1.4,<2",
     "fastapi>=0.162.0",
     "google-re2>=1.1,<2",

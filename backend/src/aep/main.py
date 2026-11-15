@@ -28,6 +28,7 @@ from aep.api import (
     media,
     models,
     notifications,
+    packages,
     projects,
     runs,
     schedules,
@@ -64,6 +65,7 @@ from aep.media.store import PostgresMediaStore
 from aep.models import GatewayAdmin, ModelService, PostgresCallStore
 from aep.notify import Notifier, PostgresNotificationStore
 from aep.ops import Ops, PostgresOpsStore, reuse_from
+from aep.packages import Packages, PostgresRuntimeNeedsStore
 from aep.projects import PostgresProjectStore
 from aep.runtime.catalog import AppCatalog, GatewayModels
 from aep.runtime.flow.store import PostgresFlowAppStore, PostgresSecretStore
@@ -228,6 +230,10 @@ def create_app() -> FastAPI:
         app.state.llm_client = llm_client
         app.state.run_service = service
         app.state.catalog = catalog
+        # Requirements lists and signed packages for runtimes (docs/api/runtime.md).
+        needs_store = PostgresRuntimeNeedsStore(pool)
+        await needs_store.setup()
+        app.state.packages = Packages(service, catalog, sources, needs_store)
         # Every platform asset in one list (docs/api/catalog.md).
         asset_meta = PostgresAssetMetaStore(pool)
         await asset_meta.setup()
@@ -348,6 +354,7 @@ def create_app() -> FastAPI:
     app.include_router(schedules.router)
     app.include_router(catalog_api.router)
     app.include_router(ops_api.router)
+    app.include_router(packages.router)
     # Each app as an MCP tool; it checks API keys itself.
     app.mount("/mcp/apps", AppMcpEndpoint())
     # Links back to a run (notices, the app API).

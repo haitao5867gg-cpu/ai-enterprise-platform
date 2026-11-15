@@ -552,9 +552,12 @@ exported_from: {app: support-router, version: 3}
 config: {...}             # 编排配置，原样；env.secrets 只有名字
 requires:                 # 方便导入时核对
   skills: [{name: after-sales-policy, version: 2}]
-  datasources: [{datasource_id: ds_1a2b, name: MySQL 示例库, kind: mysql}]
+  models: [{alias: qwen}]   # 节点里写明的模型别名
+  datasources: [{datasource_id: ds_1a2b, name: MySQL 示例库, kind: mysql, tools: [get_order]}]
   secrets: [crm_token]
 ```
+
+`requires` 和流程包的运行要求清单用同一套规则（[runtime.md](runtime.md)）：数据源包括常量（`{{env.x}}`）和开始节点输入默认值指到的，`tools` 是调用工具节点和智能体用到的工具名。导入时只核对，不认识的键忽略。
 
 导入时 `yaml` 是文件的文本内容（最多 1 MB）。文件格式不对、`format` 不认识、图本身不合法返回 422。图本身合法但引用的东西在这个平台上缺失时，不阻止导入，`problems` 列出缺什么：
 

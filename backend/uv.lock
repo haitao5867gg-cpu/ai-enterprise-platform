@@ -11,6 +11,7 @@ name = "aep"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "google-re2" },
@@ -44,6 +45,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=46" },
     { name = "duckdb", specifier = ">=1.4,<2" },
     { name = "fastapi", specifier = ">=0.162.0" },
     { name = "google-re2", specifier = ">=1.1,<2" },

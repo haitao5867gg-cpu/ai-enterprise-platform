@@ -341,7 +341,10 @@ async def test_export_and_import():
         assert data["exported_from"] == {"app": "orders", "version": 2}
         assert data["requires"] == {
             "skills": [{"name": "polite", "version": 1}],
-            "datasources": [{"datasource_id": p.crm, "name": "CRM", "kind": "postgres"}],
+            "models": [{"alias": "qwen"}],
+            "datasources": [
+                {"datasource_id": p.crm, "name": "CRM", "kind": "postgres", "tools": ["get_order"]}
+            ],
             "knowledge_bases": [],
             "secrets": ["crm_token"],
         }
