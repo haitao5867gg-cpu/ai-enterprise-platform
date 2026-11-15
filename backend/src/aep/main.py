@@ -25,6 +25,7 @@ from aep.api import (
     eval_sets,
     flows,
     knowledge,
+    media,
     models,
     notifications,
     projects,
@@ -59,6 +60,7 @@ from aep.i18n import translated_http_error
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
+from aep.media.store import PostgresMediaStore
 from aep.models import GatewayAdmin, ModelService, PostgresCallStore
 from aep.notify import Notifier, PostgresNotificationStore
 from aep.ops import Ops, PostgresOpsStore, reuse_from
@@ -124,6 +126,8 @@ def create_app() -> FastAPI:
         await register_defaults(sources, settings.default_datasources)
         knowledge_store = PostgresKnowledgeStore(pool, settings.schedule_timezone)
         await knowledge_store.setup()
+        media_store = PostgresMediaStore(pool)
+        await media_store.setup()
         asset_store = PostgresAssetStore(pool)
         await asset_store.setup()
         skill_store = PostgresSkillStore(pool)
@@ -259,6 +263,7 @@ def create_app() -> FastAPI:
         app.state.mcp_tools = tools
         app.state.databricks = databricks
         app.state.knowledge = knowledge_store
+        app.state.media = media_store
         knowledge_worker = KnowledgeWorker(knowledge_store, llm_client)
         app.state.knowledge_worker = knowledge_worker
         knowledge_task = asyncio.create_task(knowledge_worker.run())
@@ -335,6 +340,7 @@ def create_app() -> FastAPI:
     app.include_router(flows.router)
     app.include_router(skills.router)
     app.include_router(knowledge.router)
+    app.include_router(media.router)
     app.include_router(models.router)
     app.include_router(notifications.router)
     app.include_router(app_access.router)
