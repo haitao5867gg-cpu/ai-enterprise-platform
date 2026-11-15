@@ -155,6 +155,10 @@ def build(settings: Settings | None = None) -> tuple[MCPServer, Jobs]:
         async def work(directory: Any, report: Any) -> dict[str, Any]:
             return await render_spec(media, ff, spec, directory, report)
 
+        # The same key may have been handed in again while its sources were checked.
+        known = jobs.find(key)
+        if known is not None:
+            return jobs.envelope(known)
         return jobs.envelope(jobs.start("render", key, work, queued=True))
 
     @server.tool(annotations=SAFE)

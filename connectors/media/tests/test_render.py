@@ -1,10 +1,13 @@
+import asyncio
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 from conftest import path_of
 
+from aep_media import render as render_module
 from aep_media.config import Settings
 from aep_media.paths import MediaError
 from aep_media.probe import inspect
@@ -196,6 +199,36 @@ async def test_bad_arguments_name_the_item(root, media, ff, settings, change, er
 
     with pytest.raises(MediaError, match=error):
         await read_spec(media, ff, settings, fill({**SMALL, **change}))
+
+
+async def test_sources_are_checked_together_within_a_bound(root, media, ff, monkeypatch):
+    real = render_module.inspect
+    waits = {"图.png": 0.4, "横屏.mp4": 0.4, "配音.m4a": 0.4}
+
+    async def slow(ff, path):
+        await asyncio.sleep(waits[path.name])
+        return await real(ff, path)
+
+    monkeypatch.setattr(render_module, "inspect", slow)
+    settings = Settings(media_dir=root, media_check_seconds=1)
+    args = {
+        **SMALL,
+        "clips": [
+            {"source": path_of(root, "横屏.mp4")},
+            {"source": path_of(root, "图.png"), "duration": 1},
+            {"source": path_of(root, "横屏.mp4"), "start": 1},
+        ],
+        "audio": [{"source": path_of(root, "配音.m4a")}],
+    }
+    # Three sources of 0.4 s each fit in 1 s because they are probed side by side.
+    spec = await read_spec(media, ff, settings, args)
+    assert len(spec.clips) == 3 and len(spec.tracks) == 1
+    # One that takes too long stops the check, before any job is handed back.
+    waits["配音.m4a"] = 30
+    started = time.monotonic()
+    with pytest.raises(MediaError, match="检查素材超过 1 秒还没完"):
+        await read_spec(media, ff, settings, args)
+    assert time.monotonic() - started < 3
 
 
 async def test_the_video_is_limited_in_length(root, media, ff):

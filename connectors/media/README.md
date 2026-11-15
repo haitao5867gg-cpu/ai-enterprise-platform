@@ -27,6 +27,7 @@ MCP Streamable HTTP，默认端口 **8008**，端点 `/mcp`，`GET /healthz` 检
 | `AEP_MEDIA_DIR` | `/data/media` | 媒体卷 |
 | `AEP_MEDIA_MCP_HOST` / `AEP_MEDIA_MCP_PORT` | `0.0.0.0` / `8008` | |
 | `AEP_MEDIA_MAX_JOBS` | 1 | 同时渲染几个，别的排队 |
+| `AEP_MEDIA_CHECK_SECONDS` | 20 | 渲染前检查素材最多几秒，要比平台的工具调用超时短 |
 | `AEP_MEDIA_MAX_SECONDS` | 600 | 成片最长几秒 |
 | `AEP_MEDIA_WORK_HOURS` | 24 | 工作文件、缓存、任务记录留多久 |
 | `AEP_MEDIA_FFMPEG_THREADS` | 0 | 每个 ffmpeg 进程的线程数，0 让 ffmpeg 自己定 |

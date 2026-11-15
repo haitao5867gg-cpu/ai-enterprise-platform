@@ -97,6 +97,20 @@ async def test_a_render_is_a_long_job_that_a_key_finds_again(root):
     await jobs.close()
 
 
+async def test_the_same_key_handed_in_twice_at_once_renders_once(root):
+    server, jobs = build(Settings(media_dir=root))
+    args = {"width": 360, "height": 640, "clips": [{"source": path_of(root, "横屏.mp4"),
+                                                     "duration": 1}]}  # fmt: skip
+    async with Client(server) as client:
+        first, second = await asyncio.gather(
+            call(client, "render", args, KEY), call(client, "render", args, KEY)
+        )
+        ids = {r.structured_content["aep_job"]["job_id"] for r in (first, second)}
+        assert len(ids) == 1 and len(jobs.jobs) == 1
+        await until_done(client, ids.pop())
+    await jobs.close()
+
+
 async def test_renders_queue_and_cancel(root):
     server, jobs = build(Settings(media_dir=root, media_max_jobs=1))
     async with Client(server) as client:

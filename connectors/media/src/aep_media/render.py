@@ -6,6 +6,7 @@ shots without re-encoding them and mixes the sound: the voice-over, music and th
 shots' own sound where it is turned up.
 """
 
+import asyncio
 import hashlib
 import json
 import math
@@ -36,6 +37,8 @@ COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 HOLD = 0.5
 FONT = "Noto Sans CJK SC"
 SAMPLE_RATE = 48000
+# Sources probed at the same time while checking a render.
+PROBES = 4
 
 
 @dataclass
@@ -158,6 +161,43 @@ def _name(output: dict[str, Any]) -> str:
     return name.strip()
 
 
+async def _probe_all(
+    media: Media, ff: FFmpeg, settings: Settings, items: list[Any]
+) -> dict[Path, dict[str, Any] | MediaError]:
+    """Each distinct source probed, a few at a time, within the time a check may take.
+
+    A render must hand back its job before the platform's tool call times out, so the
+    whole check is bounded; a source that can't be used keeps its error for the item."""
+    paths: list[Path] = []
+    for item in items:
+        try:
+            path = media.resolve(item.get("source") if isinstance(item, dict) else None)
+        except MediaError:
+            continue  # reported, with the item, when the item is read
+        if path not in paths:
+            paths.append(path)
+    found: dict[Path, dict[str, Any] | MediaError] = {}
+    turns = asyncio.Semaphore(PROBES)
+
+    async def one(path: Path) -> None:
+        async with turns:
+            try:
+                found[path] = await inspect(ff, path)
+            except MediaError as exc:
+                found[path] = exc
+
+    try:
+        async with asyncio.timeout(settings.media_check_seconds):
+            async with asyncio.TaskGroup() as group:
+                for path in paths:
+                    group.create_task(one(path))
+    except TimeoutError:
+        raise MediaError(
+            f"检查素材超过 {settings.media_check_seconds:g} 秒还没完：素材太多，或者有文件读得太慢"
+        ) from None
+    return found
+
+
 async def read_spec(media: Media, ff: FFmpeg, settings: Settings, args: dict[str, Any]) -> Spec:
     """The render arguments checked, with each source probed; errors name the item."""
     width = int(_number(args, "width", "", default=1080, lo=240, hi=3840, integer=True) or 0)
@@ -166,20 +206,26 @@ async def read_spec(media: Media, ff: FFmpeg, settings: Settings, args: dict[str
         raise MediaError("width 和 height 要是偶数")
     fps = int(_number(args, "fps", "", default=30, lo=15, hi=60, integer=True) or 0)
     background = _color(args, "background", "", "#000000")
-    probed: dict[Path, dict[str, Any]] = {}
+    raw_clips = args.get("clips")
+    if not isinstance(raw_clips, list) or not 1 <= len(raw_clips) <= 300:
+        raise MediaError("clips 要有 1–300 个镜头")
+    raw_tracks = args.get("audio") or []
+    if not isinstance(raw_tracks, list) or len(raw_tracks) > 10:
+        raise MediaError("audio 最多 10 条音轨")
+    probed = await _probe_all(media, ff, settings, [*raw_clips, *raw_tracks])
 
     async def look(source: Any, where: str) -> tuple[Path, dict[str, Any]]:
         try:
             path = media.resolve(source)
-            if path not in probed:
-                probed[path] = await inspect(ff, path)
+            found = probed.get(path)
+            if found is None:
+                found = probed[path] = await inspect(ff, path)
+            if isinstance(found, MediaError):
+                raise found
         except MediaError as exc:
             raise MediaError(f"{where}：{exc}") from None
-        return path, probed[path]
+        return path, found
 
-    raw_clips = args.get("clips")
-    if not isinstance(raw_clips, list) or not 1 <= len(raw_clips) <= 300:
-        raise MediaError("clips 要有 1–300 个镜头")
     clips: list[Clip] = []
     for index, raw in enumerate(raw_clips):
         where = f"第 {index + 1} 个镜头"
@@ -239,9 +285,6 @@ async def read_spec(media: Media, ff: FFmpeg, settings: Settings, args: dict[str
             )
         )
 
-    raw_tracks = args.get("audio") or []
-    if not isinstance(raw_tracks, list) or len(raw_tracks) > 10:
-        raise MediaError("audio 最多 10 条音轨")
     tracks: list[Track] = []
     for index, raw in enumerate(raw_tracks):
         where = f"第 {index + 1} 条音轨"

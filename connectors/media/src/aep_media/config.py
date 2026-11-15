@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     media_mcp_port: int = Field(default=8008, ge=1, le=65535)
     # Renders at the same time; more wait in a queue.
     media_max_jobs: int = Field(default=1, ge=1, le=16)
+    # How long checking a render's sources may take: the job must be handed back
+    # before the platform's tool call (30 s by default) gives up.
+    media_check_seconds: float = Field(default=20, gt=0, le=600)
     # The longest video a render may make.
     media_max_seconds: int = Field(default=600, ge=1, le=7200)
     # Work files, cached shots and job records older than this are removed.
