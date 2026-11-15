@@ -139,14 +139,12 @@ async def follow(
                 await _time_out(tools, url, job.job_id, limit_seconds)
             pause = FAST_SECONDS if elapsed < FAST_FOR else SLOW_SECONDS
             await anyio.sleep(min(pause, limit_seconds - elapsed))
-            if watch.stopped is not None and await watch.stopped():
-                await _cancel(tools, url, job.job_id)
-                raise JobStopped()
             # A status call ends with the job's time: an answer after it does not count.
             left = limit_seconds - (time.monotonic() - started)
             if left <= 0:
                 await _time_out(tools, url, job.job_id, limit_seconds)
             seconds = min(call_seconds or tools.timeout_seconds, left)
+            reply: Any = None
             try:
                 reply = await tools.call(url, STATUS_TOOL, {"job_id": job.job_id}, seconds)
             except ConnectorUnavailable:
@@ -154,9 +152,14 @@ async def follow(
                 unreachable_since = unreachable_since or now
                 if now - unreachable_since >= UNREACHABLE_SECONDS:
                     raise
-                continue
             except ToolError as exc:
                 raise JobFailed(f"查任务进度失败：{_said(exc)}") from exc
+            # Asked after the call: a cancel wins over what the call answered, even done.
+            if watch.stopped is not None and await watch.stopped():
+                await _cancel(tools, url, job.job_id)
+                raise JobStopped()
+            if reply is None:
+                continue
             unreachable_since = None
             job = parse(reply)
     except anyio.get_cancelled_exc_class():

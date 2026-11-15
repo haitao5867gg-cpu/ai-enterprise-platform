@@ -283,9 +283,38 @@ async def test_an_agent_stops_when_its_run_is_cancelled():
         assert len(p.gateway.requests) == 1
 
 
+async def test_a_cancel_wins_over_a_job_done_meanwhile():
+    replies = [call("t1", name="a", steps=1), answer("渲染好了")]
+    async with Jobs(replies=replies) as p:
+        flow = render_flow(p.render)
+        flow["graph"]["nodes"][1] = {
+            "id": "render",
+            "type": "agent",
+            "title": "剪辑渲染",
+            "model": None,
+            "skills": [],
+            "task": "把 {{start.name}} 渲染出来",
+            "tools": [{"datasource": p.render, "tools": ["render"]}],
+            "max_steps": 4,
+        }
+        flow["graph"]["nodes"][2]["outputs"] = [{"key": "out", "from": ["{{render.text}}"]}]
+        await p.new_app("video", flow)
+        # The job is done at the first status call, which the run is cancelled during.
+        p.connector.slow = 0.3
+        resp = await p.api.post("/runs", json={"app": "video", "input": {"name": "a"}})
+        run_id = resp.json()["run_id"]
+        while p.connector.status_calls < 1:
+            await asyncio.sleep(0.005)
+        await p.store.set_status(run_id, "cancelled", "不要了", expected=("running",))
+        await p.service.wait_idle()
+        assert (await p.api.get(f"/runs/{run_id}")).json()["status"] == "cancelled"
+        # The agent did not take the result back to its model.
+        assert len(p.gateway.requests) == 1
+
+
 async def test_a_stopping_process_leaves_the_job_for_the_next_start():
     async with Jobs() as p:
-        args = {"name": "{{start.name}}", "steps": 6}
+        args = {"name": "{{start.name}}", "steps": 10**6}
         await p.new_app("video", render_flow(p.render, args=args))
         run_id = await started_run(p, "video")
         # The process stops: its runs' tasks are cancelled, the runs stay running.
@@ -294,6 +323,9 @@ async def test_a_stopping_process_leaves_the_job_for_the_next_start():
         assert p.connector.cancelled == []
         assert (await p.service.get(run_id)).record.status == "running"
 
+        # The job goes on meanwhile and is nearly done when the process starts again.
+        job = p.connector.jobs["j1"]
+        job["steps"] = job["done_steps"] + 2
         assert await p.service.recover() == 1
         await p.service.wait_idle()
         run = (await p.api.get(f"/runs/{run_id}")).json()
