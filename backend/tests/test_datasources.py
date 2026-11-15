@@ -186,7 +186,8 @@ async def platform(tmp_path, gateway):
         connector_hosts=["connector.test", "*.connector.test:*", "127.0.0.1:1"],
         uploads_dir=tmp_path,
         files_connector_url="http://files.test:8003",
-        connector_check_seconds=0.3,
+        # Long enough for the in-process fake under a busy full run; the slow fake sleeps 5 s.
+        connector_check_seconds=2,
     )
     app.dependency_overrides[get_settings] = lambda: settings
     sources = MemoryDataSourceStore()
@@ -346,7 +347,7 @@ async def test_connection_problems_are_categories_only(platform, host, code):
 
     result = resp.json()
     assert result["problems"] == [
-        {"code": code, "message": PROBLEM_TEXT[code].format(seconds="0.3")}
+        {"code": code, "message": PROBLEM_TEXT[code].format(seconds="2")}
     ]
     assert result["problems"][0]["message"].startswith(CONNECTION_WORDS[code])
     assert result["latency_ms"] is None and result["tools"] == []
@@ -605,7 +606,7 @@ async def test_tools_502_is_a_category_and_updates_health(platform):
     assert health["error"] == "refused" and platform.connectors.total == 1
     slow_source = await platform.sources.create("慢", "mysql", "http://timeout.connector.test/mcp")
     resp = await platform.api.get(f"/datasources/{slow_source.datasource_id}/tools")
-    assert resp.json()["detail"] == PROBLEM_TEXT["timeout"].format(seconds="0.3")
+    assert resp.json()["detail"] == PROBLEM_TEXT["timeout"].format(seconds="2")
 
     up = await platform.sources.create("示例库", "postgres", fake_connector.URL)
     tools = await platform.api.get(f"/datasources/{up.datasource_id}/tools")
