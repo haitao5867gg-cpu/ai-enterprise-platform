@@ -72,6 +72,19 @@ class RunRecord:
     cleared_at: datetime | None = None
     # How it came in (aep.entries.RUN_ENTRIES); None for runs from before that was kept.
     entry: str | None = None
+    # What the node at ``step`` last said of its progress: ``node``, ``percent`` (0–100 or
+    # None), ``message`` and ``updated_at`` (docs/api/connector-jobs.md); cleared when a
+    # node starts.
+    progress: dict[str, Any] | None = None
+
+
+def current_progress(record: RunRecord) -> dict[str, Any] | None:
+    """The progress to show: only while the run is running, and only the node it is at
+    (docs/api/connector-jobs.md, 运行的进度)."""
+    progress, step = record.progress, record.step
+    if record.status != "running" or not progress or not step:
+        return None
+    return progress if progress.get("node") == step.get("node") else None
 
 
 class TurnTaken(Exception):
@@ -122,7 +135,14 @@ class RunStore(Protocol):
         ``outcome`` what a ``done`` run came to (every change sets it, None by default)."""
         ...
 
-    async def set_step(self, run_id: str, node: str, title: str) -> None: ...
+    async def set_step(self, run_id: str, node: str, title: str) -> None:
+        """Note the node the run is at, and clear the progress the last one reported."""
+        ...
+
+    async def set_progress(self, run_id: str, progress: dict[str, Any]) -> None:
+        """Note what the node at the run's step says of its progress."""
+        ...
+
     async def called_by(self, run_id: str, node: str) -> RunRecord | None:
         """The newest unfinished run that node ``node`` of run ``run_id`` started (an app
         node; its ``trigger`` says so), or None."""
@@ -335,7 +355,12 @@ class MemoryRunStore:
         return True
 
     async def set_step(self, run_id: str, node: str, title: str) -> None:
-        self._runs[run_id] = replace(self._runs[run_id], step={"node": node, "title": title})
+        self._runs[run_id] = replace(
+            self._runs[run_id], step={"node": node, "title": title}, progress=None
+        )
+
+    async def set_progress(self, run_id: str, progress: dict[str, Any]) -> None:
+        self._runs[run_id] = replace(self._runs[run_id], progress=progress)
 
 
 SCHEMA = [
@@ -371,6 +396,7 @@ CREATE TABLE IF NOT EXISTS runs (
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS conversation_turn integer",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS cleared_at timestamptz",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS entry text",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS progress jsonb",
     "CREATE INDEX IF NOT EXISTS runs_app_created ON runs (app, created_at DESC)",
     # One run per turn: two messages sent at once cannot both be the next turn.
     "CREATE UNIQUE INDEX IF NOT EXISTS runs_conversation_turn_idx"
@@ -381,7 +407,7 @@ COLUMNS = (
     "run_id::text, app, status, input, tenant_id, error, app_version, config, created_at,"
     " updated_at, created_by, step, waiting_since, wait_seconds, error_type, cancelled_by,"
     " rerun_of::text, outcome, policy, project, start_at, trigger, conversation_id,"
-    " conversation_turn, cleared_at, entry"
+    " conversation_turn, cleared_at, entry, progress"
 )
 
 
@@ -594,8 +620,15 @@ class PostgresRunStore:
     async def set_step(self, run_id: str, node: str, title: str) -> None:
         async with self._pool.connection() as conn:
             await conn.execute(
-                "UPDATE runs SET step = %s WHERE run_id = %s",
+                "UPDATE runs SET step = %s, progress = NULL WHERE run_id = %s",
                 (Jsonb({"node": node, "title": title}), uuid.UUID(run_id)),
+            )
+
+    async def set_progress(self, run_id: str, progress: dict[str, Any]) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE runs SET progress = %s WHERE run_id = %s",
+                (Jsonb(progress), uuid.UUID(run_id)),
             )
 
 

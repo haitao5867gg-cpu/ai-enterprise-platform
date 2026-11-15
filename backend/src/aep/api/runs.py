@@ -30,6 +30,10 @@ run record (in the list and in ``GET /runs/{id}``) has:
 - ``step``: the node the run is at (``node`` id and ``title``), the one it waits at,
   or the last one it reached; null before its first node starts. While the run is
   ``waiting`` this is the human node it waits at, so there is no separate field for it.
+- ``progress``: what the node at ``step`` says of its progress while the run is
+  ``running`` (``node``, ``percent`` 0–100 or null, ``message`` or null and
+  ``updated_at``), for now a long-running connector job's (docs/api/connector-jobs.md);
+  null otherwise, and cleared whenever a node starts.
 - ``outcome``: what a finished flow run came to: the ``outcome`` of the end node it
   ended at (``delivered``, ``stopped`` or another word the app chose; see
   docs/api/flow-apps.md, "end"). Null unless the run is ``done`` at an end node that
@@ -244,7 +248,7 @@ from aep.runtime.service import (
     UnknownVersion,
     retryable,
 )
-from aep.runtime.store import FINISHED, RunRecord, RunStatus
+from aep.runtime.store import FINISHED, RunRecord, RunStatus, current_progress
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -322,6 +326,13 @@ class Step(BaseModel):
     title: str
 
 
+class Progress(BaseModel):
+    node: str
+    percent: int | None
+    message: str | None
+    updated_at: str
+
+
 class RunProject(BaseModel):
     """The project a run binds, as its snapshot has it (docs/api/projects.md)."""
 
@@ -355,6 +366,9 @@ class RunSummary(BaseModel):
     updated_at: str
     finished_at: str | None
     step: Step | None
+    # What the node at ``step`` says of its progress while the run is running
+    # (docs/api/connector-jobs.md); null otherwise.
+    progress: Progress | None = None
     waiting_since: str | None
     wait_seconds: float | None
     cancelled_by: str | None
@@ -487,6 +501,7 @@ def _summary(
         "updated_at": r.updated_at.isoformat(),
         "finished_at": r.updated_at.isoformat() if r.status in FINISHED else None,
         "step": r.step,
+        "progress": current_progress(r),
         "waiting_since": r.waiting_since.isoformat() if r.waiting_since else None,
         "wait_seconds": r.wait_seconds,
         "cancelled_by": r.cancelled_by,

@@ -8,7 +8,7 @@ the 6 tools of connectors/databricks over two tables of a Databricks catalog.
 import re
 
 import anyio
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 URL = "http://connector.test/mcp"
@@ -573,3 +573,116 @@ def build_databricks(calls: list[tuple[str, dict]] | None = None) -> MCPServer:
         }
 
     return server
+
+
+JOBS_URL = "http://jobs.test/mcp"
+
+
+class JobConnector:
+    """A connector with long-running jobs (docs/api/connector-jobs.md).
+
+    ``render`` hands back a job that is done after ``steps`` status calls (or fails at
+    the end when ``fail``); ``quick`` is done at once; ``plain`` is an ordinary tool.
+    ``keys`` are the job keys the calls carried, ``cancelled`` the jobs the platform
+    cancelled; ``down`` is how many of the next calls find it unreachable (see
+    :meth:`resolve`), and ``forget`` makes it forget every job, as after a restart."""
+
+    def __init__(self) -> None:
+        self.jobs: dict[str, dict] = {}
+        self.by_key: dict[str, str] = {}
+        self.keys: list[str | None] = []
+        self.cancelled: list[str] = []
+        self.status_calls = 0
+        self.started = 0
+        self.down = 0
+        self.forget = False
+        self.bad = False
+
+    def resolve(self, server: MCPServer) -> MCPServer:
+        """The server to connect to, or a refused connection while ``down``."""
+        if self.down:
+            self.down -= 1
+            raise ConnectionRefusedError("connector restarting")
+        return server
+
+    def envelope(self, job_id: str) -> dict:
+        job = self.jobs[job_id]
+        if self.bad:
+            return {"aep_job": {"job_id": job_id, "status": "sleeping"}}
+        return {
+            "aep_job": {
+                "job_id": job_id,
+                "status": job["status"],
+                "progress": job["done_steps"] / job["steps"] if job["steps"] else None,
+                "message": f"渲染第 {job['done_steps']} 段，共 {job['steps']} 段",
+                "result": job.get("result"),
+                "error": job.get("error"),
+            }
+        }
+
+    def build(self) -> MCPServer:
+        server = MCPServer("fake-jobs")
+
+        def key_of(ctx: Context) -> str | None:
+            meta = ctx.request_context.meta or {}
+            return meta.get("aep/job_key")  # type: ignore[union-attr]
+
+        @server.tool()
+        def render(name: str, ctx: Context, steps: int = 3, fail: bool = False) -> dict:
+            """Render a video."""
+            key = key_of(ctx)
+            self.keys.append(key)
+            known = self.by_key.get(key) if key else None
+            if known and self.jobs[known]["status"] in ("queued", "running", "done"):
+                return self.envelope(known)
+            self.started += 1
+            job_id = f"j{self.started}"
+            self.jobs[job_id] = {
+                "status": "running",
+                "steps": steps,
+                "done_steps": 0,
+                "fail": fail,
+                "name": name,
+            }
+            if key:
+                self.by_key[key] = job_id
+            return self.envelope(job_id)
+
+        @server.tool()
+        def quick(name: str) -> dict:
+            """Done at once."""
+            return {"aep_job": {"job_id": "q1", "status": "done", "result": {"file": name}}}
+
+        @server.tool()
+        def plain(name: str) -> dict:
+            """An ordinary tool."""
+            return {"file": name}
+
+        @server.tool()
+        def aep_job_status(job_id: str) -> dict:
+            """Where a job is."""
+            self.status_calls += 1
+            if self.forget or job_id not in self.jobs:
+                raise ToolError("没有这个任务")
+            job = self.jobs[job_id]
+            if job["status"] == "running":
+                job["done_steps"] += 1
+                if job["done_steps"] >= job["steps"]:
+                    if job["fail"]:
+                        job["status"] = "error"
+                        job["error"] = "ffmpeg 退出码 1"
+                    else:
+                        job["status"] = "done"
+                        job["result"] = {"file": f"{job['name']}.mp4"}
+            return self.envelope(job_id)
+
+        @server.tool()
+        def aep_job_cancel(job_id: str) -> dict:
+            """Stop a job."""
+            self.cancelled.append(job_id)
+            if job_id in self.jobs:
+                self.jobs[job_id]["status"] = "cancelled"
+                return self.envelope(job_id)
+            raise ToolError("没有这个任务")
+
+        return server

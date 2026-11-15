@@ -486,7 +486,34 @@ class RunService:
             ),
             call_app=self.call_app,
             app_shape=self.app_shape,
+            report_progress=self.report_progress,
+            run_cancelled=self.run_cancelled,
         )
+
+    async def report_progress(
+        self, run_id: str, node: str, value: float | None, message: str | None
+    ) -> None:
+        """Note a node's progress on its run (docs/api/connector-jobs.md); a failure to
+        note it does not stop the node."""
+        progress = {
+            "node": node,
+            "percent": None if value is None else round(value * 100),
+            "message": message,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        try:
+            await self._store.set_progress(run_id, progress)
+        except Exception:  # noting progress must not stop the run
+            log.exception("could not note the progress of run %s", run_id)
+
+    async def run_cancelled(self, run_id: str) -> bool:
+        """Whether the run was cancelled, perhaps from another process."""
+        try:
+            record = await self._store.get(run_id)
+        except Exception:  # an unanswered question is no cancel
+            log.exception("could not read run %s", run_id)
+            return False
+        return record is not None and record.status == "cancelled"
 
     async def app_shape(self, app: str) -> flownodes.AppShape | None:
         """The app as an app node calling it sees it (its current version), or None when

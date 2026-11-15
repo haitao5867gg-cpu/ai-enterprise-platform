@@ -76,6 +76,9 @@ class RunResult(BaseModel):
     result: dict[str, Any] | None
     pending: Pending | None
     error: str | None
+    # The step the run is at and what it says of its progress (docs/api/connector-jobs.md).
+    step: dict[str, str] | None = None
+    progress: dict[str, Any] | None = None
     link: str
     # The conversation the run is a turn of, and which turn (docs/api/app-access.md, "会话").
     conversation_id: str | None = None

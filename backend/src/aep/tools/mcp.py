@@ -32,6 +32,9 @@ REQUEST_TIMEOUT = -32001
 MAX_TOOL_PAGES = 10
 MAX_TOOLS = 500
 MAX_DESCRIPTION = 2000
+# The tools a connector offers the platform to follow its long-running jobs
+# (docs/api/connector-jobs.md): never listed, so no model or node picks them.
+JOB_TOOLS = frozenset({"aep_job_status", "aep_job_cancel"})
 
 
 class ToolError(Exception):
@@ -163,7 +166,8 @@ class McpTools:
             for _ in range(MAX_TOOL_PAGES):
                 page = await client.list_tools(cursor=cursor)
                 for tool in page.tools:  # a name listed twice keeps its first tool
-                    found.setdefault(tool.name, _tool_info(tool))
+                    if tool.name not in JOB_TOOLS:
+                        found.setdefault(tool.name, _tool_info(tool))
                 cursor = page.next_cursor
                 # An empty cursor, or one asked for before, would only repeat a page.
                 if not cursor or cursor in asked or len(found) >= MAX_TOOLS:
@@ -179,9 +183,12 @@ class McpTools:
         name: str,
         arguments: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> Any:
+        """What the tool returned; ``meta`` goes in the request's ``_meta``."""
+
         async def run(client: Client) -> Any:
-            result = await client.call_tool(name, arguments or {})
+            result = await client.call_tool(name, arguments or {}, meta=meta)  # type: ignore[arg-type]
             if result.is_error:
                 raise ToolError(f"{name}: {_decode(result)}")
             return _decode(result)

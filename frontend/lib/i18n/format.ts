@@ -87,7 +87,17 @@ export function stepText(t: T, run: RunSummary): string {
     cancelled: "取消于「{step}」",
     done: "",
   }[run.status];
-  return text ? t(text, { step }) : "";
+  if (!text) return "";
+  const where = t(text, { step });
+  const progress = run.status === "running" ? run.progress : null;
+  if (!progress) return where;
+  const parts = [
+    progress.percent === null ? "" : `${progress.percent}%`,
+    progress.message ?? "",
+  ].filter(Boolean);
+  if (!parts.length) return where;
+  const shown = t("（{progress}）", { progress: parts.join(t("，")) });
+  return where + shown;
 }
 
 export const triggerText = (t: T, trigger: RunTrigger) =>
