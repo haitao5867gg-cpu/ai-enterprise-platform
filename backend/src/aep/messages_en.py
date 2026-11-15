@@ -455,6 +455,37 @@ MESSAGES: dict[str, str] = {
     ),
     "表 {name} 要写成 catalog.schema.table": "Table {name} must be written catalog.schema.table",
     "表 {name} 要写成 schema.table": "Table {name} must be written schema.table",
+    # Packages for runtimes (docs/api/runtime.md)
+    "「网络」里要写主机名，比如 api.pexels.com": (
+        "“Network” takes host names, such as api.pexels.com"
+    ),
+    "平台没有配置流程包签名密钥（AEP_PACKAGE_SIGNING_KEY）": (
+        "The platform has no package signing key (AEP_PACKAGE_SIGNING_KEY)"
+    ),
+    "代码应用暂时不能打成流程包": "Code apps cannot be packaged yet",
+    "有要审批者确认的步骤，运行包上没有审批的地方，暂时不能打成流程包": (
+        "The app has steps an approver confirms, and a runtime has no place to approve; "
+        "it cannot be packaged yet"
+    ),
+    "调用其他应用的应用暂时不能打成流程包": "Apps that call other apps cannot be packaged yet",
+    "用到知识库的应用暂时不能打成流程包": "Apps that use knowledge bases cannot be packaged yet",
+    "用到上传文件数据源的应用暂时不能打成流程包": (
+        "Apps that use uploaded-file data sources cannot be packaged yet"
+    ),
+    "有数据工程节点的应用暂时不能打成流程包": (
+        "Apps with data engineering nodes cannot be packaged yet"
+    ),
+    "要选择项目的应用暂时不能打成流程包": "Apps that need a project cannot be packaged yet",
+    "有节点的数据源要到运行时才知道是哪个，运行包上没法提前绑定，暂时不能打成流程包": (
+        "A node's data source is only known when the app runs, so a runtime cannot bind it "
+        "in advance; the app cannot be packaged yet"
+    ),
+    "流程包超过 5 MB（{size} MB），请减少 Skill 的内容或个数": (
+        "The package exceeds 5 MB ({size} MB); trim the skills it uses"
+    ),
+    "Skill「{name}」第 {version} 版不在平台上": (
+        "Version {version} of skill “{name}” is not on the platform"
+    ),
 }
 
 # The node types offered when building a flow app (GET /node-types): names, what each

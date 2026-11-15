@@ -1,3 +1,5 @@
+import base64
+import binascii
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -153,6 +155,11 @@ class Settings(BaseSettings):
     demo_model: str = "company"
     demo_embedding_model: str = "company-embed"
 
+    # Packages to run apps on other machines (docs/api/runtime.md): the platform's
+    # Ed25519 signing key, as the base64 of its 32-byte seed. A secret: .env or Key Vault
+    # only. Unset, the platform cannot package apps.
+    package_signing_key: str = ""
+
     # Langfuse tracing. Off unless both keys are set; the names are shared with
     # the gateway, which reports model calls to the same project.
     langfuse_public_key: str = Field("", validation_alias="LANGFUSE_PUBLIC_KEY")
@@ -167,6 +174,20 @@ class Settings(BaseSettings):
                 parse_rule(item)
             except ValueError:
                 raise ValueError(f"AEP_CONNECTOR_HOSTS 里的「{item}」写法不对") from None
+        return value
+
+    @field_validator("package_signing_key")
+    @classmethod
+    def valid_signing_key(cls, value: str) -> str:
+        if value.strip():
+            try:
+                seed = base64.b64decode(value.strip(), validate=True)
+            except (binascii.Error, ValueError):
+                seed = b""
+            if len(seed) != 32:
+                raise ValueError(
+                    "AEP_PACKAGE_SIGNING_KEY 要是 Ed25519 私钥 32 字节种子的 base64"
+                ) from None
         return value
 
     @property

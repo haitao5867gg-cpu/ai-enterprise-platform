@@ -307,6 +307,7 @@ async def test_an_agent_app_exports_and_imports_as_an_agent_app():
         assert data["kind"] == "agent" and data["config"] == kept
         assert data["requires"] == {
             "skills": [],
+            "models": [],
             "datasources": [],
             "knowledge_bases": [],
             "secrets": [],
