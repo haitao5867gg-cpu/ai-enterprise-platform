@@ -455,6 +455,103 @@ async def test_switching_versions_and_the_default_model():
     )
 
 
+async def ready_machine(package: dict) -> tuple[Machine, dict[str, str]]:
+    """A runtime with ``package`` installed, its connector bound and its secret filled; with
+    the headers of an API key for /v1."""
+    m = Machine()
+    assert (await m.install(package)).status_code == 201
+    source_id = package["requirements"]["datasources"][0]["datasource_id"]
+    bound = await m.api.put(
+        f"/runtime/apps/coach/bindings/{source_id}", json={"connector_url": STOCK}
+    )
+    assert bound.status_code == 201, bound.text
+    filled = await m.api.put("/apps/coach/secrets/stock_key", json={"value": "k3y"})
+    assert filled.status_code == 204
+    key = (await m.api.post("/apps/coach/keys", json={"name": "教练页面"})).json()["secret"]
+    return m, {"Authorization": f"Bearer {key}"}
+
+
+async def start(m: Machine, headers: dict[str, str]) -> httpx.Response:
+    return await m.api.post(
+        "/v1/apps/coach/runs", json={"input": {"topic": "深蹲"}}, headers=headers
+    )
+
+
+async def test_a_failed_model_call_stops_runs_until_the_model_answers_again():
+    (package,) = await packaged()
+    m, v1 = await ready_machine(package)
+    m.gateway.status = 401
+    fresh = (await m.api.get("/runtime/apps/coach/check", params={"fresh": "true"})).json()
+    assert fresh["ok"] is False
+    assert item(fresh, "model", "qwen")["message"].startswith("别名在，但调用失败：")
+
+    # Before refusing a run the runtime checks again, and calls the failed alias again
+    # rather than trusting the alias list.
+    calls = len(m.gateway.requests)
+    blocked = await start(m, v1)
+    assert (blocked.status_code, blocked.json()["detail"]) == (
+        503,
+        "这个应用还不能运行：缺 qwen 模型别名（运行包自检没通过）",
+    )
+    assert len(m.gateway.requests) == calls + 1
+
+    m.gateway.status = 200
+    assert (await start(m, v1)).status_code == 201
+    await m.service.wait_idle()
+    # Once it answers, checks without fresh=true stop calling it.
+    calls = len(m.gateway.requests)
+    assert (await m.runtime.check("coach"))["ok"] is True
+    assert len(m.gateway.requests) == calls
+
+
+async def test_a_passed_check_lets_only_its_own_version_run():
+    (package,) = await packaged()
+    m, v1 = await ready_machine(package)
+    needs_more = copy.deepcopy(package)
+    needs_more["requirements"]["secrets"] = ["stock_key", "music_key"]
+    assert (await m.install(resign(needs_more, package_id="v3", version=3))).status_code == 201
+    back = await m.api.post("/runtime/apps/coach/activate", json={"version": 2})
+    assert back.json()["check"]["ok"] is True
+
+    # Version 3 becomes current before its own check, as it does while a package installs
+    # or a version switches: version 2's passed check does not let it run.
+    await m.service.versions.activate("coach", 3)
+    blocked = await start(m, v1)
+    assert (blocked.status_code, blocked.json()["detail"]) == (
+        503,
+        "这个应用还不能运行：缺 密钥 music_key（运行包自检没通过）",
+    )
+    assert (await m.runtime.latest("coach"))["ok"] is False
+
+
+async def test_an_install_that_stopped_halfway_finishes_when_installed_again():
+    (package,) = await packaged()
+    m, v1 = await ready_machine(package)
+    config = (await m.service.versions.version("coach", 2)).config
+    # Version 3 was added and made current, then the install stopped before its record.
+    await m.service.versions.install("coach", 3, config, "装到一半", None)
+    blocked = await start(m, v1)
+    assert (blocked.status_code, blocked.json()["detail"]) == (
+        503,
+        "这个应用在运行包上没有装完，请重新装一次流程包",
+    )
+
+    finished = await m.install(resign(package, package_id="v3", version=3))
+    assert finished.status_code == 201, finished.text
+    assert [v["version"] for v in finished.json()["versions"]] == [3, 2]
+    assert (await start(m, v1)).status_code == 201
+
+    # The same number with another configuration is still somebody else's version.
+    other = copy.deepcopy(config)
+    other["graph"]["nodes"][1]["title"] = "换个名字"
+    await m.service.versions.install("coach", 4, other, "别的配置", None)
+    taken = await m.install(resign(package, package_id="v4", version=4))
+    assert (taken.status_code, taken.json()["detail"]) == (
+        409,
+        "第 4 版已经装过了，平台重新打的包要用新版本",
+    )
+
+
 @pytest.mark.skipif(not os.environ.get("AEP_TEST_DATABASE_URL"), reason="needs Postgres")
 async def test_installs_in_postgres():
     from psycopg.rows import dict_row
@@ -497,6 +594,14 @@ async def test_installs_in_postgres():
         assert [v.version for v in await versions.versions("rt-test")] == [3, 2]
         with pytest.raises(VersionExists):
             await versions.install("rt-test", 3, {}, "包", None)
+        # Finishing a half-done install compares the stored configuration with the package's.
+        nested = {
+            "env": {"secrets": ["k"]},
+            "graph": {"nodes": [{"id": "say", "title": "写字幕", "temperature": 0.2}], "edges": []},
+        }
+        await versions.install("rt-test", 5, nested, "包", None)
+        got_version = await versions.version("rt-test", 5)
+        assert got_version is not None and got_version.config == nested
         content = SkillContent("说明", "正文", {"a.md": "参考"}, version=4)
         assert await skills.install("rt-test-skill", content) is True
         assert await skills.install("rt-test-skill", content) is False

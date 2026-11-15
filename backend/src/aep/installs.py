@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 NOT_PACKAGE = "不是流程包文件"
 NO_KEYS = "运行包没有配置平台公钥（AEP_PLATFORM_PUBLIC_KEYS）"
 TOO_BIG = "流程包不能超过 5 MB"
+UNFINISHED = "这个应用在运行包上没有装完，请重新装一次流程包"
 CHECK_EVERY_SECONDS = 24 * 3600
 NETWORK_SECONDS = 5.0
 MAX_LISTED = 5
@@ -332,7 +333,11 @@ class Runtime:
         self.store: InstallStore = store or MemoryInstallStore()
         self._machine = machine or (lambda: machine_facts(settings.media_dir))
         self._reach = reach
-        self._checks: dict[str, dict[str, Any]] = {}
+        # The last self-check of each app, with the version it checked.
+        self._checks: dict[str, tuple[int, dict[str, Any]]] = {}
+        # Model aliases whose last real call failed: probed again on every check until one
+        # goes through, so a check without fresh=true cannot hide a broken provider.
+        self._failed_probes: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
     # Installing
@@ -360,7 +365,8 @@ class Runtime:
             if await self.store.find(package.package_id) is not None:
                 return await self.installed(package.app), False
             config = await self._config(package)
-            await self._refuse_conflicts(package)
+            resume = await self._half_installed(package, config)
+            await self._refuse_conflicts(package, resume)
             for skill in package.skills:
                 content = SkillContent(
                     skill.description,
@@ -378,8 +384,11 @@ class Runtime:
                 )
             else:
                 await self._runs.flows.update(package.app, package.title, package.summary)
-            note = f"流程包 {package.package_id[:8]}（{package.issued_at[:10]}）"
-            await self._runs.versions.install(package.app, package.version, config, note, actor)
+            if resume:
+                await self._runs.versions.activate(package.app, package.version)
+            else:
+                note = f"流程包 {package.package_id[:8]}（{package.issued_at[:10]}）"
+                await self._runs.versions.install(package.app, package.version, config, note, actor)
             requirements = raw["requirements"]
             await self.store.add(
                 Installed(
@@ -409,7 +418,17 @@ class Runtime:
             first = exc.problems[0][1] if exc.problems else ""
             raise InstallError(422, f"这台运行包读不了包里的应用配置：{first}") from exc
 
-    async def _refuse_conflicts(self, package: _Package) -> None:
+    async def _half_installed(self, package: _Package, config: dict[str, Any]) -> bool:
+        """Whether an earlier install of this package stopped after adding the app version
+        but before recording the install: the same version number with the same
+        configuration and no install record for it. Installing again finishes it."""
+        have = await self._runs.versions.version(package.app, package.version)
+        if have is None or have.config != config:
+            return False
+        recorded = await self.store.versions(package.app)
+        return all(i.version != package.version for i in recorded)
+
+    async def _refuse_conflicts(self, package: _Package, resume: bool = False) -> None:
         for skill in package.skills:
             have = await self._runs.skills.version(skill.name, skill.version)
             if have is not None and (have.description, have.body, have.references) != (
@@ -425,7 +444,7 @@ class Runtime:
         if found is not None and found.kind != package.kind:
             other = "智能体应用" if found.kind == agent_app.KIND else "编排应用"
             raise InstallError(409, f"这台机器上已经有一个同名的{other}")
-        if await self._runs.versions.version(package.app, package.version) is not None:
+        if not resume and await self._runs.versions.version(package.app, package.version):
             raise InstallError(409, f"第 {package.version} 版已经装过了，平台重新打的包要用新版本")
 
     # Reading
@@ -517,7 +536,8 @@ class Runtime:
 
     async def check(self, app: str, fresh: bool = False) -> dict[str, Any]:
         """Check every item of the current version's requirements and keep the result."""
-        needs = (await self._current(app)).requirements
+        current = await self._current(app)
+        needs = current.requirements
         items: list[dict[str, Any]] = []
         wanted = needs["platform"]["min_version"]
         items.append(
@@ -559,7 +579,7 @@ class Runtime:
             "checked_at": datetime.now(UTC).isoformat(),
             "items": items,
         }
-        self._checks[app] = result
+        self._checks[app] = (current.version, result)
         return result
 
     async def _model_items(self, needs: dict[str, Any], fresh: bool) -> list[dict[str, Any]]:
@@ -579,7 +599,13 @@ class Runtime:
                     message = "默认对话模型不在模型网关上，请在 LiteLLM 配置里加上"
                 items.append(_item("model", alias, False, message))
                 continue
-            problem = await self._probe(alias) if fresh else None
+            problem = None
+            if fresh or alias in self._failed_probes:
+                problem = await self._probe(alias)
+                if problem is None:
+                    self._failed_probes.pop(alias, None)
+                else:
+                    self._failed_probes[alias] = problem
             items.append(_item("model", alias, problem is None, problem))
         return items
 
@@ -641,9 +667,12 @@ class Runtime:
         return items
 
     async def latest(self, app: str) -> dict[str, Any]:
-        """The last check of ``app``, checking it now when it has none."""
-        await self._versions(app)
-        return self._checks.get(app) or await self.check(app)
+        """The last check of ``app``'s current version, checking it now when it has none."""
+        current = await self._current(app)
+        cached = self._checks.get(app)
+        if cached is not None and cached[0] == current.version:
+            return cached[1]
+        return await self.check(app)
 
     async def recheck(self, app: str) -> None:
         """Check ``app`` again if it is installed (after one of its secrets changed)."""
@@ -658,11 +687,16 @@ class Runtime:
                 log.exception("could not check installed app %s", app)
 
     async def ready(self, app: str) -> str | None:
-        """None when /v1 may start a run of ``app``; else why not (docs/api/runtime.md)."""
-        if not await self.store.versions(app):
-            return None
-        last = self._checks.get(app)
-        if last is not None and last["ok"]:
+        """None when /v1 may start a run of ``app``; else why not (docs/api/runtime.md). The
+        version that runs must be installed and its own last check must have passed."""
+        try:
+            number = await self._runs.versions.current(app)
+        except LookupError:  # no version at all: the memory store's KeyError, VersionNotFound
+            return UNFINISHED
+        if all(i.version != number for i in await self.store.versions(app)):
+            return UNFINISHED
+        cached = self._checks.get(app)
+        if cached is not None and cached[0] == number and cached[1]["ok"]:
             return None
         result = await self.check(app)
         if result["ok"]:

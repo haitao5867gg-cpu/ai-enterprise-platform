@@ -511,6 +511,9 @@ MESSAGES: dict[str, str] = {
         "Version {version} is already installed; a repackaged app needs a new version"
     ),
     "这台运行包没有装应用 {app}": "App {app} is not installed on this runtime",
+    "这个应用在运行包上没有装完，请重新装一次流程包": (
+        "The app's install on this runtime did not finish; install the package again"
+    ),
     "没有装过第 {version} 版": "Version {version} was never installed",
     "这个应用不需要这个数据源": "The app does not need this data source",
     "这台机器上已经有名为「{name}」的数据源": (
