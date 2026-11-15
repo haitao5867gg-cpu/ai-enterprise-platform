@@ -84,6 +84,21 @@ async def test_a_probe_answers_within_the_check_time(root, monkeypatch):
     await jobs.close()
 
 
+async def test_probing_for_thumbnails_also_removes_old_work_files(root):
+    server, jobs = build(Settings(media_dir=root, media_work_hours=1))
+    old = time.time() - 7200
+    stale = root / "_work" / "t_old"
+    stale.mkdir(parents=True)
+    (stale / "thumbnail.jpg").write_bytes(b"x")
+    os.utime(stale, (old, old))
+    async with Client(server) as client:
+        await call(client, "probe", {"source": path_of(root, "配音.m4a")})
+        assert stale.exists()
+        await call(client, "probe", {"source": path_of(root, "横屏.mp4"), "thumbnail": True})
+        assert not stale.exists()
+    await jobs.close()
+
+
 async def test_a_render_is_a_long_job_that_a_key_finds_again(root):
     server, jobs = build(Settings(media_dir=root))
     args = {

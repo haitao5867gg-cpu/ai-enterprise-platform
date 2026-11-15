@@ -58,6 +58,8 @@ def build(settings: Settings | None = None) -> tuple[MCPServer, Jobs]:
         shown, rotation applied), orientation, fps, codecs and size. With
         ``thumbnail`` a JPG 480 px on the long edge from second 1 is made and returned
         as a file reference."""
+        if thumbnail:
+            jobs.sweep()  # thumbnails are work files too: old ones go (at most hourly)
         # An ordinary tool: it must answer before the platform's tool call gives up.
         try:
             async with asyncio.timeout(settings.media_check_seconds):
