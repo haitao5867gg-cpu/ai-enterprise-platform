@@ -29,6 +29,8 @@ def input_schema(inputs: list[dict[str, Any]] | None) -> dict[str, Any]:
                 prop["maxLength"] = f["max_length"]
             if kind == "datasource":
                 prop["description"] += "（数据源 id）"
+            elif kind == "media":
+                prop["description"] += "（素材 id，先经 /v1 上传）"
         if f.get("default") is not None:
             prop["default"] = f["default"]
         properties[f["key"]] = prop

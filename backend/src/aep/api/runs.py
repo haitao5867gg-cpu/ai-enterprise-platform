@@ -190,6 +190,11 @@ another shape are skipped, never a 500. The zip is named after the bundle
 (``result.bundle`` when it is text, as for ``etl``, else the bundle's ``name``), or
 the run id; 404 ``这次运行没有可下载的代码`` when there is none.
 
+``GET /runs/{id}/media`` lists the media files the run made into libraries its app
+binds, like ``RunResult.files`` of the app API (docs/api/media.md, 结果里的文件), but
+each ``download_path`` is the platform's own media API
+(``/media-libraries/{library_id}/items/{item_id}/file``). ``[]`` when there are none.
+
 ``GET /runs/{id}/flow`` shows how the run's app is built and what this run did,
 for explaining it (see ``aep.runtime.design``). ``design`` is the app as a whole
 (``title``, ``summary``, ``pattern``: a fixed workflow or an agent, ``knowledge``,
@@ -221,6 +226,7 @@ from pydantic import BaseModel, Field
 
 from aep import feedback as runfeedback
 from aep.api.entries import open_to_users
+from aep.app_access import platform_path, run_files
 from aep.auth import current_user, enabled, require, who
 from aep.knowledge.citations import CitedSource
 from aep.policy import DataPolicy
@@ -842,6 +848,16 @@ async def _run_files(run_id: str, service: RunService) -> tuple[dict[str, str], 
         if files is not None:
             return files, _named(bundle)
     return None
+
+
+@router.get("/{run_id}/media")
+async def run_media(run_id: str, service: Service) -> list[dict[str, Any]]:
+    """The media files the run made, for the run page."""
+    try:
+        record = (await service.get(run_id)).record
+    except RunNotFound as exc:
+        raise HTTPException(404, "run not found") from exc
+    return await run_files(service, record.app, record.run_id, platform_path)
 
 
 @router.get("/{run_id}/files.zip")

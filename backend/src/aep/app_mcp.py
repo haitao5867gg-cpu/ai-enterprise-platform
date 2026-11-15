@@ -25,6 +25,7 @@ from aep.app_access import (
     ApiKeys,
     ConversationProblem,
     bearer,
+    run_files,
     run_result,
     settle,
     start,
@@ -215,8 +216,9 @@ class AppTools:
             return _error("这个应用没有开对话")
         except ConversationBusy:
             return _error("上一条还没处理完，稍后用 get_run 查它的结果")
+        files = await run_files(service, key.app, view.record.run_id)
         result = json.loads(
-            json.dumps(run_result(view, who["web_url"]), default=lambda v: v.isoformat())
+            json.dumps(run_result(view, who["web_url"], files), default=lambda v: v.isoformat())
         )
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=summary(result))],

@@ -292,6 +292,7 @@ async def test_requirements_list_of_a_version():
             "sandbox": True,
             "skills": [{"name": "polite", "version": 1}],
             "secrets": ["crm_token"],
+            "media_libraries": [],
             "machine": None,
             "network": ["api.pexels.com"],
             "notes": "说明",

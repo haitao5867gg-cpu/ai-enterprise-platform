@@ -32,6 +32,7 @@ from aep.runtime import agent_app
 from aep.runtime.catalog import AppCatalog, AppNotFound
 from aep.runtime.flow import files as flowfiles
 from aep.runtime.flow import graph as flowgraph
+from aep.runtime.flow import media as flowmedia
 from aep.runtime.service import RunService
 from aep.runtime.store import DEFAULT_TENANT
 from aep.runtime.versions import VersionNotFound
@@ -323,6 +324,7 @@ class Packages:
             "sandbox": False,
             "skills": [],
             "secrets": [],
+            "media_libraries": [],
         }
         reason: str | None = CODE_APP
         if kind != "code":
@@ -332,7 +334,8 @@ class Packages:
                 d.datasource_id: {"datasource_id": d.datasource_id, "name": d.name, "kind": d.kind}
                 for d in await self._datasources.all()
             }
-            needed = flowfiles.requires(config, sources, {}, kind)
+            libraries = await flowmedia.names(self._runs.media, config)
+            needed = flowfiles.requires(config, sources, {}, kind, libraries)
             nodes = flowgraph.nodes(shape)
             _, default = flowfiles.model_refs(shape)
             derived = {
@@ -342,6 +345,7 @@ class Packages:
                 "sandbox": any(n["type"] == "code" for n in nodes),
                 "skills": needed["skills"],
                 "secrets": needed["secrets"],
+                "media_libraries": needed.get("media_libraries", []),
             }
             reason = unsupported(
                 nodes,

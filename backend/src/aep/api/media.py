@@ -163,7 +163,7 @@ class ItemPage(BaseModel):
     total: int
 
 
-def _library_out(library: MediaLibrary) -> LibraryOut:
+def library_out(library: MediaLibrary) -> LibraryOut:
     return LibraryOut(
         library_id=library.library_id,
         name=library.name,
@@ -239,7 +239,7 @@ def _form_tags(raw: str | None) -> tuple[str, ...]:
 
 @router.get("")
 async def list_libraries(store: Store) -> list[LibraryOut]:
-    return [_library_out(library) for library in await store.libraries()]
+    return [library_out(library) for library in await store.libraries()]
 
 
 @router.post("", status_code=201)
@@ -248,12 +248,12 @@ async def create_library(body: NewLibrary, store: Store) -> LibraryOut:
         library = await store.create_library(body.name, body.description)
     except DuplicateName as exc:
         raise HTTPException(409, f"已存在名为「{body.name}」的媒体库") from exc
-    return _library_out(library)
+    return library_out(library)
 
 
 @router.get("/{library_id}")
 async def get_library(library_id: str, store: Store) -> LibraryOut:
-    return _library_out(await _library(store, library_id))
+    return library_out(await _library(store, library_id))
 
 
 @router.patch("/{library_id}")
@@ -265,7 +265,7 @@ async def update_library(library_id: str, body: LibraryChanges, store: Store) ->
         raise HTTPException(409, f"已存在名为「{body.name}」的媒体库") from exc
     if library is None:
         raise HTTPException(404, "没有这个媒体库")
-    return _library_out(library)
+    return library_out(library)
 
 
 @router.delete("/{library_id}", status_code=204)
@@ -307,6 +307,21 @@ async def upload_items(
     uploaded_by: Annotated[str | None, Form(max_length=50)] = None,
 ) -> list[ItemOut]:
     library = await _library(store, library_id)
+    return await upload(
+        store, settings, library, files, description, tags, who(request, uploaded_by)
+    )
+
+
+async def upload(
+    store: MediaStore,
+    settings: Settings,
+    library: MediaLibrary,
+    files: list[UploadFile] | None,
+    description: str | None,
+    tags: str | None,
+    uploaded_by: str | None,
+) -> list[ItemOut]:
+    """Check a whole batch, then save it into the library (also the app API's upload)."""
     if not files:
         raise HTTPException(422, "请选择至少一个视频、音频或图片文件")
     if len(files) > MAX_FILES:
@@ -323,7 +338,7 @@ async def upload_items(
             settings.media_max_file_mb,
             description=(description or "").strip(),
             tags=labels,
-            uploaded_by=who(request, uploaded_by),
+            uploaded_by=uploaded_by,
         )
     except UploadError as exc:
         raise HTTPException(422, str(exc)) from exc

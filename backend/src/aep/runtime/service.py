@@ -55,8 +55,10 @@ from aep import entries as ways
 from aep import policy, projects, tracing
 from aep.etl.profile import InputError
 from aep.knowledge.store import KnowledgeStore
+from aep.media.store import MediaStore
 from aep.runtime import agent_app, appconfig, design, human
 from aep.runtime.flow import graph as flowgraph
+from aep.runtime.flow import media as flowmedia
 from aep.runtime.flow import nodes as flownodes
 from aep.runtime.flow import refs
 from aep.runtime.flow.builtin import BuiltinFlow
@@ -399,6 +401,20 @@ class RunService:
         return self._ctx.knowledge
 
     @property
+    def media(self) -> MediaStore:
+        """The media libraries (docs/api/media.md)."""
+        return self._ctx.media
+
+    async def _check_input(self, fields: list[dict[str, Any]], given: dict[str, Any]) -> None:
+        """A new run's input against the start node's inputs: ``InvalidValues`` when it does
+        not do, the media items it names included (docs/api/media.md, 素材输入)."""
+        _, problems = flownodes.answers(fields, given)
+        if not problems:
+            problems = await flowmedia.value_problems(self._ctx.media, fields, given)
+        if problems:
+            raise InvalidValues(problems)
+
+    @property
     def code_apps(self) -> list[str]:
         return sorted(self._graphs)
 
@@ -484,6 +500,7 @@ class RunService:
             app_shape=self.app_shape,
             report_progress=self.report_progress,
             run_cancelled=self.run_cancelled,
+            media=self._ctx.media,
         )
 
     async def report_progress(
@@ -510,6 +527,15 @@ class RunService:
             log.exception("could not read run %s", run_id)
             return False
         return record is not None and record.status == "cancelled"
+
+    async def current_config(self, app: str) -> dict[str, Any] | None:
+        """The flow configuration of the app's current version (an agent app's as the flow
+        it runs as), or None for a code app and an app that does not exist."""
+        if await self.kind(app) != "flow":
+            return None
+        await self.ensure_versions(app)
+        found = await self.versions.version(app, await self.versions.current(app))
+        return self.flow_config(app, found.config) if found is not None else None
 
     async def app_shape(self, app: str) -> flownodes.AppShape | None:
         """The app as an app node calling it sees it (its current version), or None when
@@ -834,9 +860,7 @@ class RunService:
             config = found.config
         if kind == "flow":
             config = self.flow_config(app, config)
-            _, problems = flownodes.answers(flowgraph.inputs(config), input)
-            if problems:
-                raise InvalidValues(problems)
+            await self._check_input(flowgraph.inputs(config), input)
         bound = await self._bind(app, kind, config, project)
         platform = policy.platform_default(self._ctx.settings)
         rules = projects.effective_policy(bound, platform)
@@ -1373,6 +1397,8 @@ class RunService:
             problems[chat.MESSAGE] = "消息在发消息时给，不放在会话的输入里"
         _, found = flownodes.answers(fields, given)
         problems |= found
+        if not problems:
+            problems = await flowmedia.value_problems(self._ctx.media, fields, given)
         if problems:
             raise InvalidValues(problems)
         # The project is checked as a run's (a turn binds it again each time).

@@ -114,7 +114,9 @@ PROBE_FIELDS = ("status", "error", "duration_seconds", "width", "height")
 
 class MediaStore(Protocol):
     async def setup(self) -> None: ...
-    async def create_library(self, name: str, description: str = "") -> MediaLibrary: ...
+    async def create_library(
+        self, name: str, description: str = "", library_id: str | None = None
+    ) -> MediaLibrary: ...
     async def libraries(self) -> list[MediaLibrary]: ...
     async def library(self, library_id: str) -> MediaLibrary | None: ...
     async def update_library(self, library_id: str, **changes: Any) -> MediaLibrary | None: ...
@@ -128,6 +130,13 @@ class MediaStore(Protocol):
         self, library_id: str, item_id: str, **changes: Any
     ) -> MediaItem | None: ...
     async def delete_item(self, library_id: str, item_id: str) -> MediaItem | None: ...
+    async def run_items(
+        self, run_id: str, library_ids: list[str], limit: int
+    ) -> list[MediaItem]: ...
+
+
+class DuplicateId(Exception):
+    """A library with this id already exists."""
 
 
 class MemoryMediaStore:
@@ -152,10 +161,14 @@ class MemoryMediaStore:
             status_counts=counts,
         )
 
-    async def create_library(self, name: str, description: str = "") -> MediaLibrary:
+    async def create_library(
+        self, name: str, description: str = "", library_id: str | None = None
+    ) -> MediaLibrary:
         if any(lib.name == name for lib in self._libraries.values()):
             raise DuplicateName(name)
-        library = MediaLibrary(str(uuid.uuid4()), name, description)
+        if library_id is not None and library_id in self._libraries:
+            raise DuplicateId(library_id)
+        library = MediaLibrary(library_id or str(uuid.uuid4()), name, description)
         self._libraries[library.library_id] = library
         return library
 
@@ -237,6 +250,16 @@ class MemoryMediaStore:
             del self._items[item_id]
         return item
 
+    async def run_items(self, run_id: str, library_ids: list[str], limit: int) -> list[MediaItem]:
+        found = [
+            i for i in self._items.values() if i.library_id in library_ids and _made_by(i, run_id)
+        ]
+        return sorted(found, key=lambda i: (i.created_at, i.name))[:limit]
+
+
+def _made_by(item: MediaItem, run_id: str) -> bool:
+    return item.source.get("kind") == "run" and item.source.get("run_id") == run_id
+
 
 def _by_name(library: MediaLibrary) -> str:
     return library.name
@@ -276,6 +299,9 @@ CREATE TABLE IF NOT EXISTS media_items (
     updated_at       timestamptz NOT NULL DEFAULT now()
 )""",
     "CREATE INDEX IF NOT EXISTS media_items_library ON media_items (library_id, created_at DESC)",
+    # The files a run made (docs/api/media.md, 结果里的文件).
+    "CREATE INDEX IF NOT EXISTS media_items_run ON media_items ((source->>'run_id'))"
+    " WHERE source->>'kind' = 'run'",
 ]
 
 LIBRARY_COLUMNS = (
@@ -336,8 +362,12 @@ class PostgresMediaStore:
             )
             return [_library(row) for row in await cur.fetchall()]
 
-    async def create_library(self, name: str, description: str = "") -> MediaLibrary:
-        key = uuid.uuid4()
+    async def create_library(
+        self, name: str, description: str = "", library_id: str | None = None
+    ) -> MediaLibrary:
+        key = uuid.uuid4() if library_id is None else _uuid(library_id)
+        if key is None:
+            raise ValueError(f"not a library id: {library_id}")
         async with self._pool.connection() as conn:
             try:
                 await conn.execute(
@@ -346,6 +376,8 @@ class PostgresMediaStore:
                     (key, name, description),
                 )
             except errors.UniqueViolation as exc:
+                if exc.diag.constraint_name == "media_libraries_pkey":
+                    raise DuplicateId(library_id) from exc
                 raise DuplicateName(name) from exc
         library = await self.library(str(key))
         assert library is not None
@@ -529,3 +561,16 @@ class PostgresMediaStore:
             )
             row = await cur.fetchone()
             return _item(row) if row else None
+
+    async def run_items(self, run_id: str, library_ids: list[str], limit: int) -> list[MediaItem]:
+        keys = [k for k in (_uuid(i) for i in library_ids) if k is not None]
+        if not keys:
+            return []
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {ITEM_COLUMNS} FROM media_items WHERE tenant_id = %s"
+                " AND source->>'kind' = 'run' AND source->>'run_id' = %s"
+                " AND library_id = ANY(%s) ORDER BY created_at, name LIMIT %s",
+                (DEFAULT_TENANT, run_id, keys, limit),
+            )
+            return [_item(row) for row in await cur.fetchall()]

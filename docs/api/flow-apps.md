@@ -80,12 +80,12 @@
 **start 开始**：恰好一个。
 
 ```jsonc
-{"inputs": [{"key": "question", "label": "客户问题", "type": "text" | "textarea" | "number" | "boolean" | "select" | "datasource",
+{"inputs": [{"key": "question", "label": "客户问题", "type": "text" | "textarea" | "number" | "boolean" | "select" | "datasource" | "media",
              "required": true, "default": null, "choices": [{"value": "a", "label": "A"}],   // choices 只用于 select
              "max_length": 2000}]}   // 1–20 个；max_length 只用于 text、textarea
 ```
 
-产出：每个输入字段。`datasource` 类型的值是 `datasource_id`。无分支。
+产出：每个输入字段。`datasource` 类型的值是 `datasource_id`。`media` 类型是媒体库里的一个素材：输入时给素材 id，产出是素材的摘要（名称、类型、时长、文件路径），要先在配置的 `media` 里绑定媒体库，见 [media.md](media.md)“应用用媒体库”。无分支。
 
 开始节点还可以写 `project`（第三批）：`"required"`（运行必须绑定一个项目）或 `"optional"`，不写表示这个应用不用项目。规则、新建运行时的检查和运行记录里的项目见 [projects.md](projects.md)“运行绑定项目”。
 
