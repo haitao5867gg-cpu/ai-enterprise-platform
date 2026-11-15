@@ -14,9 +14,11 @@ import {
   MEDIA_KINDS,
   mediaAccept,
   mediaFileUrl,
+  mediaPosterUrl,
   mediaKindLabels,
   mediaStatusLabels,
   mediaUploadProblem,
+  splitMediaTags,
   updateMediaItem,
   updateMediaLibrary,
   uploadMediaWithProgress,
@@ -31,16 +33,6 @@ import { MediaPreview, mediaMeta } from "./media-ui";
 import { EmptyState, ErrorNotice } from "./ui";
 
 const PAGE = 48;
-
-// Tags typed as one line: split on commas (half or full width) and spaces.
-const splitTags = (text: string) => [
-  ...new Set(
-    text
-      .split(/[,，、\s]+/)
-      .map((tag) => tag.trim())
-      .filter(Boolean),
-  ),
-];
 
 function EditItemDialog({
   item,
@@ -62,7 +54,7 @@ function EditItemDialog({
     dialog.current?.showModal();
   }, []);
   async function save() {
-    const list = splitTags(tags);
+    const list = splitMediaTags(tags);
     if (list.length > 20 || list.some((tag) => tag.length > 20)) {
       setError(t("标签最多 20 个，每个 1–20 个字"));
       return;
@@ -435,6 +427,7 @@ export function MediaDetail({ id }: { id: string }) {
                 kind={item.kind}
                 src={mediaFileUrl(item.library_id, item.item_id)}
                 name={item.name}
+                poster={mediaPosterUrl(item)}
               />
               <div className="media-card-body">
                 <strong className="media-name" title={item.name}>

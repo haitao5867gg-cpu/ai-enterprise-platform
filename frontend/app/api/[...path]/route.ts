@@ -116,7 +116,7 @@ async function handle(request: Request, context: Context) {
       ["GET", "PATCH", "DELETE"],
     ],
     [
-      /^media-libraries\/[a-zA-Z0-9_-]{1,128}\/items\/[a-zA-Z0-9_-]{1,128}\/file$/,
+      /^media-libraries\/[a-zA-Z0-9_-]{1,128}\/items\/[a-zA-Z0-9_-]{1,128}\/(file|thumbnail)$/,
       ["GET"],
     ],
     [/^knowledge-bases$/, ["GET", "POST"]],

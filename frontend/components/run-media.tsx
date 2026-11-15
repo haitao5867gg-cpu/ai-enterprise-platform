@@ -7,6 +7,7 @@ import {
   getMediaItem,
   listRunMedia,
   mediaFileUrl,
+  mediaPosterUrl,
   type MediaItem,
   type RunMediaFile,
 } from "../lib/media";
@@ -120,6 +121,7 @@ export function RunMediaInputs({
                     kind={item.kind}
                     src={mediaFileUrl(item.library_id, item.item_id)}
                     name={item.name}
+                    poster={mediaPosterUrl(item)}
                   />
                 </>
               ) : item === null ? (

@@ -42,7 +42,7 @@ import {
 import { issuesUnder, variablesFor, type Variable } from "../lib/flow-edit";
 import { errorMessage } from "../lib/runs";
 import { MEDIA_KINDS, mediaKindLabels } from "../lib/media";
-import { useBoundLibraries } from "./flow-media";
+import { SaveMediaFields, useBoundLibraries } from "./flow-media";
 import { SkillPicker } from "./app-settings";
 import {
   CheckField,
@@ -674,6 +674,20 @@ function ToolFields({
           }
         />
       )}
+      {config.media?.libraries?.length || node.save_media ? (
+        <SaveMediaFields
+          save={node.save_media}
+          config={config}
+          variables={variables}
+          issues={issues}
+          onChange={(save) => {
+            const next = { ...node };
+            if (save) next.save_media = save;
+            else delete next.save_media;
+            change(next);
+          }}
+        />
+      ) : null}
     </>
   );
 }

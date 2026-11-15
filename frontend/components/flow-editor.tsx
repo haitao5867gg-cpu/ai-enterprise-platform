@@ -83,7 +83,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
     "min_score",
     "retrieval",
   ],
-  tool: ["datasource", "tool", "args"],
+  tool: ["datasource", "tool", "args", "save_media"],
   agent: [
     "model",
     "skills",

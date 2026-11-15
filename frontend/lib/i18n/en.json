@@ -1628,5 +1628,14 @@
   "音频": "Audio",
   "库里还没有能用的素材，请搭建者先上传。": "The library has nothing usable yet. Ask a builder to upload some.",
   "还有 {n} 个素材没列出来。": "{n} more items aren't listed yet.",
-  "再列出一些": "List more"
+  "再列出一些": "List more",
+  "{library}（没有以“写”绑定）": "{library} (not bound for writing)",
+  "不存（文件 24 小时后删掉）": "Don't save (files are deleted after 24 hours)",
+  "产出的文件存进媒体库": "Save output files to a media library",
+  "先在“媒体库”里以“写”权限绑定一个库。": "Bind a library with write access under “Media libraries” first.",
+  "存进哪个库": "Library",
+  "工具产出的文件移进这个库，后面的节点拿到库里的素材。": "Files the tool makes are moved into this library; later nodes get the library's items.",
+  "用逗号或空格隔开": "Separate with commas or spaces",
+  "素材标签": "Item tags",
+  "素材说明": "Item description"
 }

@@ -40,6 +40,8 @@ export type MediaItem = {
   usable: boolean;
   source: MediaSource;
   uploaded_by: string | null;
+  // A JPG the media processing connector made (docs/api/media-processing.md).
+  has_thumbnail: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -70,6 +72,16 @@ export type RunMediaFile = {
 // How a flow app may use a library it binds (the configuration's `media.libraries`).
 export type MediaAccess = "read" | "write";
 export type MediaBinding = { library_id: string; access: MediaAccess };
+
+// Tags typed as one line: split on commas (half or full width) and spaces.
+export const splitMediaTags = (text: string) => [
+  ...new Set(
+    text
+      .split(/[,，、\s]+/)
+      .map((tag) => tag.trim())
+      .filter(Boolean),
+  ),
+];
 
 export const MEDIA_KINDS: MediaKind[] = ["video", "audio", "image"];
 export const mediaKindLabels: Record<MediaKind, string> = {
@@ -210,6 +222,13 @@ export const deleteMediaItem = (library: string, id: string) =>
 // Where the page plays or downloads an item: through the platform's proxy.
 export const mediaFileUrl = (library: string, id: string) =>
   `/api${item(library, id)}/file`;
+// The item's thumbnail, when it has one: a video shows it until it plays.
+export const mediaPosterUrl = (
+  media: Pick<MediaItem, "library_id" | "item_id" | "has_thumbnail">,
+) =>
+  media.has_thumbnail
+    ? `/api${item(media.library_id, media.item_id)}/thumbnail`
+    : undefined;
 export const listRunMedia = (runId: string, signal?: AbortSignal) =>
   requestJson(`/runs/${encodeURIComponent(runId)}/media`, {
     signal,
