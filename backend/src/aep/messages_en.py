@@ -294,6 +294,24 @@ MESSAGES: dict[str, str] = {
     "文件「{file}」：文件名含有无效字符": "File “{file}”: the file name has invalid characters",
     "文件「{file}」：单文件不能超过 20 MB": "File “{file}”: a file cannot exceed 20 MB",
     "平台没有配置知识库": "The platform has no knowledge base configured",
+    # Media libraries
+    "没有这个媒体库": "Media library not found",
+    "没有这个素材": "Media item not found",
+    "素材文件不见了": "The media file is missing",
+    "已存在名为「{name}」的媒体库": "There is already a media library named “{name}”",
+    "请选择至少一个视频、音频或图片文件": "Choose at least one video, audio or image file",
+    "一个媒体库最多 {limit} 个素材": "A media library holds at most {limit} items",
+    "文件「{file}」：只支持视频（mp4、mov、m4v、webm、mkv）、音频（m4a、mp3、wav、aac、ogg、opus、flac）和图片（jpg、jpeg、png、webp）": (  # noqa: E501
+        "File “{file}”: only video (mp4, mov, m4v, webm, mkv), audio (m4a, mp3, wav, aac, "
+        "ogg, opus, flac) and images (jpg, jpeg, png, webp) are supported"
+    ),
+    "文件「{file}」：单个文件不能超过 {size} MB": "File “{file}”: a file cannot exceed {size} MB",
+    "文件「{file}」：是空文件": "File “{file}”: the file is empty",
+    "「标签」要是 JSON 数组，最多 20 个，每个 1–20 个字": (
+        "“Tags” must be a JSON array of at most 20 tags, each 1–20 characters"
+    ),
+    "来源链接要以 http:// 或 https:// 开头": "Source links must start with http:// or https://",
+    "服务器硬盘满了，这批素材没有保存": "The server's disk is full; this batch was not saved",
     "向量模型返回的向量数量或顺序不正确": (
         "The embedding model returned the wrong number or order of vectors"
     ),

@@ -218,7 +218,15 @@ PUBLIC = frozenset(
         ("POST", "/auth/login"),
     }
 )
-BUILT = ("/apps", "/skills", "/knowledge-bases", "/datasources", "/projects", "/schedules")
+BUILT = (
+    "/apps",
+    "/skills",
+    "/knowledge-bases",
+    "/media-libraries",
+    "/datasources",
+    "/projects",
+    "/schedules",
+)
 
 
 def _under(path: str, prefix: str) -> bool:

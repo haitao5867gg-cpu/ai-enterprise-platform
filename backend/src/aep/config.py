@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     connector_check_seconds: float = Field(5.0, gt=0, le=8)
     # Shared with the read-only files connector; each upload gets a UUID directory.
     uploads_dir: Path = Path("/data/uploads")
+    # Media libraries' videos, audio and images (docs/api/media.md): where they live,
+    # the largest file one upload may hold and how many items one library may have.
+    media_dir: Path = Path("/data/media")
+    media_max_file_mb: int = Field(1024, gt=0)
+    media_max_items: int = Field(5000, gt=0)
     files_connector_url: str = "http://connector-files:8003"
     # The code sandbox (connectors/sandbox), where code nodes of flow apps run.
     sandbox_url: str = "http://sandbox-relay:8004/mcp"
