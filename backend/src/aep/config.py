@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     # connector's own AEP_DATABRICKS_READ_TIMEOUT_SECONDS).
     tool_timeout_seconds: float = 30.0
     databricks_tool_seconds: float = Field(180.0, gt=0)
+    # Longest a connector's long-running job may take (docs/api/connector-jobs.md).
+    tool_job_seconds: float = Field(7200.0, gt=0)
     # Data sources registered at startup when no source of that name exists yet,
     # as JSON: [{"name": ..., "kind": ..., "connector_url": ..., "description": ...}].
     default_datasources: list[dict[str, str]] = []

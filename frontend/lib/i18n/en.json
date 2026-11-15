@@ -1536,5 +1536,6 @@
   "常见的错": "Common mistakes",
   "应为 {expected}，给了 {actual}（{count} 条）": "Expected {expected}, got {actual} ({count})",
   "空": "nothing",
-  "检查方式": "Check"
+  "检查方式": "Check",
+  "（{progress}）": " ({progress})"
 }

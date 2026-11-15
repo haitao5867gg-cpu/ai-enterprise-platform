@@ -51,6 +51,9 @@
     "fields": [Field] | null      // 表单字段，同 flow-apps.md 人工节点
   } | null,
   "error": "…" | null,
+  "step": {"node": "render", "title": "剪辑渲染"} | null,   // 进行到、停在或失败于哪一步，同运行记录的 step
+  "progress": {"node": "render", "percent": 42, "message": "渲染第 3 段，共 12 段", "updated_at": "…"} | null,
+                                 // 当前这一步报的进度，只在 running 时有，见 connector-jobs.md
   "link": "https://…/runs/…",    // 平台里这次运行的页面（AEP_WEB_URL）
   "conversation_id": "conv_…" | null,   // 智能体应用第 1 批新增：这次运行所在的会话，见“会话”；不在会话里为 null
   "turn": 2 | null,                     // 是会话的第几轮

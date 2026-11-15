@@ -72,6 +72,14 @@ export function answersChanged(
   );
 }
 export type RunStep = { node: string; title: string };
+// What the step a running run is at says of its progress, e.g. a long-running
+// connector job (docs/api/connector-jobs.md); null otherwise.
+export type RunProgress = {
+  node: string;
+  percent: number | null;
+  message: string | null;
+  updated_at: string;
+};
 export type RunSummary = {
   app_version?: number | null;
   draft?: boolean;
@@ -86,6 +94,7 @@ export type RunSummary = {
   updated_at?: string;
   finished_at?: string | null;
   step?: RunStep | null;
+  progress?: RunProgress | null;
   // The current wait for a person, and the seconds of waits already over
   // (null: the run is from before waits were counted).
   waiting_since?: string | null;

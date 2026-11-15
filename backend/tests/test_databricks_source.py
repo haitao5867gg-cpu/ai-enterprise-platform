@@ -44,9 +44,9 @@ class Recording(McpTools):
         super().__init__(*args, **kwargs)
         self.timeouts: list[tuple[str, float | None]] = []
 
-    async def call(self, url, name, arguments=None, timeout_seconds=None):  # type: ignore[override]
+    async def call(self, url, name, arguments=None, timeout_seconds=None, meta=None):  # type: ignore[override]
         self.timeouts.append((name, timeout_seconds))
-        return await super().call(url, name, arguments, timeout_seconds)
+        return await super().call(url, name, arguments, timeout_seconds, meta)
 
 
 async def lake_env(settings: Settings = SETTINGS) -> tuple[Runtime, str, str, list, Recording]:

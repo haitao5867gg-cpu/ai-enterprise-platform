@@ -15,7 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 from aep.conversations import MAX_MESSAGE, MESSAGE
 from aep.entries import CLOSED_ENTRY
 from aep.runtime.service import ConversationGone, InvalidValues, RunService, RunView
-from aep.runtime.store import DEFAULT_TENANT, RunRecord
+from aep.runtime.store import DEFAULT_TENANT, RunRecord, current_progress
 
 PREFIX = "aep_"
 SHOWN = 12  # characters of a key shown in lists
@@ -301,6 +301,8 @@ def run_result(view: RunView, web_url: str) -> dict[str, Any]:
         if pending
         else None,
         "error": r.error if r.status == "error" else None,
+        "step": r.step,
+        "progress": current_progress(r),
         "link": f"{web_url.rstrip('/')}/runs/{r.run_id}",
         "conversation_id": r.conversation_id,
         "turn": r.conversation_turn,

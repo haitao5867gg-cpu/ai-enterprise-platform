@@ -213,6 +213,13 @@ test("the run list says what each run is about, who asked, where it is and how l
     updated_at: "2026-10-29T09:55:00Z",
     finished_at: null,
     step: { node: "plan", title: "出方案" },
+    // A long-running job's progress (docs/api/connector-jobs.md).
+    progress: {
+      node: "plan",
+      percent: 42,
+      message: "第 3 段，共 12 段",
+      updated_at: "2026-10-29T10:00:00Z",
+    },
     waiting_since: null,
     wait_seconds: 7200,
   };
@@ -259,7 +266,7 @@ test("the run list says what each run is about, who asked, where it is and how l
   await expect(first).toContainText("李雷");
   await expect(first).toContainText("零售数据 ETL");
   await expect(first).toContainText("v3");
-  await expect(first).toContainText("进行到「出方案」");
+  await expect(first).toContainText("进行到「出方案」（42%，第 3 段，共 12 段）");
   await expect(first).toContainText("2 小时前");
   await expect(first.locator("time")).toHaveAttribute("title", /2026/);
   await expect(first.locator(".run-duration span")).toHaveText([

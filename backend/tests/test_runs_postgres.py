@@ -179,3 +179,16 @@ async def test_a_finished_run_keeps_its_outcome():
         await service.wait_idle()
         finished = await store.get(other.run_id)
         assert (finished.status, finished.outcome) == ("done", None)
+
+
+async def test_progress_is_kept_and_cleared_when_the_next_step_starts():
+    gateway = FakeGateway(replies=["回答"])
+    async with platform(gateway) as service:
+        record = await service.create("hello", {"text": "你好"})
+        await service.wait_idle()
+        store = service._store
+        progress = {"node": "review", "percent": 40, "message": "第 2 段", "updated_at": "t"}
+        await store.set_progress(record.run_id, progress)
+        assert (await store.get(record.run_id)).progress == progress
+        await store.set_step(record.run_id, "next", "下一步")
+        assert (await store.get(record.run_id)).progress is None

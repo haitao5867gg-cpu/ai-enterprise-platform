@@ -41,7 +41,9 @@ from aep.projects import project_value
 from aep.runtime import human
 from aep.runtime.flow import refs
 from aep.runtime.flow.schema import input_schema
+from aep.runtime.store import RunStopped
 from aep.skills import SkillContent, SkillStore
+from aep.tools import jobs
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo, tool_message
 
 ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -215,6 +217,11 @@ class Runtime:
     call_app: CallApp | None = None
     # An app as a caller sees it (its current version), for an agent's ``apps``.
     app_shape: "Callable[[str], Awaitable[AppShape | None]] | None" = None
+    # A long-running connector job's progress, as the run shows it (run id, node, 0–1 or
+    # None, message), and whether a run was cancelled meanwhile
+    # (docs/api/connector-jobs.md). None: not noted, not asked.
+    report_progress: "Callable[[str, str, float | None, str | None], Awaitable[None]] | None" = None
+    run_cancelled: Callable[[str], Awaitable[bool]] | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -362,17 +369,63 @@ class Runtime:
             raise NodeFailure(INPUT_ERROR, git_only(found))
         return found
 
-    async def call(self, source: DataSource, tool: str, args: dict[str, Any]) -> Any:
+    async def call(
+        self,
+        source: DataSource,
+        tool: str,
+        args: dict[str, Any],
+        node: dict[str, Any] | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> Any:
+        """What the tool returned, after following it to the end when it hands back a
+        long-running job (docs/api/connector-jobs.md). Given the ``node`` and the run's
+        ``state``, the call carries the job key and the job reports its progress."""
         if self.tools is None:
             raise NodeFailure("tool_error", "平台没有配置工具调用")
+        run_id = str((state or {}).get("run_id") or "")
+        meta = None
+        watch = jobs.Watch()
+        if node is not None and run_id:
+            visit = int(((state or {}).get("visits") or {}).get(node["id"], 0))
+            meta = {jobs.JOB_KEY: jobs.job_key(run_id, node["id"], visit, tool, args)}
+            watch = self._watch(run_id, node["id"])
+        seconds = tool_seconds(source, self.settings)
         try:
-            seconds = tool_seconds(source, self.settings)
-            return await self.tools.call(source.connector_url, tool, args, seconds)
+            result = await self.tools.call(source.connector_url, tool, args, seconds, meta=meta)
+            if jobs.is_job(result):
+                result = await jobs.follow(
+                    self.tools,
+                    source.connector_url,
+                    result,
+                    watch,
+                    call_seconds=seconds,
+                    limit_seconds=self.settings.tool_job_seconds,
+                )
+            return result
         except ConnectorUnavailable as exc:
             kind = "timeout" if isinstance(exc.__cause__, TimeoutError) else "tool_error"
             raise NodeFailure(kind, f"连不上数据源「{source.name}」：{exc}") from exc
+        except jobs.JobFailed as exc:
+            raise NodeFailure("tool_error", f"工具报错：{exc}") from exc
         except ToolError as exc:
             raise NodeFailure("tool_error", f"工具报错：{tool_message(exc, tool)}") from exc
+        except jobs.JobTimedOut as exc:
+            raise NodeFailure("timeout", str(exc)) from exc
+        except jobs.JobStopped as exc:
+            # Not a failure: the run stops here, past the node's on_error.
+            raise RunStopped(run_id) from exc
+
+    def _watch(self, run_id: str, node_id: str) -> jobs.Watch:
+        report, cancelled = self.report_progress, self.run_cancelled
+
+        async def progress(value: float | None, message: str | None) -> None:
+            if report is not None:
+                await report(run_id, node_id, value, message)
+
+        async def stopped() -> bool:
+            return cancelled is not None and await cancelled(run_id)
+
+        return jobs.Watch(progress, stopped)
 
     async def run_code(self, code: str, inputs: dict[str, Any], timeout: int) -> Any:
         """What ``main(inputs)`` returns, run in the sandbox (see connectors/sandbox)."""
@@ -1902,7 +1955,7 @@ async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
         return secrets[name] if target == refs.SECRET else get(target, name)
 
     source = await rt.source(refs.resolve(node["datasource"], get))
-    result = await rt.call(source, node["tool"], refs.resolve(args, lookup))
+    result = await rt.call(source, node["tool"], refs.resolve(args, lookup), node, state)
     return Outcome({"result": result}, data=["result"] if source.kind in DATA_KINDS else [])
 
 
@@ -2304,7 +2357,7 @@ async def run_agent(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
                 "error": None,
             }
             try:
-                result = await rt.call(source, tool.name, args)
+                result = await rt.call(source, tool.name, args, node, state)
                 if source.kind in DATA_KINDS:
                     found.append(result)
                     result = policy.for_model(result, samples, key)
