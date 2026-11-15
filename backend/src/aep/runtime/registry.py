@@ -13,6 +13,7 @@ from aep.config import Settings
 from aep.databricks import DevTarget
 from aep.datasources import DataSourceStore, MemoryDataSourceStore
 from aep.knowledge.store import KnowledgeStore, MemoryKnowledgeStore
+from aep.media.store import MediaStore, MemoryMediaStore
 from aep.projects import MemoryProjectStore, ProjectStore
 from aep.tools.mcp import McpTools
 
@@ -26,7 +27,8 @@ class AppContext:
     ``databricks`` is the workspace's dev target, or None when none is configured;
     ``assets`` is the assets repository (None when not configured) and
     ``asset_store`` the index of what went there; ``projects`` the projects runs may
-    bind (aep.projects).
+    bind (aep.projects); ``media`` the media libraries start inputs pick items from
+    (docs/api/media.md).
     """
 
     llm_client: AsyncOpenAI
@@ -38,6 +40,7 @@ class AppContext:
     asset_store: AssetStore = field(default_factory=MemoryAssetStore)
     knowledge: KnowledgeStore = field(default_factory=MemoryKnowledgeStore)
     projects: ProjectStore = field(default_factory=MemoryProjectStore)
+    media: MediaStore = field(default_factory=MemoryMediaStore)
 
 
 AppBuilder = Callable[[AppContext], StateGraph]

@@ -37,6 +37,8 @@
                                             // 智能体那项选了「全部工具」时不加，连接器有什么就用什么
   ],
   "sandbox": false,                         // 有代码节点（type: code）：运行包要有代码沙箱（AEP_SANDBOX_URL）
+  "media_libraries": [{"library_id": "uuid", "name": "教练素材", "access": "write"}],
+                                            // 配置里绑定的媒体库；装包时没有就按同一个 id 新建，见 media.md“运行要求清单”
   "skills": [{"name": "coach-video-style", "version": 2}],   // 内容随包带
   "secrets": ["crm_token"],                 // 只有名字
   "machine": {"cpu_cores": 4, "memory_gb": 8, "disk_gb": 100} | null,
@@ -47,7 +49,7 @@
 }
 ```
 
-- `models`、`default_model`、`datasources`、`sandbox`、`skills`、`secrets` 由平台从这个版本的配置推出，和导出文件（`aep-app/1`）的 `requires` 用同一套规则。导出文件的 `requires` 也加上 `models` 和每个数据源的 `tools`；导入时不认识的键照旧忽略，旧文件照旧能导入。
+- `models`、`default_model`、`datasources`、`sandbox`、`media_libraries`、`skills`、`secrets` 由平台从这个版本的配置推出，和导出文件（`aep-app/1`）的 `requires` 用同一套规则。导出文件的 `requires` 也加上 `models` 和每个数据源的 `tools`；导入时不认识的键照旧忽略，旧文件照旧能导入。
 - `machine`、`network`、`notes` 存在应用上，不跟版本走；打包时拷进包里。
 
 平台这边的接口（搭建者）：
@@ -181,7 +183,7 @@
 
 自检：
 
-- **必需项**：平台版本、包里的 Skill 已装、每个模型别名在本机网关上（`default_model` 为 true 时还要有默认对话模型）、每个数据源已绑定且连得上且有清单列出的工具、`sandbox` 为 true 时代码沙箱连得上且有 `run_python`、每个密钥有值。
+- **必需项**：平台版本、包里的 Skill 已装、每个模型别名在本机网关上（`default_model` 为 true 时还要有默认对话模型）、每个数据源已绑定且连得上且有清单列出的工具、`sandbox` 为 true 时代码沙箱连得上且有 `run_python`、每个密钥有值、每个媒体库在。
 - **只提示的**：机器（CPU 核数、内存、`AEP_MEDIA_DIR` 所在磁盘的总空间，低于要求就不通过）、网络（每个主机名 5 秒内能连上 443 端口）。
 - 什么时候查：启动时、装包后、绑定或改密钥后、每 24 小时、`fresh=true` 时。其余时候返回上一次的结果。`fresh=true` 时每个模型别名再发一个最小的请求（最多 1 个 token），不通过的写「别名在，但调用失败：……」。调用失败过的别名，之后每次自检（不管带不带 `fresh`）都再调一次，调通为止。
 

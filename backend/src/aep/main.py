@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from aep import __version__, compute, llm, tracing
 from aep.api import (
     app_access,
+    app_media,
     apps,
     assets,
     auth,
@@ -169,6 +170,7 @@ def create_app() -> FastAPI:
                 asset_store=asset_store,
                 knowledge=knowledge_store,
                 projects=project_store,
+                media=media_store,
             ),
             tracer,
             versions=version_store,
@@ -379,6 +381,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(notifications.router)
     app.include_router(app_access.router)
+    app.include_router(app_media.router)
     app.include_router(entries_api.router)
     app.include_router(schedules.router)
     app.include_router(catalog_api.router)

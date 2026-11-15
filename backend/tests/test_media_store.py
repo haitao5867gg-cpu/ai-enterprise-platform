@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from aep.media.store import (
+    DuplicateId,
     DuplicateName,
     ItemLimit,
     ItemQuery,
@@ -204,3 +205,34 @@ async def test_update_and_delete_items(store):
     assert deleted.item_id == item.item_id
     assert await store.delete_item(lid, item.item_id) is None
     assert (await store.library(lid)).item_count == 0
+
+
+async def test_libraries_with_a_given_id_and_the_items_a_run_made(store):
+    wanted = str(uuid.uuid4())
+    library = await store.create_library(_name("配音"), library_id=wanted)
+    assert library.library_id == wanted
+    with pytest.raises(DuplicateId):
+        await store.create_library(_name("别的"), library_id=wanted)
+    with pytest.raises(DuplicateName):
+        await store.create_library(library.name, library_id=str(uuid.uuid4()))
+
+    other = await store.create_library(_name("成片"))
+    run = f"run-{uuid.uuid4().hex[:8]}"
+    made = [
+        _item(wanted, "第一段.mp4", source={"kind": "run", "run_id": run}),
+        _item(wanted, "别的运行.mp4", source={"kind": "run", "run_id": "someone-else"}),
+        _item(wanted, "上传的.mp4", source={"kind": "upload", "run_id": run}),
+    ]
+    await store.add_items(wanted, made, 10)
+    await store.add_items(
+        other.library_id,
+        [_item(other.library_id, "第二段.mp4", source={"kind": "run", "run_id": run})],
+        10,
+    )
+    found = await store.run_items(run, [wanted, other.library_id], 10)
+    assert [i.name for i in found] == ["第一段.mp4", "第二段.mp4"]
+    assert [i.name for i in await store.run_items(run, [other.library_id], 10)] == ["第二段.mp4"]
+    assert len(await store.run_items(run, [wanted, other.library_id], 1)) == 1
+    assert await store.run_items(run, ["not-a-uuid"], 10) == []
+    await store.delete_library(wanted)
+    await store.delete_library(other.library_id)

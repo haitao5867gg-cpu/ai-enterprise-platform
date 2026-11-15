@@ -36,9 +36,11 @@ from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import record_hits, search
 from aep.knowledge.store import Chunk, Hit, KnowledgeStore, today_in
+from aep.media.store import MediaStore
 from aep.policy import DataPolicy
 from aep.projects import project_value
 from aep.runtime import human
+from aep.runtime.flow import media as flowmedia
 from aep.runtime.flow import refs
 from aep.runtime.flow.schema import input_schema
 from aep.runtime.store import RunStopped
@@ -49,7 +51,7 @@ from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo, t
 ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 ID_RULE = "只能用小写字母、数字和下划线，以字母开头，最多 32 个字符"
 MAX_TEXT = 20000
-FIELD_TYPES = ("text", "textarea", "number", "boolean", "select", "datasource")
+FIELD_TYPES = ("text", "textarea", "number", "boolean", "select", "datasource", "media")
 JSON_TYPES = ("string", "number", "boolean", "array", "object")
 OPS = ("eq", "ne", "contains", "not_contains", "gt", "gte", "lt", "lte", "empty", "not_empty")
 ERROR_TYPES = (
@@ -119,6 +121,8 @@ class CheckEnv:
     apps: "Callable[[str], Awaitable[AppShape | None]] | None" = None
     # The app being checked, when known (an agent cannot call its own app).
     app: str | None = None
+    # The media libraries a configuration may bind (docs/api/media.md); None: any.
+    media: MediaStore | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,8 @@ class Runtime:
     # (docs/api/connector-jobs.md). None: not noted, not asked.
     report_progress: "Callable[[str, str, float | None, str | None], Awaitable[None]] | None" = None
     run_cancelled: Callable[[str], Awaitable[bool]] | None = None
+    # The media libraries start inputs of type media pick items from (docs/api/media.md).
+    media: MediaStore | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -681,8 +687,12 @@ def _field_problems(
     elif len(label) > label_length:
         found.append((("label",), f"名称最多 {label_length} 个字符"))
     kind = f.get("type")
-    if kind not in types:
+    if kind == flowmedia.MEDIA and kind not in types:
+        found.append((("type",), "只有开始节点的输入可以是素材"))
+    elif kind not in types:
         found.append((("type",), "类型只能是 " + "、".join(types)))
+    elif kind == flowmedia.MEDIA:
+        found += flowmedia.field_problems(f)
     if "required" in f and not isinstance(f["required"], bool):
         found.append((("required",), "required 必须是 true 或 false"))
     if kind == "select":
@@ -708,7 +718,10 @@ def field_problem(f: dict[str, Any], value: Any) -> str | None:
     if empty:
         return f"{f['label']}不能为空" if f.get("required") else None
     kind = f.get("type")
-    if kind in ("text", "textarea", "datasource"):
+    if kind == flowmedia.MEDIA:
+        if not isinstance(value, str):
+            return f"{f['label']}要是素材 id"
+    elif kind in ("text", "textarea", "datasource"):
         if not isinstance(value, str):
             return f"{f['label']}必须是文字"
         if f.get("max_length") and len(value) > f["max_length"]:
@@ -763,9 +776,20 @@ async def run_start(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     fields = node.get("inputs") or []
     given = state.get("input") or {}
     values = {f["key"]: given.get(f["key"], f.get("default")) for f in fields}
+    for f in fields:
+        if f.get("type") == flowmedia.MEDIA and isinstance(values[f["key"]], str):
+            values[f["key"]] = await _media_summary(f, values[f["key"]], rt)
     text = _first_text(fields, values)
     said = {"role": "user", "content": text, "actor": state.get("requester")}
     return Outcome(values, messages=[said] if text else [])
+
+
+async def _media_summary(f: dict[str, Any], item_id: str, rt: Runtime) -> dict[str, Any]:
+    """The summary of the item a media input names (checked when the run was made)."""
+    item = await rt.media.item(f["library"], item_id) if rt.media is not None else None
+    if item is None:
+        raise NodeFailure(INPUT_ERROR, f"{f['label']}：素材已经被删除")
+    return flowmedia.summary(item)
 
 
 # llm
@@ -1000,7 +1024,7 @@ async def run_condition(node: dict[str, Any], state: dict[str, Any], rt: Runtime
 
 MAX_QUESTIONS = 20
 MAX_DATA_KEYS = 16
-QUESTION_TYPES = tuple(t for t in FIELD_TYPES if t != "datasource")
+QUESTION_TYPES = tuple(t for t in FIELD_TYPES if t not in ("datasource", "media"))
 APPROVAL_ONLY = "只有确认模式可以设"
 # What an approval produces (a form produces its fields and ``actor``).
 APPROVAL_OUTPUTS = (
@@ -2007,7 +2031,7 @@ APP_KEYS = ("app", "when", "enabled")
 FILLABLE = ("text", "textarea", "number", "boolean", "select")
 CALL_TIMEOUT = 300
 CALL_APP = "call_app"
-TYPE_LABELS = {"datasource": "数据源", "file": "文件"}
+TYPE_LABELS = {"datasource": "数据源", "file": "文件", "media": "素材"}
 # What an agent app is called with.
 MESSAGE_PARAM = {"type": "string", "description": "要问它的话"}
 

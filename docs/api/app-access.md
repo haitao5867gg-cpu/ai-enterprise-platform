@@ -55,6 +55,7 @@
   "progress": {"node": "render", "percent": 42, "message": "渲染第 3 段，共 12 段", "updated_at": "…"} | null,
                                  // 当前这一步报的进度，只在 running 时有，见 connector-jobs.md
   "link": "https://…/runs/…",    // 平台里这次运行的页面（AEP_WEB_URL）
+  "files": [MediaFile],          // 这次运行产出、在绑定的媒体库里的文件，带下载地址；没有为 []，见 media.md“结果里的文件”
   "conversation_id": "conv_…" | null,   // 智能体应用第 1 批新增：这次运行所在的会话，见“会话”；不在会话里为 null
   "turn": 2 | null,                     // 是会话的第几轮
   "created_at": "…",
@@ -70,6 +71,8 @@
   - 运行的是应用的当前版本。
 - `GET /v1/runs/{run_id}?wait=0` → `RunResult`。只能查这个密钥所属应用的运行，别的返回 404「没有找到这次运行」。`wait` 同上：运行还在跑时最多等这么久。
 - `POST /v1/runs/{run_id}/answer`，请求体 `{"values": {…}, "wait": 0}` → `RunResult`。只能填表单（`pending.kind` 是 `form`）；等的是审批时返回 403「这一步要审批者在平台上确认」，没在等返回 409「这次运行现在没有在等表单」。
+
+应用绑定了媒体库时，`/v1` 还能上传、列出、下载素材，运行的输入可以是素材，见 [media.md](media.md)“应用用媒体库”。
 
 用 curl 跑一次：
 

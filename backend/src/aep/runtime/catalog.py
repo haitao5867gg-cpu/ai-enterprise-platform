@@ -36,6 +36,7 @@ from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import builtin as flowbuiltin
 from aep.runtime.flow import files as flowfiles
 from aep.runtime.flow import graph as flowgraph
+from aep.runtime.flow import media as flowmedia
 from aep.runtime.flow import refs
 from aep.runtime.flow.check import check_common, check_config
 from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems, why_not_callable
@@ -608,6 +609,7 @@ class AppCatalog:
             ),
             apps=self._runs.app_shape,
             app=app,
+            media=self._runs.media,
         )
 
     async def check_flow(
@@ -826,8 +828,9 @@ class AppCatalog:
             kb.kb_id: {"kb_id": kb.kb_id, "name": kb.name}
             for kb in await self._runs.knowledge.all()
         }
+        libraries = await flowmedia.names(self._runs.media, config)
         text = flowfiles.dump(
-            flow.title, flow.summary, app, version, config, sources, bases, flow.kind
+            flow.title, flow.summary, app, version, config, sources, bases, flow.kind, libraries
         )
         return f"{app}-v{version}.yaml", text
 
@@ -903,6 +906,21 @@ class AppCatalog:
                             "message": "没有这个已发布的应用，请在智能体里重新选择",
                         }
                     )
+        named_libraries = {
+            m.get("library_id"): m.get("name")
+            for m in requires.get("media_libraries") or []
+            if isinstance(m, dict)
+        }
+        for bound in flowmedia.bindings(config):
+            if await self._runs.media.library(bound["library_id"]) is None:
+                out.append(
+                    {
+                        "kind": "media_library",
+                        "library_id": bound["library_id"],
+                        "name": named_libraries.get(bound["library_id"]),
+                        "message": "没有这个媒体库，请新建一个或在配置里换掉",
+                    }
+                )
         for name in (config.get("env") or {}).get("secrets") or []:
             if await self._runs.secrets.get(app, name) is None:
                 out.append(

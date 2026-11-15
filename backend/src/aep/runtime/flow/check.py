@@ -12,6 +12,7 @@ from typing import Any
 from aep.conversations import DEFAULT_HISTORY_TURNS, MAX_HISTORY_TURNS, MESSAGE
 from aep.projects import FIELDS as PROJECT_FIELDS
 from aep.runtime.appconfig import ConfigError
+from aep.runtime.flow import media as flowmedia
 from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
     ERROR,
@@ -325,6 +326,11 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
     if not any(n["type"] == "end" for n in by_id.values()):
         add(["graph"], "至少要有一个结束节点")
     conversation = _check_conversation(raw.get("conversation"), by_id, add)
+    store = env.media if env.strict else None
+    media = await flowmedia.check_binding(raw.get(flowmedia.MEDIA), store, add)
+    for node in by_id.values():
+        if node["type"] == "start":
+            flowmedia.check_inputs(node, (media or {}).get("libraries", []), add)
     chat = conversation is not None and conversation["enabled"] is True
     for node_id, node in by_id.items():
         if node.get("history") is True and not chat:
@@ -466,4 +472,6 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
     out_config["graph"].setdefault("edges", [])
     if conversation is not None:
         out_config["conversation"] = conversation
+    if media is not None:
+        out_config[flowmedia.MEDIA] = media
     return out_config

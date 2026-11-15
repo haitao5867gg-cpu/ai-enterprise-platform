@@ -17,6 +17,7 @@ from aep.app_access import (
     TooManyKeys,
     bearer,
     key_owner,
+    run_files,
     run_result,
     settle,
     start,
@@ -79,6 +80,8 @@ class RunResult(BaseModel):
     # The step the run is at and what it says of its progress (docs/api/connector-jobs.md).
     step: dict[str, str] | None = None
     progress: dict[str, Any] | None = None
+    # The files the run made into the app's media libraries (docs/api/media.md).
+    files: list[dict[str, Any]] = Field(default_factory=list)
     link: str
     # The conversation the run is a turn of, and which turn (docs/api/app-access.md, "会话").
     conversation_id: str | None = None
@@ -101,7 +104,7 @@ class Answer(NoNulls):
     wait: Wait = 0
 
 
-def _service(request: Request) -> RunService:
+def run_service(request: Request) -> RunService:
     return request.app.state.run_service
 
 
@@ -113,7 +116,7 @@ def _keys(request: Request) -> ApiKeys:
 
 
 async def _app_exists(request: Request, app: str) -> None:
-    if await _service(request).kind(app) is None:
+    if await run_service(request).kind(app) is None:
         raise HTTPException(404, f"没有应用 {app}")
 
 
@@ -146,7 +149,7 @@ async def delete_key(app: str, key_id: str, request: Request) -> Response:
 # The app API: only keys, never the sign-in cookie.
 
 
-async def _key(request: Request) -> ApiKey:
+async def api_key(request: Request) -> ApiKey:
     key = await _keys(request).check(bearer(request.headers.get("authorization")))
     if key is None:
         raise HTTPException(401, "缺少或无效的 API 密钥", headers={"WWW-Authenticate": "Bearer"})
@@ -154,13 +157,15 @@ async def _key(request: Request) -> ApiKey:
     return key
 
 
-def _result(request: Request, view: Any) -> RunResult:
-    return RunResult(**run_result(view, request.app.state.web_url))
+async def _result(request: Request, view: Any) -> RunResult:
+    record = view.record
+    files = await run_files(run_service(request), record.app, record.run_id)
+    return RunResult(**run_result(view, request.app.state.web_url, files))
 
 
 async def _own_run(request: Request, key: ApiKey, run_id: str) -> Any:
     try:
-        view = await _service(request).get(run_id)
+        view = await run_service(request).get(run_id)
     except RunNotFound as exc:
         raise HTTPException(404, "没有找到这次运行") from exc
     if view.record.app != key.app:
@@ -179,10 +184,10 @@ def _invalid(where: str, exc: InvalidValues) -> RequestValidationError:
 
 @router.post("/v1/apps/{app}/runs", status_code=status.HTTP_201_CREATED)
 async def start_run(app: str, body: StartRun, request: Request) -> RunResult:
-    key = await _key(request)
+    key = await api_key(request)
     if key.app != app:
         raise HTTPException(403, f"这个密钥不能调用应用 {app}")
-    service = _service(request)
+    service = run_service(request)
     try:
         record = await start(
             service,
@@ -204,13 +209,13 @@ async def start_run(app: str, body: StartRun, request: Request) -> RunResult:
         raise HTTPException(409, "这个应用没有开对话") from exc
     except ConversationBusy as exc:
         raise HTTPException(409, "上一条还没处理完") from exc
-    return _result(request, await settle(service, record.run_id, body.wait))
+    return await _result(request, await settle(service, record.run_id, body.wait))
 
 
 @router.get("/v1/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str, request: Request) -> ConversationDetail:
-    key = await _key(request)
-    service = _service(request)
+    key = await api_key(request)
+    service = run_service(request)
     found = await service.conversations.get(conversation_id)
     if found is None or found.owner != key_owner(key) or found.app != key.app:
         raise HTTPException(404, "没有找到这个会话")
@@ -221,14 +226,14 @@ async def get_conversation(conversation_id: str, request: Request) -> Conversati
 async def get_run(
     run_id: str, request: Request, wait: Annotated[int, Query(ge=0, le=60)] = 0
 ) -> RunResult:
-    key = await _key(request)
+    key = await api_key(request)
     await _own_run(request, key, run_id)
-    return _result(request, await settle(_service(request), run_id, wait))
+    return await _result(request, await settle(run_service(request), run_id, wait))
 
 
 @router.post("/v1/runs/{run_id}/answer")
 async def answer(run_id: str, body: Answer, request: Request) -> RunResult:
-    key = await _key(request)
+    key = await api_key(request)
     view = await _own_run(request, key, run_id)
     pending = view.pending
     if view.record.status != "waiting" or pending is None:
@@ -236,7 +241,7 @@ async def answer(run_id: str, body: Answer, request: Request) -> RunResult:
     if pending.get("kind") != "form":
         raise HTTPException(403, "这一步要审批者在平台上确认")
     options = pending.get("options") or []
-    service = _service(request)
+    service = run_service(request)
     try:
         await service.resume(
             run_id, options[0] if options else "submit", None, f"API：{key.name}", body.values
@@ -245,4 +250,4 @@ async def answer(run_id: str, body: Answer, request: Request) -> RunResult:
         raise HTTPException(409, "这次运行现在没有在等表单") from exc
     except InvalidValues as exc:
         raise _invalid("values", exc) from exc
-    return _result(request, await settle(service, run_id, body.wait))
+    return await _result(request, await settle(service, run_id, body.wait))

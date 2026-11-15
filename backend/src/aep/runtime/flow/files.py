@@ -12,6 +12,7 @@ import yaml
 from aep.datasources import canon_id
 from aep.runtime import agent_app
 from aep.runtime.flow import graph as flowgraph
+from aep.runtime.flow import media as flowmedia
 from aep.runtime.flow import refs
 
 FORMAT = "aep-app/1"
@@ -185,8 +186,10 @@ def dump(
     sources: dict[str, dict[str, Any]],
     knowledge_bases: dict[str, dict[str, Any]],
     kind: str = "flow",
+    libraries: dict[str, str] | None = None,
 ) -> str:
-    """The YAML text; ``sources`` and ``knowledge_bases`` describe required resources by id.
+    """The YAML text; ``sources``, ``knowledge_bases`` and ``libraries`` (names of media
+    libraries) describe required resources by id.
     An agent app's file says ``kind: agent`` and holds its own configuration
     (docs/api/agent-apps.md, "新建、模板、导出导入")."""
     agent = kind == agent_app.KIND
@@ -197,7 +200,7 @@ def dump(
         "summary": summary,
         "exported_from": {"app": app, "version": version},
         "config": config,
-        "requires": requires(config, sources, knowledge_bases, kind),
+        "requires": requires(config, sources, knowledge_bases, kind, libraries),
     }
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
 
@@ -207,10 +210,12 @@ def requires(
     sources: dict[str, dict[str, Any]],
     knowledge_bases: dict[str, dict[str, Any]],
     kind: str = "flow",
+    libraries: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """What a configuration needs from the platform it runs on: the file's ``requires``,
     and the derived part of a package's requirements list (docs/api/runtime.md).
-    ``sources`` and ``knowledge_bases`` describe resources by id."""
+    ``sources`` and ``knowledge_bases`` describe resources by id, ``libraries`` names
+    media libraries by id."""
     agent = kind == agent_app.KIND
     shape = agent_app.as_flow(config) if agent else config
     models, _ = model_refs(shape)
@@ -227,6 +232,9 @@ def requires(
         ],
         "secrets": list((config.get("env") or {}).get("secrets") or []),
     }
+    # Only apps that bind media libraries list them: other files stay as they were.
+    if bound := flowmedia.required(config, libraries or {}):
+        out["media_libraries"] = bound
     if agent:
         out["apps"] = [a["app"] for a in config["agent"].get("apps") or []]
     return out

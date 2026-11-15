@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -14,6 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from aep.conversations import MAX_MESSAGE, MESSAGE
 from aep.entries import CLOSED_ENTRY
+from aep.runtime.flow import media as flowmedia
 from aep.runtime.service import ConversationGone, InvalidValues, RunService, RunView
 from aep.runtime.store import DEFAULT_TENANT, RunRecord, current_progress
 
@@ -285,7 +287,55 @@ async def settle(service: RunService, run_id: str, wait: float) -> RunView:
         await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
 
 
-def run_result(view: RunView, web_url: str) -> dict[str, Any]:
+MAX_FILES = 50
+
+
+def download_path(app: str, library_id: str, item_id: str) -> str:
+    """Where ``/v1`` serves an item's file, after the address ``/v1`` is called at."""
+    return f"/v1/apps/{app}/media-libraries/{library_id}/items/{item_id}/file"
+
+
+def platform_path(library_id: str, item_id: str) -> str:
+    """Where the platform's own media API serves an item's file (the run page)."""
+    return f"/media-libraries/{library_id}/items/{item_id}/file"
+
+
+async def run_files(
+    service: RunService,
+    app: str,
+    run_id: str,
+    link: Callable[[str, str], str] | None = None,
+) -> list[dict[str, Any]]:
+    """The files the run made into libraries the app binds (docs/api/media.md, 结果里的文件);
+    ``link`` gives each one's ``download_path`` (by default the ``/v1`` one)."""
+    config = await service.current_config(app)
+    libraries = [b["library_id"] for b in flowmedia.bindings(config or {})]
+    if not libraries:
+        return []
+    items = await service.media.run_items(run_id, libraries, MAX_FILES)
+    return [
+        {
+            "item_id": item.item_id,
+            "library_id": item.library_id,
+            "name": item.name,
+            "kind": item.kind,
+            "size_bytes": item.size_bytes,
+            "duration_seconds": item.duration_seconds,
+            "width": item.width,
+            "height": item.height,
+            "download_path": (
+                link(item.library_id, item.item_id)
+                if link is not None
+                else download_path(app, item.library_id, item.item_id)
+            ),
+        }
+        for item in items
+    ]
+
+
+def run_result(
+    view: RunView, web_url: str, files: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     r = view.record
     pending = view.pending
     return {
@@ -303,6 +353,7 @@ def run_result(view: RunView, web_url: str) -> dict[str, Any]:
         "error": r.error if r.status == "error" else None,
         "step": r.step,
         "progress": current_progress(r),
+        "files": files or [],
         "link": f"{web_url.rstrip('/')}/runs/{r.run_id}",
         "conversation_id": r.conversation_id,
         "turn": r.conversation_turn,

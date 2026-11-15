@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import shutil
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -27,6 +28,8 @@ from aep import __version__, llm, packages
 from aep.config import Settings
 from aep.connector_check import ConnectorCheck, connection_problem, failed_detail
 from aep.datasources import DataSource, DataSourceStore, DuplicateName, canon_id
+from aep.media.store import DuplicateId
+from aep.media.store import DuplicateName as LibraryNameTaken
 from aep.runtime import agent_app
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import AppCatalog
@@ -92,6 +95,12 @@ class _Source(_Loose):
     tools: list[str]
 
 
+class _Library(_Loose):
+    library_id: str
+    name: str | None
+    access: str
+
+
 class _Requirements(_Loose):
     platform: _Platform
     models: list[dict[str, str]]
@@ -103,6 +112,8 @@ class _Requirements(_Loose):
     machine: dict[str, StrictInt] | None
     network: list[str]
     notes: str
+    # Packages made before media libraries could be bound have none.
+    media_libraries: list[_Library] = []
 
 
 class _Package(_Loose):
@@ -284,11 +295,21 @@ async def reaches(host: str) -> bool:
     return True
 
 
+# A media library's name, as the media API allows (docs/api/media.md).
+MAX_LIBRARY_NAME = 50
 MACHINE = (("cpu_cores", "CPU", "核"), ("memory_gb", "内存", "GB"), ("disk_gb", "硬盘", "GB"))
 
 
 def _item(kind: str, name: str, ok: bool, message: str | None, required: bool = True, **more: Any):
     return {"kind": kind, "name": name, **more, "required": required, "ok": ok, "message": message}
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _missing(item: dict[str, Any]) -> str:
@@ -304,6 +325,8 @@ def _missing(item: dict[str, Any]) -> str:
         return f"密钥 {name}"
     if kind == "sandbox":
         return "代码沙箱"
+    if kind == "media_library":
+        return f"媒体库「{name}」"
     return f"平台 {name} 以上的镜像"
 
 
@@ -377,6 +400,8 @@ class Runtime:
                     created_by=actor,
                 )
                 await self._runs.skills.install(skill.name, content)
+            for library in package.requirements.media_libraries:
+                await self._add_library(package.app, library)
             await self._runs.ensure_flows()
             if await self._runs.flows.get(package.app) is None:
                 await self._runs.flows.create(
@@ -401,6 +426,27 @@ class Runtime:
             )
         await self.check(package.app)
         return await self.installed(package.app), True
+
+    async def _add_library(self, app: str, library: _Library) -> None:
+        """Make a media library the package binds, with the same id, when this machine has
+        none (docs/api/media.md, 运行要求清单); its name gets the app's when taken."""
+        store = self._runs.media
+        if not _is_uuid(library.library_id):
+            raise InstallError(422, NOT_PACKAGE)
+        if await store.library(library.library_id) is not None:
+            return
+        name = (library.name or f"媒体库 {library.library_id[:8]}")[:MAX_LIBRARY_NAME]
+        for candidate in (name, f"{name}（{app}）", f"{name}（{app} {library.library_id[:8]}）"):
+            try:
+                await store.create_library(
+                    candidate[:MAX_LIBRARY_NAME], library_id=library.library_id
+                )
+                return
+            except LibraryNameTaken:
+                continue
+            except DuplicateId:
+                return  # made meanwhile
+        raise InstallError(409, f"这台机器上已经有名为「{name}」的媒体库")
 
     async def _config(self, package: _Package) -> dict[str, Any]:
         """The configuration in the package's app file, checked as an imported file is."""
@@ -568,6 +614,17 @@ class Runtime:
             have = await self._runs.secrets.get(app, name)
             items.append(
                 _item("secret", name, have is not None, None if have else "还没有填这个密钥")
+            )
+        for wanted in needs.get("media_libraries") or []:
+            library = await self._runs.media.library(str(wanted.get("library_id")))
+            items.append(
+                _item(
+                    "media_library",
+                    library.name if library else str(wanted.get("name") or wanted["library_id"]),
+                    library is not None,
+                    None if library else "没有这个媒体库，请重新装一次流程包",
+                    library_id=wanted.get("library_id"),
+                )
             )
         items += self._machine_items(needs.get("machine"))
         for host in needs.get("network") or []:
