@@ -63,6 +63,7 @@ export function pageRole(pathname: string): Role {
       "/apps",
       "/skills",
       "/knowledge",
+      "/media",
       "/datasources",
       "/projects",
       "/models",

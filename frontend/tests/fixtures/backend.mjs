@@ -35,6 +35,48 @@ createServer(async (request, response) => {
     return json({ detail: "Wrong API base path" }, 404);
   if (path === "/readyz")
     return json({ status: "ok", source: "contract-fixture" });
+  // Media items: an upload echoes the files; a file answers byte ranges (docs/api/media.md).
+  if (path?.startsWith("/media-libraries/")) {
+    if (path.endsWith("/items") && request.method === "POST") {
+      const form = await new Request("http://fixture/media-upload", {
+        method: "POST",
+        headers: request.headers,
+        body: Readable.toWeb(request),
+        duplex: "half",
+      }).formData();
+      return json(
+        await Promise.all(
+          form.getAll("files").map(async (file) => ({
+            name: file.name,
+            bytes: [...new Uint8Array(await file.arrayBuffer())],
+          })),
+        ),
+        202,
+      );
+    }
+    if (path.endsWith("/file")) {
+      const body = Buffer.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 0xff]);
+      const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range ?? "");
+      const head = {
+        "Content-Type": "video/mp4",
+        "Accept-Ranges": "bytes",
+        "Content-Disposition":
+          "inline; filename*=UTF-8''%E6%88%90%E7%89%87.mp4",
+      };
+      if (!range) {
+        response.writeHead(200, { ...head, "Content-Length": body.length });
+        return response.end(body);
+      }
+      const start = Number(range[1]);
+      const end = range[2] ? Number(range[2]) : body.length - 1;
+      response.writeHead(206, {
+        ...head,
+        "Content-Length": end - start + 1,
+        "Content-Range": `bytes ${start}-${end}/${body.length}`,
+      });
+      return response.end(body.subarray(start, end + 1));
+    }
+  }
   if (path?.startsWith("/knowledge-bases/")) {
     if (path.endsWith("/documents") && request.method === "POST") {
       const form = await new Request("http://fixture/knowledge-upload", {

@@ -4,6 +4,7 @@ import { useT } from "../lib/i18n/client";
 import type { Input } from "../lib/apps";
 import { isCodeRepo, isToolService, kindLabel } from "../lib/datasources";
 import type { FieldValues } from "../lib/input-fields";
+import { MediaPicker } from "./media-ui";
 
 type Source = { datasource_id: string; name: string; kind: string };
 // Tool services come last, in their own group: a start input may feed a tool node, but an
@@ -68,7 +69,17 @@ export function InputFields({
               {field.label}
               {field.required && <span className="muted">{t("（必填）")}</span>}
             </label>
-            {field.type === "boolean" ? (
+            {field.type === "media" ? (
+              <MediaPicker
+                id={id}
+                library={field.library ?? ""}
+                kinds={field.kinds}
+                value={String(values[field.key] ?? "")}
+                onChange={change}
+                disabled={disabled}
+                common={common}
+              />
+            ) : field.type === "boolean" ? (
               <input
                 {...common}
                 type="checkbox"

@@ -6,6 +6,7 @@ import type {
 } from "./knowledge";
 import type { FlowEdge, NodeDesign, NodeKind } from "./flow";
 import type { CheckResult, FieldAccuracy } from "./evals";
+import type { MediaBinding, MediaKind } from "./media";
 import { ApiError, isRecord, requestJson } from "./runs";
 
 // docs/api/apps-and-skills.md — names and payloads follow the backend contract.
@@ -22,7 +23,9 @@ export type InputType =
   | "number"
   | "boolean"
   | "select"
-  | "datasource";
+  | "datasource"
+  // An item of a media library the app binds (docs/api/media.md, 素材输入).
+  | "media";
 export type Input<T extends InputType = InputType> = {
   key: string;
   label: string;
@@ -34,8 +37,11 @@ export type Input<T extends InputType = InputType> = {
   // Start inputs only: folded under 高级选项 on the new-run page; sentences to pick from.
   advanced?: boolean;
   examples?: string[];
+  // Media inputs only: the bound library to pick from and the kinds it takes.
+  library?: string;
+  kinds?: MediaKind[];
 };
-export type FormField = Input<Exclude<InputType, "datasource">>;
+export type FormField = Input<Exclude<InputType, "datasource" | "media">>;
 export type ValueType = "string" | "number" | "boolean" | "array" | "object";
 export type OutputField = {
   key: string;
@@ -367,6 +373,8 @@ export type FlowConfig = {
   env: { vars: EnvVar[]; secrets: string[] };
   graph: { nodes: FlowNode[]; edges: Edge[] };
   conversation?: FlowConversation | null;
+  // The media libraries the app binds (docs/api/media.md, 绑定).
+  media?: { libraries: MediaBinding[] } | null;
 };
 // What the use page shows before the first message (docs/api/agent-apps.md).
 export type ChatSettings = { opening: string; suggestions: string[] };

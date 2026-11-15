@@ -107,6 +107,7 @@ const NAV: NavGroup[] = [
     items: [
       item("/skills", "Skill", "spark"),
       item("/knowledge", "知识库", "book"),
+      item("/media", "媒体库", "film"),
       item("/datasources", "数据源与工具", "plug"),
       item("/projects", "项目", "folder"),
       item("/catalog", "资产目录", "box"),

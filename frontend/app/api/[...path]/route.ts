@@ -19,10 +19,18 @@ function jsonError(detail: string, status: number) {
 }
 
 // What the API needs from the browser's request: the body's type, the sign-in cookie
-// the client's address for the record of changes and the reader's language. Nothing else
-// is passed on.
-function forwarded(request: Request, hasBody: boolean, isUpload: boolean) {
+// the client's address for the record of changes, the reader's language and, for a media
+// file, the byte range asked for. Nothing else is passed on.
+function forwarded(
+  request: Request,
+  hasBody: boolean,
+  isUpload: boolean,
+  isMedia = false,
+) {
   const headers: Record<string, string> = {};
+  // A media file is played in parts (docs/api/media.md: the file supports Range).
+  const range = isMedia ? request.headers.get("range") : null;
+  if (range) headers.Range = range;
   if (hasBody)
     headers["Content-Type"] = isUpload
       ? request.headers.get("content-type")!
@@ -91,11 +99,26 @@ async function handle(request: Request, context: Context) {
     [/^projects\/options$/, ["GET"]],
     [/^projects\/[a-z][a-z0-9-]{1,39}$/, ["GET", "PUT", "DELETE"]],
     [/^runs$/, ["GET", "POST"]],
-    [/^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow|manual))?$/, ["GET"]],
+    [
+      /^runs\/[a-zA-Z0-9_-]{1,128}(\/(files\.zip|flow|manual|media))?$/,
+      ["GET"],
+    ],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/(resume|cancel|retry|rerun)$/, ["POST"]],
     // Feedback on a run and rerunning it from a step (docs/api/evals.md).
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/feedback$/, ["PUT", "DELETE"]],
     [/^runs\/[a-zA-Z0-9_-]{1,128}\/rerun-from$/, ["POST"]],
+    // Media libraries and their items (docs/api/media.md).
+    [/^media-libraries$/, ["GET", "POST"]],
+    [/^media-libraries\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],
+    [/^media-libraries\/[a-zA-Z0-9_-]{1,128}\/items$/, ["GET", "POST"]],
+    [
+      /^media-libraries\/[a-zA-Z0-9_-]{1,128}\/items\/[a-zA-Z0-9_-]{1,128}$/,
+      ["GET", "PATCH", "DELETE"],
+    ],
+    [
+      /^media-libraries\/[a-zA-Z0-9_-]{1,128}\/items\/[a-zA-Z0-9_-]{1,128}\/file$/,
+      ["GET"],
+    ],
     [/^knowledge-bases$/, ["GET", "POST"]],
     [/^knowledge-bases\/(options|doc-templates)$/, ["GET"]],
     [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],
@@ -178,7 +201,13 @@ async function handle(request: Request, context: Context) {
     request.method === "POST" &&
     (endpoint === "datasources/files" ||
       /^knowledge-bases\/[^/]+\/documents$/.test(endpoint) ||
-      /^apps\/[^/]+\/eval-set\/import$/.test(endpoint));
+      /^apps\/[^/]+\/eval-set\/import$/.test(endpoint) ||
+      /^media-libraries\/[^/]+\/items$/.test(endpoint));
+  // A media file plays while it downloads: the browser asks for byte ranges, and a long
+  // video takes longer than the usual timeout. Media uploads are large too.
+  const isMedia = /^media-libraries\/[^/]+\/items(\/[^/]+\/file)?$/.test(
+    endpoint,
+  );
   const methods = routes.find(([pattern]) => pattern.test(endpoint))?.[1];
   if (!methods) return jsonError("Not found", 404);
   if (!methods.includes(request.method)) {
@@ -208,6 +237,13 @@ async function handle(request: Request, context: Context) {
     if (["apps", "node-types", "app-templates"].includes(path[0])) {
       const { mockApps } = await import("../../../lib/server/mock-apps");
       return mockApps(request, path);
+    }
+    if (
+      path[0] === "media-libraries" ||
+      (path[0] === "runs" && path[2] === "media")
+    ) {
+      const { mockMedia } = await import("../../../lib/server/mock-media");
+      return mockMedia(request, path);
     }
     if (path[0] === "knowledge-bases") {
       const { mockKnowledge } =
@@ -281,7 +317,7 @@ async function handle(request: Request, context: Context) {
       `${base.href.replace(/\/$/, "")}/${endpoint}${new URL(request.url).search}`,
       {
         method: request.method,
-        headers: forwarded(request, hasBody, isUpload),
+        headers: forwarded(request, hasBody, isUpload, isMedia),
         body: hasBody
           ? isUpload
             ? request.body
@@ -290,16 +326,18 @@ async function handle(request: Request, context: Context) {
         cache: "no-store",
         redirect: "manual",
         signal: AbortSignal.timeout(
-          isUpload
-            ? 300_000
-            : /\/nodes\/[^/]+\/test$/.test(endpoint) ||
-                // Testing a webhook waits up to 10 seconds for the other end.
-                /^webhooks\/[^/]+\/test$/.test(endpoint) ||
-                // Saving or testing a model calls it on the gateway first.
-                (/^models(\/[^/]+(\/test)?)?$/.test(endpoint) &&
-                  ["POST", "PATCH"].includes(request.method))
-              ? 120_000
-              : 10_000,
+          isMedia
+            ? 3_600_000
+            : isUpload
+              ? 300_000
+              : /\/nodes\/[^/]+\/test$/.test(endpoint) ||
+                  // Testing a webhook waits up to 10 seconds for the other end.
+                  /^webhooks\/[^/]+\/test$/.test(endpoint) ||
+                  // Saving or testing a model calls it on the gateway first.
+                  (/^models(\/[^/]+(\/test)?)?$/.test(endpoint) &&
+                    ["POST", "PATCH"].includes(request.method))
+                ? 120_000
+                : 10_000,
         ),
         ...(isUpload ? { duplex: "half" as const } : {}),
       } as RequestInit & { duplex?: "half" },
@@ -311,6 +349,11 @@ async function handle(request: Request, context: Context) {
     });
     const disposition = response.headers.get("Content-Disposition");
     if (disposition) headers.set("Content-Disposition", disposition);
+    if (isMedia)
+      for (const name of ["Content-Length", "Content-Range", "Accept-Ranges"]) {
+        const value = response.headers.get(name);
+        if (value) headers.set(name, value);
+      }
     // The sign-in cookie is set and cleared by the API (docs/api/auth.md).
     for (const cookie of response.headers.getSetCookie())
       headers.append("Set-Cookie", cookie);

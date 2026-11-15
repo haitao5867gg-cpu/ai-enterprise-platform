@@ -75,6 +75,7 @@ import {
 } from "./etl-review";
 import { NoteList, NotesScope, type Note } from "./review-notes";
 import { EtlResultView } from "./etl-result";
+import { RunMediaFiles, RunMediaInputs } from "./run-media";
 import { readChanges, StepChanges } from "./step-changes";
 import { isV2Result } from "../lib/etl-v2";
 
@@ -1269,6 +1270,10 @@ export function RunDetail({
                   {etlResult && (
                     <GeneratedFiles result={etlResult} runId={id} />
                   )}
+                  <RunMediaFiles
+                    runId={id}
+                    version={`${run.status}:${run.messages.length}`}
+                  />
                   <RunFeedbackPanel
                     key={run.feedback?.mine?.at ?? "none"}
                     run={run}
@@ -1332,6 +1337,13 @@ export function RunDetail({
                     </Link>
                   )}
                 </section>
+              )}
+              {/* What a run made so far, before it is done: the result tab lists it after. */}
+              {!resultTab && (
+                <RunMediaFiles
+                  runId={id}
+                  version={`${run.status}:${run.messages.length}:${run.progress?.updated_at ?? ""}`}
+                />
               )}
               <RunFlow
                 runId={id}
@@ -1504,6 +1516,9 @@ export function RunDetail({
                     <dt>{t("提出人")}</dt>
                     <dd>{run.created_by || "—"}</dd>
                   </div>
+                  {run.inputs && run.input && (
+                    <RunMediaInputs inputs={run.inputs} values={run.input} />
+                  )}
                   {run.trigger && (
                     <div>
                       <dt>{t("发起方式")}</dt>
