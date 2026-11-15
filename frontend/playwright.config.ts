@@ -30,6 +30,7 @@ export default defineConfig({
         "flow-canvas.spec.ts",
         "knowledge.spec.ts",
         "media.spec.ts",
+        "transcribe.spec.ts",
         "retrieval.spec.ts",
         "data-nodes.spec.ts",
         "datasources.spec.ts",

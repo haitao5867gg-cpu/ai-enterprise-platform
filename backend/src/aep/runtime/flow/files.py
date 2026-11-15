@@ -154,6 +154,11 @@ def model_refs(config: dict[str, Any]) -> tuple[list[str], bool]:
     aliases: list[str] = []
     default = False
     for node in flowgraph.nodes(config):
+        if node["type"] == "transcribe":  # always names its model
+            model = node.get("model")
+            if isinstance(model, str) and model.strip() and model not in aliases:
+                aliases.append(model)
+            continue
         if node["type"] not in MODEL_NODES:
             continue
         model = node.get("model")

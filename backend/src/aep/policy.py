@@ -36,6 +36,11 @@ DESCRIPTIONS: dict[str, str] = {
     "schema": "只发表结构：列名、类型和主外键。",
 }
 
+# Kinds of media files nodes send to models (docs/api/transcription.md).
+MediaKind = Literal["audio", "image"]
+MEDIA_KINDS: tuple[MediaKind, ...] = ("audio", "image")
+MEDIA_LABELS: dict[str, str] = {"audio": "音频", "image": "图片"}
+
 # Models the platform runs itself: nothing sent to them leaves the platform.
 LOCAL_MODELS = frozenset({"mock-embed", "mock-rerank"})
 
@@ -62,29 +67,45 @@ class DataPolicy:
     samples: Samples = "full"
     # The model aliases a run may use; None: any.
     models: tuple[str, ...] | None = None
+    # The kinds of media files that may be sent to models.
+    media: tuple[MediaKind, ...] = MEDIA_KINDS
 
     def as_dict(self) -> dict[str, Any]:
-        return {"samples": self.samples, "models": list(self.models) if self.models else None}
+        return {
+            "samples": self.samples,
+            "models": list(self.models) if self.models else None,
+            "media": list(self.media),
+        }
 
     @classmethod
     def from_dict(cls, value: Any) -> "DataPolicy":
-        """A stored policy; runs from before policies existed sent everything."""
+        """A stored policy; runs from before policies existed sent everything, and runs
+        from before the media kind existed sent no media (so any is allowed)."""
         if not isinstance(value, dict):
             return cls()
         samples = value.get("samples")
         models = value.get("models")
+        media = value.get("media")
         return cls(
             samples if samples in LEVELS else "full",
             tuple(str(m) for m in models) if isinstance(models, list) and models else None,
+            media_kinds(media) if isinstance(media, list) else MEDIA_KINDS,
         )
 
     def allows(self, model: str) -> bool:
         return self.models is None or model in self.models or model in LOCAL_MODELS
 
 
+def media_kinds(values: Iterable[Any]) -> tuple[MediaKind, ...]:
+    """The known kinds among ``values``, in the usual order."""
+    given = {str(v).strip() for v in values}
+    return tuple(kind for kind in MEDIA_KINDS if kind in given)
+
+
 def platform_default(settings: Settings) -> DataPolicy:
     models = tuple(m.strip() for m in settings.allowed_models.split(",") if m.strip())
-    return DataPolicy(settings.data_samples, models or None)
+    media = media_kinds(settings.data_media.split(","))
+    return DataPolicy(settings.data_samples, models or None, media)
 
 
 def model_problem(
@@ -96,6 +117,16 @@ def model_problem(
     allowed = "、".join(policy.models or ())
     who = f"项目「{project}」" if project else "平台"
     return f"{who}只允许用模型 {allowed}，节点「{where}」用的是 {model}"
+
+
+def media_problem(
+    policy: DataPolicy, kind: MediaKind, where: str, project: str | None = None
+) -> str | None:
+    """Why media of ``kind`` may not be sent to a model by node ``where``, or None."""
+    if kind in policy.media:
+        return None
+    who = f"项目「{project}」" if project else "平台"
+    return f"{who}不允许把{MEDIA_LABELS[kind]}发给模型，节点「{where}」要发"
 
 
 # Masking

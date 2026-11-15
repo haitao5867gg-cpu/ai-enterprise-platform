@@ -204,6 +204,19 @@ export function policyText(
       t("只用模型 {models}", { models: policy.models.join(t("、")) }),
       origin(project?.policy.models),
     ]);
+  // Media kinds kept from models (docs/api/transcription.md); older runs allow all.
+  const media = policy.media ?? ["audio", "image"];
+  if (media.length < 2)
+    parts.push([
+      media.length
+        ? t("媒体只发{kinds}", {
+            kinds: media
+              .map((kind) => t(kind === "audio" ? "音频" : "图片"))
+              .join(t("、")),
+          })
+        : t("不发音频和图片"),
+      origin(project?.policy.media),
+    ]);
   if (!parts.length) return null;
   const join = (items: string[]) => items.join(t("；"));
   const of = (text: string, from: string) =>

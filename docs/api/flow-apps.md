@@ -42,7 +42,7 @@
   "type": "llm",              // 见下面的节点类型
   "title": "起草售后回复",     // 1–50 字符
   "max_visits": 3,            // 一次运行里最多跑几次，1–50（加模型审查节点后从 10 放宽到 20，第 5 轮复测后到 50），不写为 3；超过时运行失败并写明原因，不能重试（见下）；确认模式的人工节点例外，见“人工节点的次数上限”
-  "on_error": OnError,        // 只有 llm、classifier、tool、knowledge、agent、code、llm_review 和数据工程、git_pr、app 节点可以设；不写等于 {"then": "stop"}
+  "on_error": OnError,        // 只有 llm、classifier、tool、knowledge、agent、code、llm_review、transcribe 和数据工程、git_pr、app 节点可以设；不写等于 {"then": "stop"}
   "ui": {"x": 120, "y": 40},  // 留给以后的画布，平台原样保存，不参与运行
   "note": "讲解说明"           // 可选，最多 500 字符，只给人看，见 data-nodes.md
 }
@@ -74,6 +74,8 @@
 每种类型的设置字段如下（公共字段不再重复）。“产出”是这个节点写进变量池的字段，“分支”是它的出边要用的 `branch` 名。可选的设置不写时按运行时的默认值处理（如 llm 的 `model` 为 null、`skills` 为 `[]`、`output` 为文字，`title` 不写时用节点 id）；手写、经接口或导入的配置可以不写这些键，编辑页读入时按同样的默认值补上，保存后写进配置。
 
 **knowledge 知识检索**的设置、产出和引用编号规则见 [knowledge.md](knowledge.md#编排应用知识检索节点)。
+
+**transcribe 语音转写**的设置、产出和外发策略见 [transcription.md](transcription.md)。
 
 **数据工程节点** `etl_profile`、`etl_plan_check`、`databricks_ingest`、`etl_code_check`、`databricks_dev_run`、`databricks_release`、`data_check` 见 [data-nodes.md](data-nodes.md)。
 

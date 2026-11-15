@@ -169,8 +169,8 @@
             "environment": "dev", "environment_label": "开发",
             "params": {"update_month": "2026-09"},
             "param_labels": {"update_month": "统计月"},                // 参数的显示名，页面用
-            "policy": {"samples": "stats", "models": null}} | null,   // 项目自己的策略设置，null 的项用平台默认
-"policy": {"samples": "stats", "models": ["company"] | null}     // 这次运行的有效策略，没绑定项目时是平台默认
+            "policy": {"samples": "stats", "models": null, "media": null}} | null,   // 项目自己的策略设置，null 的项用平台默认
+"policy": {"samples": "stats", "models": ["company"] | null, "media": ["audio", "image"]}     // 这次运行的有效策略，没绑定项目时是平台默认
 ```
 
 运行页的标题下面显示项目、环境和参数值；有效策略不是 `full` 或限定了模型时显示一句“发给模型的数据：只发统计（项目设置）”，括号里按 `project.policy` 写这一项来自项目设置还是平台设置。
@@ -226,6 +226,7 @@
 - 调模型前平台再查一次模型（防止漏网，比如运行创建以后才出现的调用，或者运行创建以后知识库换了向量模型）：知识检索的向量模型和重排模型也在发请求前查；不在清单里时这个节点以 `input_error` 失败，`error_message` 同上面第 5 步的写法，不发出请求。
 - 运行创建时定下的策略保存在运行上，之后一直按它（确认后恢复、平台重启后恢复都一样），平台默认改了也不影响已有的运行；代码应用 `etl` 同样。
 - 绑定项目的运行：`policy.samples` 不是 null 时用它，否则用平台默认；`policy.models` 同理。项目的设置可以比平台默认严，也可以松，第一期不设上限。
+- 第三项「媒体」（`policy.media`、平台默认 `AEP_DATA_MEDIA`）：哪些种类的媒体文件（音频、图片）可以发给模型，规则同上，见 [transcription.md](transcription.md)“数据外发策略：媒体”。
 
 ### 管什么
 

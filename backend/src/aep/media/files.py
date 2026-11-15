@@ -7,9 +7,10 @@ may be a gigabyte).
 
 import os
 import shutil
+import stat
 import uuid
-from pathlib import Path
-from typing import cast
+from pathlib import Path, PurePosixPath
+from typing import Any, cast
 
 from fastapi import UploadFile
 
@@ -130,6 +131,47 @@ def save_files(files: list[UploadFile], items: list[MediaItem], root: Path) -> N
         upload.file.seek(0)
         with path.open("wb") as target:
             shutil.copyfileobj(upload.file, target, COPY_BUFFER)
+
+
+class VolumeFileError(ValueError):
+    """A media path that does not name a file on the media volume."""
+
+
+def volume_file(root: Path, path: Any, outside: str = "文件不在媒体库里") -> Path:
+    """The file a media path (relative to ``root``, docs/api/media-processing.md) names: no
+    absolute path, ``..`` or link on the way, and a regular file at the end."""
+    if not isinstance(path, str) or not path:
+        raise VolumeFileError("没有文件路径")
+    parts = path.split("/")
+    if (
+        "\\" in path
+        or "\x00" in path
+        or PurePosixPath(path).is_absolute()
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        raise VolumeFileError(f"{outside}：{path}")
+    current = root.resolve()
+    for part in parts:
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            raise VolumeFileError(f"文件不见了：{path}") from None
+        if stat.S_ISLNK(mode):
+            raise VolumeFileError(f"{outside}：{path}")
+    if not stat.S_ISREG(current.lstat().st_mode):
+        raise VolumeFileError(f"文件不见了：{path}")
+    return current
+
+
+def media_path(value: Any) -> str | None:
+    """The media path a value names: a path, an item's summary (``path``) or a file
+    reference (``{"aep_file": {"path"}}``); None for anything else."""
+    if isinstance(value, dict) and set(value) == {"aep_file"}:
+        value = value["aep_file"]
+    if isinstance(value, dict):
+        value = value.get("path")
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def thumbnail_path(root: Path, item: MediaItem) -> Path:

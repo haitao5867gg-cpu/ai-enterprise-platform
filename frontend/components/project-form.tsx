@@ -3,6 +3,7 @@
 import { useId, useState } from "react";
 import {
   KEY,
+  POLICY_MEDIA,
   PREFIX,
   PROJECT_ID,
   TABLE,
@@ -17,7 +18,9 @@ import {
   replaceProject,
   scheduledUseLabels,
   scheduledUses,
+  mediaText,
   modelCheckCapLabels,
+  policyMediaLabels,
   type CheckSeverity,
   type Choice,
   type Convention,
@@ -32,7 +35,7 @@ import {
   type Reference,
   type Scheduled,
 } from "../lib/projects";
-import { ApiError, errorMessage, type SampleLevel } from "../lib/runs";
+import { ApiError, errorMessage, type PolicyMedia, type SampleLevel } from "../lib/runs";
 import { useUnsavedWarning } from "./asset-ui";
 import { CHECKS_HELP, ChecksField } from "./checks-field";
 import {
@@ -116,6 +119,7 @@ function payload(input: ProjectInput, adopted: string): ProjectInput {
     policy: {
       samples: input.policy.samples,
       models: input.policy.models?.length ? input.policy.models : null,
+      media: input.policy.media ?? null,
     },
   };
 }
@@ -877,6 +881,41 @@ export function ProjectForm({ initial, options, onSaved, onCancel, mode }: Props
             。选了以后，运行里每个调模型的节点都只能用这些模型。
           </small>
         </fieldset>
+        <SelectField
+          label="可以发给模型的媒体"
+          value={input.policy.media ? "own" : ""}
+          choices={[
+            { value: "", label: mediaText(null, defaults?.media) },
+            { value: "own", label: "自己选" },
+          ]}
+          help="语音转写节点发音频，看图的节点发图片。不允许时节点在发出前失败。"
+          onChange={(value) =>
+            set("policy", {
+              ...input.policy,
+              media: value ? [...(defaults?.media ?? POLICY_MEDIA)] : null,
+            })
+          }
+        />
+        {input.policy.media && (
+          <div className="check-grid" role="group" aria-label="允许发的媒体">
+            {(options?.media_kinds?.map((kind) => kind.value) ?? POLICY_MEDIA).map((kind) => (
+              <CheckField
+                key={kind}
+                label={policyMediaLabels[kind as PolicyMedia]}
+                checked={input.policy.media?.includes(kind) ?? false}
+                onChange={(checked) => {
+                  const media = input.policy.media ?? [];
+                  set("policy", {
+                    ...input.policy,
+                    media: checked
+                      ? POLICY_MEDIA.filter((item) => item === kind || media.includes(item))
+                      : media.filter((item) => item !== kind),
+                  });
+                }}
+              />
+            ))}
+          </div>
+        )}
       </fieldset>
 
       {error && <ErrorNotice message={error} />}

@@ -46,7 +46,7 @@ class CallRecord:
     (docs/api/models.md, "调用记录")."""
 
     model: str
-    kind: str  # "chat" | "embedding"
+    kind: str  # "chat" | "embedding" | "rerank" | "transcription"
     run_id: str | None
     node: str | None
     prompt_tokens: int
@@ -55,6 +55,8 @@ class CallRecord:
     ok: bool
     error: str | None  # a problem code (``error_code``) when the call failed
     duration_ms: int
+    # How long the audio of a transcription was, when the model said.
+    audio_seconds: float | None = None
 
 
 Recorder = Callable[[CallRecord], Awaitable[None]]
@@ -108,6 +110,7 @@ async def _record(
     usage: Any = None,
     cost: float | None = None,
     error: BaseException | None = None,
+    audio_seconds: float | None = None,
 ) -> None:
     if _recorder is None:
         return
@@ -123,6 +126,7 @@ async def _record(
         ok=error is None,
         error=error_code(error) if error is not None else None,
         duration_ms=int((time.monotonic() - started) * 1000),
+        audio_seconds=audio_seconds,
     )
     try:
         await _recorder(record)
@@ -210,6 +214,114 @@ async def chat(
             completion_tokens=usage.completion_tokens if usage else 0,
             total_tokens=usage.total_tokens if usage else 0,
         ),
+    )
+
+
+@dataclass(frozen=True)
+class Transcript:
+    """What a transcription model heard (docs/api/transcription.md): the whole text, each
+    sentence and, when the model gives them, each word, with times in seconds."""
+
+    text: str
+    language: str | None
+    duration_seconds: float | None
+    segments: list[dict[str, Any]]
+    words: list[dict[str, Any]]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "language": self.language,
+            "duration_seconds": self.duration_seconds,
+            "segments": self.segments,
+            "words": self.words,
+        }
+
+
+async def transcribe(
+    client: AsyncOpenAI,
+    file: tuple[str, bytes],
+    model: str,
+    *,
+    language: str | None = None,
+    prompt: str | None = None,
+) -> Transcript:
+    """Send one audio (or video) file to a transcription model through the gateway, asking
+    for sentence and word times (``verbose_json``)."""
+    await _check()
+    params: dict[str, Any] = {}
+    if language:
+        params["language"] = language
+    if prompt:
+        params["prompt"] = prompt
+    started = time.monotonic()
+    try:
+        raw = await client.audio.transcriptions.with_raw_response.create(
+            model=model,
+            file=file,
+            response_format="verbose_json",
+            timestamp_granularities=["segment", "word"],
+            **params,
+        )
+        found = transcript(raw.http_response.json(), language)
+    except Exception as exc:
+        await _record(model, "transcription", started, error=exc)
+        raise
+    await _record(
+        model,
+        "transcription",
+        started,
+        cost=_cost(raw.headers),
+        audio_seconds=found.duration_seconds,
+    )
+    return found
+
+
+def _seconds(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return round(number, 3) if math.isfinite(number) and number >= 0 else None
+
+
+def _timed(items: Any, key: str) -> list[dict[str, Any]]:
+    """Timed pieces (sentences under ``text``, words under ``word``) in time order, with
+    blank ones and ones without times left out."""
+    found = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get(key), str):
+            continue
+        text = item[key].strip()
+        start, end = _seconds(item.get("start")), _seconds(item.get("end"))
+        if text and start is not None and end is not None:
+            found.append({"start": start, "end": max(start, end), key: text})
+    return sorted(found, key=lambda piece: (piece["start"], piece["end"]))
+
+
+def transcript(data: Any, language: str | None = None) -> Transcript:
+    """A transcription model's ``verbose_json`` answer, tidied."""
+    if not isinstance(data, dict):
+        raise ValueError("转写模型的回答格式不对")
+    segments = _timed(data.get("segments"), "text")
+    words = _timed(data.get("words"), "word")
+    if not words:  # some servers give words only inside each sentence
+        nested = [w for s in data.get("segments") or [] if isinstance(s, dict)
+                  for w in s.get("words") or []]  # fmt: skip
+        words = _timed(nested, "word")
+    text = data.get("text")
+    text = text.strip() if isinstance(text, str) else ""
+    if not text:
+        text = "".join(s["text"] for s in segments)
+    said = data.get("language")
+    duration = _seconds(data.get("duration"))
+    if duration is None and segments:
+        duration = max(s["end"] for s in segments)
+    return Transcript(
+        text=text,
+        language=said.strip() if isinstance(said, str) and said.strip() else language,
+        duration_seconds=duration,
+        segments=segments,
+        words=words,
     )
 
 

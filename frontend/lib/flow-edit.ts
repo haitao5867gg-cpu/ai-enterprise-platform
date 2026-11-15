@@ -13,6 +13,7 @@ export const BRANCHED_ERROR_TYPES = [
   "llm",
   "classifier",
   "llm_review",
+  "transcribe",
   "tool",
   "agent",
   "code",
@@ -46,6 +47,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   condition: "条件判断",
   tool: "调用工具",
   knowledge: "知识检索",
+  transcribe: "语音转写",
   agent: "智能体",
   human: "人工",
   template: "文本拼接",
@@ -63,7 +65,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
 };
 
 export function nodeKind(type: FlowNode["type"]): NodeKind {
-  if (["llm", "classifier", "agent", "llm_review"].includes(type))
+  if (["llm", "classifier", "agent", "llm_review", "transcribe"].includes(type))
     return "model";
   if (
     [
@@ -113,6 +115,8 @@ export function ownOutputs(node: FlowNode): string[] {
       return ["result"];
     case "knowledge":
       return ["hits", "context"];
+    case "transcribe":
+      return ["text", "language", "duration_seconds", "segments", "words"];
     case "agent":
       return ["text", "steps", "hits"];
     case "human":

@@ -24,7 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from aep.cluster_harness import DATE_DIRECTIVES, FIXED_FORMATS, PARAM, rule_value
-from aep.policy import LEVELS, DataPolicy
+from aep.policy import LEVELS, DataPolicy, media_kinds
 from aep.runtime.store import DEFAULT_TENANT
 
 # Keys of environments and parameters follow flow node ids (aep.runtime.flow.nodes.ID).
@@ -326,6 +326,14 @@ class Convention(_Model):
 class Policy(_Model):
     samples: Literal["full", "masked", "stats", "schema"] | None = None
     models: list[_text(1, 100)] | None = Field(None, min_length=1, max_length=20)
+    # Which kinds of media may go to models; None: the platform's (docs/api/transcription.md).
+    media: list[Literal["audio", "image"]] | None = Field(None, max_length=2)
+
+    @model_validator(mode="after")
+    def distinct_media(self) -> "Policy":
+        if self.media is not None and len(set(self.media)) != len(self.media):
+            raise ValueError("可以发给模型的媒体不能重复")
+        return self
 
 
 class ProjectBody(_Model):
@@ -647,9 +655,11 @@ def effective_policy(project: dict[str, Any] | None, platform: DataPolicy) -> Da
     own = (project or {}).get("policy") or {}
     samples = own.get("samples")
     models = own.get("models")
+    media = own.get("media")
     return DataPolicy(
         samples if samples in LEVELS else platform.samples,
         tuple(models) if models else platform.models,
+        media_kinds(media) if isinstance(media, list) else platform.media,
     )
 
 
@@ -666,7 +676,7 @@ def run_summary(project: dict[str, Any] | None) -> dict[str, Any] | None:
         "params": project["values"],
         "param_labels": {p["key"]: p["label"] for p in project["params"]},
         # The project's own setting; the page says which part of the policy it set.
-        "policy": project.get("policy") or {"samples": None, "models": None},
+        "policy": project.get("policy") or {"samples": None, "models": None, "media": None},
     }
 
 

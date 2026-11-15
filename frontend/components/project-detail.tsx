@@ -9,6 +9,7 @@ import {
   emptyProject,
   getProject,
   getProjectOptions,
+  mediaText,
   modelCheckCapLabels,
   paramText,
   paramTypeLabels,
@@ -257,6 +258,10 @@ function ProjectView({ project, options }: { project: Project; options: ProjectO
                 ? project.policy.models.join("、")
                 : `平台默认（${defaults?.models?.length ? `只用 ${defaults.models.join("、")}` : "不限定"}）`}
             </dd>
+          </div>
+          <div>
+            <dt>可以发给模型的媒体</dt>
+            <dd>{mediaText(project.policy.media, defaults?.media)}</dd>
           </div>
         </dl>
       </section>

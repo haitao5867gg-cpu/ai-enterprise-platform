@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import struct
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -40,9 +41,9 @@ from aep.runtime.store import DEFAULT_TENANT
 
 log = logging.getLogger(__name__)
 
-Purpose = Literal["chat", "embedding", "rerank"]
-PURPOSES: tuple[Purpose, ...] = ("chat", "embedding", "rerank")
-PURPOSE_LABELS = {"chat": "对话", "embedding": "向量", "rerank": "重排"}
+Purpose = Literal["chat", "embedding", "rerank", "transcription"]
+PURPOSES: tuple[Purpose, ...] = ("chat", "embedding", "rerank", "transcription")
+PURPOSE_LABELS = {"chat": "对话", "embedding": "向量", "rerank": "重排", "transcription": "转写"}
 GatewayState = Literal["ok", "no_db", "down"]
 
 ALIAS = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
@@ -241,6 +242,8 @@ class UsageSummary:
     cost_usd: float | None = None
     last_call_at: datetime | None = None
     last_error: str | None = None  # the code of the last call when it failed
+    # Seconds of audio transcription models heard (docs/api/transcription.md).
+    audio_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -333,6 +336,7 @@ def _add(summary: UsageSummary, at: datetime, call: llm.CallRecord) -> UsageSumm
         cost_usd=cost,
         last_call_at=at,
         last_error=None if call.ok else call.error,
+        audio_seconds=summary.audio_seconds + (call.audio_seconds or 0.0),
     )
 
 
@@ -368,6 +372,8 @@ CREATE TABLE IF NOT EXISTS model_calls (
     duration_ms       integer NOT NULL DEFAULT 0
 )""",
     "CREATE INDEX IF NOT EXISTS model_calls_at ON model_calls (tenant_id, at)",
+    # Transcriptions are counted in audio seconds (docs/api/transcription.md).
+    "ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS audio_seconds double precision",
     "CREATE INDEX IF NOT EXISTS model_calls_run ON model_calls (run_id) WHERE run_id IS NOT NULL",
     """
 CREATE TABLE IF NOT EXISTS platform_settings (
@@ -395,8 +401,8 @@ class PostgresCallStore:
         async with self._pool.connection() as conn:
             await conn.execute(
                 "INSERT INTO model_calls (model, kind, run_id, node, prompt_tokens,"
-                " completion_tokens, cost_usd, ok, error, duration_ms)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " completion_tokens, cost_usd, ok, error, duration_ms, audio_seconds)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     call.model,
                     call.kind,
@@ -408,6 +414,7 @@ class PostgresCallStore:
                     call.ok,
                     call.error,
                     call.duration_ms,
+                    call.audio_seconds,
                 ),
             )
 
@@ -418,6 +425,7 @@ class PostgresCallStore:
                 " coalesce(sum(prompt_tokens), 0) AS prompt_tokens,"
                 " coalesce(sum(completion_tokens), 0) AS completion_tokens,"
                 " sum(cost_usd) AS cost_usd, max(at) AS last_call_at,"
+                " coalesce(sum(audio_seconds), 0) AS audio_seconds,"
                 " (array_agg(CASE WHEN ok THEN NULL ELSE coalesce(error, 'gateway') END"
                 "   ORDER BY at DESC, id DESC))[1] AS last_error"
                 " FROM model_calls WHERE tenant_id = %s AND at >= %s GROUP BY model",
@@ -432,6 +440,7 @@ class PostgresCallStore:
                     cost_usd=row["cost_usd"],
                     last_call_at=row["last_call_at"],
                     last_error=row["last_error"],
+                    audio_seconds=float(row["audio_seconds"]),
                 )
                 for row in await cur.fetchall()
             }
@@ -453,7 +462,7 @@ class PostgresCallStore:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 "SELECT at, model, kind, run_id, node, prompt_tokens, completion_tokens,"
-                " cost_usd, ok, error, duration_ms FROM model_calls"
+                " cost_usd, ok, error, duration_ms, audio_seconds FROM model_calls"
                 " WHERE tenant_id = %s AND run_id = %s ORDER BY at",
                 (DEFAULT_TENANT, run_id),
             )
@@ -666,7 +675,8 @@ class ModelService:
         purpose = info.get("aep_purpose")
         if purpose not in PURPOSES:
             mode = info.get("mode")
-            purpose = mode if mode in ("embedding", "rerank") else "chat"
+            known = {"embedding": "embedding", "rerank": "rerank"}
+            purpose = known.get(mode, "transcription" if mode == "audio_transcription" else "chat")
         key = info.get("aep_key")
         if not (isinstance(key, dict) and key.get("source") in ("page", "env", "none")):
             key = {"source": "unknown" if source == "config" else "none", "env": None}
@@ -922,6 +932,8 @@ class ModelService:
         try:
             if purpose == "embedding":
                 await llm.embed(client, ["测试"], alias)
+            elif purpose == "transcription":
+                await llm.transcribe(client, ("测试.wav", SILENCE), alias)
             else:
                 result = await llm.chat(
                     client, [{"role": "user", "content": "请只回复：OK"}], alias, max_tokens=16
@@ -954,6 +966,21 @@ class ModelService:
                 log.warning("model gateway refused a clean-up: %s", exc)
                 return
             raise ModelError(502, problem("gateway", reason=str(exc))["message"]) from exc
+
+
+def _silence(seconds: float = 1.0, rate: int = 16000) -> bytes:
+    """A WAV of silence, for testing a transcription model."""
+    frames = int(seconds * rate)
+    data = b"\x00\x00" * frames
+    header = (
+        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+        + b"data" + struct.pack("<I", len(data))
+    )  # fmt: skip
+    return header + data
+
+
+SILENCE = _silence()
 
 
 def _problem_of(exc: BaseException, purpose: str) -> dict[str, str]:

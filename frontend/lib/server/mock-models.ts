@@ -68,6 +68,18 @@ const store = (globalStore.aepMockModels ??= new Map(
     ...mockModels.map((alias) => configModel(alias, "chat")),
     configModel("mock-embed", "embedding"),
     configModel("company-embed", "embedding"),
+    {
+      ...configModel("transcribe", "transcription"),
+      display_name: "语音转写（faster-whisper）",
+      provider: "openai_compatible" as const,
+      model: "Systran/faster-whisper-small",
+      usage: {
+        ...EMPTY,
+        calls: 3,
+        audio_seconds: 378,
+        last_call_at: "2026-01-05T09:00:00.000Z",
+      },
+    },
   ].map((model) => [model.alias, model]),
 ));
 const defaults = (globalStore.aepMockModelDefaults ??= {
@@ -92,7 +104,7 @@ function out(model: Keyed): Model {
   };
 }
 function listed(): Model[] {
-  const order = ["chat", "embedding", "rerank"];
+  const order = ["chat", "embedding", "rerank", "transcription"];
   return [...store.values()]
     .map(out)
     .sort(

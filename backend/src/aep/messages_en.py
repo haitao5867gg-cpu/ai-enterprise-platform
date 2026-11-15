@@ -752,6 +752,18 @@ NODE_TYPES: dict[str, str] = {
     "调用工具": "Call tool",
     "调用应用": "Call app",
     "调用数据源的一个只读工具": "Call one read-only tool of a data source",
+    "语音转写": "Transcribe speech",
+    "把一段音频或视频的声音转成文字，带每句和每个字的时间": (
+        "Turn the speech in an audio or video file into text, with the time of each "
+        "sentence and word"
+    ),
+    "全文": "Full text",
+    "认出的语言": "Detected language",
+    "音频长度（秒）": "Audio length (seconds)",
+    "每句的文字和起止时间": "Each sentence's text, start and end",
+    "每个字或词的起止时间（模型不给时为空）": (
+        "Each word's start and end (empty when the model gives none)"
+    ),
     "调用模型": "Call model",
     "调用过的工具": "Tools called",
     "运行报告（Markdown）": "Run report (Markdown)",

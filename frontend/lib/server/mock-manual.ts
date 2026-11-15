@@ -184,7 +184,7 @@ export function buildMockManual(
       manual.human.push({
         ...ref,
         prompt:
-          setting && "prompt" in setting
+          setting && "prompt" in setting && setting.prompt
             ? setting.prompt
             : (node.note ?? "请确认"),
       });

@@ -32,7 +32,7 @@ import {
 const NO_DB =
   "模型网关没有接数据库，这里只能查看配置文件里的模型，不能新增。请按部署说明给网关配置 DATABASE_URL 和 LITELLM_SALT_KEY 后重启。";
 const DOWN = "连不上模型网关，看不到模型清单。请检查网关服务是否在运行。";
-const purposes: Purpose[] = ["chat", "embedding", "rerank"];
+const purposes: Purpose[] = ["chat", "embedding", "rerank", "transcription"];
 
 type Tested = TestResult | "failed" | "running";
 type Dialog = { kind: "create" } | { kind: "edit"; model: Model };
@@ -54,10 +54,17 @@ function UsageCell({ model }: { model: Model }) {
         )}
       </span>
       <span className="muted">
-        {t("{input} / {output} token", {
-          input: formatCompact(locale, usage.prompt_tokens),
-          output: formatCompact(locale, usage.completion_tokens),
-        })}
+        {model.purpose === "transcription"
+          ? t("{minutes} 音频分钟", {
+              minutes: formatNumber(
+                locale,
+                Math.round((usage.audio_seconds ?? 0) / 6) / 10,
+              ),
+            })
+          : t("{input} / {output} token", {
+              input: formatCompact(locale, usage.prompt_tokens),
+              output: formatCompact(locale, usage.completion_tokens),
+            })}
         {usage.cost_usd !== null && ` · $${usage.cost_usd.toFixed(2)}`}
       </span>
       {usage.last_call_at && (

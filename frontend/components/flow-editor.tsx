@@ -84,6 +84,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
     "retrieval",
   ],
   tool: ["datasource", "tool", "args", "save_media"],
+  transcribe: ["model", "audio", "language", "prompt"],
   agent: [
     "model",
     "skills",

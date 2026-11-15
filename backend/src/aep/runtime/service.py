@@ -725,6 +725,8 @@ class RunService:
             title = node.get("title") or node["id"]
             if node["type"] in ("llm", "classifier", "agent", "llm_review"):
                 used.append((node.get("model") or fallback, title))
+            if node["type"] == "transcribe" and isinstance(node.get("model"), str):
+                used.append((node["model"], title))
             search = node if node["type"] == "knowledge" else None
             if node["type"] == "agent" and isinstance(node.get("knowledge"), dict):
                 search = node["knowledge"]

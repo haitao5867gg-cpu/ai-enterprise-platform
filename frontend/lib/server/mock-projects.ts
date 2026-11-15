@@ -21,7 +21,13 @@ import {
   type ProjectOptions,
   type Scheduled,
 } from "../projects";
-import { isRecord, type RunPolicy, type RunProject, type SampleLevel } from "../runs";
+import {
+  isRecord,
+  type PolicyMedia,
+  type RunPolicy,
+  type RunProject,
+  type SampleLevel,
+} from "../runs";
 import { mockError, mockJson, noContent, readBody } from "./mock-assets";
 import { mockModels } from "./mock-flow-apps";
 
@@ -44,7 +50,11 @@ const DESCRIPTIONS: Record<SampleLevel, string> = {
   schema: "只发表结构：列名、类型和主外键。",
 };
 const LOCAL_MODELS = ["mock-embed", "mock-rerank"];
-export const PLATFORM_POLICY: RunPolicy = { samples: "full", models: null };
+export const PLATFORM_POLICY: RunPolicy = {
+  samples: "full",
+  models: null,
+  media: ["audio", "image"],
+};
 const globalStore = globalThis as typeof globalThis & {
   aepMockProjects?: Map<string, Project>;
 };
@@ -316,6 +326,14 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       !models.every((model) => typeof model === "string" && model.trim()))
   )
     return "「数据外发策略的允许的模型」的格式、长度或范围不正确";
+  const media = policy.media ?? null;
+  if (
+    media !== null &&
+    (!Array.isArray(media) ||
+      !media.every((kind) => kind === "audio" || kind === "image") ||
+      new Set(media).size !== media.length)
+  )
+    return "「数据外发策略的媒体」的取值不对";
   for (const [what, keys] of [
     ["环境", environments.map((env) => env.key)],
     ["引用表", references.map((ref) => ref.name)],
@@ -381,7 +399,7 @@ function readProject(body: Record<string, unknown>): ProjectInput | string {
       }),
     ),
     model_check_max_severity: cap as CheckSeverity,
-    policy: { samples, models: models as string[] | null },
+    policy: { samples, models: models as string[] | null, media: media as PolicyMedia[] | null },
   };
 }
 
@@ -410,7 +428,11 @@ export async function mockProjects(request: Request, path: string[]) {
         description: DESCRIPTIONS[value],
       })),
       models: [...mockModels],
-      defaults: { samples: "full", models: null },
+      media_kinds: [
+        { value: "audio", label: "音频" },
+        { value: "image", label: "图片" },
+      ],
+      defaults: { samples: "full", models: null, media: ["audio", "image"] },
     };
     return mockJson(options);
   }
@@ -491,6 +513,7 @@ export function projectPolicy(bound: ProjectSnapshot | null): RunPolicy {
   return {
     samples: own?.samples ?? PLATFORM_POLICY.samples,
     models: own?.models ?? PLATFORM_POLICY.models,
+    media: own?.media ?? PLATFORM_POLICY.media,
   };
 }
 

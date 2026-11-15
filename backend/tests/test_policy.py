@@ -118,7 +118,11 @@ def test_the_platform_default_and_model_problems():
     settings = SETTINGS.model_copy(update={"data_samples": "stats", "allowed_models": " qwen, x "})
     rules = policy.platform_default(settings)
     assert rules == DataPolicy("stats", ("qwen", "x"))
-    assert rules.as_dict() == {"samples": "stats", "models": ["qwen", "x"]}
+    assert rules.as_dict() == {
+        "samples": "stats",
+        "models": ["qwen", "x"],
+        "media": ["audio", "image"],
+    }
     assert policy.platform_default(SETTINGS) == DataPolicy("full", None)
     assert DataPolicy.from_dict(None) == DataPolicy()
     assert DataPolicy.from_dict({"samples": "odd", "models": []}) == DataPolicy()
@@ -251,7 +255,7 @@ async def test_data_values_go_to_models_as_they_are_by_default():
         await p.new_app("where", lookup_flow(p.shop))
         run = await p.run("where", {"city": "上海"})
         assert run["status"] == "done", run["error"]
-        assert run["policy"] == {"samples": "full", "models": None}
+        assert run["policy"] == {"samples": "full", "models": None, "media": ["audio", "image"]}
         assert "a@example.com" in prompt(p, 0) and "上海" in prompt(p, 0)
 
 
@@ -261,13 +265,17 @@ async def test_data_values_are_left_out(level):
         await p.new_app("where", lookup_flow(p.shop))
         run = await p.run("where", {"city": "北京"})
         assert run["status"] == "done", run["error"]
-        assert run["policy"] == {"samples": level, "models": None}
+        assert run["policy"] == {"samples": level, "models": None, "media": ["audio", "image"]}
         sent = prompt(p, 0)
         assert "a@example.com" not in sent and "上海" not in sent
         assert "（这里有 3 行数据，列为 customer_id、email、city；" in sent
         assert "要的城市：北京" in sent  # What people wrote goes as it is.
         listed = (await p.api.get("/runs")).json()
-        assert listed[0]["policy"] == {"samples": level, "models": None}
+        assert listed[0]["policy"] == {
+            "samples": level,
+            "models": None,
+            "media": ["audio", "image"],
+        }
 
 
 async def test_masked_tokens_round_trip_through_the_flow():
@@ -280,7 +288,7 @@ async def test_masked_tokens_round_trip_through_the_flow():
         run = await p.run("where", {"city": "上海"})
         assert run["run_id"] == RUN0
         assert run["status"] == "done", run["error"]
-        assert run["policy"] == {"samples": "masked", "models": None}
+        assert run["policy"] == {"samples": "masked", "models": None, "media": ["audio", "image"]}
 
         first = prompt(p, 0)
         assert "a@example.com" not in first and '上海"' not in first
@@ -395,7 +403,7 @@ async def test_a_run_is_refused_when_a_node_uses_a_model_the_platform_does_not_a
         assert resp.status_code == 201, resp.text
         await p.service.wait_idle()
         run = (await p.api.get(f"/runs/{resp.json()['run_id']}")).json()
-        assert run["policy"] == {"samples": "full", "models": ["qwen"]}
+        assert run["policy"] == {"samples": "full", "models": ["qwen"], "media": ["audio", "image"]}
 
 
 def _all_qwen(config: dict) -> dict:
@@ -790,7 +798,7 @@ async def test_the_etl_app_keeps_the_policy_the_run_was_created_with():
     ctx = dataclasses.replace(service._ctx, settings=with_policy(data_samples="full"))  # noqa: SLF001
     restarted = RunService(service._store, service._checkpointer, default_apps(), ctx)  # noqa: SLF001
     view = await test_etl.decide(restarted, run_id, "approve")
-    assert view.record.policy == {"samples": "stats", "models": None}
+    assert view.record.policy == {"samples": "stats", "models": None, "media": ["audio", "image"]}
     retry = gateway.requests[2]["body"]["messages"][-1]["content"]
     assert "a@example.com" not in retry and "The value '‹已隐去›'" in retry
 

@@ -1,4 +1,11 @@
-import { ApiError, isRecord, requestJson, sampleLabels, type SampleLevel } from "./runs";
+import {
+  ApiError,
+  isRecord,
+  requestJson,
+  sampleLabels,
+  type PolicyMedia,
+  type SampleLevel,
+} from "./runs";
 
 // docs/api/projects.md is the source of truth for these wire types.
 export type Environment = {
@@ -127,7 +134,18 @@ export const modelCheckCapLabels: Record<CheckSeverity, string> = {
 export type ProjectPolicy = {
   samples: SampleLevel | null;
   models: string[] | null;
+  // Which media files may go to models (docs/api/transcription.md); projects saved
+  // before it have none (read as null: the platform default).
+  media?: PolicyMedia[] | null;
 };
+export const policyMediaLabels: Record<PolicyMedia, string> = { audio: "音频", image: "图片" };
+export const POLICY_MEDIA: PolicyMedia[] = ["audio", "image"];
+export const mediaText = (media: PolicyMedia[] | null | undefined, defaults?: PolicyMedia[]) =>
+  media
+    ? media.length
+      ? media.map((kind) => policyMediaLabels[kind]).join("、")
+      : "都不允许"
+    : `平台默认${defaults ? `（${defaults.length ? defaults.map((kind) => policyMediaLabels[kind]).join("、") : "都不允许"}）` : ""}`;
 export type ProjectInput = {
   project_id: string;
   name: string;
@@ -158,7 +176,8 @@ export type ProjectOptions = {
   sample_levels: { value: SampleLevel; label: string; description: string }[];
   // Aliases on the model gateway; null when it could not be read.
   models: string[] | null;
-  defaults: { samples: SampleLevel; models: string[] | null };
+  media_kinds?: { value: PolicyMedia; label: string }[];
+  defaults: { samples: SampleLevel; models: string[] | null; media?: PolicyMedia[] };
 };
 // What a new run binds (POST /runs `project`).
 export type ProjectChoice = {
@@ -347,7 +366,7 @@ export function emptyProject(): ProjectInput {
     checks: [],
     conventions: [],
     model_check_max_severity: "error",
-    policy: { samples: null, models: null },
+    policy: { samples: null, models: null, media: null },
   };
 }
 
@@ -371,6 +390,7 @@ export function projectInput(project: Project): ProjectInput {
     policy: {
       samples: project.policy.samples ?? null,
       models: project.policy.models ? [...project.policy.models] : null,
+      media: project.policy.media ? [...project.policy.media] : null,
     },
   };
 }

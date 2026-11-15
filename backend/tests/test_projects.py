@@ -459,7 +459,11 @@ async def _options(settings: Any) -> None:
         ]
         assert options["sample_levels"][2]["label"] == "只发统计"
         assert options["models"] == ["mock", "qwen"]
-        assert options["defaults"] == {"samples": "stats", "models": None}
+        assert options["defaults"] == {
+            "samples": "stats",
+            "models": None,
+            "media": ["audio", "image"],
+        }
         resp = await p.api.post(
             "/projects", json=project(policy={"samples": None, "models": ["deepseek"]})
         )
@@ -535,9 +539,9 @@ async def test_a_run_binds_a_project_and_keeps_a_snapshot():
             "environment_label": "开发",
             "params": {"update_month": "2026-10", "version": 3},
             "param_labels": {"update_month": "统计月", "version": "版本"},
-            "policy": {"samples": None, "models": None},
+            "policy": {"samples": None, "models": None, "media": None},
         }
-        assert run["policy"] == {"samples": "full", "models": None}
+        assert run["policy"] == {"samples": "full", "models": None, "media": ["audio", "image"]}
         sent = p.gateway.requests[0]["body"]["messages"][-1]["content"]
         assert sent.startswith("统计月 2026-10，写到 icsd-ace-dev.jade_dev\n## 项目：IBF 入库运费")
         assert "| `prev.sales.forecast` | 预测表 | Type = 'Vol.' | 上一期的需求预测 |" in sent
@@ -650,7 +654,11 @@ async def test_a_project_policy_applies_to_its_runs():
         assert resp.status_code == 201, resp.text
         await p.service.wait_idle()
         run = (await p.api.get(f"/runs/{resp.json()['run_id']}")).json()
-        assert run["policy"] == {"samples": "stats", "models": ["qwen"]}
+        assert run["policy"] == {
+            "samples": "stats",
+            "models": ["qwen"],
+            "media": ["audio", "image"],
+        }
 
 
 async def test_saving_checks_project_references():

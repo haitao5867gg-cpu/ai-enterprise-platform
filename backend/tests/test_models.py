@@ -47,7 +47,10 @@ class PickyGateway(FakeGateway):
         self.cost: str | None = None
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
+        try:
+            body = json.loads(request.content)
+        except ValueError:  # a transcription is sent as a form
+            return super()._handle(request)
         if body.get("model") in self.failing:
             self.requests.append(
                 {"url": str(request.url), "headers": request.headers, "body": body}

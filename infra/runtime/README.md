@@ -14,6 +14,7 @@
 | `postgres`、`redis` | 运行包自己的数据库，和平台的分开 |
 | `connector-sandbox`、`sandbox-relay` | 代码节点的沙箱，不能上网 |
 | `connector-media` | 媒体处理（ffmpeg），读媒体库、渲染视频；流程用到时绑定 `http://connector-media:8008/mcp` |
+| `asr`（可选） | 本地语音转写（faster-whisper），模型网关的 `transcribe` 别名默认指向它。`.env` 里写 `COMPOSE_PROFILES=asr` 才启动，第一次下载模型约 500 MB，常驻内存约 1G（[docs/api/transcription.md](../../docs/api/transcription.md)） |
 
 没有平台页面、示例源库和 Langfuse。外部应用自己的服务（页面、连接器）写在
 `infra/runtime/compose.app.yml`，它自己的对外路由写在 `infra/runtime/sites/*.caddy`。这两样都不进仓库，`install.sh` 发现了就一起启动。
