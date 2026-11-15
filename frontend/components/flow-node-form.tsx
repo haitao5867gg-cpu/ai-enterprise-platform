@@ -41,6 +41,8 @@ import {
 } from "../lib/datasources";
 import { issuesUnder, variablesFor, type Variable } from "../lib/flow-edit";
 import { errorMessage } from "../lib/runs";
+import { MEDIA_KINDS, mediaKindLabels } from "../lib/media";
+import { useBoundLibraries } from "./flow-media";
 import { SkillPicker } from "./app-settings";
 import {
   CheckField,
@@ -94,6 +96,7 @@ const inputTypes: { value: InputType; label: string }[] = [
   { value: "boolean", label: "是/否" },
   { value: "select", label: "下拉选择" },
   { value: "datasource", label: "数据源" },
+  { value: "media", label: "素材" },
 ];
 const operators: { value: Condition["op"]; label: string }[] = [
   { value: "eq", label: "等于" },
@@ -326,6 +329,67 @@ function OutputFields({
   );
 }
 
+// Which bound library a media input picks from, and which kinds it takes (none ticked:
+// all of them; docs/api/media.md, 素材输入).
+function MediaInputSettings({
+  input,
+  libraries,
+  update,
+}: {
+  input: Input;
+  libraries: { value: string; label: string }[];
+  update: (input: Input) => void;
+}) {
+  const t = useT();
+  const kinds = input.kinds ?? [];
+  const library = input.library ?? "";
+  return (
+    <>
+      <SelectField
+        label={t("从哪个媒体库选")}
+        value={library}
+        choices={[
+          { value: "", label: t("请选择媒体库") },
+          ...libraries,
+          ...(library && !libraries.some((item) => item.value === library)
+            ? [
+                {
+                  value: library,
+                  label: t("没有绑定的媒体库（{id}）", { id: library }),
+                },
+              ]
+            : []),
+        ]}
+        help={
+          libraries.length
+            ? undefined
+            : t("先在下面「媒体库」一节绑定一个媒体库。")
+        }
+        onChange={(value) => update({ ...input, library: value })}
+      />
+      <fieldset className="media-kinds">
+        <legend>{t("收哪几类（都不勾等于都收）")}</legend>
+        {MEDIA_KINDS.map((kind) => (
+          <CheckField
+            key={kind}
+            label={t(mediaKindLabels[kind])}
+            checked={kinds.includes(kind)}
+            onChange={(on) => {
+              const next = { ...input };
+              const chosen = MEDIA_KINDS.filter((k) =>
+                k === kind ? on : kinds.includes(k),
+              );
+              if (chosen.length) next.kinds = chosen;
+              else delete next.kinds;
+              update(next);
+            }}
+          />
+        ))}
+      </fieldset>
+    </>
+  );
+}
+
 function InputList<T extends Input>({
   label,
   inputs,
@@ -333,6 +397,7 @@ function InputList<T extends Input>({
   issues,
   prefix,
   allowDatasource,
+  libraries,
   start = false,
 }: {
   label: string;
@@ -343,6 +408,8 @@ function InputList<T extends Input>({
   allowDatasource: boolean;
   // A start node's inputs also say how the new-run page shows them.
   start?: boolean;
+  // The libraries the app binds, for media inputs; left out: no media inputs here.
+  libraries?: { value: string; label: string }[];
 }) {
   const t = useT();
   return (
@@ -378,13 +445,23 @@ function InputList<T extends Input>({
             choices={translated(
               t,
               inputTypes.filter(
-                (item) => allowDatasource || item.value !== "datasource",
+                (item) =>
+                  (allowDatasource || item.value !== "datasource") &&
+                  (libraries !== undefined || item.value !== "media"),
               ),
             )}
             onChange={(type) => {
               const next = { ...input, type: type as InputType };
               if (type !== "select") delete next.choices;
               else next.choices ??= [{ value: "a", label: t("选项 A") }];
+              if (type === "media") {
+                // An item is picked at run time: there is no default to give.
+                delete next.default;
+                next.library ??= libraries?.[0]?.value ?? "";
+              } else {
+                delete next.library;
+                delete next.kinds;
+              }
               // Examples only fit text: dropped here, not left to fail the save unseen.
               if (type !== "text" && type !== "textarea") {
                 delete next.max_length;
@@ -434,6 +511,13 @@ function InputList<T extends Input>({
               render={(example, _j, set) => (
                 <TextField label={t("例子")} value={example} onChange={set} />
               )}
+            />
+          )}
+          {input.type === "media" && (
+            <MediaInputSettings
+              input={input}
+              libraries={libraries ?? []}
+              update={(next) => update(next as T)}
             />
           )}
           {input.type === "select" && (
@@ -2208,6 +2292,7 @@ export function NodeSettings({
   const t = useT();
   const variables = variablesFor(config, node.id);
   const at = (path: string) => issuesUnder(issues, path);
+  const boundLibraries = useBoundLibraries(config);
   switch (node.type) {
     case "etl_profile":
     case "databricks_ingest":
@@ -2474,6 +2559,7 @@ export function NodeSettings({
             issues={issues}
             allowDatasource
             start
+            libraries={boundLibraries}
             onChange={(inputs) => change({ ...node, inputs })}
           />
         </>

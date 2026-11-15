@@ -700,6 +700,8 @@ export type FlowIssues = {
   graph: string[];
   env: Record<string, string>;
   nodes: Record<string, Record<string, string>>;
+  // The media binding's, by the path under `media` (e.g. "libraries.0.library_id").
+  media?: Record<string, string>;
 };
 export const noIssues: FlowIssues = { graph: [], env: {}, nodes: {} };
 export function sortIssues(
@@ -717,6 +719,8 @@ export function sortIssues(
       sorted.graph.push(msg);
     } else if (section === "env") {
       sorted.env[loc.slice(3).join(".")] = msg;
+    } else if (section === "media") {
+      (sorted.media ??= {})[loc.slice(3).join(".") || "media"] = msg;
     } else if (section !== "graph" || loc.length === 3) {
       sorted.graph.push(msg);
     } else if (kind === "nodes" && typeof id === "string") {

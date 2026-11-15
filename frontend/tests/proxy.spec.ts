@@ -25,6 +25,41 @@ test("knowledge proxy preserves multipart bytes, chunk pagination and original d
   expect([...(await file.body())]).toEqual(bytes);
 });
 
+test("media proxy keeps upload bytes and answers byte ranges for playing", async ({
+  request,
+}) => {
+  const items = "/api/media-libraries/lib-1/items";
+  const bytes = [0, 0xff, 0x10, 0x80];
+  const upload = await request.post(items, {
+    multipart: {
+      files: {
+        name: "配音.m4a",
+        mimeType: "audio/mp4",
+        buffer: Buffer.from(bytes),
+      },
+    },
+  });
+  expect(upload.status()).toBe(202);
+  expect(await upload.json()).toEqual([{ name: "配音.m4a", bytes }]);
+
+  const whole = await request.get(`${items}/item-1/file`);
+  expect(whole.status()).toBe(200);
+  expect(whole.headers()["accept-ranges"]).toBe("bytes");
+  expect(whole.headers()["content-disposition"]).toBe(
+    "inline; filename*=UTF-8''%E6%88%90%E7%89%87.mp4",
+  );
+  expect([...(await whole.body())]).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 0xff]);
+
+  // A player asks for a part: the range goes through and the part comes back.
+  const part = await request.get(`${items}/item-1/file`, {
+    headers: { Range: "bytes=2-4" },
+  });
+  expect(part.status()).toBe(206);
+  expect(part.headers()["content-range"]).toBe("bytes 2-4/10");
+  expect(part.headers()["content-length"]).toBe("3");
+  expect([...(await part.body())]).toEqual([2, 3, 4]);
+});
+
 test("production ignores mock flag and forwards health and configured API base path", async ({
   request,
   page,

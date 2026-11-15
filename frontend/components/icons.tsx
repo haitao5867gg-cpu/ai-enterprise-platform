@@ -21,6 +21,7 @@ type IconName =
   | "chart"
   | "book"
   | "box"
+  | "film"
   | "sidebar"
   | "chevron";
 const paths: Record<IconName, string> = {
@@ -44,6 +45,7 @@ const paths: Record<IconName, string> = {
   chart: "M4 20h16 M7 16v-5 M12 16V6 M17 16v-8",
   book: "M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z M4 21V5 M8 7h7",
   box: "M3 7l9-4 9 4v10l-9 4-9-4z M3 7l9 4 9-4 M12 11v10",
+  film: "M4 4h16v16H4z M8 4v16 M16 4v16 M4 9h4 M4 15h4 M16 9h4 M16 15h4",
   sidebar: "M4 4h16v16H4z M9 4v16",
   chevron: "m9 6 6 6-6 6",
   chip: "M7 7h10v10H7z M10 3v4 M14 3v4 M10 17v4 M14 17v4 M3 10h4 M3 14h4 M17 10h4 M17 14h4",

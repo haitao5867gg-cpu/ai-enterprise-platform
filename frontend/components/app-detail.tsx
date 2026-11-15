@@ -13,6 +13,7 @@ import {
 import { ConfigCode } from "./config-code";
 import { ConvertToFlow } from "./app-convert";
 import { FlowConversation } from "./flow-conversation";
+import { FlowMedia } from "./flow-media";
 import { AppBudget } from "./app-budget";
 import { AppSchedules } from "./app-schedules";
 import Link from "next/link";
@@ -1038,6 +1039,15 @@ export function AppDetailView({ app }: { app: string }) {
                 setConfig(value);
                 setNotice("");
               }}
+              disabled={busy || running}
+            />
+            <FlowMedia
+              config={config}
+              setConfig={(value) => {
+                setConfig(value);
+                setNotice("");
+              }}
+              issues={issues.media ?? {}}
               disabled={busy || running}
             />
           </>

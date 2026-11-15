@@ -361,7 +361,10 @@ export async function requestJson(
   try {
     const timeout = AbortSignal.timeout(
       init.body instanceof FormData
-        ? 300_000
+        ? // Videos for a media library can be large (docs/api/media.md).
+          path.startsWith("/media-libraries/")
+          ? 3_600_000
+          : 300_000
         : path.endsWith("/test") ||
             // Proposing an asset pushes to the assets repository (docs/api/catalog.md).
             path.endsWith("/pull-request") ||
