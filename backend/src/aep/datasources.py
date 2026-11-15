@@ -85,7 +85,12 @@ def tool_seconds(source: DataSource, settings: Settings) -> float | None:
 class DataSourceStore(Protocol):
     async def setup(self) -> None: ...
     async def create(
-        self, name: str, kind: DataSourceKind, connector_url: str, description: str = ""
+        self,
+        name: str,
+        kind: DataSourceKind,
+        connector_url: str,
+        description: str = "",
+        datasource_id: str | None = None,
     ) -> DataSource: ...
     async def get(self, datasource_id: str) -> DataSource | None: ...
     async def all(self) -> list[DataSource]: ...
@@ -109,11 +114,18 @@ class MemoryDataSourceStore:
         return None
 
     async def create(
-        self, name: str, kind: DataSourceKind, connector_url: str, description: str = ""
+        self,
+        name: str,
+        kind: DataSourceKind,
+        connector_url: str,
+        description: str = "",
+        datasource_id: str | None = None,
     ) -> DataSource:
         if any(d.name == name for d in self._items.values()):
             raise DuplicateName(name)
-        ds = DataSource(str(uuid.uuid4()), name, kind, connector_url, description)
+        # A runtime registers a package's source under the platform's id (docs/api/runtime.md).
+        key = canon_id(datasource_id) if datasource_id else str(uuid.uuid4())
+        ds = DataSource(key, name, kind, connector_url, description)
         self._items[ds.datasource_id] = ds
         return ds
 
@@ -198,7 +210,12 @@ class PostgresDataSourceStore:
                 await conn.execute(statement)
 
     async def create(
-        self, name: str, kind: DataSourceKind, connector_url: str, description: str = ""
+        self,
+        name: str,
+        kind: DataSourceKind,
+        connector_url: str,
+        description: str = "",
+        datasource_id: str | None = None,
     ) -> DataSource:
         async with self._pool.connection() as conn:
             try:
@@ -206,7 +223,13 @@ class PostgresDataSourceStore:
                     "INSERT INTO datasources"
                     " (datasource_id, name, kind, connector_url, description)"
                     f" VALUES (%s, %s, %s, %s, %s) RETURNING {COLUMNS}",
-                    (uuid.uuid4(), name, kind, connector_url, description),
+                    (
+                        uuid.UUID(datasource_id) if datasource_id else uuid.uuid4(),
+                        name,
+                        kind,
+                        connector_url,
+                        description,
+                    ),
                 )
             except errors.UniqueViolation as exc:
                 raise DuplicateName(name) from exc

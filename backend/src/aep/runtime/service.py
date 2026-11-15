@@ -377,6 +377,9 @@ class RunService:
         self._running: dict[str, asyncio.Task] = {}
         # Told each time a run settles (waiting, done, error): the platform's notices.
         self.on_settled: Callable[[RunSettled], Awaitable[None]] | None = None
+        # On a runtime, why an app's runs cannot start through /v1 or MCP yet (its
+        # self-check, docs/api/runtime.md); None when they can.
+        self.ready_check: Callable[[str], Awaitable[str | None]] | None = None
         # Where model calls are recorded (aep.models.CallStore), for each step's usage.
         self.calls: Any = None
 

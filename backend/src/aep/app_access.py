@@ -241,6 +241,10 @@ async def start(
     ``ConversationProblem``. ``entry`` is the way it came in: ``api`` or ``mcp``."""
     if not (await service.entries.get(key.app)).open(entry):
         raise ConversationProblem(403, CLOSED_ENTRY)
+    if service.ready_check is not None:
+        problem = await service.ready_check(key.app)
+        if problem is not None:
+            raise ConversationProblem(503, problem)
     requester = f"API：{key.name}"
     if conversation_id is not None and new_conversation:
         raise ConversationProblem(422, "new_conversation 和 conversation_id 只能给一个")

@@ -156,6 +156,9 @@ LABELS: dict[str, str] = {
     "POST /apps/{app}/draft/publish": "发布应用",
     "POST /apps/{app}/versions/{version}/activate": "切换应用版本",
     "PUT /apps/{app}/runtime-requirements": "修改运行要求",
+    "POST /runtime/packages": "安装流程包",
+    "POST /runtime/apps/{app}/activate": "切换运行包里的应用版本",
+    "PUT /runtime/apps/{app}/bindings/{datasource_id}": "绑定连接器",
     "POST /skills": "新建 Skill",
     "PUT /skills/{name}/draft": "保存 Skill 草稿",
     "DELETE /skills/{name}/draft": "放弃 Skill 草稿",
@@ -250,6 +253,9 @@ def required(method: str, path: str) -> str | None:
         "/packages/public-key",
     ):
         return "builder"
+    # A runtime's installs and bindings (docs/api/runtime.md).
+    if _under(path, "/runtime"):
+        return "builder" if method in WRITES else "user"
     if any(_under(path, p) for p in ("/users", "/audit", "/webhooks", "/notification-channels")):
         return "admin"
     if _under(path, "/models"):
@@ -899,8 +905,40 @@ def _route_path(request: Request) -> str:
     return getattr(route, "path", None) or request.url.path
 
 
+# What a runtime serves (docs/api/runtime.md, 运行模式): routes under these prefixes, and
+# these method and route pairs. Everything else answers 404 there.
+RUNTIME_PREFIXES = ("/auth", "/users", "/v1", "/runtime", "/media-libraries")
+RUNTIME_ROUTES = frozenset(
+    {
+        ("GET", "/healthz"),
+        ("GET", "/readyz"),
+        ("GET", "/apps/{app}/keys"),
+        ("POST", "/apps/{app}/keys"),
+        ("DELETE", "/apps/{app}/keys/{key_id}"),
+        ("PUT", "/apps/{app}/secrets/{name}"),
+        ("DELETE", "/apps/{app}/secrets/{name}"),
+        ("GET", "/apps/{app}/usage"),
+        ("GET", "/datasources"),
+        ("GET", "/datasources/{datasource_id}"),
+        ("GET", "/datasources/{datasource_id}/health"),
+        ("GET", "/datasources/{datasource_id}/tools"),
+        ("POST", "/datasources/test"),
+        ("GET", "/models"),
+    }
+)
+NOT_ON_RUNTIME = "运行包里没有这个接口"
+
+
+def runtime_allows(method: str, path: str) -> bool:
+    return (method, path) in RUNTIME_ROUTES or any(_under(path, p) for p in RUNTIME_PREFIXES)
+
+
 async def authorize(request: Request) -> None:
-    """Every route's first dependency: who is asking, and may they."""
+    """Every route's first dependency: what a runtime serves, who is asking, and may they."""
+    if getattr(request.app.state, "mode", "platform") == "runtime" and not runtime_allows(
+        request.method, _route_path(request)
+    ):
+        raise HTTPException(404, NOT_ON_RUNTIME)
     auth = _service(request)
     if auth is None or not auth.enabled:
         request.state.user = LOCAL_USER

@@ -159,6 +159,12 @@ class Settings(BaseSettings):
     # Ed25519 signing key, as the base64 of its 32-byte seed. A secret: .env or Key Vault
     # only. Unset, the platform cannot package apps.
     package_signing_key: str = ""
+    # ``runtime`` makes this process a runtime: it runs installed packages only, through
+    # /v1 and /mcp/apps, and serves no design pages; ``platform`` is the platform itself.
+    mode: Literal["platform", "runtime"] = "platform"
+    # A runtime's trusted platform public keys (base64 raw Ed25519); old and new side by
+    # side while the platform changes its key.
+    platform_public_keys: list[str] = []
 
     # Langfuse tracing. Off unless both keys are set; the names are shared with
     # the gateway, which reports model calls to the same project.
@@ -188,6 +194,18 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "AEP_PACKAGE_SIGNING_KEY 要是 Ed25519 私钥 32 字节种子的 base64"
                 ) from None
+        return value
+
+    @field_validator("platform_public_keys")
+    @classmethod
+    def valid_public_keys(cls, value: list[str]) -> list[str]:
+        for i, key in enumerate(value, 1):
+            try:
+                raw = base64.b64decode(key.strip(), validate=True)
+            except (binascii.Error, ValueError):
+                raw = b""
+            if len(raw) != 32:
+                raise ValueError(f"AEP_PLATFORM_PUBLIC_KEYS 里第 {i} 把公钥不是 32 字节的 base64")
         return value
 
     @property
