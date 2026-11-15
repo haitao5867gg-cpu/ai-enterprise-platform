@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     data_media: str = "audio,image"
     # Largest file the transcribe node sends to a transcription model.
     transcribe_max_mb: int = Field(25, gt=0)
+    # Images an llm node sends to a model that can see them (docs/api/vision.md).
+    vision_max_mb: int = Field(5, gt=0)
+    vision_max_images: int = Field(10, gt=0, le=10)
     # Each call to a connector (MCP server) tool; a Databricks data source's tools get
     # longer, as their statements may wait for a warehouse or cluster (longer than the
     # connector's own AEP_DATABRICKS_READ_TIMEOUT_SECONDS).

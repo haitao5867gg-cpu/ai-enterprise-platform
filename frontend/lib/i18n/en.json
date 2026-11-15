@@ -1660,5 +1660,9 @@
   "转写模型": "Transcription models",
   "韩语": "Korean",
   "语音转写": "Transcribe speech",
-  "转写模型#字段": "Transcription model"
+  "转写模型#字段": "Transcription model",
+  "第 {n} 张图片": "Image {n}",
+  "选填，最多 10 项。每项引用一个文件或抽帧结果（会找出里面所有的图片），随提示词发给能看图的模型。": "Optional, up to 10 entries. Each refers to a file or a frames result (every image in it is found) and goes with the prompt to a model that can see images.",
+  "这个模型可能看不了图，请换一个标了「能看图」的模型。": "This model may not be able to see images; pick one marked “can see images”.",
+  "能看图": "Can see images"
 }

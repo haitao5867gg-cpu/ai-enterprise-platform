@@ -77,6 +77,7 @@ NO_DB = (
     "请按部署说明给网关配置 DATABASE_URL 和 LITELLM_SALT_KEY"
 )
 DOWN = "连不上模型网关"
+VISION_CHAT_ONLY = "只有对话模型能设为能看图"
 BAD_KEY_ENV = (
     "环境变量名要以 _API_KEY 结尾，只能有大写字母、数字和下划线，不能以 LITELLM_ 或 AEP_ 开头"
 )
@@ -698,6 +699,8 @@ class ModelService:
             "source": source,
             "is_default": self._defaults.get(purpose) == alias,
             "allowed": policy.allows(alias),
+            # A chat model that can look at images (docs/api/vision.md).
+            "vision": purpose == "chat" and info.get("supports_vision") is True,
             "context_window": window if isinstance(window, int) else None,
             "price": price,
         }
@@ -719,6 +722,7 @@ class ModelService:
                 "label": m["display_name"],
                 "purpose": m["purpose"],
                 "allowed": m["allowed"],
+                "vision": m["vision"],
             }
             for m in await self.catalog()
         ]
@@ -750,6 +754,8 @@ class ModelService:
             raise ModelError(422, "「供应商」的格式、长度或范围不正确")
         if body["purpose"] not in ("chat", "embedding"):
             raise ModelError(422, "页面上只能新增对话模型和向量模型，重排模型请在配置文件里加")
+        if body.get("vision") and body["purpose"] != "chat":
+            raise ModelError(422, VISION_CHAT_ONLY)
         async with self._lock:
             await self._writable()
             try:
@@ -770,6 +776,8 @@ class ModelService:
             }
             if body["purpose"] == "embedding":
                 info["mode"] = "embedding"
+            if body.get("vision"):
+                info["supports_vision"] = True
             await self._gateway(self.admin.add(alias, params, info))
             self._forget()
             result = await self._test(alias, body["purpose"])
@@ -828,6 +836,10 @@ class ModelService:
                 info["aep_description"] = body["description"]
             if body.get("key") is not None:
                 info["aep_key"] = _key_note(check_key(body["key"], provider))
+            if body.get("vision") is not None:
+                if body["vision"] and current["purpose"] != "chat":
+                    raise ModelError(422, VISION_CHAT_ONLY)
+                info["supports_vision"] = bool(body["vision"])
             model_id = str(dep["model_info"]["id"])
             if not params:
                 if info:

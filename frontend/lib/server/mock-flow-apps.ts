@@ -1056,6 +1056,17 @@ export function validateFlow(config: unknown): ValidationIssue[] {
         loc: [...loc, "quiet"],
         msg: "quiet 必须是 true 或 false",
       });
+    if (node.type === "llm" && node.images !== undefined) {
+      const shape = "图片要写最多 10 项，每项一个引用或媒体路径";
+      const images: unknown = node.images;
+      if (!Array.isArray(images) || images.length > 10)
+        issues.push({ loc: [...loc, "images"], msg: shape });
+      else
+        images.forEach((entry, i) => {
+          if (typeof entry !== "string" || !entry.trim())
+            issues.push({ loc: [...loc, "images", i], msg: shape });
+        });
+    }
     if (node.type === "llm_review") issues.push(...reviewIssues(node, loc));
     if (
       node.type === "agent" &&

@@ -31,6 +31,7 @@ export default defineConfig({
         "knowledge.spec.ts",
         "media.spec.ts",
         "transcribe.spec.ts",
+        "vision.spec.ts",
         "retrieval.spec.ts",
         "data-nodes.spec.ts",
         "datasources.spec.ts",

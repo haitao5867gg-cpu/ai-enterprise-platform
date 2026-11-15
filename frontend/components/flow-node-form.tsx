@@ -284,6 +284,62 @@ export function ModelFields({
   );
 }
 
+// The images an llm node sends after its prompt (docs/api/vision.md): one reference or
+// media path a row; a model not marked as able to see images gets a hint, not a block.
+function ImageFields({
+  node,
+  options,
+  variables,
+  issues,
+  change,
+}: {
+  node: Extract<FlowNode, { type: "llm" }>;
+  options: Options;
+  variables: Variable[];
+  issues: Issues;
+  change: Change;
+}) {
+  const t = useT();
+  const images = node.images ?? [];
+  const alias = node.model ?? options.default_model;
+  const choice = (options.model_choices ?? []).find(
+    (item) => item.alias === alias,
+  );
+  return (
+    <>
+      <ListEditor
+        label={t("图片")}
+        items={images}
+        max={10}
+        make={() => ""}
+        issues={(i) => issuesUnder(issues, `images.${i}`)}
+        onChange={(next) =>
+          change({ ...node, images: next.length ? next : undefined })
+        }
+        render={(image, i, set) => (
+          <RefField
+            label={t("第 {n} 张图片", { n: i + 1 })}
+            value={image}
+            variables={variables}
+            onChange={set}
+          />
+        )}
+      />
+      <p className="field-hint">
+        {t(
+          "选填，最多 10 项。每项引用一个文件或抽帧结果（会找出里面所有的图片），随提示词发给能看图的模型。",
+        )}
+      </p>
+      {issues?.images && <p className="field-error">{issues.images}</p>}
+      {images.length > 0 && choice && !choice.vision && (
+        <p className="field-hint" role="status">
+          {t("这个模型可能看不了图，请换一个标了「能看图」的模型。")}
+        </p>
+      )}
+    </>
+  );
+}
+
 function OutputFields({
   label,
   fields,
@@ -2802,6 +2858,13 @@ export function NodeSettings({
             variables={variables}
             issues={at("prompt")}
             onChange={(prompt) => change({ ...node, prompt })}
+          />
+          <ImageFields
+            node={node}
+            options={options}
+            variables={variables}
+            issues={issues}
+            change={change}
           />
           {(config.conversation?.enabled || node.history) && (
             <CheckField

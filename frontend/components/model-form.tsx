@@ -57,6 +57,7 @@ export function ModelForm(props: Props) {
     initial?.key.source === "env" ? (initial.key.env ?? "") : "",
   );
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [vision, setVision] = useState(initial?.vision ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [aliasError, setAliasError] = useState("");
@@ -75,6 +76,7 @@ export function ModelForm(props: Props) {
           ? { display_name: displayName.trim() }
           : {}),
         ...(description !== initial.description ? { description } : {}),
+        ...(vision !== initial.vision ? { vision } : {}),
         ...(model.trim() !== initial.model ? { model: model.trim() } : {}),
         ...(apiBase.trim() && apiBase.trim() !== (initial.api_base ?? "")
           ? { api_base: apiBase.trim() }
@@ -90,10 +92,10 @@ export function ModelForm(props: Props) {
         provider || displayName.trim() || model.trim() || keyValue || keyEnv,
       );
   useUnsavedWarning(dirty);
-  // Only the display name and description change without a test call.
+  // Only the display name, description and vision mark change without a test call.
   const testing = initial
     ? Object.keys(changes).some(
-        (field) => field !== "display_name" && field !== "description",
+        (field) => !["display_name", "description", "vision"].includes(field),
       )
     : true;
 
@@ -141,6 +143,7 @@ export function ModelForm(props: Props) {
             ...(form.region ? { aws_region: awsRegion.trim() } : {}),
             ...(key ? { key } : {}),
             ...(description ? { description } : {}),
+            ...(purpose === "chat" && vision ? { vision: true } : {}),
           });
       // The key never comes back; drop it from memory as soon as it is saved.
       setKeyValue("");
@@ -176,6 +179,7 @@ export function ModelForm(props: Props) {
     keyEnv: `${prefix}-key-env`,
     keyHint: `${prefix}-key-hint`,
     description: `${prefix}-description`,
+    visionHint: `${prefix}-vision-hint`,
     saveHint: `${prefix}-save-hint`,
   };
   const unchangedHint = initial ? "不改就留空。" : "";
@@ -448,6 +452,22 @@ export function ModelForm(props: Props) {
                     : "key 直接交给模型网关加密保存，平台不保存，页面上也不会再显示。"}
                 </p>
               </fieldset>
+            )}
+            {purpose === "chat" && (
+              <div className="check-field-block">
+                <label className="check-field">
+                  <input
+                    type="checkbox"
+                    checked={vision}
+                    aria-describedby={ids.visionHint}
+                    onChange={(event) => setVision(event.target.checked)}
+                  />
+                  能看图
+                </label>
+                <small className="muted" id={ids.visionHint}>
+                  多模态模型，调用模型节点可以带图片发给它。
+                </small>
+              </div>
             )}
             <div className="asset-field">
               <label htmlFor={ids.description}>

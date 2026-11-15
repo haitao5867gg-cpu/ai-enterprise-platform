@@ -367,7 +367,7 @@ class Runtime:
     async def chat(
         self,
         node: dict[str, Any],
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         state: dict[str, Any] | None = None,
     ) -> str:
         model = node.get("model") or self.default_model
@@ -825,6 +825,7 @@ async def check_llm(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     if "quiet" in node and not isinstance(node["quiet"], bool):
         p.add(("quiet",), "quiet 必须是 true 或 false")
     _history(node, p)
+    images.check_images(node, p)
     output = node.get("output", {"kind": "text"})
     if not isinstance(output, dict) or output.get("kind") not in ("text", "json"):
         p.add(("output",), "输出方式只能是 text 或 json")
@@ -868,7 +869,7 @@ JSON_CHECK = {
 async def _ask_json(
     rt: Runtime,
     node: dict[str, Any],
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     valid: Callable[[Any], str | None],
     state: dict[str, Any],
 ) -> dict[str, Any]:
@@ -903,7 +904,11 @@ async def run_llm(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
     system = rt.system(node, refs.render(node.get("system") or "", get), instruction)
     messages = [{"role": "system", "content": system}] if system else []
     messages += history_messages(node, state)
-    messages.append({"role": "user", "content": refs.render(node["prompt"], get)})
+    prompt = refs.render(node["prompt"], get)
+    # Images go after the text in the same message (docs/api/vision.md).
+    parts = await images.image_parts(node, state, rt)
+    content: Any = [{"type": "text", "text": prompt}, *parts] if parts else prompt
+    messages.append({"role": "user", "content": content})
     if fields is None:
         text, restored = rt.unmask(await rt.chat(node, messages, state), state)
         # A quiet node's answer is only for later nodes: it stays out of the run's messages.
@@ -2751,6 +2756,7 @@ from aep.runtime.flow import (  # noqa: E402
     data_check,
     data_nodes,
     git_node,
+    images,
     review,
     transcribe,
 )

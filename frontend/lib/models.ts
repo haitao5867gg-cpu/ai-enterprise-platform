@@ -39,6 +39,8 @@ export type Model = {
   source: "config" | "page";
   is_default: boolean;
   allowed: boolean;
+  // A chat model that can look at images (docs/api/vision.md).
+  vision: boolean;
   context_window: number | null;
   price: { input: number; output: number } | null;
   usage: ModelUsageSummary;
@@ -80,6 +82,8 @@ export type ModelInput = {
   aws_region?: string;
   key?: KeyInput;
   description?: string;
+  // Chat models only (docs/api/vision.md).
+  vision?: boolean;
 };
 export type ModelChanges = Partial<
   Omit<ModelInput, "alias" | "purpose" | "provider">

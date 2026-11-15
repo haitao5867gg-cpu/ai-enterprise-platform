@@ -205,6 +205,9 @@ function ModelTable({
                           {t("默认")}
                         </span>
                       )}
+                      {model.vision && (
+                        <span className="datasource-tag">{t("能看图")}</span>
+                      )}
                       {!model.allowed && (
                         <span className="datasource-tag undeclared">
                           {t("外发策略不允许")}

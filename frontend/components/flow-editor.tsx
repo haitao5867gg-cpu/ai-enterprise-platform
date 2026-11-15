@@ -97,7 +97,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
     "history",
     "max_steps",
   ],
-  llm: ["model", "skills", "system", "prompt", "output", "history"],
+  llm: ["model", "skills", "system", "prompt", "output", "history", "images"],
   human: [
     "mode",
     "prompt",
