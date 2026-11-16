@@ -17,6 +17,7 @@ from aep.runtime.flow.nodes import (
     Problems,
     Runtime,
 )
+from aep.tools import jobs
 
 # What a step may be: nodes with one way out whose outputs are values, not a decision.
 STEP_TYPES = ("llm", "tool", "code", "template", "transcribe")
@@ -173,7 +174,8 @@ async def run_each(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
             done += 1
             await report()
 
-    tasks = [asyncio.ensure_future(one(i, v)) for i, v in enumerate(items)]
+    with jobs.abandonable() as abandon:
+        tasks = [asyncio.ensure_future(one(i, v)) for i, v in enumerate(items)]
     try:
         for finished in asyncio.as_completed(tasks):
             try:
@@ -182,6 +184,12 @@ async def run_each(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
                 raise NodeFailure(
                     exc.failure.type, f"第 {exc.position} 项：{exc.failure.message}"
                 ) from exc
+    except Exception:
+        # The node stops here: the items still running are not wanted, nor their
+        # connector jobs. A cancel (the run's, or the process stopping) is not this: each
+        # job then goes the way its run does (aep.tools.jobs).
+        abandon.give_up()
+        raise
     finally:
         for task in tasks:
             task.cancel()

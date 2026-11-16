@@ -10,6 +10,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from aep.runtime.flow import each, files, graph
 from aep.runtime.flow.nodes import Runtime
+from aep.tools import jobs
+from tests import fake_connector
 from tests.test_flow_tools import Platform
 
 STUDIO_URL = "http://studio.test/mcp"
@@ -114,9 +116,15 @@ def flow(**node: Any) -> dict:
 
 
 class Each(Platform):
-    def __init__(self, replies: list[str] | None = None, shots: list[Any] | None = None) -> None:
+    def __init__(
+        self,
+        replies: list[str] | None = None,
+        shots: list[Any] | None = None,
+        servers: dict[str, MCPServer] | None = None,
+    ) -> None:
         self.studio = Studio(shots)
-        super().__init__(replies or ["你好"], servers={STUDIO_URL: self.studio.server})
+        servers = {STUDIO_URL: self.studio.server, **(servers or {})}
+        super().__init__(replies or ["你好"], servers=servers)
         self.progress: list[tuple[str, float | None, str | None]] = []
         noted = self.service.report_progress
 
@@ -240,6 +248,70 @@ async def test_a_retry_tries_again_only_the_item_that_failed():
         assert run["status"] == "done", run["error"]
         assert run["result"]["clips"] is None
         assert p.studio.picks.count("关键是热量缺口") == 2
+
+
+LONG = 10**6
+
+
+async def renders(monkeypatch, shots: list[dict]) -> tuple[Each, fake_connector.JobConnector]:
+    """A platform whose each node renders every shot as a long-running connector job."""
+    monkeypatch.setattr(jobs, "FAST_SECONDS", 0.01)
+    monkeypatch.setattr(jobs, "SLOW_SECONDS", 0.01)
+    connector = fake_connector.JobConnector()
+    p = Each(shots=shots, servers={fake_connector.JOBS_URL: connector.build()})
+    await p.__aenter__()
+    source = (await p.sources.create("渲染", "mcp", fake_connector.JOBS_URL)).datasource_id
+    args = {"name": "{{item.line}}", "steps": "{{item.steps}}", "fail": "{{item.fail}}"}
+    do = {"type": "tool", "datasource": source, "tool": "render", "args": args}
+    await p.app(p.config(do=do, concurrency=3))
+    return p, connector
+
+
+async def test_a_failed_item_cancels_the_jobs_of_the_items_still_running(monkeypatch):
+    shots = [
+        {"line": "开场", "steps": LONG, "fail": False},
+        {"line": "热量缺口", "steps": 3, "fail": True},
+        {"line": "结尾", "steps": LONG, "fail": False},
+    ]
+    p, connector = await renders(monkeypatch, shots)
+    try:
+        run = await p.run("cut", {"topic": "x"})
+        assert run["status"] == "error"
+        assert "第 2 项：工具报错：ffmpeg 退出码 1" in run["error"]
+        # The other items' jobs are not left rendering on the connector.
+        others = sorted(j for j, job in connector.jobs.items() if job["name"] != "热量缺口")
+        assert len(others) == 2
+        assert sorted(connector.cancelled) == others
+        assert all(connector.jobs[j]["status"] == "cancelled" for j in others)
+    finally:
+        await p.__aexit__(None, None, None)
+
+
+async def test_a_stopping_process_leaves_the_items_jobs_for_the_next_start(monkeypatch):
+    shots = [{"line": line, "steps": LONG, "fail": False} for line in ("开场", "缺口", "结尾")]
+    p, connector = await renders(monkeypatch, shots)
+    try:
+        resp = await p.api.post("/runs", json={"app": "cut", "input": {"topic": "x"}})
+        run_id = resp.json()["run_id"]
+        while connector.status_calls < 6:
+            await asyncio.sleep(0.005)
+        # The process stops: its runs' tasks are cancelled, the runs stay running.
+        p.service._running[run_id].cancel()
+        await p.service.wait_idle()
+        assert connector.cancelled == []
+
+        # The jobs go on meanwhile; after the start the node picks every one of them up.
+        for job in connector.jobs.values():
+            job["steps"] = job["done_steps"] + 2
+        assert await p.service.recover() == 1
+        await p.service.wait_idle()
+        run = (await p.api.get(f"/runs/{run_id}")).json()
+        assert run["status"] == "done", run["error"]
+        made = [c["result"]["file"] for c in run["result"]["clips"]]
+        assert made == ["开场.mp4", "缺口.mp4", "结尾.mp4"]
+        assert connector.started == 3
+    finally:
+        await p.__aexit__(None, None, None)
 
 
 async def test_a_model_step_reads_the_item():
