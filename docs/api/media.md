@@ -216,6 +216,6 @@
 
 ## 后续批次（各自补契约）
 
-- 媒体处理连接器（`connectors/media`，MCP）：探测时长和宽高、抽帧、截取、拼接、烧字幕、渲染；上传后由它把 `processing` 变成 `ready`，并给每个视频生成一张缩略图（`GET …/thumbnail`）。
+- 媒体处理连接器（`connectors/media`，MCP）：探测时长和宽高、抽帧、截取、拼接、烧字幕、渲染；上传后由它把 `processing` 变成 `ready`，并给每个视频生成一张缩略图（`GET …/thumbnail`）。见 [media-processing.md](media-processing.md)。
 - 编排应用：按描述检索素材的工具，供节点和智能体调用。
 - 运行产出的文件进媒体库（媒体处理连接器），给手机直接播放的短期下载链接。

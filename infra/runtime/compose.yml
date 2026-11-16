@@ -128,6 +128,23 @@ services:
       timeout: 3s
       retries: 20
 
+  # 媒体处理（docs/api/media-processing.md）：ffmpeg 读媒体库的文件，只写自己的工作目录。
+  # 流程要用时，按清单里的 datasource_id 绑定 http://connector-media:8008/mcp。
+  connector-media:
+    <<: *restart
+    build: ../../connectors/media
+    environment:
+      AEP_MEDIA_DIR: /data/media
+      AEP_MEDIA_MCP_HOST: 0.0.0.0
+      AEP_MEDIA_MCP_PORT: 8008
+    volumes:
+      - media-data:/data/media
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
   # 代码节点的 Python 只在这里跑：独自在内部网络上，不能上网，没有数据库和 API。
   # API 经 sandbox-relay 访问它（connectors/sandbox/README.md）。
   connector-sandbox:
