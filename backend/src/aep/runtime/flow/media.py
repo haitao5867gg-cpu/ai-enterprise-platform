@@ -119,14 +119,17 @@ def save_problems(save: Any) -> list[tuple[tuple[str | int, ...], str]]:
     return found
 
 
-def check_saves(node: dict[str, Any], bound: list[dict[str, Any]], add: Add) -> None:
-    """A tool node saves its files into a library the app binds for writing."""
+def check_saves(
+    node: dict[str, Any], bound: list[dict[str, Any]], add: Add, where: list[str | int]
+) -> None:
+    """A tool node (or an each node's tool step, ``where`` it is written) saves its files
+    into a library the app binds for writing."""
     save = node.get(SAVE)
     library = save.get("library") if isinstance(save, dict) else None
     if not isinstance(library, str) or not library:
         return
     if not any(b["library_id"] == library and b["access"] == "write" for b in bound):
-        add(["graph", "nodes", node["id"], SAVE, "library"], "存进的媒体库要以“写”权限绑定到应用")
+        add([*where, SAVE, "library"], "存进的媒体库要以“写”权限绑定到应用")
 
 
 def save_tags(save: dict[str, Any]) -> tuple[str, ...]:

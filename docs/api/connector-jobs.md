@@ -74,7 +74,7 @@
 ```
 
 - 只在运行 `running`、并且 `progress.node` 等于 `step.node` 时有值，其他时候是 null。每个节点开始时清掉上一份进度，所以不会显示已经走过的节点的旧进度。
-- 现在只有长任务报进度：每次查到的 `progress`、`message` 有变化就写上。以后逐项处理节点也会报「第几项，共几项」。
+- 长任务每次查到的 `progress`、`message` 有变化就写上。逐项处理节点每完成一项报一次「已完成几项，共几项」（[each.md](each.md)）。
 - 运行页在「进行到「渲染」」后面接着显示「42%，渲染第 3 段，共 12 段」。
 
 `/v1` 的 `RunResult`（[app-access.md](app-access.md)）加 `step`（同运行记录的 `step`：`{"node", "title"}` 或 null）和 `progress`（同上）。外部页面按 `step.node` 把节点归到自己的几段进度里（比如教练页面的「转写配音、排镜头、找素材、渲染」），再显示 `percent` 和 `message`。MCP 的 `get_run` 返回的就是 `RunResult`，也带这两个字段。

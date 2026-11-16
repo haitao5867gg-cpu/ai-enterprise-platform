@@ -534,6 +534,9 @@ class NodeType:
     branch_labels: Callable[[dict[str, Any]], dict[str, str]] = lambda node: {}
     # Settings taken as they are: no references in them (code may contain "{{").
     verbatim: frozenset[str] = frozenset()
+    # Whether the node retries itself as ``on_error.retry`` says (an each node, per
+    # item), so running it does not retry it as a whole.
+    own_retry: bool = False
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -2767,3 +2770,6 @@ TYPES.update(app_node.TYPES)
 TYPES.update(git_node.TYPES)
 TYPES.update(review.TYPES)
 TYPES.update(transcribe.TYPES)
+
+# The each node's steps are the types above; it adds itself to TYPES.
+from aep.runtime.flow import each  # noqa: E402, F401

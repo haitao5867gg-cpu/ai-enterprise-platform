@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   getNodeTypes,
   NODE_ID_PATTERN,
+  RESERVED_IDS,
   testAppNode,
   type AppDetail,
   type FlowConfig,
@@ -85,6 +86,7 @@ const formKeys: Record<FlowNode["type"], string[]> = {
   ],
   tool: ["datasource", "tool", "args", "save_media"],
   transcribe: ["model", "audio", "language", "prompt"],
+  each: ["items", "do", "concurrency", "on_item_error"],
   agent: [
     "model",
     "skills",
@@ -271,9 +273,23 @@ function NodeTestPanel({
   config: FlowConfig;
 }) {
   const t = useT();
+  // The item an each node's step reads comes from its list, not a test value.
   const refs = referencesIn(node).filter(
-    (ref) => ref.node !== "env" && ref.node !== "secret",
+    (ref) => !["env", "secret", "item"].includes(ref.node),
   );
+  // An each node's list is given as JSON (docs/api/each.md).
+  const listRef = node.type === "each" ? node.items.replace(/[{}\s]/g, "") : "";
+  const sent = (): Record<string, unknown> =>
+    Object.fromEntries(
+      Object.entries(values).map(([key, value]) => {
+        if (key !== listRef) return [key, value];
+        try {
+          return [key, JSON.parse(value)];
+        } catch {
+          return [key, value];
+        }
+      }),
+    );
   const [values, setValues] = useState<Record<string, string>>({});
   const [result, setResult] = useState<NodeTest | null>(null);
   const [error, setError] = useState("");
@@ -290,6 +306,11 @@ function NodeTestPanel({
         <TextField
           key={`${ref.node}.${ref.field}`}
           label={`{{${ref.node}.${ref.field}}}`}
+          help={
+            `${ref.node}.${ref.field}` === listRef
+              ? t('写成 JSON 列表，比如 ["第一句", "第二句"]。')
+              : undefined
+          }
           value={values[`${ref.node}.${ref.field}`] ?? ""}
           onChange={(value) =>
             setValues({ ...values, [`${ref.node}.${ref.field}`]: value })
@@ -308,7 +329,7 @@ function NodeTestPanel({
           setError("");
           setResult(null);
           try {
-            setResult(await testAppNode(app, node.id, values, config));
+            setResult(await testAppNode(app, node.id, sent(), config));
           } catch (err) {
             setError(errorMessage(err));
           } finally {
@@ -547,8 +568,7 @@ export function FlowEditor({
     if (!idDraft || !node || idDraft.node !== node.id) return;
     const value = idDraft.value.trim();
     if (value === node.id) return setIdDraft(null);
-    if (!NODE_ID_PATTERN.test(value) || ["env", "secret"].includes(value))
-      return;
+    if (!NODE_ID_PATTERN.test(value) || RESERVED_IDS.includes(value)) return;
     if (nodes.some((item) => item.id === value)) return;
     setConfig(renameNode(config, node.id, value));
     setSelected(value);
@@ -561,9 +581,10 @@ export function FlowEditor({
   const idIssue =
     idValue === node?.id
       ? ""
-      : !NODE_ID_PATTERN.test(idValue) || ["env", "secret"].includes(idValue)
+      : !NODE_ID_PATTERN.test(idValue) || RESERVED_IDS.includes(idValue)
         ? t(
-            "标识以小写字母开头，只用小写字母、数字和下划线，最多 32 个字符；env、secret 不能用。",
+            "标识以小写字母开头，只用小写字母、数字和下划线，最多 32 个字符；{reserved} 不能用。",
+            { reserved: RESERVED_IDS.join("、") },
           )
         : nodes.some((item) => item.id === idValue)
           ? t("已有节点用了这个标识。")

@@ -12,8 +12,8 @@ from typing import Any
 from aep.conversations import DEFAULT_HISTORY_TURNS, MAX_HISTORY_TURNS, MESSAGE
 from aep.projects import FIELDS as PROJECT_FIELDS
 from aep.runtime.appconfig import ConfigError
+from aep.runtime.flow import each, refs
 from aep.runtime.flow import media as flowmedia
-from aep.runtime.flow import refs
 from aep.runtime.flow.nodes import (
     ERROR,
     ERROR_FIELDS,
@@ -299,7 +299,7 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
                 "标识只能用小写字母、数字和下划线，以字母开头，最多 32 个字符",
             )
             continue
-        if node_id in refs.RESERVED:
+        if node_id in (*refs.RESERVED, refs.ITEM):
             add(["graph", "nodes", node_id, "id"], f"{node_id} 是保留的标识")
             continue
         if node_id in by_id:
@@ -328,15 +328,20 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
     conversation = _check_conversation(raw.get("conversation"), by_id, add)
     store = env.media if env.strict else None
     media = await flowmedia.check_binding(raw.get(flowmedia.MEDIA), store, add)
-    for node in by_id.values():
-        if node["type"] == "start":
-            flowmedia.check_inputs(node, (media or {}).get("libraries", []), add)
-        elif node["type"] == "tool":
-            flowmedia.check_saves(node, (media or {}).get("libraries", []), add)
     chat = conversation is not None and conversation["enabled"] is True
     for node_id, node in by_id.items():
-        if node.get("history") is True and not chat:
-            add(["graph", "nodes", node_id, "history"], "应用没有打开对话，不能带会话历史")
+        if node["type"] == "start":
+            flowmedia.check_inputs(node, (media or {}).get("libraries", []), add)
+            continue
+        # An each node's step is checked where it is written (docs/api/each.md).
+        body = each.step(node) if node["type"] == "each" else node
+        if body is None:
+            continue
+        where: list[str | int] = ["graph", "nodes", node_id, *(["do"] if body is not node else [])]
+        if body["type"] == "tool":
+            flowmedia.check_saves(body, (media or {}).get("libraries", []), add, where)
+        if body.get("history") is True and not chat:
+            add([*where, "history"], "应用没有打开对话，不能带会话历史")
 
     out: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
     for i, edge in enumerate(edges):
@@ -429,6 +434,9 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
     for node_id, node in by_id.items():
         verbatim = TYPES[node["type"]].verbatim
         settings = {k: v for k, v in node.items() if k not in NOT_SETTINGS | verbatim}
+        if node["type"] == "each":
+            settings = each.step_settings(settings)
+        step_type = (node.get("do") or {}).get("type") if node["type"] == "each" else None
         for loc, text in refs.strings(settings):
             for target, name in refs.find(text):
                 where = ["graph", "nodes", node_id, *loc]
@@ -436,10 +444,16 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
                     if name not in env_keys:
                         add(where, f"没有常量 {name}")
                 elif target == refs.SECRET:
-                    if node["type"] != "tool" or loc[:1] != ("args",):
+                    in_args = (node["type"] == "tool" and loc[:1] == ("args",)) or (
+                        step_type == "tool" and loc[:2] == ("do", "args")
+                    )
+                    if not in_args:
                         add(where, "密钥只能写在工具节点的参数里")
                     elif name not in environment["secrets"]:
                         add(where, f"没有声明密钥 {name}，请先在应用的密钥里添加")
+                elif target == refs.ITEM:
+                    if node["type"] != "each" or loc[:1] != ("do",):
+                        add(where, "{{item.*}} 只能写在逐项处理节点的「每一项做什么」里")
                 elif target == refs.CONVERSATION:
                     if not chat:
                         add(where, "应用没有打开对话，不能引用会话")

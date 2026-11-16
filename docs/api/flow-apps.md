@@ -38,11 +38,11 @@
 
 ```jsonc
 {
-  "id": "draft",              // ^[a-z][a-z0-9_]{0,31}$，应用内唯一；env、secret、param、project、conversation 保留
+  "id": "draft",              // ^[a-z][a-z0-9_]{0,31}$，应用内唯一；env、secret、param、project、conversation、item 保留
   "type": "llm",              // 见下面的节点类型
   "title": "起草售后回复",     // 1–50 字符
   "max_visits": 3,            // 一次运行里最多跑几次，1–50（加模型审查节点后从 10 放宽到 20，第 5 轮复测后到 50），不写为 3；超过时运行失败并写明原因，不能重试（见下）；确认模式的人工节点例外，见“人工节点的次数上限”
-  "on_error": OnError,        // 只有 llm、classifier、tool、knowledge、agent、code、llm_review、transcribe 和数据工程、git_pr、app 节点可以设；不写等于 {"then": "stop"}
+  "on_error": OnError,        // 只有 llm、classifier、tool、knowledge、agent、code、llm_review、transcribe 和数据工程、git_pr、app、each 节点可以设；不写等于 {"then": "stop"}
   "ui": {"x": 120, "y": 40},  // 留给以后的画布，平台原样保存，不参与运行
   "note": "讲解说明"           // 可选，最多 500 字符，只给人看，见 data-nodes.md
 }
@@ -63,6 +63,7 @@
 
 - 写法 `{{节点标识.字段}}`，例如 `{{start.question}}`、`{{draft.text}}`；`{{env.refund_limit}}` 引用常量；`{{secret.crm_token}}` 引用密钥；`{{param.update_month}}` 引用运行参数，`{{project.brief}}` 等引用运行绑定的项目（第三批，见 [projects.md](projects.md)，开始节点要设 `project`）。
 - `{{conversation.history}}`、`{{conversation.turn}}` 引用会话（应用要打开对话，见“对话”）。
+- `{{item.value}}`、`{{item.position}}`、`{{item.字段}}` 引用逐项处理的当前项，只能写在逐项处理节点的 `do` 里，见 [each.md](each.md)。
 - 前端可以用这个正则找出引用：`\{\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}\}`。
 - 文本里的引用按文本插入（对象和数组插入为 JSON）。还没有值的变量插入为空字符串。
 - 工具参数和代码节点输入里，如果整个值恰好是一个引用（如 `"{{lookup.result}}"`），传原始值而不是文本。
@@ -76,6 +77,8 @@
 **knowledge 知识检索**的设置、产出和引用编号规则见 [knowledge.md](knowledge.md#编排应用知识检索节点)。
 
 **transcribe 语音转写**的设置、产出和外发策略见 [transcription.md](transcription.md)。
+
+**each 逐项处理**：对一个列表的每一项做同一步（`llm`、`tool`、`code`、`template`、`transcribe` 之一），收齐结果，设置、产出和运行规则见 [each.md](each.md)。
 
 **数据工程节点** `etl_profile`、`etl_plan_check`、`databricks_ingest`、`etl_code_check`、`databricks_dev_run`、`databricks_release`、`data_check` 见 [data-nodes.md](data-nodes.md)。
 
@@ -532,7 +535,7 @@
 
 - `config`：要试的配置，一般是编辑页里还没保存的配置；不传时用草稿，没有草稿用当前版本。只校验被试的这个节点，图的其他问题不影响试跑。
 - `values`：这个节点引用的变量的测试值，键是 `"节点.字段"`，如 `{"start.question": "我要退货", "review.comment": ""}`。没给的变量按空值。常量取配置里的值，密钥取已设的值。
-- 可以试跑的类型：llm、classifier、condition、tool、knowledge、agent、template、code。start、human、end 返回 422。
+- 可以试跑的类型：llm、classifier、condition、tool、knowledge、agent、template、code、each（`items` 的值在 `values` 里给，如 `{"plan.shots": [...]}`）。start、human、end 返回 422。
 - 超时：整个请求最多 120 秒。
 
 ```jsonc

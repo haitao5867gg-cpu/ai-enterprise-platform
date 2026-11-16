@@ -168,6 +168,30 @@ export type TranscribeNode = NodeBase &
     language?: string | null;
     prompt?: string;
   };
+// The step an each node does for every item (docs/api/each.md): one of these nodes'
+// settings, without the common fields.
+type StepOf<N> = N extends NodeBase
+  ? Omit<N, keyof NodeBase | "on_error">
+  : never;
+export const EACH_STEP_TYPES = [
+  "llm",
+  "tool",
+  "code",
+  "template",
+  "transcribe",
+] as const;
+export type EachStep = StepOf<
+  LlmNode | ToolNode | CodeNode | TemplateNode | TranscribeNode
+>;
+export type EachNode = NodeBase &
+  Fallible & {
+    type: "each";
+    // A reference to a list.
+    items: string;
+    do: EachStep;
+    concurrency?: number;
+    on_item_error?: "stop" | "skip";
+  };
 export type KnowledgeNode = NodeBase &
   Fallible & {
     type: "knowledge";
@@ -367,6 +391,7 @@ export type FlowNode =
   | ToolNode
   | KnowledgeNode
   | TranscribeNode
+  | EachNode
   | AgentNode
   | HumanNode
   | TemplateNode
@@ -506,6 +531,15 @@ export type NodeTest = {
 };
 export const APP_ID_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
 export const NODE_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+// Names a reference may mean besides the app's nodes (docs/api/flow-apps.md, each.md).
+export const RESERVED_IDS = [
+  "env",
+  "secret",
+  "param",
+  "project",
+  "conversation",
+  "item",
+];
 type SettingBase = { key: string; label: string; help?: string };
 export type Setting = SettingBase &
   (

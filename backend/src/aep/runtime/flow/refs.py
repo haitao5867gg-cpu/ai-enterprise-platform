@@ -5,6 +5,7 @@ A reference names a node's output (``{{draft.text}}``), a constant
 (``{{param.update_month}}``), what the run's project says (``{{project.brief}}``;
 docs/api/projects.md) or the conversation the run is a turn of
 (``{{conversation.history}}``, ``{{conversation.turn}}``; docs/api/flow-apps.md, "对话").
+In an each node's step, ``{{item.*}}`` is the item it is doing (docs/api/each.md).
 In text a
 reference is replaced by its value as text; a setting that is exactly one
 reference (a tool argument, a code input) gets the value itself.
@@ -25,6 +26,9 @@ PARAM = "param"
 PROJECT = "project"
 CONVERSATION = "conversation"
 RESERVED = (ENV, SECRET, PARAM, PROJECT, CONVERSATION)
+# The item an each node's step is doing (``{{item.value}}``, ``{{item.position}}``,
+# ``{{item.<field>}}``; docs/api/each.md): like a node's outputs, set only for that step.
+ITEM = "item"
 # What ``{{conversation.*}}`` may name.
 CONVERSATION_FIELDS = ("history", "turn")
 
