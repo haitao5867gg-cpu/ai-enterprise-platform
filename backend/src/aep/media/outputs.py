@@ -148,19 +148,24 @@ async def save_outputs(
     if planned and library.item_count + len(planned) > settings.media_max_items:
         raise SaveError(f"一个媒体库最多 {settings.media_max_items} 个素材")
     moved: list[_Planned] = []
+    moving = asyncio.ensure_future(asyncio.to_thread(_move_all, root, planned, moved))
     try:
-        for plan in planned:
-            await asyncio.to_thread(move, plan.source, root / plan.item.rel_path)
-            moved.append(plan)
+        await asyncio.shield(moving)
         added = await store.add_items(
             library_id, [plan.item for plan in planned], settings.media_max_items
         )
     except BaseException as exc:
         # Whatever stopped it (a full library, a lost database, a cancel), put back what
-        # was moved, so a retry finds the files where the tool left them. Unless the
-        # records were written after all: then the files belong where they are.
-        if not (moved and await _registered(store, library_id, moved[0].item.import_key)):
+        # was moved, so a retry finds the files where the tool left them. A cancel stops
+        # the wait, not the thread moving the files: it is let finish first, so every
+        # moved file is known. Unless the records were written after all: then the files
+        # belong where they are.
+        cleanup = _Cleanup()
+        await cleanup.settle(moving)
+        if not (moved and await cleanup.registered(store, library_id, moved[0].item.import_key)):
             _put_back(root, moved)
+        if cleanup.cancelled and not isinstance(exc, asyncio.CancelledError):
+            raise asyncio.CancelledError() from exc
         if not isinstance(exc, OSError | ItemLimit | MissingLibrary):
             raise
         if isinstance(exc, MissingLibrary):
@@ -178,13 +183,38 @@ async def save_outputs(
     return replace_refs(value, {path: summary(item) for path, item in saved.items()})
 
 
-async def _registered(store: MediaStore, library_id: str, key: str) -> bool:
-    """Whether the batch's records were written (they are written together); not known
-    counts as not written."""
-    try:
-        return await asyncio.wait_for(store.imported(library_id, key), 5) is not None
-    except BaseException:  # noqa: BLE001 - an unanswered question is no record
-        return False
+def _move_all(root: Path, planned: list[_Planned], moved: list[_Planned]) -> None:
+    """In a worker thread: each file into the library, noted in ``moved`` once it is."""
+    for plan in planned:
+        move(plan.source, root / plan.item.rel_path)
+        moved.append(plan)
+
+
+class _Cleanup:
+    """Waits a cancel does not cut short; a cancel that comes meanwhile is noted, to be
+    passed on once the files are where they belong."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def settle(self, future: "asyncio.Future[Any]") -> None:
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                if not future.cancelled():
+                    self.cancelled = True
+            except BaseException:  # noqa: BLE001 - its outcome is the caller's to read
+                pass
+
+    async def registered(self, store: MediaStore, library_id: str, key: str) -> bool:
+        """Whether the batch's records were written (they are written together); not
+        known counts as not written."""
+        lookup = asyncio.ensure_future(asyncio.wait_for(store.imported(library_id, key), 5))
+        await self.settle(lookup)
+        if lookup.cancelled() or lookup.exception() is not None:
+            return False
+        return lookup.result() is not None
 
 
 def _put_back(root: Path, moved: list["_Planned"]) -> None:

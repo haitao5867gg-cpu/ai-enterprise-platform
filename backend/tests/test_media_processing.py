@@ -3,6 +3,7 @@ by the media processing connector, thumbnails, and tool nodes that save the file
 made into a media library."""
 
 import asyncio
+import threading
 import uuid
 from typing import Any
 
@@ -376,6 +377,74 @@ async def test_a_lost_database_leaves_the_files_for_a_retry(tmp_path, monkeypatc
         # The node run again finds them.
         monkeypatch.setattr(p.media, "add_items", real)
         assert await save() == {"video": summary(item)}
+
+
+async def test_a_cancel_while_moving_leaves_the_files_for_a_retry(tmp_path, monkeypatch):
+    async with Processing(tmp_path) as p:
+        root = p.settings.media_dir
+        refs = []
+        for n in range(2):
+            folder = root / "_work" / f"j_{n}"
+            folder.mkdir(parents=True)
+            (folder / f"{n}.mp4").write_bytes(b"\x00" * 10)
+            refs.append({"aep_file": {"path": f"_work/j_{n}/{n}.mp4", "name": f"{n}.mp4"}})
+        started, release = threading.Event(), threading.Event()
+        real = outputs.move
+
+        def slow(source: Any, target: Any) -> None:
+            started.set()
+            release.wait(5)
+            real(source, target)
+
+        monkeypatch.setattr(outputs, "move", slow)
+        saving = asyncio.create_task(
+            save_outputs(
+                refs,
+                store=p.media,
+                settings=p.settings,
+                prober=None,
+                library_id=p.footage,
+                run_id="r-1",
+                summary=summary,
+            )  # fmt: skip
+        )
+        await asyncio.to_thread(started.wait, 5)
+        saving.cancel()
+        await asyncio.sleep(0.05)
+        saving.cancel()  # cancelled again while it waits for the move
+        await asyncio.sleep(0.05)
+        release.set()  # the move under way still happens, after the cancel
+        with pytest.raises(asyncio.CancelledError):
+            await saving
+        # Nothing registered, and every file is back where the tool left it.
+        assert await p.saved(p.footage) == []
+        assert p.work() == ["j_0/0.mp4", "j_1/1.mp4"]
+        assert [d for d in (root / p.footage).iterdir()] == []
+
+        # A cancel while the database is asked still puts the files back, and is passed on.
+        monkeypatch.setattr(outputs, "move", real)
+        stop = asyncio.Event()
+
+        async def hangs(*args: Any, **kwargs: Any) -> Any:
+            await stop.wait()
+
+        monkeypatch.setattr(p.media, "add_items", hangs)
+        saving = asyncio.create_task(
+            save_outputs(
+                refs,
+                store=p.media,
+                settings=p.settings,
+                prober=None,
+                library_id=p.footage,
+                run_id="r-1",
+                summary=summary,
+            )  # fmt: skip
+        )
+        await asyncio.sleep(0.1)
+        saving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await saving
+        assert p.work() == ["j_0/0.mp4", "j_1/1.mp4"]
 
 
 async def test_what_saving_refuses(tmp_path, monkeypatch):
