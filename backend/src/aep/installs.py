@@ -30,6 +30,7 @@ from aep.connector_check import ConnectorCheck, connection_problem, failed_detai
 from aep.datasources import DataSource, DataSourceStore, DuplicateName, canon_id
 from aep.media.store import DuplicateId
 from aep.media.store import DuplicateName as LibraryNameTaken
+from aep.models import SILENCE
 from aep.runtime import agent_app
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.catalog import AppCatalog
@@ -665,7 +666,7 @@ class Runtime:
                 continue
             problem = None
             if fresh or alias in self._failed_probes:
-                problem = await self._probe(alias)
+                problem = await self._probe(alias, await self._purpose(alias))
                 if problem is None:
                     self._failed_probes.pop(alias, None)
                 else:
@@ -673,16 +674,30 @@ class Runtime:
             items.append(_item("model", alias, problem is None, problem))
         return items
 
-    async def _probe(self, alias: str) -> str | None:
-        if self._client is None:
-            return None
+    async def _purpose(self, alias: str) -> str:
+        """What the alias is for, as the model page says; chat when it cannot tell."""
+        if self._catalog.model_choices is None:
+            return "chat"
         try:
-            await llm.chat(
-                self._client.with_options(timeout=30, max_retries=0),
-                [{"role": "user", "content": "OK"}],
-                alias,
-                max_tokens=1,
-            )
+            choices = await self._catalog.model_choices()
+        except Exception:  # noqa: BLE001 - not knowing means the usual chat probe
+            return "chat"
+        return next((c["purpose"] for c in choices if c["alias"] == alias), "chat")
+
+    async def _probe(self, alias: str, purpose: str = "chat") -> str | None:
+        """The smallest call the alias takes, by what it is for (as the model page tests
+        it): one token of chat, one embedding, a second of silence transcribed. Rerank
+        models are not called."""
+        if self._client is None or purpose == "rerank":
+            return None
+        client = self._client.with_options(timeout=30, max_retries=0)
+        try:
+            if purpose == "embedding":
+                await llm.embed(client, ["OK"], alias)
+            elif purpose == "transcription":
+                await llm.transcribe(client, ("ok.wav", SILENCE), alias)
+            else:
+                await llm.chat(client, [{"role": "user", "content": "OK"}], alias, max_tokens=1)
         except Exception as exc:  # noqa: BLE001 - any failure is what the check reports
             return f"别名在，但调用失败：{str(exc)[:200]}"
         return None

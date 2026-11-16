@@ -504,6 +504,41 @@ async def test_a_failed_model_call_stops_runs_until_the_model_answers_again():
     assert len(m.gateway.requests) == calls
 
 
+@pytest.mark.parametrize(
+    ("purpose", "path"),
+    [
+        ("chat", "/v1/chat/completions"),
+        ("transcription", "/v1/audio/transcriptions"),
+        ("embedding", "/v1/embeddings"),
+        ("rerank", None),
+    ],
+)
+async def test_a_fresh_check_calls_each_model_the_way_its_purpose_takes(purpose, path):
+    # A transcription model cannot chat: as the model page tests it, it transcribes a
+    # second of silence; an embedding model embeds a word; a rerank model is not called.
+    (package,) = await packaged()
+    m, _ = await ready_machine(package)
+
+    async def choices() -> list[dict]:
+        return [{"alias": "qwen", "label": "Qwen", "purpose": purpose, "allowed": True,
+                 "vision": False}]  # fmt: skip
+
+    m.catalog.model_choices = choices
+    calls = len(m.gateway.requests)
+    fresh = (await m.api.get("/runtime/apps/coach/check", params={"fresh": "true"})).json()
+    assert item(fresh, "model", "qwen")["ok"] is True
+    asked = [httpx.URL(r["url"]).path for r in m.gateway.requests[calls:]]
+    assert asked == ([path] if path else [])
+
+    # A failing one is still told, whatever it is for.
+    m.gateway.status = 401
+    fresh = (await m.api.get("/runtime/apps/coach/check", params={"fresh": "true"})).json()
+    failed = item(fresh, "model", "qwen")
+    assert failed["ok"] is (path is None)
+    if path:
+        assert failed["message"].startswith("别名在，但调用失败：")
+
+
 async def test_a_passed_check_lets_only_its_own_version_run():
     (package,) = await packaged()
     m, v1 = await ready_machine(package)
