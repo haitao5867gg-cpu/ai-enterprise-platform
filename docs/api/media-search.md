@@ -22,7 +22,7 @@
 }
 ```
 
-- `POST /media-libraries`、`PATCH /media-libraries/{library_id}` 可以带 `describe`；PATCH 写 `null` 关掉，不写不变。
+- `POST /media-libraries`、`PATCH /media-libraries/{library_id}` 可以带 `describe`。新建时写 `null` 和不写一样，不自动描述；PATCH 写 `null` 关掉，不写不变。别的字段都不能是 `null`。
 - 检查（422，`detail` 是一句话，同媒体库别的接口）：网关上没有这个模型「网关上没有模型「x」」；不是对话模型或没标能看图「模型「x」没标能看图，换一个能看图的模型」；`hint` 超长等格式问题同别的字段。连不上网关时不查模型，照样保存。
 - 打开或换了模型后，库里还没描述的素材（见下面「哪些素材会被描述」）在后台一个个补上。
 

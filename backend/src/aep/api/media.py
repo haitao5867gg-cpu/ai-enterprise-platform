@@ -121,17 +121,8 @@ class Describe(BaseModel):
     hint: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] = ""
 
 
-class NewLibrary(NoNulls):
-    name: Name
-    description: Description = ""
-    describe: Describe | None = None
-
-
-class LibraryChanges(BaseModel):
-    name: Name | None = None
-    description: Description | None = None
-    # null turns automatic descriptions off; left out, they stay as they are.
-    describe: Describe | None = None
+class _NullDescribe(BaseModel):
+    """No field may be null but ``describe``, where null means no automatic descriptions."""
 
     @model_validator(mode="before")
     @classmethod
@@ -139,6 +130,19 @@ class LibraryChanges(BaseModel):
         if isinstance(value, dict) and any(v is None for k, v in value.items() if k != "describe"):
             raise ValueError("请求字段不能为 null")
         return value
+
+
+class NewLibrary(_NullDescribe):
+    name: Name
+    description: Description = ""
+    describe: Describe | None = None
+
+
+class LibraryChanges(_NullDescribe):
+    name: Name | None = None
+    description: Description | None = None
+    # null turns automatic descriptions off; left out, they stay as they are.
+    describe: Describe | None = None
 
 
 class Source(BaseModel):

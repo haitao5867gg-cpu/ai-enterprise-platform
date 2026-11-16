@@ -264,6 +264,13 @@ async def test_a_library_s_describing_model_is_checked(tmp_path):
         assert blind.json()["detail"] == ("模型「company」没标能看图，换一个能看图的模型")
         long_hint = await made({"model": "company-vision", "hint": "长" * 201})
         assert long_hint.status_code == 422
+        # null is no automatic descriptions, as when left out; other fields cannot be null.
+        plain = await made(None)
+        assert plain.status_code == 201 and plain.json()["describe"] is None
+        null_text = await p.api.post(
+            "/media-libraries", json={"name": "另一个", "description": None}
+        )
+        assert null_text.status_code == 422
         library = await p.library(hint="")
         path = f"/media-libraries/{library}"
         assert (await p.api.get(path)).json()["describe"] == {
