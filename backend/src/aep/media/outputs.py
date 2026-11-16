@@ -6,6 +6,10 @@ in its result as ``{"aep_file": {"path", "name"}}``. A tool node with ``save_med
 probes every such file, moves it into the library, records it as made by the run
 (``source.kind: run``) and puts the item's summary where the reference was, so later
 nodes, the run's ``files`` and the app API see the library's file.
+
+A file downloaded from a stock site carries its ``source`` (``kind: stock``) in the
+reference: the item records that instead, and a page the library already holds is not
+saved a second time.
 """
 
 import asyncio
@@ -28,6 +32,7 @@ from aep.media.probe import (
     move,
     work_file,
 )
+from aep.media.source import stock_source
 from aep.media.store import ItemLimit, MediaItem, MediaStore, MissingLibrary
 
 MAX_SAVED = 20
@@ -117,15 +122,28 @@ async def save_outputs(
     root = settings.media_dir
     saved: dict[str, MediaItem] = {}
     planned: list[_Planned] = []
+    pages: dict[str, str] = {}  # a stock page planned in this batch -> its file's path
+    same_page: dict[str, str] = {}  # a later file from that page -> the planned path
     for ref in refs:
         path = ref.get("path")
         shown = _name(ref, path) if isinstance(path, str) else "?"
-        if isinstance(path, str) and (path in saved or any(p.path == path for p in planned)):
+        if isinstance(path, str) and (
+            path in saved or path in same_page or any(p.path == path for p in planned)
+        ):
             continue
         key = import_key(run_id, path) if isinstance(path, str) else ""
         if isinstance(path, str) and (done := await store.imported(library_id, key)):
             saved[path] = await _recovered(done, root, path, store, prober)
             continue
+        stock = stock_source(ref.get("source"))
+        page = stock.get("url") if stock else None
+        if isinstance(path, str) and page:
+            if page in pages:
+                same_page[path] = pages[page]
+                continue
+            if (have := await _held(store, root, library_id, page)) is not None:
+                saved[path] = have
+                continue
         try:
             source = await asyncio.to_thread(work_file, root, path)
         except WorkFileError as exc:
@@ -152,10 +170,12 @@ async def save_outputs(
             description=description,
             description_by="person" if description else None,
             tags=tags,
-            source={"kind": "run", "run_id": run_id},
+            source=stock or {"kind": "run", "run_id": run_id},
             import_key=key,
         )
         planned.append(_Planned(path, source, item))
+        if page:
+            pages[page] = path
     if planned and library.item_count + len(planned) > settings.media_max_items:
         raise SaveError(f"一个媒体库最多 {settings.media_max_items} 个素材")
     if prober is not None:
@@ -188,7 +208,17 @@ async def save_outputs(
         raise SaveError(f"移动文件失败：{exc}") from exc
     for plan, item in zip(planned, added, strict=True):
         saved[plan.path] = item
+    for path, first in same_page.items():
+        saved[path] = saved[first]
     return replace_refs(value, {path: summary(item) for path, item in saved.items()})
+
+
+async def _held(store: MediaStore, root: Path, library_id: str, page: str) -> MediaItem | None:
+    """The library's ready item downloaded from this stock page, while its file is there."""
+    have = await store.stock_item(library_id, page)
+    if have is None or not await asyncio.to_thread((root / have.rel_path).is_file):
+        return None
+    return have
 
 
 async def _probe_all(prober: Prober, planned: list[_Planned]) -> None:

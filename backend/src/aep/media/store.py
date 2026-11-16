@@ -161,6 +161,7 @@ class MediaStore(Protocol):
     ) -> list[MediaItem]: ...
     async def processing(self, limit: int) -> list[MediaItem]: ...
     async def imported(self, library_id: str, import_key: str) -> MediaItem | None: ...
+    async def stock_item(self, library_id: str, url: str) -> MediaItem | None: ...
     async def undescribed(self, limit: int) -> list[tuple[MediaItem, dict[str, Any]]]: ...
     async def describe_item(
         self, library_id: str, item_id: str, description: str
@@ -308,6 +309,14 @@ class MemoryMediaStore:
             None,
         )
 
+    async def stock_item(self, library_id: str, url: str) -> MediaItem | None:
+        found = [
+            i
+            for i in self._items.values()
+            if i.library_id == library_id and i.status == "ready" and _from_page(i, url)
+        ]
+        return min(found, key=_newest_first, default=None)
+
     async def undescribed(self, limit: int) -> list[tuple[MediaItem, dict[str, Any]]]:
         found = []
         for item in self._items.values():
@@ -339,6 +348,10 @@ def _waits_for_model(item: MediaItem) -> bool:
         and item.description_by is None
         and item.describe_error is None
     )
+
+
+def _from_page(item: MediaItem, url: str) -> bool:
+    return item.source.get("kind") == "stock" and item.source.get("url") == url
 
 
 def _made_by(item: MediaItem, run_id: str) -> bool:
@@ -393,6 +406,9 @@ CREATE TABLE IF NOT EXISTS media_items (
     " WHERE import_key IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS media_items_processing ON media_items (created_at)"
     " WHERE status = 'processing'",
+    # Files downloaded from a stock site, found again by their page (docs/api/media-processing.md).
+    "CREATE INDEX IF NOT EXISTS media_items_stock ON media_items (library_id, (source->>'url'))"
+    " WHERE source->>'kind' = 'stock'",
     # Automatic descriptions (docs/api/media-search.md).
     "ALTER TABLE media_libraries ADD COLUMN IF NOT EXISTS describe jsonb",
     "ALTER TABLE media_items ADD COLUMN IF NOT EXISTS description_by text",
@@ -720,6 +736,20 @@ class PostgresMediaStore:
                 f"SELECT {ITEM_COLUMNS} FROM media_items WHERE library_id = %s"
                 " AND tenant_id = %s AND import_key = %s LIMIT 1",
                 (key, DEFAULT_TENANT, import_key),
+            )
+            row = await cur.fetchone()
+            return _item(row) if row else None
+
+    async def stock_item(self, library_id: str, url: str) -> MediaItem | None:
+        key = _uuid(library_id)
+        if key is None:
+            return None
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {ITEM_COLUMNS} FROM media_items WHERE library_id = %s"
+                " AND tenant_id = %s AND status = 'ready' AND source->>'kind' = 'stock'"
+                " AND source->>'url' = %s ORDER BY created_at DESC, item_id DESC LIMIT 1",
+                (key, DEFAULT_TENANT, url),
             )
             row = await cur.fetchone()
             return _item(row) if row else None

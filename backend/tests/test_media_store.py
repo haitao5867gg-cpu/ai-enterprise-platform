@@ -263,6 +263,30 @@ async def test_items_waiting_for_a_probe_and_files_a_run_saved(store):
     await store.delete_library(lid)
 
 
+async def test_a_stock_page_the_library_holds(store):
+    library = await store.create_library(_name("网络素材"))
+    lid = library.library_id
+    page = "https://pixabay.com/videos/id-1/"
+    stock = {"kind": "stock", "site": "Pixabay", "url": page}
+    older = _item(lid, "旧.mp4", source=stock)
+    await store.add_items(lid, [older], 10)
+    newer = _item(lid, "新.mp4", source=stock)
+    others = [
+        _item(lid, "坏.mp4", source=stock, status="error"),
+        _item(lid, "别的.mp4", source={**stock, "url": "https://pixabay.com/videos/id-2/"}),
+        _item(lid, "成片.mp4", source={"kind": "run", "run_id": "r", "url": page}),
+    ]
+    await store.add_items(lid, [newer, *others], 10)
+    found = await store.stock_item(lid, page)
+    assert found is not None and found.item_id in (older.item_id, newer.item_id)
+    other = await store.create_library(_name("别的库"))
+    assert await store.stock_item(other.library_id, page) is None
+    assert await store.stock_item(lid, "https://pixabay.com/videos/id-3/") is None
+    assert await store.stock_item("not-a-uuid", page) is None
+    await store.delete_library(lid)
+    await store.delete_library(other.library_id)
+
+
 async def test_libraries_that_describe_and_the_items_waiting_for_a_model(store):
     describe = {"model": "company-vision", "hint": "教练素材"}
     library = await store.create_library(_name("会描述"), describe=describe)

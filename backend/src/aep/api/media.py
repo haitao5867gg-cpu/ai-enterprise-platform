@@ -45,6 +45,7 @@ from aep.media.files import (
     validate_files,
 )
 from aep.media.probe import Prober
+from aep.media.source import Source
 from aep.media.store import (
     DESCRIBED_KINDS,
     DuplicateName,
@@ -103,8 +104,6 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Description = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
 Tag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20)]
 Tags = Annotated[list[Tag], Field(max_length=20)]
-Text = Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
-Link = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)]
 TAGS_FORM = "「标签」要是 JSON 数组，最多 20 个，每个 1–20 个字"
 
 
@@ -143,26 +142,6 @@ class LibraryChanges(_NullDescribe):
     description: Description | None = None
     # null turns automatic descriptions off; left out, they stay as they are.
     describe: Describe | None = None
-
-
-class Source(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["upload", "stock", "run"]
-    site: Text | None = None
-    url: Link | None = None
-    author: Text | None = None
-    license: Text | None = None
-    license_url: Link | None = None
-    run_id: Text | None = None
-
-    @field_validator("url", "license_url")
-    @classmethod
-    def web_address(cls, value: str | None) -> str | None:
-        # Pages show these as links; only web addresses.
-        if value and not value.lower().startswith(("https://", "http://")):
-            raise ValueError("来源链接要以 http:// 或 https:// 开头")
-        return value or None
 
 
 class ItemChanges(NoNulls):
