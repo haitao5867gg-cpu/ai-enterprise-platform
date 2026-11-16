@@ -114,7 +114,7 @@ async def save_outputs(
             continue
         key = import_key(run_id, path) if isinstance(path, str) else ""
         if isinstance(path, str) and (done := await store.imported(library_id, key)):
-            saved[path] = done
+            saved[path] = await _recovered(done, root, path, store, prober)
             continue
         try:
             source = await asyncio.to_thread(work_file, root, path)
@@ -181,6 +181,31 @@ async def save_outputs(
             item = probed or item
         saved[plan.path] = item
     return replace_refs(value, {path: summary(item) for path, item in saved.items()})
+
+
+async def _recovered(
+    done: MediaItem, root: Path, path: str, store: MediaStore, prober: Prober | None
+) -> MediaItem:
+    """An item this run saved before. When its records were written but the answer was
+    lost (and the check after it too), its file was put back in ``_work`` for a retry:
+    it is brought in now and probed again, as a probe meanwhile found no file."""
+    target = root / done.rel_path
+    if await asyncio.to_thread(target.is_file):
+        return done
+    try:
+        source = await asyncio.to_thread(work_file, root, path)
+    except WorkFileError:
+        raise SaveError(f"文件「{done.name}」：文件不见了") from None
+    try:
+        await asyncio.to_thread(move, source, target)
+    except OSError as exc:
+        raise SaveError(f"移动文件失败：{exc}") from exc
+    if prober is None:
+        return done
+    probed = await prober.probe(done)
+    if probed is None:  # the connector is away: usable as it is
+        probed = await store.update_item(done.library_id, done.item_id, status="ready", error=None)
+    return probed or done
 
 
 def _move_all(root: Path, planned: list[_Planned], moved: list[_Planned]) -> None:

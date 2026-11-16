@@ -379,6 +379,60 @@ async def test_a_lost_database_leaves_the_files_for_a_retry(tmp_path, monkeypatc
         assert await save() == {"video": summary(item)}
 
 
+async def test_records_written_while_the_database_is_lost_get_their_files(tmp_path, monkeypatch):
+    async with Processing(tmp_path) as p:
+        root = p.settings.media_dir
+        work = root / "_work" / "j_1"
+        work.mkdir(parents=True)
+        (work / "成片.mp4").write_bytes(b"\x00" * 10)
+        value = {"video": {"aep_file": {"path": "_work/j_1/成片.mp4", "name": "成片.mp4"}}}
+
+        async def save() -> Any:
+            return await save_outputs(
+                value, store=p.media, settings=p.settings, prober=p.prober,
+                library_id=p.footage, run_id="r-1", summary=summary,
+            )  # fmt: skip
+
+        add, imported = p.media.add_items, p.media.imported
+        lost = False
+
+        async def written_then_lost(*args: Any, **kwargs: Any) -> Any:
+            nonlocal lost
+            await add(*args, **kwargs)
+            lost = True  # and stays lost for the check after it
+            raise RuntimeError("connection to the database was lost")
+
+        async def unanswered(*args: Any, **kwargs: Any) -> Any:
+            if lost:
+                raise RuntimeError("connection to the database was lost")
+            return await imported(*args, **kwargs)
+
+        monkeypatch.setattr(p.media, "add_items", written_then_lost)
+        monkeypatch.setattr(p.media, "imported", unanswered)
+        with pytest.raises(RuntimeError):
+            await save()
+        # Not known whether the records were written: the file is put back for a retry.
+        [item] = await p.saved(p.footage)
+        assert p.work() == ["j_1/成片.mp4"] and not (root / item.rel_path).exists()
+        await p.prober.sweep()  # probed meanwhile: no file there
+        assert (await p.media.item(p.footage, item.item_id)).status == "error"
+
+        # Run again once the database is back: the file joins its record, probed again.
+        lost = False
+        monkeypatch.setattr(p.media, "add_items", add)
+        result = await save()
+        [item] = await p.saved(p.footage)
+        assert result == {"video": summary(item)}
+        assert (root / item.rel_path).is_file() and p.work() == []
+        assert item.status == "ready" and item.error is None and item.duration_seconds == 12.5
+        assert await p.saved(p.footage) == [item]  # no second item
+
+        # Gone from both places: said so, not a summary of a missing file.
+        (root / item.rel_path).unlink()
+        with pytest.raises(SaveError, match="文件「成片.mp4」：文件不见了"):
+            await save()
+
+
 async def test_a_cancel_while_moving_leaves_the_files_for_a_retry(tmp_path, monkeypatch):
     async with Processing(tmp_path) as p:
         root = p.settings.media_dir
