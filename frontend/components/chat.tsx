@@ -132,11 +132,19 @@ export function ChatThread({
 
   const busy = Boolean(detail?.busy) || sending;
   const extra = inputs.filter((field) => field.key !== "message");
-  const reason = blocked ? blocked : busy ? t("上一条还没处理完") : "";
+  // A media input still uploading or checking a file: its value is the old one.
+  const [mediaBusy, setMediaBusy] = useState(false);
+  const reason = blocked
+    ? blocked
+    : busy
+      ? t("上一条还没处理完")
+      : mediaBusy
+        ? t("素材还在上传或检查，好了再发")
+        : "";
 
   async function send(message: string) {
     const trimmed = message.trim();
-    if (!trimmed || busy || blocked) return;
+    if (!trimmed || busy || blocked || mediaBusy) return;
     if (!id && extra.length) {
       const problems = validateFields(extra, values, "input");
       if (problems.length) {
@@ -261,6 +269,7 @@ export function ChatThread({
             disabled={sending}
             prefix={`chat-${app}`}
             datasources={datasources}
+            onBusy={setMediaBusy}
           />
         </details>
       )}

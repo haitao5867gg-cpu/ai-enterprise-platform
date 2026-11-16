@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useT } from "../lib/i18n/client";
 import type { Input } from "../lib/apps";
 import { isCodeRepo, isToolService, kindLabel } from "../lib/datasources";
@@ -40,6 +41,7 @@ export function InputFields({
   disabled = false,
   prefix = "input",
   datasources = [],
+  onBusy,
 }: {
   fields: Input[];
   values: FieldValues;
@@ -48,8 +50,23 @@ export function InputFields({
   disabled?: boolean;
   prefix?: string;
   datasources?: Source[];
+  // Whether a media input is still uploading or checking a file: the form must not be
+  // sent meanwhile (its value is the one chosen before).
+  onBusy?: (busy: boolean) => void;
 }) {
   const t = useT();
+  const busyKeys = useRef(new Set<string>());
+  const latestBusy = useRef(onBusy);
+  useEffect(() => {
+    latestBusy.current = onBusy;
+  });
+  const busyChange = (key: string) => (busy: boolean) => {
+    const keys = busyKeys.current;
+    const before = keys.size > 0;
+    if (busy) keys.add(key);
+    else keys.delete(key);
+    if (keys.size > 0 !== before) latestBusy.current?.(keys.size > 0);
+  };
   return (
     <div className="input-fields">
       {fields.map((field) => {
@@ -78,6 +95,7 @@ export function InputFields({
                 onChange={change}
                 disabled={disabled}
                 common={common}
+                onBusy={busyChange(field.key)}
               />
             ) : field.type === "boolean" ? (
               <input

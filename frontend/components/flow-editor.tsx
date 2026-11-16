@@ -376,6 +376,8 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // A media input still uploading or checking a file: its value is the old one.
+  const [mediaBusy, setMediaBusy] = useState(false);
   return (
     <form
       className="draft-run asset-form"
@@ -386,7 +388,7 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
         setErrors(
           Object.fromEntries(issues.map((issue) => [issue.loc[2], issue.msg])),
         );
-        if (issues.length || busy) return;
+        if (issues.length || busy || mediaBusy) return;
         setBusy(true);
         setError("");
         try {
@@ -414,9 +416,10 @@ function DraftRun({ app, data }: { app: string; data: AppDetail }) {
         prefix="draft-input"
         datasources={data.options.datasources}
         disabled={busy}
+        onBusy={setMediaBusy}
       />
       {error && <p className="field-error">{error}</p>}
-      <button className="button primary" disabled={busy}>
+      <button className="button primary" disabled={busy || mediaBusy}>
         {busy ? t("正在创建…") : t("开始试运行")}
       </button>
     </form>

@@ -16,7 +16,7 @@ import {
   type MediaItem,
   type MediaKind,
 } from "../lib/media";
-import { errorMessage } from "../lib/runs";
+import { ApiError, errorMessage } from "../lib/runs";
 import { useMay } from "./session";
 
 // Plays or shows an item where it is; the browser asks the proxy for byte ranges.
@@ -78,9 +78,16 @@ export function mediaMeta(
 }
 
 const PICK_PAGE = 50;
+// How often an upload the connector is still probing is looked at again: soon at
+// first, then less often (the platform retries a minute later when it is away).
+const CHECK_FIRST_MS = 1000;
+const CHECK_SOON_MS = 2000;
+const CHECK_LATER_MS = 5000;
+const CHECK_SOON_TIMES = 15;
 
 // A start input of type media on the new-run page: pick an item of the input's library
-// (newest first, searchable), or upload one and use it.
+// (newest first, searchable), or upload one and use it once it is ready (a run takes
+// only ready items; with the media connector set an upload is probed first).
 export function MediaPicker({
   id,
   library,
@@ -89,6 +96,7 @@ export function MediaPicker({
   onChange,
   disabled,
   common,
+  onBusy,
 }: {
   id: string;
   library: string;
@@ -97,6 +105,9 @@ export function MediaPicker({
   onChange: (value: string) => void;
   disabled: boolean;
   common: Record<string, unknown>;
+  // Told while an upload is sent or checked: the form's value is still the old one
+  // then, so the form waits rather than send it.
+  onBusy?: (busy: boolean) => void;
 }) {
   const t = useT();
   // Uploading to a library is for builders (docs/api/auth.md); others only pick.
@@ -109,6 +120,8 @@ export function MediaPicker({
   const [chosen, setChosen] = useState<MediaItem | null>(null);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
+  // An upload still being probed: chosen when it is ready, never before.
+  const [checking, setChecking] = useState<MediaItem | null>(null);
   const [revision, setRevision] = useState(0);
   const file = useRef<HTMLInputElement>(null);
   const abort = useRef<(() => void) | null>(null);
@@ -119,6 +132,66 @@ export function MediaPicker({
     latestChange.current = onChange;
   });
   useEffect(() => () => abort.current?.(), []);
+  useEffect(() => {
+    if (!checking) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let looked = 0;
+    const later = () => {
+      looked += 1;
+      timer = setTimeout(
+        look,
+        looked < CHECK_SOON_TIMES ? CHECK_SOON_MS : CHECK_LATER_MS,
+      );
+    };
+    function look() {
+      getMediaItem(checking!.library_id, checking!.item_id, controller.signal)
+        .then((item) => {
+          if (controller.signal.aborted) return;
+          if (item.status === "processing") return later();
+          setChecking(null);
+          // Not usable: said so and not chosen (a list reload would clear the error).
+          if (item.status === "ready") choose(item);
+          else
+            setError(
+              t("「{name}」用不了：{error}", {
+                name: item.name,
+                error: item.error ?? t("处理失败了"),
+              }),
+            );
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return;
+          if (err instanceof ApiError && err.status === 404) {
+            setChecking(null);
+            setError(errorMessage(err));
+            return;
+          }
+          later(); // a passing network problem: look again
+        });
+    }
+    timer = setTimeout(look, CHECK_FIRST_MS);
+    return () => {
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+    // `t` and `choose` read only state setters and the latest handler.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking]);
+  function choose(item: MediaItem) {
+    setChosen(item);
+    latestChange.current(item.item_id);
+    setRevision((n) => n + 1);
+  }
+  const busy = progress !== null || checking !== null;
+  const latestBusy = useRef(onBusy);
+  useEffect(() => {
+    latestBusy.current = onBusy;
+  });
+  useEffect(() => {
+    latestBusy.current?.(busy);
+  }, [busy]);
+  useEffect(() => () => latestBusy.current?.(false), []);
   const accepted = kinds?.length ? kinds : undefined;
   const oneKind = accepted?.length === 1 ? accepted[0] : undefined;
   const pickable = (page: MediaItem[]) =>
@@ -208,9 +281,15 @@ export function MediaPicker({
     abort.current = job.abort;
     job.done
       .then(([item]) => {
-        setChosen(item);
-        latestChange.current(item.item_id);
-        setRevision((n) => n + 1);
+        if (item.status === "ready") choose(item);
+        else if (item.status === "processing") setChecking(item);
+        else
+          setError(
+            t("「{name}」用不了：{error}", {
+              name: item.name,
+              error: item.error ?? t("处理失败了"),
+            }),
+          );
       })
       .catch((err) => setError(errorMessage(err)))
       .finally(() => {
@@ -237,7 +316,7 @@ export function MediaPicker({
           {...common}
           id={id}
           value={value}
-          disabled={disabled || progress !== null}
+          disabled={disabled || busy}
           onChange={(event) => onChange(event.target.value)}
         >
           <option value="">
@@ -257,7 +336,7 @@ export function MediaPicker({
               className="sr-only"
               aria-label={t("上传一个素材")}
               accept={mediaAccept(accepted)}
-              disabled={disabled || progress !== null}
+              disabled={disabled || busy}
               onChange={(event) => {
                 upload(Array.from(event.target.files ?? []));
                 event.target.value = "";
@@ -266,7 +345,7 @@ export function MediaPicker({
             <button
               type="button"
               className="button secondary"
-              disabled={disabled || progress !== null}
+              disabled={disabled || busy}
               onClick={() => file.current?.click()}
             >
               {progress !== null
@@ -276,6 +355,11 @@ export function MediaPicker({
           </>
         )}
       </div>
+      {checking && (
+        <p className="field-hint" role="status">
+          {t("正在检查「{name}」，检查完会自动选上。", { name: checking.name })}
+        </p>
+      )}
       {items !== null && unread > 0 && (
         <p className="field-hint">
           {t("还有 {n} 个素材没列出来。", { n: unread })}{" "}

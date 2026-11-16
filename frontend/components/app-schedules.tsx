@@ -267,6 +267,8 @@ function ScheduleForm({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  // A media input still uploading or checking a file: its value is the old one.
+  const [mediaBusy, setMediaBusy] = useState(false);
   // An edited schedule's project, as it was saved.
   useEffect(() => {
     const saved = editing?.project;
@@ -299,7 +301,7 @@ function ScheduleForm({
       noValidate
       onSubmit={async (event) => {
         event.preventDefault();
-        if (saving) return;
+        if (saving || mediaBusy) return;
         const problems: Record<string, string> = {};
         let input: Record<string, unknown> = {};
         if (inputs) {
@@ -408,6 +410,7 @@ function ScheduleForm({
               disabled={saving}
               prefix={`${id}-input`}
               datasources={datasources}
+              onBusy={setMediaBusy}
             />
           ) : (
             <p className="muted">这个应用不需要输入。</p>
@@ -434,7 +437,7 @@ function ScheduleForm({
       </p>
       {error && <ErrorNotice message={error} />}
       <div className="datasource-save-row">
-        <button className="button primary" disabled={saving}>
+        <button className="button primary" disabled={saving || mediaBusy}>
           {saving ? "正在保存…" : editing ? "保存修改" : "新建定时"}
         </button>
       </div>

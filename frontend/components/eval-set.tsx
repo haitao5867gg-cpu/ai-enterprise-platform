@@ -231,11 +231,14 @@ function CaseDialog({
   const ref = useRef<HTMLDialogElement>(null);
   const [item, setItem] = useState(initial);
   const [problem, setProblem] = useState("");
+  // A media input still uploading or checking a file holds the one chosen before.
+  const [mediaBusy, setMediaBusy] = useState(false);
   useEffect(() => {
     ref.current?.showModal();
   }, []);
   const set = (patch: Partial<EvalCase>) => setItem({ ...item, ...patch });
   function save() {
+    if (mediaBusy) return setProblem("素材还在上传或检查，好了再保存。");
     if (!CASE_ID.test(item.id))
       return setProblem(
         "用例标识只能用小写字母、数字、- 和 _，最多 60 个字符。",
@@ -299,6 +302,7 @@ function CaseDialog({
             values={item.input}
             prefix="eval-case-input"
             onChange={(input) => set({ input })}
+            onBusy={setMediaBusy}
           />
         ) : (
           <p className="muted">这个应用的开始节点没有输入。</p>
@@ -359,7 +363,9 @@ function CaseDialog({
           </p>
         )}
         <div className="eval-dialog-actions">
-          <button className="button primary">放进评测集</button>
+          <button className="button primary" disabled={mediaBusy}>
+            放进评测集
+          </button>
           <button type="button" className="button secondary" onClick={onClose}>
             取消
           </button>
