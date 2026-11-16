@@ -14,6 +14,7 @@
 | `postgres`、`redis` | 运行包自己的数据库，和平台的分开 |
 | `connector-sandbox`、`sandbox-relay` | 代码节点的沙箱，不能上网 |
 | `connector-media` | 媒体处理（ffmpeg），读媒体库、渲染视频；流程用到时绑定 `http://connector-media:8008/mcp` |
+| `connector-stock` | 图库：在 Pixabay 上搜可商用的视频，把选中的下载下来（[docs/api/stock.md](../../docs/api/stock.md)）；`.env` 里填 `AEP_STOCK_PIXABAY_KEY`，流程用到时绑定 `http://connector-stock:8009/mcp`，要能访问 `pixabay.com` 和 `cdn.pixabay.com` |
 | `asr`（可选） | 本地语音转写（faster-whisper），模型网关的 `transcribe` 别名默认指向它。`.env` 里写 `COMPOSE_PROFILES=asr` 才启动，第一次下载模型约 500 MB，常驻内存约 1G（[docs/api/transcription.md](../../docs/api/transcription.md)） |
 
 没有平台页面、示例源库和 Langfuse。外部应用自己的服务（页面、连接器）写在
@@ -61,9 +62,11 @@ bash infra/runtime/aep-runtime.sh check coach-video
 
 自检不通过的项按提示补，补完再查一次：
 
-- **数据源**：外部应用自己的连接器先写进 `.env` 的 `AEP_CONNECTOR_HOSTS`，例如
-  `["connector-stock:8010"]`，再重新运行 `install.sh`。然后绑定：
-  `aep-runtime.sh bind <应用> <datasource_id> http://connector-stock:8010/mcp`
+- **数据源**：运行包自带的连接器直接绑定，例如图库：
+  `aep-runtime.sh bind <应用> <datasource_id> http://connector-stock:8009/mcp`
+  （`.env` 的 `AEP_CONNECTOR_HOSTS` 里要有 `connector-stock:8009`，新装的默认就有）。
+  外部应用自己的连接器先写进 `AEP_CONNECTOR_HOSTS`，例如 `["connector-stock:8009", "my-connector:9000"]`，
+  再重新运行 `install.sh`，然后同样绑定。
 - **密钥**：`aep-runtime.sh secret <应用> <密钥名>`，输入时不显示。
 - **模型**：别名不在网关上时，改 `infra/litellm/config.yaml` 或 `.env`，再运行 `install.sh`。
   `aep-runtime.sh check <应用> --fresh` 会真的调一次每个别名。

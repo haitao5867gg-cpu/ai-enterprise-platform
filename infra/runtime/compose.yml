@@ -152,6 +152,25 @@ services:
       timeout: 3s
       retries: 30
 
+  # 图库（docs/api/stock.md）：在 Pixabay 上搜可商用的视频，把选中的下载到媒体卷自己的目录。
+  # key 写在 .env 的 AEP_STOCK_PIXABAY_KEY；没写时照常启动，调用工具时报没有 key。
+  # 流程要用时，按清单里的 datasource_id 绑定 http://connector-stock:8009/mcp。
+  connector-stock:
+    <<: *restart
+    build: ../../connectors/stock
+    environment:
+      AEP_MEDIA_DIR: /data/media
+      AEP_STOCK_MCP_HOST: 0.0.0.0
+      AEP_STOCK_MCP_PORT: 8009
+      AEP_STOCK_PIXABAY_KEY: ${AEP_STOCK_PIXABAY_KEY:-}
+    volumes:
+      - media-data:/data/media
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
   # 语音转写（docs/api/transcription.md）：可选的本地 faster-whisper（speaches，CPU 版），
   # 模型网关的 transcribe 别名默认指向它。docker compose --profile asr up -d 才启动
   # （或在 .env 里写 COMPOSE_PROFILES=asr）。第一次启动时下载 ASR_MODEL 到 asr-models 卷，

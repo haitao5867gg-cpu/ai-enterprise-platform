@@ -118,7 +118,7 @@ JSON 列表，每一项是下面一种写法：
 | `[fd00::5]:8001` | IPv6 地址 |
 | `*.connectors.svc.cluster.local:*` | 这个后缀下的子域名，不含后缀本身；端口写法同上 |
 
-不接受单独一个 `*`，也不接受 `*:8001` 这样主机只有 `*` 的写法；写法不对时平台启动失败。默认值是 `["connector-postgres:8001", "connector-mysql:8002", "connector-files:8003", "connector-databricks:8005"]`，也就是本地编排里的四个数据源连接器。不用 docker 单独开发后端时，按需加上本机连接器的地址：`localhost:*` 这类写法对回环地址不起作用，要写明端口，例如 `localhost:8001`；不要写平台自己的端口（如 `localhost:8000`）。
+不接受单独一个 `*`，也不接受 `*:8001` 这样主机只有 `*` 的写法；写法不对时平台启动失败。默认值是 `["connector-postgres:8001", "connector-mysql:8002", "connector-files:8003", "connector-databricks:8005", "connector-git:8006", "connector-stock:8009"]`，也就是本地编排里的数据源、Git 和图库连接器。不用 docker 单独开发后端时，按需加上本机连接器的地址：`localhost:*` 这类写法对回环地址不起作用，要写明端口，例如 `localhost:8001`；不要写平台自己的端口（如 `localhost:8000`）。
 
 后缀写法不要盖住平台自己所在的命名空间。平台只认得出第 4 条里那些名字的服务；部署时改过名的服务（比如 Helm 加了前缀的平台接口）认不出来，会被后缀写法放进来。
 
