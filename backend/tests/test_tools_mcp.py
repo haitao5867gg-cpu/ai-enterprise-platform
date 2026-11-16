@@ -1,8 +1,10 @@
 """The MCP client's connection problems: what kind each one is, masked addresses in its
 messages, redirects, and listing many tools. No network: scripted HTTP replies."""
 
+import asyncio
 import errno
 import json
+import random
 import socket
 import ssl
 from collections.abc import Awaitable, Callable
@@ -13,6 +15,7 @@ import httpx2
 import pytest
 from mcp import types
 from mcp.client.streamable_http import streamable_http_client
+from mcp.server import MCPServer
 from mcp.server.lowlevel import Server
 from mcp.shared.exceptions import MCPError
 
@@ -219,3 +222,57 @@ async def test_an_empty_or_repeated_cursor_ends_the_listing():
     found = await McpTools(5, resolve=lambda url: stuck).list_tools("http://stuck.test/mcp")
     assert [t.name for t in found] == ["a", "b"]
     assert asked == [None, "same"]
+
+
+async def test_a_call_cancelled_on_the_way_is_cancelled():
+    """The MCP client can swallow a cancel that comes in the middle of a call (the call
+    then returns as if nothing happened, and a cancelled run polled its job for hours);
+    every cancel asked for during a call ends it cancelled."""
+    server = MCPServer("slow")
+
+    @server.tool()
+    async def status(job_id: str) -> dict:
+        await asyncio.sleep(random.random() * 0.003)
+        return {"job_id": job_id}
+
+    tools = McpTools(5, resolve=lambda url: server)
+    rng = random.Random(7)
+    asked = honoured = 0
+    for _ in range(400):
+        task = asyncio.create_task(tools.call("http://slow.test/mcp", "status", {"job_id": "j"}))
+        await asyncio.sleep(rng.random() * 0.006)
+        if not task.cancel():
+            continue  # it had finished already
+        asked += 1
+        try:
+            await task
+        except asyncio.CancelledError:
+            honoured += 1
+    assert asked > 50 and honoured == asked
+
+
+async def test_a_call_made_while_a_cancel_is_handled_still_answers():
+    """A shielded clean-up call during a cancel (cancelling a long job, say) is not cut."""
+    server = MCPServer("cleanup")
+
+    @server.tool()
+    async def cancel(job_id: str) -> dict:
+        return {"cancelled": job_id}
+
+    tools = McpTools(5, resolve=lambda url: server)
+    answers = []
+
+    async def run() -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                answers.append(await tools.call("http://c.test/mcp", "cancel", {"job_id": "j"}))
+            raise
+
+    task = asyncio.create_task(run())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert answers == [{"cancelled": "j"}]

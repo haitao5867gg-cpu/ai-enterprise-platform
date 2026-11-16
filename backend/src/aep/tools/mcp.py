@@ -7,6 +7,7 @@ of a URL through ``resolve``. Errors name the server by its masked address
 (``aep.connector_urls.mask_url``), as they reach run records, logs and traces.
 """
 
+import asyncio
 import errno
 import json
 import socket
@@ -202,6 +203,32 @@ class McpTools:
 
     async def _with_client(
         self, url: str, run: Callable[[Client], Any], timeout_seconds: float | None = None
+    ) -> Any:
+        # The MCP client can swallow a cancel that arrives during a call: the call then
+        # returns, or fails as if the connector were unreachable, and the cancelled run
+        # goes on (polling a long job, say). A cancel asked for during the call and still
+        # outstanding afterwards is raised here. Counting from the start leaves alone a
+        # call made while a cancel is already being handled (a shielded clean-up).
+        task = asyncio.current_task()
+        asked = task.cancelling() if task is not None else 0
+
+        def swallowed() -> bool:
+            return task is not None and task.cancelling() > asked
+
+        try:
+            result = await self._connect(url, run, timeout_seconds)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            if swallowed():
+                raise asyncio.CancelledError() from None
+            raise
+        if swallowed():
+            raise asyncio.CancelledError()
+        return result
+
+    async def _connect(
+        self, url: str, run: Callable[[Client], Any], timeout_seconds: float | None
     ) -> Any:
         timeout = timeout_seconds or self._timeout
         try:
