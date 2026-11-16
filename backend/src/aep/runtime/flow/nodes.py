@@ -2771,5 +2771,7 @@ TYPES.update(git_node.TYPES)
 TYPES.update(review.TYPES)
 TYPES.update(transcribe.TYPES)
 
-# The each node's steps are the types above; it adds itself to TYPES.
-from aep.runtime.flow import each  # noqa: E402, F401
+# The media search node adds itself to TYPES (docs/api/media-search.md); the each node's
+# steps are the types above, and it adds itself too (docs/api/each.md).
+from aep.runtime.flow import media_search  # noqa: E402, F401, I001
+from aep.runtime.flow import each  # noqa: E402, F401, I001

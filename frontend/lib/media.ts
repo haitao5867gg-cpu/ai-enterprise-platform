@@ -4,10 +4,13 @@ import { ApiError, requestJson } from "./runs";
 // docs/api/media.md is the source of truth for these wire types.
 export type MediaKind = "video" | "audio" | "image";
 export type MediaStatus = "processing" | "ready" | "error";
+// A library's automatic descriptions (docs/api/media-search.md).
+export type MediaDescribe = { model: string; hint: string };
 export type MediaLibrary = {
   library_id: string;
   name: string;
   description: string;
+  describe: MediaDescribe | null;
   item_count: number;
   total_bytes: number;
   status_counts: Record<MediaStatus, number>;
@@ -42,6 +45,9 @@ export type MediaItem = {
   uploaded_by: string | null;
   // A JPG the media processing connector made (docs/api/media-processing.md).
   has_thumbnail: boolean;
+  // Who wrote the description, and why a model could not (docs/api/media-search.md).
+  description_by: "person" | "model" | null;
+  describe_error: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -174,7 +180,11 @@ export const getMediaLibrary = (library: string, signal?: AbortSignal) =>
   requestJson(base(library), { signal }) as Promise<MediaLibrary>;
 export const updateMediaLibrary = (
   library: string,
-  input: { name?: string; description?: string },
+  input: {
+    name?: string;
+    description?: string;
+    describe?: MediaDescribe | null;
+  },
 ) => requestJson(base(library), json("PATCH", input)) as Promise<MediaLibrary>;
 export const deleteMediaLibrary = (library: string) =>
   requestJson(base(library), json("DELETE"));
@@ -219,6 +229,26 @@ export const updateMediaItem = (
   requestJson(item(library, id), json("PATCH", changes)) as Promise<MediaItem>;
 export const deleteMediaItem = (library: string, id: string) =>
   requestJson(item(library, id), json("DELETE"));
+// 「AI 重写」: the item's description is cleared and written again by the library's model.
+export const describeMediaItem = (library: string, id: string) =>
+  requestJson(
+    `${item(library, id)}/describe`,
+    json("POST"),
+  ) as Promise<MediaItem>;
+// Whether the library's model is to describe the item and has not yet.
+export function waitsForDescription(
+  library: Pick<MediaLibrary, "describe">,
+  media: MediaItem,
+): boolean {
+  return (
+    library.describe !== null &&
+    media.status === "ready" &&
+    (media.kind === "video" || media.kind === "image") &&
+    !media.description &&
+    media.description_by === null &&
+    media.describe_error === null
+  );
+}
 // Where the page plays or downloads an item: through the platform's proxy.
 export const mediaFileUrl = (library: string, id: string) =>
   `/api${item(library, id)}/file`;

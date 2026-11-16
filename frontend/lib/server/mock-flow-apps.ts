@@ -623,6 +623,16 @@ const defaults: FlowNode[] = [
     language: "zh",
     prompt: "",
   },
+  {
+    id: "footage",
+    type: "media_search",
+    title: "检索素材",
+    library: "",
+    query: "",
+    kinds: ["video", "image"],
+    tags: [],
+    limit: 50,
+  },
   blankConfig().graph.nodes[0],
   { ...(blankConfig().graph.nodes[1] as LlmNode), quiet: false },
   intentConfig().graph.nodes[1],
@@ -1079,6 +1089,23 @@ export function validateFlow(config: unknown): ValidationIssue[] {
     if (ids.has(node.id))
       issues.push({ loc: [...loc, "id"], msg: "节点 id 重复" });
     ids.add(node.id);
+    // docs/api/media-search.md: a library the app binds; how many to take.
+    if (node.type === "media_search") {
+      const bound = (config as FlowConfig).media?.libraries ?? [];
+      if (!bound.some((item) => item.library_id === node.library))
+        issues.push({
+          loc: [...loc, "library"],
+          msg: "要选一个绑定到应用的媒体库",
+        });
+      if ((node.query ?? "").length > 200)
+        issues.push({ loc: [...loc, "query"], msg: "搜索词最多 200 个字符" });
+      const limit = node.limit ?? 50;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200)
+        issues.push({
+          loc: [...loc, "limit"],
+          msg: "最多取几个要在 1–200 之间",
+        });
+    }
     if (node.type === "knowledge") {
       if (
         typeof node.query !== "string" ||
@@ -1415,6 +1442,28 @@ export function simulateNode(
           : type === "object"
             ? {}
             : "（模拟抽取）";
+  // docs/api/media-search.md: two example items of the library.
+  if (node.type === "media_search") {
+    const item = (name: string, description: string) => ({
+      item_id: `mock-${name}`,
+      library_id: node.library,
+      name,
+      kind: "video",
+      duration_seconds: 12.4,
+      width: 1080,
+      height: 1920,
+      path: `${node.library}/mock-${name}/${name}`,
+      orientation: "portrait",
+      description,
+      tags: [],
+      source: { kind: "upload" },
+    });
+    const items = [
+      item("卧推侧面.mp4", "健身房杠铃卧推，侧面全景"),
+      item("早餐.mp4", "一盘鸡胸肉和西兰花，俯拍特写"),
+    ].slice(0, node.limit ?? 50);
+    outputs = { items, count: items.length, total: items.length };
+  }
   if (node.type === "knowledge") {
     for (const id of node.knowledge_bases)
       if (!knowledgeExists(id)) throw new Error("知识库不存在");

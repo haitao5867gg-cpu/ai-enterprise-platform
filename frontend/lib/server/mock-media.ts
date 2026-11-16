@@ -1,14 +1,16 @@
 import "server-only";
 import type {
+  MediaDescribe,
   MediaItem,
   MediaKind,
   MediaLibrary,
   MediaSource,
   RunMediaFile,
 } from "../media";
-import { MAX_UPLOAD, mediaKindOf } from "../media";
+import { MAX_UPLOAD, mediaKindOf, waitsForDescription } from "../media";
 import { isRecord } from "../runs";
 import { mockError, mockJson, noContent, readBody } from "./mock-assets";
+import { mockModelChoices } from "./mock-models";
 
 // The local mock of docs/api/media.md: libraries, items and their bytes, in memory.
 type StoredLibrary = Omit<
@@ -72,6 +74,8 @@ function newItem(
     source: { kind: "upload" },
     uploaded_by: null,
     has_thumbnail: false,
+    description_by: null,
+    describe_error: null,
     created_at: now(),
     updated_at: now(),
     ...extra,
@@ -87,6 +91,7 @@ function seed(): Store {
         library_id,
         name: "教练素材",
         description: "教练自己拍的健身房镜头",
+        describe: null,
         created_at: now(),
         updated_at: now(),
       },
@@ -105,6 +110,7 @@ function seed(): Store {
       height: 1280,
       orientation: "portrait",
       description: "健身房杠铃卧推，侧面全景",
+      description_by: "person",
       tags: ["胸", "卧推"],
       uploaded_by: "王教练",
       has_thumbnail: true,
@@ -150,6 +156,36 @@ function nameProblem(value: unknown, own?: string): Response | null {
     (library) => library.name === value.trim() && library.library_id !== own,
   );
   return taken ? mockError(`已存在名为「${value.trim()}」的媒体库`, 409) : null;
+}
+
+// docs/api/media-search.md: a vision model of the mock's gateway, and a hint.
+function describeOf(value: unknown): MediaDescribe | null | Response {
+  if (value === null) return null;
+  if (!isRecord(value) || typeof value.model !== "string")
+    return mockError("「自动描述」的格式、长度或范围不正确", 422);
+  const hint = typeof value.hint === "string" ? value.hint.trim() : "";
+  if (hint.length > 200)
+    return mockError("「说明」的格式、长度或范围不正确", 422);
+  const found = mockModelChoices().find((m) => m.alias === value.model);
+  if (!found) return mockError(`网关上没有模型「${value.model}」`, 422);
+  if (!found.vision)
+    return mockError(
+      `模型「${value.model}」没标能看图，换一个能看图的模型`,
+      422,
+    );
+  return { model: value.model, hint };
+}
+// What the mock's model "sees": items waiting in a describing library are described
+// when they are looked at.
+function describeWaiting() {
+  for (const { item } of store.items.values()) {
+    const library = store.libraries.get(item.library_id);
+    if (library && waitsForDescription(library, item)) {
+      item.description = `${item.name.replace(/\.[^.]+$/, "")}的画面（模拟描述）`;
+      item.description_by = "model";
+      item.updated_at = now();
+    }
+  }
 }
 
 function tagsOf(value: unknown): string[] | null {
@@ -234,6 +270,8 @@ async function upload(request: Request, library: StoredLibrary) {
       file.size,
       {
         description: typeof description === "string" ? description : "",
+        description_by:
+          typeof description === "string" && description ? "person" : null,
         tags,
         uploaded_by: typeof by === "string" && by.trim() ? by.trim() : null,
         // As if the media connector were set: a name with 待检查 is probed first.
@@ -267,10 +305,13 @@ export async function mockMedia(
     if (body instanceof Response) return body;
     const problem = nameProblem(body.name);
     if (problem) return problem;
+    const describe = describeOf(body.describe ?? null);
+    if (describe instanceof Response) return describe;
     const library: StoredLibrary = {
       library_id: crypto.randomUUID(),
       name: (body.name as string).trim(),
       description: typeof body.description === "string" ? body.description : "",
+      describe,
       created_at: now(),
       updated_at: now(),
     };
@@ -296,12 +337,18 @@ export async function mockMedia(
       }
       if (typeof body.description === "string")
         library.description = body.description;
+      if (body.describe !== undefined) {
+        const describe = describeOf(body.describe);
+        if (describe instanceof Response) return describe;
+        library.describe = describe;
+      }
       library.updated_at = now();
     }
     return mockJson(snapshot(library));
   }
   if (!itemId) {
     if (method === "POST") return upload(request, library);
+    describeWaiting();
     const query = new URL(request.url).searchParams;
     const words = (query.get("q") ?? "")
       .toLowerCase()
@@ -353,6 +400,18 @@ export async function mockMedia(
     store.items.delete(itemId);
     return noContent();
   }
+  if (action === "describe" && method === "POST") {
+    if (!library.describe) return mockError("这个媒体库没有打开自动描述", 409);
+    if (entry.item.kind === "audio")
+      return mockError("只能给视频和图片写描述", 422);
+    Object.assign(entry.item, {
+      description: "",
+      description_by: null,
+      describe_error: null,
+      updated_at: now(),
+    });
+    return mockJson(entry.item, 202);
+  }
   if (method === "PATCH") {
     const body = await readBody(request);
     if (body instanceof Response) return body;
@@ -383,6 +442,7 @@ export async function mockMedia(
           },
           422,
         );
+      if (body.description !== item.description) item.description_by = "person";
       item.description = body.description;
     }
     if (typeof body.usable === "boolean") item.usable = body.usable;

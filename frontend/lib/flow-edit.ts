@@ -27,6 +27,7 @@ export const BRANCHED_ERROR_TYPES = [
   "data_check",
   "app",
   "each",
+  "media_search",
 ];
 export const UNTESTABLE_TYPES = [
   "start",
@@ -49,6 +50,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   tool: "调用工具",
   knowledge: "知识检索",
   transcribe: "语音转写",
+  media_search: "检索素材",
   each: "逐项处理",
   agent: "智能体",
   human: "人工",
@@ -73,6 +75,7 @@ export function nodeKind(type: FlowNode["type"]): NodeKind {
     [
       "tool",
       "knowledge",
+      "media_search",
       "etl_profile",
       "databricks_ingest",
       "databricks_dev_run",
@@ -121,6 +124,8 @@ export function ownOutputs(node: FlowNode): string[] {
       return ["text", "language", "duration_seconds", "segments", "words"];
     case "each":
       return ["results", "failed", "count"];
+    case "media_search":
+      return ["items", "count", "total"];
     case "agent":
       return ["text", "steps", "hits"];
     case "human":

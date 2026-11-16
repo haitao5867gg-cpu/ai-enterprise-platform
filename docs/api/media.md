@@ -8,7 +8,7 @@
 
 - **媒体库**：一组视频、音频和图片，比如「教练素材」「网络素材缓存」。文件存在运行这套平台的服务器本地硬盘（`AEP_MEDIA_DIR`，默认 `/data/media`），布局是 `<library_id>/<item_id>/<文件名>`。外部应用装运行包时，媒体库就在外部应用自己的机器上，素材和成片不出那台机器。以后换成对象存储时只改存储这一层，接口不变。
 - **素材**：库里的一个文件，带画面描述、标签、来源和授权。描述和标签决定流程能不能按一句话找到它，所以都能改。
-- **用在哪里**：编排应用绑定媒体库后，开始节点的输入可以是库里的素材，外部页面经应用 API（`/v1`）上传、列出、下载素材，见下面“应用用媒体库”。后续批次：媒体处理连接器读这些文件做探测、抽帧、剪辑和渲染；编排应用的节点按描述检索素材。这两项各有自己的契约。
+- **用在哪里**：编排应用绑定媒体库后，开始节点的输入可以是库里的素材，外部页面经应用 API（`/v1`）上传、列出、下载素材，见下面“应用用媒体库”。媒体处理连接器读这些文件做探测、抽帧、剪辑和渲染（[media-processing.md](media-processing.md)）；库可以自动给素材写画面描述，编排应用的「检索素材」节点按描述找素材（[media-search.md](media-search.md)）。
 
 ## 数据结构
 
@@ -21,6 +21,7 @@
   "item_count": 9,
   "total_bytes": 201326592,
   "status_counts": {"processing": 0, "ready": 9, "error": 0},
+  "describe": null,               // 自动描述：{"model", "hint"}，见 media-search.md
   "created_at": "……", "updated_at": "……"
 }
 
@@ -51,6 +52,8 @@
   },
   "uploaded_by": "王教练" | null,
   "has_thumbnail": false,          // 有缩略图（媒体处理连接器探测时做的），见 media-processing.md
+  "description_by": "person" | "model" | null,   // 描述是谁写的；describe_error：模型没写成的原因。见 media-search.md
+  "describe_error": null,
   "created_at": "……", "updated_at": "……"
 }
 ```
@@ -219,5 +222,5 @@
 ## 后续批次（各自补契约）
 
 - 媒体处理连接器（`connectors/media`，MCP）：探测时长和宽高、抽帧、截取、拼接、烧字幕、渲染；上传后由它把 `processing` 变成 `ready`，并给每个视频生成一张缩略图（`GET …/thumbnail`）。见 [media-processing.md](media-processing.md)。
-- 编排应用：按描述检索素材的工具，供节点和智能体调用。
+- 编排应用按描述检索素材、库自动写画面描述：见 [media-search.md](media-search.md)。智能体按描述检索素材的工具以后再加。
 - 运行产出的文件进媒体库（媒体处理连接器），给手机直接播放的短期下载链接。

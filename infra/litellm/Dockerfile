@@ -9,8 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl libatom
 # LiteLLM's Langfuse callback needs (it is not part of the proxy extra). prisma is
 # the client LiteLLM keeps models added on the model page in (docs/api/models.md);
 # psycopg creates the gateway's database on first start (ensure_db.py).
+# httpx2/httpcore2 are pinned because 2.16.1 breaks this LiteLLM build: every chat
+# completion fails with "unsupported operand type(s) for |: 'str' and 'type'".
 RUN pip install --no-cache-dir "litellm[proxy]==1.106.4" "langfuse>=4.7,<5" \
-    "prisma==0.15.0" "psycopg[binary]>=3.2,<4"
+    "prisma==0.15.0" "psycopg[binary]>=3.2,<4" "httpx2==2.16.0" "httpcore2==2.16.0"
 # Generate the Prisma client (and fetch its engines) at build time, not on first start.
 RUN cd "$(python -c 'import litellm, os; print(os.path.dirname(litellm.__file__))')/proxy" \
     && prisma generate

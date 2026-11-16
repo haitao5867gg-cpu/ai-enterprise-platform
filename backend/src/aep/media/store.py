@@ -20,6 +20,9 @@ MediaKind = Literal["video", "audio", "image"]
 ItemStatus = Literal["processing", "ready", "error"]
 STATUSES: tuple[ItemStatus, ...] = ("processing", "ready", "error")
 SourceKind = Literal["upload", "stock", "run"]
+DescribedBy = Literal["person", "model"]
+# What a model describes (docs/api/media-search.md, 自动描述).
+DESCRIBED_KINDS: tuple[MediaKind, ...] = ("video", "image")
 
 
 def _now() -> datetime:
@@ -45,6 +48,8 @@ class MediaLibrary:
     library_id: str
     name: str
     description: str = ""
+    # Automatic descriptions: {"model", "hint"}, or None when off (media-search.md).
+    describe: dict[str, Any] | None = None
     tenant_id: str = DEFAULT_TENANT
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
@@ -73,6 +78,9 @@ class MediaItem:
     uploaded_by: str | None = None
     # A JPG next to the item, made when it was probed (docs/api/media-processing.md).
     has_thumbnail: bool = False
+    # Who wrote the description (None: nobody yet) and why a model could not.
+    description_by: DescribedBy | None = None
+    describe_error: str | None = None
     # A file a run's tool made, saved once per run and work file (save_media).
     import_key: str | None = None
     tenant_id: str = DEFAULT_TENANT
@@ -91,6 +99,10 @@ class ItemQuery:
     usable: bool | None = None
     limit: int = 50
     offset: int = 0
+    # A node's search (media-search.md): any of these kinds, all of these tags, a status.
+    kinds: tuple[MediaKind, ...] | None = None
+    tags: tuple[str, ...] = ()
+    status: ItemStatus | None = None
 
     @property
     def words(self) -> list[str]:
@@ -104,6 +116,12 @@ def _matches(item: MediaItem, query: ItemQuery) -> bool:
         return False
     if query.usable is not None and item.usable != query.usable:
         return False
+    if query.kinds is not None and item.kind not in query.kinds:
+        return False
+    if any(tag not in item.tags for tag in query.tags):
+        return False
+    if query.status is not None and item.status != query.status:
+        return False
     text = " ".join((item.name, item.description, *item.tags)).casefold()
     return all(word in text for word in query.words)
 
@@ -112,14 +130,18 @@ def _newest_first(item: MediaItem) -> tuple[float, str]:
     return (-item.created_at.timestamp(), item.name)
 
 
-ITEM_FIELDS = ("description", "tags", "usable", "source")
+ITEM_FIELDS = ("description", "tags", "usable", "source", "description_by", "describe_error")
 PROBE_FIELDS = ("status", "error", "duration_seconds", "width", "height", "has_thumbnail")
 
 
 class MediaStore(Protocol):
     async def setup(self) -> None: ...
     async def create_library(
-        self, name: str, description: str = "", library_id: str | None = None
+        self,
+        name: str,
+        description: str = "",
+        library_id: str | None = None,
+        describe: dict[str, Any] | None = None,
     ) -> MediaLibrary: ...
     async def libraries(self) -> list[MediaLibrary]: ...
     async def library(self, library_id: str) -> MediaLibrary | None: ...
@@ -139,6 +161,10 @@ class MediaStore(Protocol):
     ) -> list[MediaItem]: ...
     async def processing(self, limit: int) -> list[MediaItem]: ...
     async def imported(self, library_id: str, import_key: str) -> MediaItem | None: ...
+    async def undescribed(self, limit: int) -> list[tuple[MediaItem, dict[str, Any]]]: ...
+    async def describe_item(
+        self, library_id: str, item_id: str, description: str
+    ) -> MediaItem | None: ...
 
 
 class DuplicateId(Exception):
@@ -168,13 +194,17 @@ class MemoryMediaStore:
         )
 
     async def create_library(
-        self, name: str, description: str = "", library_id: str | None = None
+        self,
+        name: str,
+        description: str = "",
+        library_id: str | None = None,
+        describe: dict[str, Any] | None = None,
     ) -> MediaLibrary:
         if any(lib.name == name for lib in self._libraries.values()):
             raise DuplicateName(name)
         if library_id is not None and library_id in self._libraries:
             raise DuplicateId(library_id)
-        library = MediaLibrary(library_id or str(uuid.uuid4()), name, description)
+        library = MediaLibrary(library_id or str(uuid.uuid4()), name, description, describe)
         self._libraries[library.library_id] = library
         return library
 
@@ -197,6 +227,8 @@ class MemoryMediaStore:
         values = {
             k: v for k, v in changes.items() if k in ("name", "description") and v is not None
         }
+        if "describe" in changes:  # None turns it off
+            values["describe"] = changes["describe"]
         library = dataclasses.replace(library, **values, updated_at=_now())
         self._libraries[library_id] = library
         return self._with_counts(library)
@@ -276,6 +308,38 @@ class MemoryMediaStore:
             None,
         )
 
+    async def undescribed(self, limit: int) -> list[tuple[MediaItem, dict[str, Any]]]:
+        found = []
+        for item in self._items.values():
+            describe = self._libraries[item.library_id].describe
+            if describe is not None and _waits_for_model(item):
+                found.append((item, describe))
+        found.sort(key=lambda pair: (pair[0].created_at, pair[0].name))
+        return found[:limit]
+
+    async def describe_item(
+        self, library_id: str, item_id: str, description: str
+    ) -> MediaItem | None:
+        item = await self.item(library_id, item_id)
+        if item is None or item.description or item.description_by is not None:
+            return None
+        item = dataclasses.replace(
+            item, description=description, description_by="model", updated_at=_now()
+        )
+        self._items[item_id] = item
+        return item
+
+
+def _waits_for_model(item: MediaItem) -> bool:
+    """Whether a model is to describe the item, its library describing (media-search.md)."""
+    return (
+        item.status == "ready"
+        and item.kind in DESCRIBED_KINDS
+        and not item.description
+        and item.description_by is None
+        and item.describe_error is None
+    )
+
 
 def _made_by(item: MediaItem, run_id: str) -> bool:
     return item.source.get("kind") == "run" and item.source.get("run_id") == run_id
@@ -329,10 +393,17 @@ CREATE TABLE IF NOT EXISTS media_items (
     " WHERE import_key IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS media_items_processing ON media_items (created_at)"
     " WHERE status = 'processing'",
+    # Automatic descriptions (docs/api/media-search.md).
+    "ALTER TABLE media_libraries ADD COLUMN IF NOT EXISTS describe jsonb",
+    "ALTER TABLE media_items ADD COLUMN IF NOT EXISTS description_by text",
+    "ALTER TABLE media_items ADD COLUMN IF NOT EXISTS describe_error text",
+    "CREATE INDEX IF NOT EXISTS media_items_undescribed ON media_items (created_at)"
+    " WHERE status = 'ready' AND description = '' AND description_by IS NULL"
+    " AND describe_error IS NULL",
 ]
 
 LIBRARY_COLUMNS = (
-    "l.library_id::text, l.name, l.description, l.tenant_id, l.created_at, l.updated_at"
+    "l.library_id::text, l.name, l.description, l.describe, l.tenant_id, l.created_at, l.updated_at"
 )
 LIBRARY_COUNTS = """
   coalesce(count(i.item_id), 0)::int AS item_count,
@@ -343,7 +414,8 @@ LIBRARY_COUNTS = """
 ITEM_COLUMNS = (
     "item_id::text, library_id::text, name, kind, size_bytes, rel_path, status, error,"
     " duration_seconds, width, height, description, tags, usable, source, uploaded_by,"
-    " has_thumbnail, import_key, tenant_id, created_at, updated_at"
+    " has_thumbnail, description_by, describe_error, import_key, tenant_id, created_at,"
+    " updated_at"
 )
 
 
@@ -390,7 +462,11 @@ class PostgresMediaStore:
             return [_library(row) for row in await cur.fetchall()]
 
     async def create_library(
-        self, name: str, description: str = "", library_id: str | None = None
+        self,
+        name: str,
+        description: str = "",
+        library_id: str | None = None,
+        describe: dict[str, Any] | None = None,
     ) -> MediaLibrary:
         key = uuid.uuid4() if library_id is None else _uuid(library_id)
         if key is None:
@@ -398,9 +474,9 @@ class PostgresMediaStore:
         async with self._pool.connection() as conn:
             try:
                 await conn.execute(
-                    "INSERT INTO media_libraries (library_id, name, description)"
-                    " VALUES (%s, %s, %s)",
-                    (key, name, description),
+                    "INSERT INTO media_libraries (library_id, name, description, describe)"
+                    " VALUES (%s, %s, %s, %s)",
+                    (key, name, description, Jsonb(describe) if describe is not None else None),
                 )
             except errors.UniqueViolation as exc:
                 if exc.diag.constraint_name == "media_libraries_pkey":
@@ -425,12 +501,21 @@ class PostgresMediaStore:
         if key is None:
             return None
         async with self._pool.connection() as conn:
+            describe = changes.get("describe")
             try:
                 cur = await conn.execute(
                     "UPDATE media_libraries SET name = coalesce(%s, name),"
-                    " description = coalesce(%s, description), updated_at = now()"
+                    " description = coalesce(%s, description),"
+                    " describe = CASE WHEN %s THEN %s ELSE describe END, updated_at = now()"
                     " WHERE library_id = %s AND tenant_id = %s RETURNING library_id",
-                    (changes.get("name"), changes.get("description"), key, DEFAULT_TENANT),
+                    (
+                        changes.get("name"),
+                        changes.get("description"),
+                        "describe" in changes,
+                        Jsonb(describe) if describe is not None else None,
+                        key,
+                        DEFAULT_TENANT,
+                    ),
                 )
             except errors.UniqueViolation as exc:
                 raise DuplicateName(changes.get("name")) from exc
@@ -476,9 +561,10 @@ class PostgresMediaStore:
                 cur = await conn.execute(
                     "INSERT INTO media_items (item_id, library_id, name, kind, size_bytes,"
                     " rel_path, status, error, duration_seconds, width, height, description,"
-                    " tags, usable, source, uploaded_by, has_thumbnail, import_key)"
+                    " tags, usable, source, uploaded_by, has_thumbnail, description_by,"
+                    " describe_error, import_key)"
                     " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
-                    " %s, %s)"
+                    " %s, %s, %s, %s)"
                     f" RETURNING {ITEM_COLUMNS}",
                     (
                         uuid.UUID(item.item_id),
@@ -498,6 +584,8 @@ class PostgresMediaStore:
                         Jsonb(item.source),
                         item.uploaded_by,
                         item.has_thumbnail,
+                        item.description_by,
+                        item.describe_error,
                         item.import_key,
                     ),
                 )
@@ -528,6 +616,15 @@ class PostgresMediaStore:
         if query.usable is not None:
             where.append("usable = %s")
             params.append(query.usable)
+        if query.kinds is not None:
+            where.append("kind = ANY(%s)")
+            params.append(list(query.kinds))
+        if query.tags:
+            where.append("tags @> %s")
+            params.append(list(query.tags))
+        if query.status is not None:
+            where.append("status = %s")
+            params.append(query.status)
         condition = " AND ".join(where)
         async with self._pool.connection() as conn:
             cur = await conn.execute(
@@ -623,6 +720,40 @@ class PostgresMediaStore:
                 f"SELECT {ITEM_COLUMNS} FROM media_items WHERE library_id = %s"
                 " AND tenant_id = %s AND import_key = %s LIMIT 1",
                 (key, DEFAULT_TENANT, import_key),
+            )
+            row = await cur.fetchone()
+            return _item(row) if row else None
+
+    async def undescribed(self, limit: int) -> list[tuple[MediaItem, dict[str, Any]]]:
+        columns = ", ".join(f"i.{c.strip()}" for c in ITEM_COLUMNS.split(","))
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT {columns}, l.describe AS library_describe FROM media_items i"
+                " JOIN media_libraries l ON l.library_id = i.library_id"
+                " WHERE i.tenant_id = %s AND l.describe IS NOT NULL AND i.status = 'ready'"
+                " AND i.kind = ANY(%s) AND i.description = '' AND i.description_by IS NULL"
+                " AND i.describe_error IS NULL ORDER BY i.created_at, i.name LIMIT %s",
+                (DEFAULT_TENANT, list(DESCRIBED_KINDS), limit),
+            )
+            found = []
+            for row in await cur.fetchall():
+                describe = row.pop("library_describe")
+                found.append((_item(row), describe))
+            return found
+
+    async def describe_item(
+        self, library_id: str, item_id: str, description: str
+    ) -> MediaItem | None:
+        library, key = _uuid(library_id), _uuid(item_id)
+        if library is None or key is None:
+            return None
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE media_items SET description = %s, description_by = 'model',"
+                " updated_at = now() WHERE item_id = %s AND library_id = %s AND tenant_id = %s"
+                " AND description = '' AND description_by IS NULL"
+                f" RETURNING {ITEM_COLUMNS}",
+                (description, key, library, DEFAULT_TENANT),
             )
             row = await cur.fetchone()
             return _item(row) if row else None

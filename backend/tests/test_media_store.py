@@ -261,3 +261,71 @@ async def test_items_waiting_for_a_probe_and_files_a_run_saved(store):
     assert await store.imported(lid, "x" * 64) is None
     assert await store.imported("not-a-uuid", "k" * 64) is None
     await store.delete_library(lid)
+
+
+async def test_libraries_that_describe_and_the_items_waiting_for_a_model(store):
+    describe = {"model": "company-vision", "hint": "教练素材"}
+    library = await store.create_library(_name("会描述"), describe=describe)
+    assert (await store.library(library.library_id)).describe == describe
+    plain = await store.create_library(_name("不描述"))
+    assert plain.describe is None
+    items = [
+        _item(library.library_id, "a-等着.mp4"),
+        _item(library.library_id, "b-照片.jpg", kind="image"),
+        _item(library.library_id, "c-配音.m4a", kind="audio"),
+        _item(library.library_id, "d-探测中.mp4", status="processing"),
+        _item(library.library_id, "e-有描述.mp4", description="人写的", description_by="person"),
+        _item(library.library_id, "f-清空了.mp4", description_by="person"),
+        _item(library.library_id, "g-失败了.mp4", describe_error="写描述失败：…"),
+    ]
+    await store.add_items(library.library_id, items, 100)
+    await store.add_items(plain.library_id, [_item(plain.library_id, "不描述.mp4")], 100)
+
+    async def waiting() -> list[str]:
+        found = await store.undescribed(1000)
+        return [i.name for i, d in found if i.library_id == library.library_id and d == describe]
+
+    assert await waiting() == ["a-等着.mp4", "b-照片.jpg"]
+    kept = await store.item(library.library_id, items[4].item_id)
+    assert (kept.description_by, kept.describe_error) == ("person", None)
+
+    # A model's description is kept only while nobody wrote one.
+    written = await store.describe_item(library.library_id, items[0].item_id, "杠铃卧推")
+    assert (written.description, written.description_by) == ("杠铃卧推", "model")
+    assert await store.describe_item(library.library_id, items[0].item_id, "又一次") is None
+    assert await store.describe_item(library.library_id, items[4].item_id, "覆盖") is None
+    assert await waiting() == ["b-照片.jpg"]
+    await store.update_item(library.library_id, items[1].item_id, describe_error="失败了")
+    assert await waiting() == []
+    await store.update_item(
+        library.library_id, items[1].item_id, description="", description_by=None,
+        describe_error=None,
+    )  # fmt: skip
+    assert await waiting() == ["b-照片.jpg"]
+
+    # Turned off, nothing waits; a rename keeps it.
+    renamed = await store.update_library(library.library_id, name=_name("改名"))
+    assert renamed.describe == describe
+    off = await store.update_library(library.library_id, describe=None)
+    assert off.describe is None
+    assert await waiting() == []
+
+
+async def test_a_node_s_search_takes_kinds_tags_and_a_status(store):
+    library = await store.create_library(_name("找素材"))
+    items = [
+        _item(library.library_id, "胸-特写.mp4", tags=("胸", "特写")),
+        _item(library.library_id, "胸.jpg", kind="image", tags=("胸",)),
+        _item(library.library_id, "胸.m4a", kind="audio", tags=("胸",)),
+        _item(library.library_id, "胸-处理中.mp4", status="processing", tags=("胸",)),
+    ]
+    await store.add_items(library.library_id, items, 100)
+
+    async def names(**query) -> list[str]:
+        found, _ = await store.items(library.library_id, ItemQuery(**query))
+        return sorted(i.name for i in found)
+
+    assert await names(kinds=("video", "image")) == ["胸-处理中.mp4", "胸-特写.mp4", "胸.jpg"]
+    assert await names(tags=("胸", "特写")) == ["胸-特写.mp4"]
+    assert await names(status="ready", kinds=("video",)) == ["胸-特写.mp4"]
+    assert await names(tags=("胸",), status="ready") == ["胸-特写.mp4", "胸.jpg", "胸.m4a"]

@@ -70,6 +70,14 @@ bash infra/runtime/aep-runtime.sh check coach-video
 
 自检全部通过后，`/v1` 才接受运行。
 
+装包时建的媒体库默认不自动写画面描述。要按描述找素材（[docs/api/media-search.md](../../docs/api/media-search.md)）的应用，
+在素材库上打开，用运行包自己网关上的看图模型：
+
+```bash
+bash infra/runtime/aep-runtime.sh libraries                       # 找到库 id
+bash infra/runtime/aep-runtime.sh describe <库 id> company-vision "健身教练自己拍的训练和饮食素材"
+```
+
 ### 4. 给外部应用建 API 密钥
 
 ```bash

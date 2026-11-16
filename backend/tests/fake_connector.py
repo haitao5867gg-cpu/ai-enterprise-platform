@@ -715,6 +715,7 @@ class MediaConnector:
         self.root = root
         self.down = 0
         self.probed: list[dict] = []
+        self.framed: list[dict] = []
         self.tasks = 0
 
     def resolve(self, server: MCPServer) -> MCPServer:
@@ -757,6 +758,30 @@ class MediaConnector:
                     "aep_file": {"path": f"{rel}/thumbnail.jpg", "name": "thumbnail.jpg"}
                 }
             return found
+
+        @server.tool()
+        def frames(
+            source: str, count: int | None = None, width: int = 512, at: list | None = None
+        ) -> dict:
+            """Frames of a video (``count`` of them) or the image itself, as JPGs under
+            ``_work``; a file with 无帧 in its name is refused."""
+            self.framed.append({"source": source, "count": count, "width": width})
+            path = self.root / source
+            if not path.is_file():
+                raise ToolError(f"文件不存在：{source}")
+            if "无帧" in path.name:
+                raise ToolError("抽不出帧：文件坏了")
+            rel, folder = self._task()
+            made = []
+            image = MEDIA_KINDS.get(path.suffix.lower()) == "image"
+            for i in range(1 if image else count or 6):
+                (folder / f"frame_{i + 1}.jpg").write_bytes(JPEG + bytes([i]))
+                ref = {"path": f"{rel}/frame_{i + 1}.jpg", "name": f"frame_{i + 1}.jpg"}
+                made.append({"time": float(i), "width": width, "height": width,
+                             "image": {"aep_file": ref}})  # fmt: skip
+            # The connector hands back a done job when it finished within its time.
+            return {"aep_job": {"job_id": f"j_{self.tasks}", "status": "done",
+                                "result": {"duration_seconds": 12.5, "frames": made}}}  # fmt: skip
 
         @server.tool()
         def make(files: list[dict]) -> dict:

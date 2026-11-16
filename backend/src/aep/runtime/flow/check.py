@@ -12,7 +12,7 @@ from typing import Any
 from aep.conversations import DEFAULT_HISTORY_TURNS, MAX_HISTORY_TURNS, MESSAGE
 from aep.projects import FIELDS as PROJECT_FIELDS
 from aep.runtime.appconfig import ConfigError
-from aep.runtime.flow import each, refs
+from aep.runtime.flow import each, media_search, refs
 from aep.runtime.flow import media as flowmedia
 from aep.runtime.flow.nodes import (
     ERROR,
@@ -340,6 +340,8 @@ async def check_config(raw: Any, env: CheckEnv) -> dict[str, Any]:
         where: list[str | int] = ["graph", "nodes", node_id, *(["do"] if body is not node else [])]
         if body["type"] == "tool":
             flowmedia.check_saves(body, (media or {}).get("libraries", []), add, where)
+        elif body["type"] == media_search.TYPE:
+            media_search.check_bound(body, (media or {}).get("libraries", []), add, where)
         if body.get("history") is True and not chat:
             add([*where, "history"], "应用没有打开对话，不能带会话历史")
 
