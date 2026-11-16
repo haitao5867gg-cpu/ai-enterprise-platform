@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n/client";
+import { listModels, type Model } from "../lib/models";
 import {
   deleteMediaItem,
   deleteMediaLibrary,
+  describeMediaItem,
   forgetMediaLibraries,
   formatBytes,
   getMediaLibrary,
@@ -22,6 +24,8 @@ import {
   updateMediaItem,
   updateMediaLibrary,
   uploadMediaWithProgress,
+  waitsForDescription,
+  type MediaDescribe,
   type MediaItem,
   type MediaKind,
   type MediaLibrary,
@@ -64,7 +68,8 @@ function EditItemDialog({
     try {
       saved(
         await updateMediaItem(item.library_id, item.item_id, {
-          description,
+          // Sent only when changed: an unchanged description stays the model's.
+          ...(description !== item.description ? { description } : {}),
           tags: list,
           usable,
         }),
@@ -142,6 +147,145 @@ function EditItemDialog({
   );
 }
 
+// docs/api/media-search.md: whether a vision model describes the library's videos and
+// images, which one, and what it is told about the library.
+function DescribeDialog({
+  describe,
+  close,
+  save,
+}: {
+  describe: MediaDescribe | null;
+  close: () => void;
+  save: (describe: MediaDescribe | null) => Promise<void>;
+}) {
+  const t = useT();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [on, setOn] = useState(describe !== null);
+  const [model, setModel] = useState(describe?.model ?? "");
+  const [hint, setHint] = useState(describe?.hint ?? "");
+  const [models, setModels] = useState<Model[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    dialog.current?.showModal();
+    const controller = new AbortController();
+    listModels(controller.signal)
+      .then((list) => {
+        const seeing = list.models.filter(
+          (m) => m.purpose === "chat" && m.vision,
+        );
+        setModels(seeing);
+        setModel((old) => old || seeing[0]?.alias || "");
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(errorMessage(err));
+      });
+    return () => controller.abort();
+  }, []);
+  async function submit() {
+    if (on && !model) {
+      setError(t("请选择能看图的模型"));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await save(on ? { model, hint: hint.trim() } : null);
+    } catch (err) {
+      setError(errorMessage(err));
+      setBusy(false);
+    }
+  }
+  const choices = models ?? [];
+  return (
+    <dialog
+      ref={dialog}
+      className="knowledge-dialog"
+      aria-labelledby="media-describe-dialog-title"
+      onCancel={close}
+      onClose={close}
+    >
+      <div className="asset-section-heading">
+        <h2 id="media-describe-dialog-title">{t("自动描述")}</h2>
+        <button type="button" className="text-button" onClick={close}>
+          {t("关闭")}
+        </button>
+      </div>
+      <form
+        className="asset-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <label className="check-field">
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={busy}
+            onChange={(event) => setOn(event.target.checked)}
+          />
+          {t("上传的视频和图片由 AI 看画面写描述")}
+        </label>
+        <p className="field-hint">
+          {t(
+            "探测完后抽几帧给能看图的模型，写一句画面描述，流程按它找素材。人写过或改过的描述不会被覆盖。",
+          )}
+        </p>
+        {on && (
+          <>
+            <div className="asset-field">
+              <label htmlFor="media-describe-model">{t("用哪个模型")}</label>
+              <select
+                id="media-describe-model"
+                value={model}
+                disabled={busy || models === null}
+                onChange={(event) => setModel(event.target.value)}
+              >
+                {!choices.some((m) => m.alias === model) && (
+                  <option value={model}>
+                    {model || t("没有能看图的模型")}
+                  </option>
+                )}
+                {choices.map((m) => (
+                  <option key={m.alias} value={m.alias}>
+                    {m.display_name}
+                  </option>
+                ))}
+              </select>
+              <span className="field-hint">
+                {t("只列模型页上标了「能看图」的对话模型。")}
+              </span>
+            </div>
+            <div className="asset-field">
+              <label htmlFor="media-describe-hint">
+                {t("给模型的说明（选填）")}
+              </label>
+              <textarea
+                id="media-describe-hint"
+                rows={2}
+                maxLength={200}
+                value={hint}
+                disabled={busy}
+                placeholder={t("例如：健身教练自己拍的训练和饮食素材")}
+                onChange={(event) => setHint(event.target.value)}
+              />
+            </div>
+          </>
+        )}
+        {error && (
+          <p className="field-error" role="alert">
+            {error}
+          </p>
+        )}
+        <button className="button primary" type="submit" disabled={busy}>
+          {busy ? t("正在保存…") : t("保存")}
+        </button>
+      </form>
+    </dialog>
+  );
+}
+
 function sourceText(t: ReturnType<typeof useT>, item: MediaItem): string {
   if (item.source.kind === "run") return t("运行产出");
   if (item.source.kind === "stock")
@@ -170,11 +314,17 @@ export function MediaDetail({ id }: { id: string }) {
   const [dragging, setDragging] = useState(false);
   const [editing, setEditing] = useState<MediaItem | null>(null);
   const [renaming, setRenaming] = useState(false);
+  const [describing, setDescribing] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const abort = useRef<(() => void) | null>(null);
   useEffect(() => () => abort.current?.(), []);
 
-  const processing = items?.some((item) => item.status === "processing");
+  // Items being probed, or waiting for the model to describe them, change by themselves.
+  const processing = items?.some(
+    (item) =>
+      item.status === "processing" ||
+      (library !== null && waitsForDescription(library, item)),
+  );
   useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -254,6 +404,19 @@ export function MediaDetail({ id }: { id: string }) {
     }
   }
 
+  async function describeAgain(item: MediaItem) {
+    try {
+      const updated = await describeMediaItem(id, item.item_id);
+      setItems(
+        (old) =>
+          old?.map((x) => (x.item_id === updated.item_id ? updated : x)) ??
+          null,
+      );
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   async function removeLibrary() {
     if (!library) return;
     if (
@@ -295,6 +458,12 @@ export function MediaDetail({ id }: { id: string }) {
             >
               {t("改名称和说明")}
             </button>
+            <button
+              className="button secondary"
+              onClick={() => setDescribing(true)}
+            >
+              {t("自动描述")}
+            </button>
             <button className="button reject" onClick={removeLibrary}>
               {t("删除媒体库")}
             </button>
@@ -314,6 +483,11 @@ export function MediaDetail({ id }: { id: string }) {
         {library.status_counts.error > 0 && (
           <span>{t("{n} 个处理失败", { n: library.status_counts.error })}</span>
         )}
+        <span>
+          {library.describe
+            ? t("AI 写画面描述：{model}", { model: library.describe.model })
+            : t("不自动写画面描述")}
+        </span>
       </div>
       {error && (
         <ErrorNotice
@@ -434,7 +608,24 @@ export function MediaDetail({ id }: { id: string }) {
                   {item.name}
                 </strong>
                 <span className="muted">{mediaMeta(t, item)}</span>
-                {item.description && <p>{item.description}</p>}
+                {item.description && (
+                  <p>
+                    {item.description}
+                    {item.description_by === "model" && (
+                      <span className="app-tag media-ai-tag">
+                        {t("AI 写的")}
+                      </span>
+                    )}
+                  </p>
+                )}
+                {waitsForDescription(library, item) && (
+                  <span className="muted" role="status">
+                    {t("AI 正在写描述")}
+                  </span>
+                )}
+                {item.describe_error && (
+                  <p className="field-error">{item.describe_error}</p>
+                )}
                 {item.tags.length > 0 && (
                   <div className="media-tags">
                     {item.tags.map((tag) => (
@@ -464,6 +655,20 @@ export function MediaDetail({ id }: { id: string }) {
                   >
                     {t("编辑")}
                   </button>
+                  {library.describe &&
+                    item.status === "ready" &&
+                    item.kind !== "audio" && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        aria-label={t("AI 重写「{name}」的描述", {
+                          name: item.name,
+                        })}
+                        onClick={() => void describeAgain(item)}
+                      >
+                        {t("AI 重写")}
+                      </button>
+                    )}
                   <a
                     className="text-button"
                     href={mediaFileUrl(item.library_id, item.item_id)}
@@ -506,6 +711,17 @@ export function MediaDetail({ id }: { id: string }) {
                 null,
             );
             setEditing(null);
+          }}
+        />
+      )}
+      {describing && (
+        <DescribeDialog
+          describe={library.describe}
+          close={() => setDescribing(false)}
+          save={async (describe) => {
+            setLibrary(await updateMediaLibrary(id, { describe }));
+            setDescribing(false);
+            setRevision((n) => n + 1);
           }}
         />
       )}

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,8 @@ class Prober:
         self.tools = tools
         self.settings = settings
         self._wake = asyncio.Event()
+        # Told when an item became ready (the describer looks for work then).
+        self.on_ready: Callable[[], None] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -149,6 +152,8 @@ class Prober:
         )
         if updated is None and has_thumbnail:  # deleted meanwhile
             thumbnail_path(root, item).unlink(missing_ok=True)
+        if updated is not None and self.on_ready is not None:
+            self.on_ready()
         return updated or item
 
     async def _failed(self, item: MediaItem, reason: str) -> MediaItem:

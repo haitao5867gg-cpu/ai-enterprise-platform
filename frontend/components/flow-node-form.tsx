@@ -31,6 +31,7 @@ import type {
   SkillRef,
   ToolNode,
   TranscribeNode,
+  MediaSearchNode,
   ValueType,
 } from "../lib/apps";
 import {
@@ -59,7 +60,7 @@ import {
   type Variable,
 } from "../lib/flow-edit";
 import { errorMessage } from "../lib/runs";
-import { MEDIA_KINDS, mediaKindLabels } from "../lib/media";
+import { MEDIA_KINDS, mediaKindLabels, splitMediaTags } from "../lib/media";
 import { SaveMediaFields, useBoundLibraries } from "./flow-media";
 import { SkillPicker } from "./app-settings";
 import {
@@ -2444,6 +2445,107 @@ function TranscribeFields({
   );
 }
 
+// docs/api/media-search.md: which bound library, the words, kinds and tags an item must
+// have, and how many to take.
+function MediaSearchFields({
+  node,
+  libraries,
+  change,
+  issues,
+  variables,
+}: {
+  node: MediaSearchNode;
+  libraries: { value: string; label: string }[];
+  change: Change;
+  issues: Issues;
+  variables: Variable[];
+}) {
+  const t = useT();
+  const at = (path: string) => issuesUnder(issues, path);
+  const kinds = node.kinds ?? [];
+  const [tags, setTags] = useState((node.tags ?? []).join(", "));
+  return (
+    <>
+      <SelectField
+        label={t("从哪个媒体库找")}
+        value={node.library}
+        issues={at("library")}
+        choices={[
+          { value: "", label: t("请选择媒体库") },
+          ...libraries,
+          ...(node.library &&
+          !libraries.some((item) => item.value === node.library)
+            ? [
+                {
+                  value: node.library,
+                  label: t("没有绑定的媒体库（{id}）", { id: node.library }),
+                },
+              ]
+            : []),
+        ]}
+        help={
+          libraries.length
+            ? undefined
+            : t("先在应用设置的「媒体库」一节绑定一个媒体库。")
+        }
+        onChange={(library) => change({ ...node, library })}
+      />
+      <RefField
+        label={t("搜索词（选填）")}
+        value={node.query ?? ""}
+        variables={variables}
+        issues={at("query")}
+        help={t(
+          "空格分开的每个词都要出现在素材的名称、画面描述或标签里；不填就取全部能用的素材。",
+        )}
+        onChange={(query) => change({ ...node, query })}
+      />
+      <fieldset className="media-kinds">
+        <legend>{t("素材类型（都不勾等于都要）")}</legend>
+        {MEDIA_KINDS.map((kind) => (
+          <CheckField
+            key={kind}
+            label={t(mediaKindLabels[kind])}
+            checked={kinds.includes(kind)}
+            onChange={(on) => {
+              const next = { ...node };
+              const chosen = MEDIA_KINDS.filter((k) =>
+                k === kind ? on : kinds.includes(k),
+              );
+              if (chosen.length) next.kinds = chosen;
+              else delete next.kinds;
+              change(next);
+            }}
+          />
+        ))}
+      </fieldset>
+      {at("kinds").map((issue) => (
+        <p className="field-error" key={issue}>
+          {issue}
+        </p>
+      ))}
+      <TextField
+        label={t("要带的标签（选填）")}
+        value={tags}
+        issues={at("tags")}
+        help={t("用逗号分开；素材要带着这里的每个标签。")}
+        onChange={(value) => {
+          setTags(value);
+          change({ ...node, tags: splitMediaTags(value) });
+        }}
+      />
+      <NumberField
+        label={t("最多取几个")}
+        value={node.limit ?? 50}
+        min={1}
+        max={200}
+        issues={at("limit")}
+        onChange={(limit) => change({ ...node, limit })}
+      />
+    </>
+  );
+}
+
 // docs/api/each.md: the list, the step done for every item (a node's own settings, which
 // may read the item) and how items run.
 function EachFields({
@@ -2845,6 +2947,16 @@ export function NodeSettings({
             onChange={(inputs) => change({ ...node, inputs })}
           />
         </>
+      );
+    case "media_search":
+      return (
+        <MediaSearchFields
+          node={node}
+          libraries={boundLibraries}
+          change={change}
+          issues={issues}
+          variables={variables}
+        />
       );
     case "transcribe":
       return (

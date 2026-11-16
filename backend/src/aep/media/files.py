@@ -117,6 +117,7 @@ def validate_files(
                 rel_path=f"{library_id}/{item_id}/{name}",
                 status=status,
                 description=description,
+                description_by="person" if description else None,
                 tags=tags,
                 uploaded_by=uploaded_by,
             )

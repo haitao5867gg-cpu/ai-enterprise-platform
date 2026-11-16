@@ -150,6 +150,7 @@ async def save_outputs(
             rel_path=f"{library_id}/{item_id}/{name}",
             status="ready",
             description=description,
+            description_by="person" if description else None,
             tags=tags,
             source={"kind": "run", "run_id": run_id},
             import_key=key,

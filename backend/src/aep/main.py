@@ -64,6 +64,7 @@ from aep.installs import PostgresInstallStore, Runtime
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
+from aep.media.describe import Describer
 from aep.media.probe import Prober
 from aep.media.store import PostgresMediaStore
 from aep.models import GatewayAdmin, ModelService, PostgresCallStore
@@ -298,6 +299,10 @@ def create_app() -> FastAPI:
         # (docs/api/media-processing.md), on the platform and on a runtime alike.
         media_prober = Prober(media_store, tools, settings)
         app.state.media_prober = media_prober
+        # Libraries may have their videos and images described (docs/api/media-search.md).
+        media_describer = Describer(media_store, tools, settings, llm_client)
+        app.state.media_describer = media_describer
+        media_prober.on_ready = media_describer.kick
         knowledge_worker = KnowledgeWorker(knowledge_store, llm_client)
         app.state.knowledge_worker = knowledge_worker
         background: list[asyncio.Task] = []
@@ -305,6 +310,8 @@ def create_app() -> FastAPI:
             background.append(asyncio.create_task(knowledge_worker.run()))
         if media_prober.enabled:
             background.append(asyncio.create_task(media_prober.run()))
+        if media_describer.enabled:
+            background.append(asyncio.create_task(media_describer.run()))
         # Runs started on a schedule (docs/api/schedules.md).
         schedule_store = PostgresScheduleStore(pool)
         await schedule_store.setup()

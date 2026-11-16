@@ -168,6 +168,16 @@ export type TranscribeNode = NodeBase &
     language?: string | null;
     prompt?: string;
   };
+// docs/api/media-search.md: usable items of a bound media library, with what they show.
+export type MediaSearchNode = NodeBase &
+  Fallible & {
+    type: "media_search";
+    library: string;
+    query?: string;
+    kinds?: ("video" | "audio" | "image")[];
+    tags?: string[];
+    limit?: number;
+  };
 // The step an each node does for every item (docs/api/each.md): one of these nodes'
 // settings, without the common fields.
 type StepOf<N> = N extends NodeBase
@@ -391,6 +401,7 @@ export type FlowNode =
   | ToolNode
   | KnowledgeNode
   | TranscribeNode
+  | MediaSearchNode
   | EachNode
   | AgentNode
   | HumanNode

@@ -27,11 +27,13 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from aep.api.validation import NoNulls, chinese_errors
 from aep.auth import who
 from aep.config import Settings, get_settings
+from aep.media.describe import Describer
 from aep.media.files import (
     MAX_FILES,
     UploadError,
@@ -44,6 +46,7 @@ from aep.media.files import (
 )
 from aep.media.probe import Prober
 from aep.media.store import (
+    DESCRIBED_KINDS,
     DuplicateName,
     ItemLimit,
     ItemQuery,
@@ -53,6 +56,7 @@ from aep.media.store import (
     MediaStore,
     MissingLibrary,
 )
+from aep.models import ModelService
 
 LABELS = {
     "name": "名称",
@@ -63,6 +67,9 @@ LABELS = {
     "q": "搜索词",
     "limit": "每页条数",
     "offset": "起始位置",
+    "describe": "自动描述",
+    "model": "模型",
+    "hint": "说明",
 }
 router = APIRouter(prefix="/media-libraries", tags=["media"], route_class=chinese_errors(LABELS))
 
@@ -75,6 +82,19 @@ def get_prober(request: Request) -> Prober | None:
     """Probes uploads when the media processing connector is set; None otherwise."""
     prober = getattr(request.app.state, "media_prober", None)
     return prober if prober is not None and prober.enabled else None
+
+
+def get_models(request: Request) -> ModelService | None:
+    """The gateway's models, to check the one describing a library's items."""
+    return getattr(request.app.state, "models", None)
+
+
+Models = Annotated[ModelService | None, Depends(get_models)]
+
+
+def get_describer(request: Request) -> Describer | None:
+    """Describes items of libraries that ask for it (docs/api/media-search.md)."""
+    return getattr(request.app.state, "media_describer", None)
 
 
 Store = Annotated[MediaStore, Depends(get_store)]
@@ -92,14 +112,33 @@ def _unique(tags: list[str]) -> list[str]:
     return list(dict.fromkeys(tags))
 
 
+class Describe(BaseModel):
+    """A library's automatic descriptions (docs/api/media-search.md)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
+    hint: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] = ""
+
+
 class NewLibrary(NoNulls):
     name: Name
     description: Description = ""
+    describe: Describe | None = None
 
 
-class LibraryChanges(NoNulls):
+class LibraryChanges(BaseModel):
     name: Name | None = None
     description: Description | None = None
+    # null turns automatic descriptions off; left out, they stay as they are.
+    describe: Describe | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def no_nulls(cls, value: Any) -> Any:
+        if isinstance(value, dict) and any(v is None for k, v in value.items() if k != "describe"):
+            raise ValueError("请求字段不能为 null")
+        return value
 
 
 class Source(BaseModel):
@@ -138,6 +177,7 @@ class LibraryOut(BaseModel):
     library_id: str
     name: str
     description: str
+    describe: Describe | None
     item_count: int
     total_bytes: int
     status_counts: dict[str, int]
@@ -163,6 +203,8 @@ class ItemOut(BaseModel):
     source: Source
     uploaded_by: str | None
     has_thumbnail: bool
+    description_by: Literal["person", "model"] | None
+    describe_error: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -177,6 +219,7 @@ def library_out(library: MediaLibrary) -> LibraryOut:
         library_id=library.library_id,
         name=library.name,
         description=library.description,
+        describe=Describe.model_construct(**library.describe) if library.describe else None,
         item_count=library.item_count,
         total_bytes=library.total_bytes,
         status_counts=library.status_counts,
@@ -217,6 +260,8 @@ def item_out(item: MediaItem) -> ItemOut:
         source=_source(item.source),
         uploaded_by=item.uploaded_by,
         has_thumbnail=item.has_thumbnail,
+        description_by=item.description_by,
+        describe_error=item.describe_error,
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -252,13 +297,46 @@ async def list_libraries(store: Store) -> list[LibraryOut]:
     return [library_out(library) for library in await store.libraries()]
 
 
+async def _check_describe(describe: Describe, models: Models) -> None:
+    """The model describing a library's items is a chat model that can see images; not
+    checked while the gateway cannot be reached."""
+    catalog = await models.catalog() if models is not None else []
+    if not catalog:
+        return
+    found = next((m for m in catalog if m["alias"] == describe.model), None)
+    if found is None:
+        problem = f"网关上没有模型「{describe.model}」"
+    elif not found["vision"]:
+        problem = f"模型「{describe.model}」没标能看图，换一个能看图的模型"
+    else:
+        return
+    raise HTTPException(422, problem)
+
+
+def _describe_value(describe: Describe | None) -> dict[str, Any] | None:
+    return describe.model_dump() if describe is not None else None
+
+
 @router.post("", status_code=201)
-async def create_library(body: NewLibrary, store: Store) -> LibraryOut:
+async def create_library(
+    body: NewLibrary, store: Store, models: Models, request: Request
+) -> LibraryOut:
+    if body.describe is not None:
+        await _check_describe(body.describe, models)
     try:
-        library = await store.create_library(body.name, body.description)
+        library = await store.create_library(
+            body.name, body.description, describe=_describe_value(body.describe)
+        )
     except DuplicateName as exc:
         raise HTTPException(409, f"已存在名为「{body.name}」的媒体库") from exc
+    _kick(request)
     return library_out(library)
+
+
+def _kick(request: Request) -> None:
+    describer = get_describer(request)
+    if describer is not None:
+        describer.kick()
 
 
 @router.get("/{library_id}")
@@ -267,14 +345,21 @@ async def get_library(library_id: str, store: Store) -> LibraryOut:
 
 
 @router.patch("/{library_id}")
-async def update_library(library_id: str, body: LibraryChanges, store: Store) -> LibraryOut:
+async def update_library(
+    library_id: str, body: LibraryChanges, store: Store, models: Models, request: Request
+) -> LibraryOut:
     changes = body.model_dump(exclude_unset=True)
+    if "describe" in changes:
+        if body.describe is not None:
+            await _check_describe(body.describe, models)
+        changes["describe"] = _describe_value(body.describe)
     try:
         library = await store.update_library(library_id, **changes)
     except DuplicateName as exc:
         raise HTTPException(409, f"已存在名为「{body.name}」的媒体库") from exc
     if library is None:
         raise HTTPException(404, "没有这个媒体库")
+    _kick(request)
     return library_out(library)
 
 
@@ -390,15 +475,36 @@ async def get_item(library_id: str, item_id: str, store: Store) -> ItemOut:
 
 @router.patch("/{library_id}/items/{item_id}")
 async def update_item(library_id: str, item_id: str, body: ItemChanges, store: Store) -> ItemOut:
-    await _item(store, library_id, item_id)
+    current = await _item(store, library_id, item_id)
     changes = body.model_dump(exclude_unset=True)
     if body.source is not None:
         # The source is replaced whole, every field present.
         changes["source"] = body.source.model_dump()
+    if "description" in changes and changes["description"] != current.description:
+        # A person's description, even an empty one, is not written over by a model.
+        changes["description_by"] = "person"
     item = await store.update_item(library_id, item_id, **changes)
     if item is None:
         raise HTTPException(404, "没有这个素材")
     return item_out(item)
+
+
+@router.post("/{library_id}/items/{item_id}/describe", status_code=202)
+async def describe_item(library_id: str, item_id: str, store: Store, request: Request) -> ItemOut:
+    """Have the library's model write the item's description again (media-search.md)."""
+    library = await _library(store, library_id)
+    item = await _item(store, library_id, item_id)
+    if library.describe is None:
+        raise HTTPException(409, "这个媒体库没有打开自动描述")
+    if item.kind not in DESCRIBED_KINDS:
+        raise HTTPException(422, "只能给视频和图片写描述")
+    updated = await store.update_item(
+        library_id, item_id, description="", description_by=None, describe_error=None
+    )
+    if updated is None:
+        raise HTTPException(404, "没有这个素材")
+    _kick(request)
+    return item_out(updated)
 
 
 @router.delete("/{library_id}/items/{item_id}", status_code=204)

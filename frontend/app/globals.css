@@ -7327,6 +7327,10 @@ p.skill-usage {
 .media-card-body p {
   margin: 0;
 }
+.media-ai-tag {
+  margin-left: 6px;
+  vertical-align: 1px;
+}
 .media-name {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -8,6 +8,9 @@
 #   bash infra/runtime/aep-runtime.sh activate <应用> <版本>
 #   bash infra/runtime/aep-runtime.sh secret <应用> <密钥名>      输入时不显示
 #   bash infra/runtime/aep-runtime.sh key <应用> <名字>           建 API 密钥，只显示这一次
+#   bash infra/runtime/aep-runtime.sh libraries                   看媒体库和它们的 id
+#   bash infra/runtime/aep-runtime.sh describe <库 id> <看图模型> [提示]
+#                                         打开自动写画面描述；模型写 off 关掉
 set -euo pipefail
 
 API=${AEP_RUNTIME_API:-http://127.0.0.1:8000}
@@ -32,7 +35,7 @@ call() {
 
 json() { python3 -c 'import json, sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2])), ensure_ascii=False))' "$@"; }
 
-usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 cmd=${1:-}
 [ -n "$cmd" ] || usage
@@ -79,6 +82,21 @@ case "$cmd" in
     echo "下面的 secret 只显示这一次，存到外部应用的服务器上，不要发在聊天里。" >&2
     call POST "/apps/$1/keys" -H 'Content-Type: application/json' \
       --data-binary "$(json name "$2")"
+    ;;
+  libraries)
+    call GET /media-libraries
+    ;;
+  describe)
+    [ $# -ge 2 ] && [ $# -le 3 ] || usage
+    if [ "$2" = off ]; then
+      body='{"describe": null}'
+    else
+      body=$(python3 -c '
+import json, sys
+describe = {"model": sys.argv[1], **({"hint": sys.argv[2]} if sys.argv[2:] else {})}
+print(json.dumps({"describe": describe}, ensure_ascii=False))' "${@:2}")
+    fi
+    call PATCH "/media-libraries/$1" -H 'Content-Type: application/json' --data-binary "$body"
     ;;
   *)
     usage

@@ -541,6 +541,20 @@ MESSAGES: dict[str, str] = {
     "没有设置每一项做什么": "What to do for each item is not set",
     "「items」取到的不是列表": "“items” is not a list",
     "最多处理 {count} 项，这次有 {found} 项": "At most {count} items, but there are {found}",
+    # Finding footage by what it shows (docs/api/media-search.md)
+    "网关上没有模型「{model}」": "The gateway has no model “{model}”",
+    "模型「{model}」没标能看图，换一个能看图的模型": (
+        "Model “{model}” is not marked as seeing images; pick one that is"
+    ),
+    "这个媒体库没有打开自动描述": "This media library does not describe its items",
+    "只能给视频和图片写描述": "Only videos and images can be described",
+    "要选一个绑定到应用的媒体库": "Pick a media library bound to the app",
+    "搜索词最多 {count} 个字符": "The search words can have at most {count} characters",
+    "标签最多 {count} 个，每个 1–{length} 个字": (
+        "At most {count} tags, each 1–{length} characters"
+    ),
+    "最多取几个要在 {low}–{high} 之间": "How many to take must be between {low} and {high}",
+    "媒体库不见了：{library}": "The media library is gone: {library}",
 }
 
 # The node types offered when building a flow app (GET /node-types): names, what each
@@ -769,6 +783,15 @@ NODE_TYPES: dict[str, str] = {
     "调用数据源的一个只读工具": "Call one read-only tool of a data source",
     "语音转写": "Transcribe speech",
     "逐项处理": "For each item",
+    "检索素材": "Find media",
+    "按词、类型和标签从绑定的媒体库里取出能用的素材，带画面描述": (
+        "Take usable items from a bound media library by words, kind and tags, with what they show"
+    ),
+    "找到的素材：摘要、画面描述、标签和来源": (
+        "The items found: summary, what they show, tags and source"
+    ),
+    "找到几个": "How many were found",
+    "符合条件的一共几个": "How many match in all",
     "对一个列表的每一项做同一步（调模型、调工具、跑代码……），收齐结果再往下走": (
         "Do one step (call a model, a tool, run code…) for every item of a list, then go "
         "on with all the results"

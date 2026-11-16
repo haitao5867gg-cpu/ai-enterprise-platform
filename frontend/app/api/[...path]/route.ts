@@ -119,6 +119,11 @@ async function handle(request: Request, context: Context) {
       /^media-libraries\/[a-zA-Z0-9_-]{1,128}\/items\/[a-zA-Z0-9_-]{1,128}\/(file|thumbnail)$/,
       ["GET"],
     ],
+    // AI 重写 (docs/api/media-search.md).
+    [
+      /^media-libraries\/[a-zA-Z0-9_-]{1,128}\/items\/[a-zA-Z0-9_-]{1,128}\/describe$/,
+      ["POST"],
+    ],
     [/^knowledge-bases$/, ["GET", "POST"]],
     [/^knowledge-bases\/(options|doc-templates)$/, ["GET"]],
     [/^knowledge-bases\/[a-zA-Z0-9_-]{1,128}$/, ["GET", "PATCH", "DELETE"]],
