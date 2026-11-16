@@ -12,6 +12,8 @@ import type {
   AppTool,
   CallableApp,
   AppDetail,
+  EachNode,
+  EachStep,
   AppSummary,
   ClassifierNode,
   Condition,
@@ -32,6 +34,7 @@ import type {
   ValueType,
 } from "../lib/apps";
 import {
+  EACH_STEP_TYPES,
   chatModelChoices,
   getApp,
   isFlowConfig,
@@ -47,7 +50,14 @@ import {
   toolDescription,
   type CodeRepos,
 } from "../lib/datasources";
-import { issuesUnder, variablesFor, type Variable } from "../lib/flow-edit";
+import {
+  issuesUnder,
+  issuesWithin,
+  stepDefaults,
+  typeLabels,
+  variablesFor,
+  type Variable,
+} from "../lib/flow-edit";
 import { errorMessage } from "../lib/runs";
 import { MEDIA_KINDS, mediaKindLabels } from "../lib/media";
 import { SaveMediaFields, useBoundLibraries } from "./flow-media";
@@ -2434,21 +2444,135 @@ function TranscribeFields({
   );
 }
 
+// docs/api/each.md: the list, the step done for every item (a node's own settings, which
+// may read the item) and how items run.
+function EachFields({
+  node,
+  config,
+  options,
+  issues,
+  change,
+  variables,
+}: {
+  node: EachNode;
+  config: FlowConfig;
+  options: Options;
+  issues: Issues;
+  change: Change;
+  variables: Variable[];
+}) {
+  const t = useT();
+  const at = (path: string) => issuesUnder(issues, path);
+  const item = t("当前项");
+  const itemVariables: Variable[] = [
+    { ref: "{{item.value}}", group: item, field: "value" },
+    { ref: "{{item.position}}", group: item, field: "position" },
+  ];
+  const step = { ...node.do, id: node.id, title: node.title } as FlowNode;
+  return (
+    <>
+      <RefField
+        label={t("对哪个列表逐项处理")}
+        value={node.items}
+        variables={variables}
+        issues={at("items")}
+        help={t(
+          "插一个变量，取到的值要是列表，比如模型按 JSON 列出的镜头、工具返回的列表。最多 100 项。",
+        )}
+        onChange={(items) => change({ ...node, items })}
+      />
+      <SelectField
+        label={t("每一项做什么")}
+        value={node.do.type}
+        issues={at("do.type")}
+        help={t("换一种会清掉下面的设置。")}
+        onChange={(type) =>
+          change({
+            ...node,
+            do: stepDefaults(type as EachStep["type"]),
+          })
+        }
+        choices={EACH_STEP_TYPES.map((type) => ({
+          value: type,
+          label: t(typeLabels[type]),
+        }))}
+      />
+      <fieldset className="list-editor each-step">
+        <legend>
+          {t("每一项：{kind}", { kind: t(typeLabels[node.do.type]) })}
+        </legend>
+        <small className="muted">
+          {t(
+            "{value} 是当前项，{position} 是第几项（从 1 开始）；当前项是对象时用 {field} 取它的字段。",
+            {
+              value: "{{item.value}}",
+              position: "{{item.position}}",
+              field: "{{item." + t("字段#变量名") + "}}",
+            },
+          )}
+        </small>
+        <NodeSettings
+          node={step}
+          config={config}
+          options={options}
+          issues={issuesWithin(issues, "do")}
+          extraVariables={itemVariables}
+          change={(next) => {
+            const settings: Record<string, unknown> = { ...next };
+            delete settings.id;
+            delete settings.title;
+            change({ ...node, do: settings as unknown as EachStep });
+          }}
+        />
+      </fieldset>
+      <NumberField
+        label={t("同时处理几项")}
+        value={node.concurrency ?? 3}
+        min={1}
+        max={10}
+        issues={at("concurrency")}
+        help={t(
+          "调模型、调工具都要等，同时处理几项会快一些；注意模型和工具的限流。",
+        )}
+        onChange={(concurrency) => change({ ...node, concurrency })}
+      />
+      <SelectField
+        label={t("某一项失败时")}
+        value={node.on_item_error ?? "stop"}
+        issues={at("on_item_error")}
+        help={t(
+          "重试次数在下面的“出错时”里设，按每一项算。跳过的项在 failed 里写明第几项和原因。",
+        )}
+        onChange={(value) =>
+          change({ ...node, on_item_error: value as "stop" | "skip" })
+        }
+        choices={[
+          { value: "stop", label: t("整个节点失败") },
+          { value: "skip", label: t("跳过这一项，接着处理别的") },
+        ]}
+      />
+    </>
+  );
+}
+
 export function NodeSettings({
   node,
   config,
   options,
   issues,
   change,
+  extraVariables = [],
 }: {
   node: FlowNode;
   config: FlowConfig;
   options: Options;
   issues: Issues;
   change: Change;
+  // Variables besides the upstream nodes' (the item an each node's step reads).
+  extraVariables?: Variable[];
 }) {
   const t = useT();
-  const variables = variablesFor(config, node.id);
+  const variables = [...extraVariables, ...variablesFor(config, node.id)];
   const at = (path: string) => issuesUnder(issues, path);
   const boundLibraries = useBoundLibraries(config);
   switch (node.type) {
@@ -3079,7 +3203,21 @@ export function NodeSettings({
           options={options}
           change={change}
           issues={issues}
-          variables={variablesFor(config, node.id, true)}
+          variables={[
+            ...extraVariables,
+            ...variablesFor(config, node.id, true),
+          ]}
+        />
+      );
+    case "each":
+      return (
+        <EachFields
+          node={node}
+          config={config}
+          options={options}
+          issues={issues}
+          change={change}
+          variables={variables}
         />
       );
     case "agent":

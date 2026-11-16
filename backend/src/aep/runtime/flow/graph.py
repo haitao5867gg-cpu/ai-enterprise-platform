@@ -29,7 +29,7 @@ from langgraph.graph import END, START, StateGraph
 
 from aep.knowledge.citations import cited_numbers
 from aep.runtime.design import NodeDesign
-from aep.runtime.flow import refs
+from aep.runtime.flow import each, refs
 from aep.runtime.flow.check import DEFAULT_MAX_VISITS, branches
 from aep.runtime.flow.nodes import ERROR, INPUT_ERROR, TYPES, NodeFailure, Outcome, Runtime
 from aep.runtime.store import RunStopped
@@ -83,6 +83,23 @@ def nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
     return list(config["graph"]["nodes"])
 
 
+def steps(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every node, with an each node's step (``do``) as a node of its own under the each
+    node's id (docs/api/each.md): what is read for the models, skills, data sources, tools
+    and references a configuration uses. Reads unchecked configurations without failing."""
+    found: list[dict[str, Any]] = []
+    for node in config["graph"]["nodes"]:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") != "each":
+            found.append(node)
+            continue
+        found.append({k: v for k, v in node.items() if k != "do"})
+        if isinstance(node.get("id"), str) and (inner := each.step(node)) is not None:
+            found.append(inner)
+    return found
+
+
 def start_node(config: dict[str, Any]) -> dict[str, Any]:
     return next(n for n in nodes(config) if n["type"] == "start")
 
@@ -105,7 +122,7 @@ def outcome(config: dict[str, Any], state: dict[str, Any]) -> str | None:
 
 def skill_refs(config: dict[str, Any]) -> list[tuple[str, int]]:
     found: list[tuple[str, int]] = []
-    for node in nodes(config):
+    for node in steps(config):
         for ref in node.get("skills") or []:
             key = (ref["name"], ref["version"])
             if key not in found:
@@ -164,7 +181,7 @@ async def execute(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> O
             raise FlowError(node, exc.message, exc.type) from exc
     on_error = node.get("on_error") or {}
     retry = on_error.get("retry") or {}
-    attempts = 1 + int(retry.get("max", 0))
+    attempts = 1 if spec.own_retry else 1 + int(retry.get("max", 0))
     failure = NodeFailure("model_error", "")
     for attempt in range(attempts):
         try:

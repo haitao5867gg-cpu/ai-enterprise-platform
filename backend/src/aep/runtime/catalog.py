@@ -34,10 +34,10 @@ from aep.knowledge.rerank import rerank_options
 from aep.runtime import agent_app, appconfig, design, manual
 from aep.runtime.appconfig import ConfigError
 from aep.runtime.flow import builtin as flowbuiltin
+from aep.runtime.flow import each, refs
 from aep.runtime.flow import files as flowfiles
 from aep.runtime.flow import graph as flowgraph
 from aep.runtime.flow import media as flowmedia
-from aep.runtime.flow import refs
 from aep.runtime.flow.check import check_common, check_config
 from aep.runtime.flow.nodes import TYPES, CheckEnv, NodeFailure, Problems, why_not_callable
 from aep.runtime.flow.store import AppExists
@@ -438,7 +438,7 @@ class AppCatalog:
             if app in self._runs.code_apps:
                 settings = list((config.get("nodes") or {}).items())
             else:
-                settings = [(n["id"], n) for n in flowgraph.nodes(config)]
+                settings = [(n["id"], n) for n in flowgraph.steps(config)]
             for node, value in settings:
                 for ref in value.get("skills") or []:
                     use = {"app": app, "node": node, "version": number}
@@ -890,7 +890,7 @@ class AppCatalog:
         models = await self.models()
         if models is not None:
             for model in dict.fromkeys(
-                n["model"] for n in flowgraph.nodes(config) if n.get("model")
+                n["model"] for n in flowgraph.steps(config) if n.get("model")
             ):
                 if model not in models:
                     out.append(
@@ -1019,6 +1019,8 @@ class AppCatalog:
         settings = {
             k: v for k, v in node.items() if k not in {"id", "type", "title", "ui"} | spec.verbatim
         }
+        if node["type"] == "each":
+            settings = each.step_settings(settings)
         rendered = {
             ".".join(str(part) for part in loc): refs.render(text, shown)
             for loc, text in refs.strings(settings)

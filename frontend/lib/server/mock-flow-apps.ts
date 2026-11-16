@@ -16,8 +16,9 @@ import type {
   Condition,
   ImportProblem,
   AgentOutput,
+  EachNode,
 } from "../apps";
-import { NODE_ID_PATTERN } from "../apps";
+import { EACH_STEP_TYPES, NODE_ID_PATTERN, RESERVED_IDS } from "../apps";
 import {
   outputsOf,
   knowledgeIssues,
@@ -722,6 +723,21 @@ const defaults: FlowNode[] = [
     body: "",
     message: "",
   },
+  {
+    id: "each",
+    type: "each",
+    title: "逐项处理",
+    items: "",
+    do: {
+      type: "llm",
+      model: null,
+      skills: [],
+      prompt: "",
+      output: { kind: "text" },
+    },
+    concurrency: 3,
+    on_item_error: "stop",
+  },
   blankConfig().graph.nodes[2],
 ];
 export const mockNodeTypes: NodeType[] = defaults.map((node) => {
@@ -970,6 +986,52 @@ function reviewIssues(
   return issues;
 }
 
+// docs/api/each.md, "保存时检查": the list, the step and how items run; the step's own
+// settings are checked as far as the mock checks that kind of node.
+function eachIssues(node: EachNode, loc: (string | number)[]) {
+  const issues: ValidationIssue[] = [];
+  if (
+    typeof node.items !== "string" ||
+    !/^\s*\{\{\s*[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\s*\}\}\s*$/.test(node.items)
+  )
+    issues.push({
+      loc: [...loc, "items"],
+      msg: "要插一个变量：对哪个列表逐项处理",
+    });
+  const step: unknown = node.do;
+  if (!isRecord(step))
+    issues.push({ loc: [...loc, "do"], msg: "要设置每一项做什么" });
+  else if (!(EACH_STEP_TYPES as readonly unknown[]).includes(step.type))
+    issues.push({
+      loc: [...loc, "do", "type"],
+      msg: `每一项只能做这几种：${EACH_STEP_TYPES.map((type) => typeLabels[type]).join("、")}`,
+    });
+  else {
+    for (const key of ["id", "title", "on_error", "max_visits", "note", "ui"])
+      if (key in step)
+        issues.push({
+          loc: [...loc, "do", key],
+          msg: `每一项做的那一步不写 ${key}`,
+        });
+    if (step.type === "llm" && !String(step.prompt ?? "").trim())
+      issues.push({ loc: [...loc, "do", "prompt"], msg: "提示词不能为空" });
+    if (step.type === "tool" && !String(step.tool ?? "").trim())
+      issues.push({ loc: [...loc, "do", "tool"], msg: "请选择工具" });
+  }
+  const concurrency = node.concurrency ?? 3;
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 10)
+    issues.push({
+      loc: [...loc, "concurrency"],
+      msg: "同时处理几项要在 1–10 之间",
+    });
+  if (!["stop", "skip"].includes(node.on_item_error ?? "stop"))
+    issues.push({
+      loc: [...loc, "on_item_error"],
+      msg: "某一项失败时只能是 stop（停下）或 skip（跳过）",
+    });
+  return issues;
+}
+
 export function validateFlow(config: unknown): ValidationIssue[] {
   const root = ["body", "config", "graph"];
   if (
@@ -989,7 +1051,7 @@ export function validateFlow(config: unknown): ValidationIssue[] {
       (node) =>
         isRecord(node) &&
         NODE_ID_PATTERN.test(node.id) &&
-        !["env", "secret", "param", "project"].includes(node.id) &&
+        !RESERVED_IDS.includes(node.id) &&
         defaults.some((item) => item.type === node.type) &&
         typeof node.title === "string" &&
         node.title.trim(),
@@ -1068,6 +1130,7 @@ export function validateFlow(config: unknown): ValidationIssue[] {
         });
     }
     if (node.type === "llm_review") issues.push(...reviewIssues(node, loc));
+    if (node.type === "each") issues.push(...eachIssues(node, loc));
     if (
       node.type === "agent" &&
       (node.tools.length > 10 ||
@@ -1132,9 +1195,20 @@ export function validateFlow(config: unknown): ValidationIssue[] {
               ...at,
               msg: `项目没有 ${field} 这一项，可以用 ${PROJECT_FIELDS.join("、")}`,
             });
+        } else if (id === "item") {
+          if (node.type !== "each" || path[0] !== "do")
+            issues.push({
+              ...at,
+              msg: "{{item.*}} 只能写在逐项处理节点的「每一项做什么」里",
+            });
         } else if (id === "secret") {
-          if (node.type !== "tool" || path[0] !== "args")
-            issues.push({ ...at, msg: "密钥只能用在工具参数里" });
+          const inArgs =
+            (node.type === "tool" && path[0] === "args") ||
+            (node.type === "each" &&
+              node.do.type === "tool" &&
+              path[0] === "do" &&
+              path[1] === "args");
+          if (!inArgs) issues.push({ ...at, msg: "密钥只能用在工具参数里" });
           else if (!flow.env.secrets.includes(field))
             issues.push({ ...at, msg: `密钥 ${field} 没有在配置中声明` });
         } else if (!target || !outputsOf(target).includes(field))
@@ -1303,6 +1377,34 @@ export function simulateNode(
   ) as Record<string, unknown>;
   const dataResult = simulateDataNode(node, rendered);
   if (dataResult) return { ...dataResult, rendered };
+  // docs/api/each.md: the step is simulated for every item in turn.
+  if (node.type === "each") {
+    const ref =
+      /^\s*\{\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}\}\s*$/.exec(
+        node.items,
+      );
+    const items = ref ? pool[ref[1]]?.[ref[2]] : undefined;
+    if (!Array.isArray(items))
+      throw new MockNodeFailure("input_error", "「items」取到的不是列表");
+    if (items.length > 100)
+      throw new MockNodeFailure(
+        "input_error",
+        `最多处理 100 项，这次有 ${items.length} 项`,
+      );
+    const step = { ...node.do, id: node.id, title: node.title } as FlowNode;
+    const results = items.map(
+      (value, i) =>
+        simulateNode(step, {
+          ...pool,
+          item: { ...(isRecord(value) ? value : {}), value, position: i + 1 },
+        }).outputs,
+    );
+    return {
+      outputs: { results, failed: [], count: items.length },
+      branch: null,
+      rendered,
+    };
+  }
   const fakeValue = (type: string): unknown =>
     type === "number"
       ? 100

@@ -526,6 +526,21 @@ MESSAGES: dict[str, str] = {
     "Skill「{name}」第 {version} 版不在平台上": (
         "Version {version} of skill “{name}” is not on the platform"
     ),
+    # The each node (docs/api/each.md)
+    "要插一个变量：对哪个列表逐项处理": "Insert a variable: the list to go through",
+    "要设置每一项做什么": "Set what to do for each item",
+    "每一项只能做这几种：{kinds}": "Each item can only get one of these: {kinds}",
+    "每一项做的那一步不写 {key}": "The step for each item has no {key}",
+    "同时处理几项要在 {low}–{high} 之间": "Items at once must be between {low} and {high}",
+    "某一项失败时只能是 stop（停下）或 skip（跳过）": (
+        "When an item fails can only be stop or skip"
+    ),
+    "{{item.*}} 只能写在逐项处理节点的「每一项做什么」里": (
+        "{{item.*}} can only be used in the step of a for-each node"
+    ),
+    "没有设置每一项做什么": "What to do for each item is not set",
+    "「items」取到的不是列表": "“items” is not a list",
+    "最多处理 {count} 项，这次有 {found} 项": "At most {count} items, but there are {found}",
 }
 
 # The node types offered when building a flow app (GET /node-types): names, what each
@@ -753,6 +768,16 @@ NODE_TYPES: dict[str, str] = {
     "调用应用": "Call app",
     "调用数据源的一个只读工具": "Call one read-only tool of a data source",
     "语音转写": "Transcribe speech",
+    "逐项处理": "For each item",
+    "对一个列表的每一项做同一步（调模型、调工具、跑代码……），收齐结果再往下走": (
+        "Do one step (call a model, a tool, run code…) for every item of a list, then go "
+        "on with all the results"
+    ),
+    "每一项的产出，顺序同列表；跳过的项为空": (
+        "What the step put out for each item, in the list's order; empty for a skipped item"
+    ),
+    "失败后跳过的项：第几项和原因": "The items skipped after failing: which and why",
+    "一共几项": "How many items there were",
     "把一段音频或视频的声音转成文字，带每句和每个字的时间": (
         "Turn the speech in an audio or video file into text, with the time of each "
         "sentence and word"

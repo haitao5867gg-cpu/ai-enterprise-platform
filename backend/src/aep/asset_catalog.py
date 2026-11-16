@@ -326,7 +326,7 @@ class AssetCatalog:
                 for kb_id in params.get("knowledge_bases") or []:
                     scan.use("knowledge", kb_id, info, node_id)
             return
-        nodes = flowgraph.nodes(config)
+        nodes = flowgraph.steps(config)
         consts = {
             v.get("key"): v.get("value")
             for v in ((config.get("env") or {}).get("vars") or [])

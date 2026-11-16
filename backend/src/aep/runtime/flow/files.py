@@ -28,7 +28,7 @@ class BadFile(ValueError):
 def datasource_ids(config: dict[str, Any]) -> list[str]:
     """The data sources the app names directly (not through a reference)."""
     found: list[str] = []
-    for node in flowgraph.nodes(config):
+    for node in flowgraph.steps(config):
         values = [node.get("datasource")] if node["type"] in DATASOURCE_NODES else []
         if node["type"] == "agent":
             values = [entry.get("datasource") for entry in node.get("tools") or []]
@@ -46,11 +46,17 @@ def _items(value: Any) -> list[dict[str, Any]]:
     return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
+def _steps(config: Any) -> list[dict[str, Any]]:
+    """``flowgraph.steps`` of a configuration that may not have been checked."""
+    found = _items(_obj(_obj(config).get("graph")).get("nodes"))
+    return flowgraph.steps({"graph": {"nodes": found}})
+
+
 def _datasource_settings(config: dict[str, Any]) -> list[tuple[dict[str, Any], Any]]:
     """Every node's data source setting with the node it is on (an agent has one per
     tools entry, given as that entry)."""
     settings: list[tuple[dict[str, Any], Any]] = []
-    for node in _items(_obj(_obj(config).get("graph")).get("nodes")):
+    for node in _steps(config):
         if node.get("type") in DATASOURCE_NODES:
             settings.append((node, node.get("datasource")))
         elif node.get("type") == "agent":
@@ -153,7 +159,7 @@ def model_refs(config: dict[str, Any]) -> tuple[list[str], bool]:
     that calls a model names none (it then uses the default chat model)."""
     aliases: list[str] = []
     default = False
-    for node in flowgraph.nodes(config):
+    for node in flowgraph.steps(config):
         if node["type"] == "transcribe":  # always names its model
             model = node.get("model")
             if isinstance(model, str) and model.strip() and model not in aliases:

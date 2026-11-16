@@ -721,7 +721,7 @@ class RunService:
                     node.params.get("knowledge_bases"), title, node.params.get("knowledge_mode")
                 )
             return used
-        for node in flowgraph.nodes(config):
+        for node in flowgraph.steps(config):
             title = node.get("title") or node["id"]
             if node["type"] in ("llm", "classifier", "agent", "llm_review"):
                 used.append((node.get("model") or fallback, title))
@@ -901,7 +901,7 @@ class RunService:
         except projects.BindError as exc:
             raise ProjectProblem(str(exc)) from exc
         defined = {p["key"] for p in snapshot["params"]}
-        for node in flowgraph.nodes(config):
+        for node in flowgraph.steps(config):
             skip = NOT_SETTINGS | flownodes.TYPES[node["type"]].verbatim
             settings = {k: v for k, v in node.items() if k not in skip}
             for _, text in refs.strings(settings):

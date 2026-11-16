@@ -3,14 +3,17 @@
 A connector tool that takes minutes hands back ``{"aep_job": {...}}`` at once instead of
 its result; :func:`follow` asks the same connector's ``aep_job_status`` until the job is
 done, reporting its progress, and cancels it with ``aep_job_cancel`` when it runs too
-long or the run is cancelled. The calls themselves go through ``aep.tools.mcp.McpTools``,
-so each one keeps the ordinary tool timeout.
+long, the run is cancelled or the work it was for is given up (:func:`abandonable`). The
+calls themselves go through ``aep.tools.mcp.McpTools``, so each one keeps the ordinary tool
+timeout.
 """
 
 import hashlib
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
@@ -71,6 +74,39 @@ class Watch:
 
     progress: Callable[[float | None, str | None], Awaitable[None]] | None = None
     stopped: Callable[[], Awaitable[bool]] | None = None
+
+
+class Abandon:
+    """Work that may be given up while its run goes on, such as the items of an each node
+    still running after one failed. A job followed in a task started under it is
+    cancelled when that task is cancelled after :meth:`give_up`, as for a cancelled run;
+    otherwise a cancelled task leaves its job for the next start, as when the process
+    stops."""
+
+    def __init__(self) -> None:
+        self.given_up = False
+
+    def give_up(self) -> None:
+        self.given_up = True
+
+
+_ABANDON: ContextVar[tuple[Abandon, ...]] = ContextVar("aep_jobs_abandon", default=())
+
+
+@contextmanager
+def abandonable() -> Iterator[Abandon]:
+    """An :class:`Abandon` for the tasks started within: each takes a copy of the context,
+    so it follows its jobs under this one (and any it is nested in)."""
+    abandon = Abandon()
+    token = _ABANDON.set((*_ABANDON.get(), abandon))
+    try:
+        yield abandon
+    finally:
+        _ABANDON.reset(token)
+
+
+def _given_up() -> bool:
+    return any(a.given_up for a in _ABANDON.get())
 
 
 def job_key(run_id: str, node: str, visit: int, tool: str, args: Any) -> str:
@@ -168,11 +204,11 @@ async def follow(
             unreachable_since = None
             job = parse(reply)
     except anyio.get_cancelled_exc_class():
-        # The run was cancelled in this process, or the process is stopping. Only a
-        # cancelled run's job is cancelled: after a restart the node runs again and picks
-        # its job up by its key. Without a run to ask, nothing will pick it up.
+        # The run was cancelled in this process, the work was given up, or the process is
+        # stopping. Only the last leaves the job: after a restart the node runs again and
+        # picks its job up by its key. Without a run to ask, nothing will pick it up.
         with anyio.CancelScope(shield=True):
-            if watch.stopped is None or await _stopped(watch.stopped):
+            if _given_up() or watch.stopped is None or await _stopped(watch.stopped):
                 await _cancel(tools, url, job.job_id)
         raise
 

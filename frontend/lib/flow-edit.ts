@@ -1,6 +1,6 @@
 // Pure helpers for the flow editor: outputs, variables, branches and graph edits.
 // The rules follow docs/api/flow-apps.md.
-import type { Edge, FlowConfig, FlowNode, NodeType } from "./apps";
+import type { EachStep, Edge, FlowConfig, FlowNode, NodeType } from "./apps";
 import type { FlowEdge, FlowNode as DiagramNode, NodeKind } from "./flow";
 import type { ValidationIssue } from "./runs";
 import type { RerankModel } from "./knowledge";
@@ -26,6 +26,7 @@ export const BRANCHED_ERROR_TYPES = [
   "databricks_release",
   "data_check",
   "app",
+  "each",
 ];
 export const UNTESTABLE_TYPES = [
   "start",
@@ -48,6 +49,7 @@ export const typeLabels: Record<FlowNode["type"], string> = {
   tool: "调用工具",
   knowledge: "知识检索",
   transcribe: "语音转写",
+  each: "逐项处理",
   agent: "智能体",
   human: "人工",
   template: "文本拼接",
@@ -117,6 +119,8 @@ export function ownOutputs(node: FlowNode): string[] {
       return ["hits", "context"];
     case "transcribe":
       return ["text", "language", "duration_seconds", "segments", "words"];
+    case "each":
+      return ["results", "failed", "count"];
     case "agent":
       return ["text", "steps", "hits"];
     case "human":
@@ -462,10 +466,19 @@ export function stringsOf(node: FlowNode): { path: Path; value: string }[] {
   for (const [key, value] of Object.entries(node)) {
     if (["id", "type", "title", "ui", "note"].includes(key)) continue;
     if (node.type === "code" && key === "code") continue;
+    if (node.type === "each" && key === "do" && isRecord(value)) {
+      // A code step's code is verbatim too (docs/api/each.md).
+      for (const [inner, item] of Object.entries(value))
+        if (!(node.do.type === "code" && inner === "code"))
+          visit(item, [key, inner]);
+      continue;
+    }
     visit(value, [key]);
   }
   return found;
 }
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
 function mapStrings<T>(value: T, change: (text: string) => string): T {
   if (typeof value === "string") return change(value) as T;
   if (Array.isArray(value))
@@ -487,6 +500,17 @@ function mapNodeStrings(
   for (const [key, value] of Object.entries(node)) {
     if (["id", "type", "title", "ui", "note"].includes(key)) continue;
     if (node.type === "code" && key === "code") continue;
+    if (node.type === "each" && key === "do" && isRecord(value)) {
+      next[key] = Object.fromEntries(
+        Object.entries(value).map(([inner, item]) => [
+          inner,
+          node.do.type === "code" && inner === "code"
+            ? item
+            : mapStrings(item, change),
+        ]),
+      );
+      continue;
+    }
     next[key] = mapStrings(value, change);
   }
   return next as FlowNode;
@@ -636,6 +660,34 @@ export function deleteNode(config: FlowConfig, id: string): FlowConfig {
   };
 }
 
+// A new step for an each node (docs/api/each.md), as the node types' defaults are.
+export function stepDefaults(type: EachStep["type"]): EachStep {
+  switch (type) {
+    case "llm":
+      return {
+        type,
+        model: null,
+        skills: [],
+        prompt: "",
+        output: { kind: "text" },
+      };
+    case "tool":
+      return { type, datasource: "", tool: "", args: {} };
+    case "code":
+      return {
+        type,
+        code: "def main(inputs):\n    return {'text': str(inputs.get('item', ''))}",
+        inputs: { item: "{{item.value}}" },
+        outputs: [{ key: "text", type: "string" }],
+        timeout_seconds: 10,
+      };
+    case "template":
+      return { type, template: "{{item.value}}" };
+    case "transcribe":
+      return { type, model: "transcribe", audio: "{{item.value}}", prompt: "" };
+  }
+}
+
 export function freeId(config: FlowConfig, base: string): string {
   const taken = new Set(config.graph.nodes.map((node) => node.id));
   if (!taken.has(base)) return base;
@@ -744,6 +796,18 @@ export function sortIssues(
   return sorted;
 }
 // Messages for a setting and everything under it, e.g. "inputs.0" covers "inputs.0.key".
+// The issues under `path`, keyed relative to it (an each node's step, "do").
+export function issuesWithin(
+  bucket: Record<string, string> | undefined,
+  path: string,
+): Record<string, string> | undefined {
+  if (!bucket) return undefined;
+  return Object.fromEntries(
+    Object.entries(bucket)
+      .filter(([key]) => key.startsWith(`${path}.`))
+      .map(([key, msg]) => [key.slice(path.length + 1), msg]),
+  );
+}
 export function issuesUnder(
   bucket: Record<string, string> | undefined,
   path: string,

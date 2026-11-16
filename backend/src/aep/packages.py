@@ -342,7 +342,7 @@ class Packages:
                 "models": needed["models"],
                 "default_model": default,
                 "datasources": needed["datasources"],
-                "sandbox": any(n["type"] == "code" for n in nodes),
+                "sandbox": any(n["type"] == "code" for n in flowgraph.steps(shape)),
                 "skills": needed["skills"],
                 "secrets": needed["secrets"],
                 "media_libraries": needed.get("media_libraries", []),
