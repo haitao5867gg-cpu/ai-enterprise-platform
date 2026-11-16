@@ -337,6 +337,47 @@ async def test_saving_again_finds_what_this_run_saved(tmp_path):
         ) == {"n": 1}  # fmt: skip
 
 
+async def test_a_lost_database_leaves_the_files_for_a_retry(tmp_path, monkeypatch):
+    async with Processing(tmp_path) as p:
+        root = p.settings.media_dir
+        work = root / "_work" / "j_1"
+        work.mkdir(parents=True)
+        (work / "成片.mp4").write_bytes(b"\x00" * 10)
+        value = {"video": {"aep_file": {"path": "_work/j_1/成片.mp4", "name": "成片.mp4"}}}
+
+        async def save() -> Any:
+            return await save_outputs(
+                value, store=p.media, settings=p.settings, prober=None,
+                library_id=p.footage, run_id="r-1", summary=summary,
+            )  # fmt: skip
+
+        real = p.media.add_items
+
+        async def gone(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("connection to the database was lost")
+
+        monkeypatch.setattr(p.media, "add_items", gone)
+        with pytest.raises(RuntimeError, match="database was lost"):
+            await save()
+        # Nothing registered, and the file is back where the tool left it.
+        assert await p.saved(p.footage) == [] and p.work() == ["j_1/成片.mp4"]
+        assert [d for d in (root / p.footage).iterdir()] == []
+
+        # The records were written, but the answer was lost: the files stay with them.
+        async def written_then_lost(*args: Any, **kwargs: Any) -> Any:
+            await real(*args, **kwargs)
+            raise RuntimeError("connection to the database was lost")
+
+        monkeypatch.setattr(p.media, "add_items", written_then_lost)
+        with pytest.raises(RuntimeError):
+            await save()
+        [item] = await p.saved(p.footage)
+        assert (root / item.rel_path).is_file() and p.work() == []
+        # The node run again finds them.
+        monkeypatch.setattr(p.media, "add_items", real)
+        assert await save() == {"video": summary(item)}
+
+
 async def test_what_saving_refuses(tmp_path, monkeypatch):
     async with Processing(tmp_path, media_max_items=1) as p:
         root = p.settings.media_dir

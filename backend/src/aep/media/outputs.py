@@ -155,12 +155,14 @@ async def save_outputs(
         added = await store.add_items(
             library_id, [plan.item for plan in planned], settings.media_max_items
         )
-    except (OSError, ItemLimit, MissingLibrary) as exc:
-        # Put back what was moved, so a retry finds the files where the tool left them.
-        for plan in moved:
-            target = root / plan.item.rel_path
-            await asyncio.to_thread(move, target, plan.source)
-            await asyncio.to_thread(_drop_folder, target.parent)
+    except BaseException as exc:
+        # Whatever stopped it (a full library, a lost database, a cancel), put back what
+        # was moved, so a retry finds the files where the tool left them. Unless the
+        # records were written after all: then the files belong where they are.
+        if not (moved and await _registered(store, library_id, moved[0].item.import_key)):
+            _put_back(root, moved)
+        if not isinstance(exc, OSError | ItemLimit | MissingLibrary):
+            raise
         if isinstance(exc, MissingLibrary):
             raise SaveError("没有这个媒体库") from exc
         if isinstance(exc, ItemLimit):
@@ -174,6 +176,26 @@ async def save_outputs(
             item = probed or item
         saved[plan.path] = item
     return replace_refs(value, {path: summary(item) for path, item in saved.items()})
+
+
+async def _registered(store: MediaStore, library_id: str, key: str) -> bool:
+    """Whether the batch's records were written (they are written together); not known
+    counts as not written."""
+    try:
+        return await asyncio.wait_for(store.imported(library_id, key), 5) is not None
+    except BaseException:  # noqa: BLE001 - an unanswered question is no record
+        return False
+
+
+def _put_back(root: Path, moved: list["_Planned"]) -> None:
+    """Renames on the media volume: done at once, even while a cancel is handled."""
+    for plan in moved:
+        target = root / plan.item.rel_path
+        try:
+            move(target, plan.source)
+        except OSError:
+            continue
+        _drop_folder(target.parent)
 
 
 def _drop_folder(folder: Path) -> None:
