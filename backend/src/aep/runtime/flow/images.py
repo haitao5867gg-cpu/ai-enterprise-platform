@@ -92,6 +92,8 @@ async def image_parts(
             raise NodeFailure(INPUT_ERROR, f"第 {i + 1} 项图片取到的不是文件：{shown}")
         paths += found
     paths = list(dict.fromkeys(paths))  # the same file is sent once
+    if not paths:
+        return []  # every entry was an optional input left empty: text only, nothing to check
     limit = rt.settings.vision_max_images
     if len(paths) > limit:
         raise NodeFailure(INPUT_ERROR, f"一次最多发 {limit} 张图片，取到了 {len(paths)} 张")

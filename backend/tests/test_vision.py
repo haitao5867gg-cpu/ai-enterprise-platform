@@ -225,6 +225,17 @@ async def test_a_run_whose_policy_keeps_images_in_sends_nothing(tmp_path):
         assert chats(p) == []
 
 
+async def test_a_policy_that_keeps_images_in_lets_a_node_without_images_run(tmp_path):
+    # Only an optional input left empty: no image goes out, so the policy has nothing to stop.
+    async with Media(tmp_path, data_media="audio") as p:
+        await p.new_app("look", look_flow(p.footage, images=["{{start.frames}}"]))
+        photo = await p.add(p.footage, "教练.png")
+        run = await p.run("look", {"photo": photo.item_id, "topic": "深蹲"})
+        assert run["status"] == "done", run
+        [chat] = chats(p)
+        assert chat["messages"][-1]["content"] == "这个镜头是深蹲吗？"
+
+
 async def test_images_are_checked_when_saved(tmp_path):
     async with Media(tmp_path) as p:
         resp = await p.api.post("/apps", json={"app": "look", "title": "看画面"})
