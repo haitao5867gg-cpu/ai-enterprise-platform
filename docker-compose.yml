@@ -182,6 +182,37 @@ services:
       timeout: 3s
       retries: 20
 
+  # 语音转写（docs/api/transcription.md）：可选的本地 faster-whisper（speaches，CPU 版），
+  # 模型网关的 transcribe 别名默认指向它。docker compose --profile asr up -d 才启动
+  # （或在 .env 里写 COMPOSE_PROFILES=asr）。第一次启动时下载 ASR_MODEL 到 asr-models 卷，
+  # 下完才算健康；以后直接用卷里的。
+  asr:
+    image: ghcr.io/speaches-ai/speaches:0.8.3-cpu
+    profiles: ["asr"]
+    environment:
+      ASR_MODEL: ${ASR_MODEL:-Systran/faster-whisper-small}
+      ENABLE_UI: "false"
+      # 模型一直留在内存里，每次转写不用重新加载。
+      WHISPER__TTL: "-1"
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+    command:
+      - sh
+      - -c
+      - >-
+        (until curl -fsS http://localhost:8000/health >/dev/null 2>&1; do sleep 2; done;
+        curl -fsS --retry 5 -X POST "http://localhost:8000/v1/models/$$ASR_MODEL") &
+        exec uvicorn --factory speaches.main:create_app
+    volumes:
+      - asr-models:/home/ubuntu/.cache/huggingface/hub
+    ports:
+      - "127.0.0.1:8010:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://localhost:8000/v1/models/$$ASR_MODEL\" >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 900s
+
   connector-files:
     build: ./connectors/files
     environment:
@@ -337,6 +368,10 @@ services:
       COMPANY_QWEN_MODEL: ${COMPANY_QWEN_MODEL:-openai/qwen3.8-max}
       COMPANY_EMBED_MODEL: ${COMPANY_EMBED_MODEL:-openai/text-embedding-v4}
       COMPANY_RERANK_MODEL: ${COMPANY_RERANK_MODEL:-hosted_vllm/gte-rerank-v2}
+      # 语音转写（docs/api/transcription.md）：默认指向可选的本地转写服务 asr。
+      TRANSCRIBE_MODEL: ${TRANSCRIBE_MODEL:-openai/${ASR_MODEL:-Systran/faster-whisper-small}}
+      TRANSCRIBE_API_BASE: ${TRANSCRIBE_API_BASE:-http://asr:8000/v1}
+      TRANSCRIBE_API_KEY: ${TRANSCRIBE_API_KEY:-none}
       # Models added on the model page (docs/api/models.md): kept in a database of the
       # gateway's own on the platform's Postgres, their keys encrypted with the salt key.
       # Never change LITELLM_SALT_KEY once models are saved.
@@ -431,3 +466,4 @@ volumes:
   uploads:
   knowledge-data:
   media-data:
+  asr-models:

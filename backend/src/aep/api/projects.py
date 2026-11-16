@@ -130,6 +130,9 @@ async def project_options(catalog: Catalog, settings: Config) -> dict[str, Any]:
             for level in policy.LEVELS
         ],
         "models": await catalog.models(),
+        "media_kinds": [
+            {"value": kind, "label": policy.MEDIA_LABELS[kind]} for kind in policy.MEDIA_KINDS
+        ],
         "defaults": default.as_dict(),
     }
 

@@ -26,10 +26,18 @@ import type {
   OutputField,
   ReviewNode,
   ReviewRule,
+  SkillRef,
   ToolNode,
+  TranscribeNode,
   ValueType,
 } from "../lib/apps";
-import { chatModelChoices, getApp, isFlowConfig, listApps } from "../lib/apps";
+import {
+  chatModelChoices,
+  getApp,
+  isFlowConfig,
+  listApps,
+  modelChoices,
+} from "../lib/apps";
 import {
   cachedTools,
   isCodeRepo,
@@ -236,7 +244,7 @@ export function ModelFields({
   change,
   issues,
 }: {
-  node: Extract<FlowNode, { model: string | null }>;
+  node: Extract<FlowNode, { model: string | null; skills: SkillRef[] }>;
   options: Options;
   change: Change;
   issues: Issues;
@@ -2290,6 +2298,86 @@ export function AgentFields({
   );
 }
 
+// Languages a transcription model is told to expect (ISO 639); others are kept as typed.
+const LANGUAGES = [
+  { value: "zh", label: "中文" },
+  { value: "en", label: "英语" },
+  { value: "yue", label: "粤语" },
+  { value: "ja", label: "日语" },
+  { value: "ko", label: "韩语" },
+];
+
+// docs/api/transcription.md: the file to transcribe and how the model should hear it.
+function TranscribeFields({
+  node,
+  options,
+  change,
+  issues,
+  variables,
+}: {
+  node: TranscribeNode;
+  options: Options;
+  change: Change;
+  issues: Issues;
+  variables: Variable[];
+}) {
+  const t = useT();
+  const at = (path: string) => issuesUnder(issues, path);
+  const language = node.language ?? "";
+  return (
+    <>
+      <SelectField
+        label={t("转写模型#字段")}
+        value={node.model}
+        issues={at("model")}
+        help={t(
+          "模型页“转写”下面的模型；仓库自带的 transcribe 是本地的 faster-whisper。",
+        )}
+        onChange={(model) => change({ ...node, model })}
+        choices={[
+          ...(node.model ? [] : [{ value: "", label: t("请选择转写模型") }]),
+          ...modelChoices(options, "transcription", node.model || null),
+        ]}
+      />
+      <RefField
+        label={t("要转写的文件")}
+        value={node.audio}
+        variables={variables}
+        issues={at("audio")}
+        help={t(
+          "引用开始节点的素材输入或工具产出的文件，音频、视频都行，最大 25 MB。",
+        )}
+        onChange={(audio) => change({ ...node, audio })}
+      />
+      <SelectField
+        label={t("语言")}
+        value={language}
+        issues={at("language")}
+        onChange={(value) => change({ ...node, language: value || null })}
+        choices={[
+          ...LANGUAGES.map((item) => ({ ...item, label: t(item.label) })),
+          ...(language && !LANGUAGES.some((item) => item.value === language)
+            ? [{ value: language, label: language }]
+            : []),
+          { value: "", label: t("让模型自己判断") },
+        ]}
+      />
+      <RefField
+        label={t("提示（选填）")}
+        value={node.prompt ?? ""}
+        variables={variables}
+        multiline
+        rows={3}
+        issues={at("prompt")}
+        help={t(
+          "写几句同一领域的话和专有名词，模型照着用词和标点，比如“以下是普通话的健身教学。卧推、硬拉、深蹲。”最多 500 个字符。",
+        )}
+        onChange={(prompt) => change({ ...node, prompt })}
+      />
+    </>
+  );
+}
+
 export function NodeSettings({
   node,
   config,
@@ -2577,6 +2665,16 @@ export function NodeSettings({
             onChange={(inputs) => change({ ...node, inputs })}
           />
         </>
+      );
+    case "transcribe":
+      return (
+        <TranscribeFields
+          node={node}
+          options={options}
+          change={change}
+          issues={issues}
+          variables={variables}
+        />
       );
     case "knowledge":
       return (

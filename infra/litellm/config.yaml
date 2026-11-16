@@ -4,7 +4,8 @@
 #
 # These are read only on the model page; models added there are kept in the
 # gateway's database (docs/api/models.md). model_info carries what the page shows:
-# aep_display_name, aep_purpose (chat, embedding or rerank) and aep_provider.
+# aep_display_name, aep_purpose (chat, embedding, rerank or transcription) and
+# aep_provider.
 model_list:
   # No key needed. Default for local development and CI.
   - model_name: mock
@@ -125,6 +126,20 @@ model_list:
       aep_purpose: rerank
       aep_provider: openai_compatible
       mode: rerank
+
+  # Speech to text with the time of each sentence and word (docs/api/transcription.md).
+  # Defaults to the optional local faster-whisper service `asr` (speaches); any
+  # OpenAI-compatible /v1/audio/transcriptions that returns segments works.
+  - model_name: transcribe
+    litellm_params:
+      model: os.environ/TRANSCRIBE_MODEL
+      api_base: os.environ/TRANSCRIBE_API_BASE
+      api_key: os.environ/TRANSCRIBE_API_KEY
+    model_info:
+      aep_display_name: 语音转写（faster-whisper）
+      aep_purpose: transcription
+      aep_provider: openai_compatible
+      mode: audio_transcription
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

@@ -341,6 +341,24 @@ class Runtime:
 
         return check
 
+    def media_check(
+        self, node: dict[str, Any], state: dict[str, Any]
+    ) -> Callable[[policy.MediaKind], None]:
+        """Raises ``input_error`` for media the run's policy does not let go to models,
+        before any request is sent (docs/api/transcription.md)."""
+        bound = state.get("project") or {}
+        own = (bound.get("policy") or {}).get("media")
+        project = bound.get("name") if own is not None else None
+        title = node.get("title") or node.get("id") or ""
+        rules = self.data_policy(state)
+
+        def check(kind: policy.MediaKind) -> None:
+            problem = policy.media_problem(rules, kind, title, project)
+            if problem:
+                raise NodeFailure(INPUT_ERROR, problem)
+
+        return check
+
     def system(self, node: dict[str, Any], *extra: str) -> str:
         parts = [self.skills[(s["name"], s["version"])].text() for s in node.get("skills") or []]
         parts += [e.strip() for e in extra if e and e.strip()]
@@ -2728,10 +2746,18 @@ TYPES: dict[str, NodeType] = {
 }
 
 # The data-engineering types use the helpers above; they register themselves here.
-from aep.runtime.flow import app_node, data_check, data_nodes, git_node, review  # noqa: E402
+from aep.runtime.flow import (  # noqa: E402
+    app_node,
+    data_check,
+    data_nodes,
+    git_node,
+    review,
+    transcribe,
+)
 
 TYPES.update(data_nodes.TYPES)
 TYPES.update(data_check.TYPES)
 TYPES.update(app_node.TYPES)
 TYPES.update(git_node.TYPES)
 TYPES.update(review.TYPES)
+TYPES.update(transcribe.TYPES)

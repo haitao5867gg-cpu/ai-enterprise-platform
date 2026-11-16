@@ -156,6 +156,15 @@ export type SaveMedia = {
   description?: string;
   tags?: string[];
 };
+// Speech to timed text (docs/api/transcription.md).
+export type TranscribeNode = NodeBase &
+  Fallible & {
+    type: "transcribe";
+    model: string;
+    audio: string;
+    language?: string | null;
+    prompt?: string;
+  };
 export type KnowledgeNode = NodeBase &
   Fallible & {
     type: "knowledge";
@@ -354,6 +363,7 @@ export type FlowNode =
   | ConditionNode
   | ToolNode
   | KnowledgeNode
+  | TranscribeNode
   | AgentNode
   | HumanNode
   | TemplateNode
@@ -591,7 +601,7 @@ export type AppDetail = AppSummary & {
 export type ModelChoice = {
   alias: string;
   label: string;
-  purpose: "chat" | "embedding" | "rerank";
+  purpose: "chat" | "embedding" | "rerank" | "transcription";
   allowed: boolean;
 };
 
@@ -602,8 +612,18 @@ export function chatModelChoices(
   options: Pick<AppDetail["options"], "models" | "model_choices">,
   current: string | null,
 ): { value: string; label: string }[] {
+  return modelChoices(options, "chat", current);
+}
+
+// The gateway's models of one purpose for a node's model dropdown, with the current
+// alias kept when the gateway no longer has it.
+export function modelChoices(
+  options: Pick<AppDetail["options"], "models" | "model_choices">,
+  purpose: ModelChoice["purpose"],
+  current: string | null,
+): { value: string; label: string }[] {
   const listed = (options.model_choices ?? []).filter(
-    (choice) => choice.purpose === "chat",
+    (choice) => choice.purpose === purpose,
   );
   const entries = listed.length
     ? listed.map((choice) => ({

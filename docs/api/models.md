@@ -9,11 +9,11 @@
 - **模型**：网关上的一个别名（`alias`），节点和知识库按别名调用它。来源有两种：
   - `config`：写在 `infra/litellm/config.yaml` 里的（`mock`、`company`、`company-qwen`、`company-embed` 等）。页面上只读，改它们仍然改配置文件和 `.env`。
   - `page`：在页面上新增的。网关把它存在自己的数据库里（LiteLLM 的 `store_model_in_db`），加上、改完立刻能调，不用重启。
-- **用途**（`purpose`）：`chat`（对话，节点用）、`embedding`（向量，知识库用）、`rerank`（重排）。页面上只能新增 `chat` 和 `embedding`；重排模型仍在配置文件里加。
+- **用途**（`purpose`）：`chat`（对话，节点用）、`embedding`（向量，知识库用）、`rerank`（重排）、`transcription`（转写，语音转写节点用，见 [transcription.md](transcription.md)）。页面上只能新增 `chat` 和 `embedding`；重排和转写模型仍在配置文件里加。
 - **key 不进平台**：页面上填的 key 直接交给网关，网关加密后存进它自己的库（用 `LITELLM_SALT_KEY` 加密）。平台的库、日志和接口都不保存、不返回 key，只记 key 是「页面上填的」还是「服务器环境变量 `XXX_API_KEY`」。这和「凭据留在连接器那边」是同一条约定。
 - **显示名和用途**记在网关里这个模型的 `model_info` 上（`aep_display_name`、`aep_purpose`、`aep_description`、`aep_provider`、`aep_key`），平台不另存一份，所以网关是模型清单的唯一来源。配置文件里的模型也在 `model_info` 里写上这几项。
 - **平台默认模型**：没指定模型的节点用默认对话模型，新建知识库默认用默认向量模型。页面上可以改；没改过时分别是 `AEP_DEFAULT_MODEL`、`AEP_DEFAULT_EMBEDDING_MODEL`。
-- **调用记录**：平台经 `aep.llm` 发出的每次模型调用（对话、向量、对话模型重排）都记一行：时间、别名、哪个运行和节点、token、费用、成败。模型页的调用量来自这里，以后的运营看板和预算也用它。
+- **调用记录**：平台经 `aep.llm` 发出的每次模型调用（对话、向量、对话模型重排、转写）都记一行：时间、别名、哪个运行和节点、token、费用、成败。模型页的调用量来自这里，以后的运营看板和预算也用它。
 
 ## 数据结构
 
@@ -22,7 +22,7 @@
 {
   "alias": "claude-sonnet",              // 小写字母开头，小写字母、数字、- 和 _，2–40 个字符；登记后不能改
   "display_name": "Claude Sonnet 5.5",    // 1–60 字符；配置文件里没写时等于 alias
-  "purpose": "chat" | "embedding" | "rerank",
+  "purpose": "chat" | "embedding" | "rerank" | "transcription",
   "provider": "anthropic" | "openai" | "azure" | "bedrock" | "dashscope" | "deepseek" | "openai_compatible" | "mock" | "other",
   "model": "claude-sonnet-5-5",           // 供应商那边的型号（去掉 LiteLLM 的 provider/ 前缀）；配置文件里引用环境变量的，是网关解析后的值
   "api_base": null | "https://aigw.example.com/v1",   // 只有 openai_compatible、azure 和填了地址的 openai 有
@@ -37,6 +37,7 @@
   "usage": {                              // 近 30 天，来自调用记录
     "calls": 12, "errors": 1,
     "prompt_tokens": 34000, "completion_tokens": 5200,
+    "audio_seconds": 0.0,                 // 转写模型听过的音频秒数（页面显示成音频分钟）
     "cost_usd": 0.18 | null,              // 网关算不出费用的调用不计入；一次都算不出时为 null
     "last_call_at": "……" | null,
     "last_error": null | "认证失败：key 不对或已失效。"   // 最近一次调用失败时的说明（下面「问题分类」里的一句）；最近一次成功时为 null
@@ -46,7 +47,7 @@
 // ModelList
 {
   "gateway": "ok" | "no_db" | "down",     // no_db：网关没接数据库，只能看不能新增；down：网关连不上，models 为 []
-  "models": [Model],                      // 先对话、再向量、再重排；同一用途里默认模型在前，其余按 alias
+  "models": [Model],                      // 先对话、再向量、再重排、再转写；同一用途里默认模型在前，其余按 alias
   "defaults": {"chat": "company", "embedding": "company-embed"}
 }
 
@@ -97,6 +98,7 @@ key 两种填法：
 测试怎么做：
 - 对话模型：发一条「请只回复：OK」，`max_tokens` 16，`reply` 是回复的前 200 个字符。
 - 向量模型：对「测试」取一次向量，要求 1024 维（平台的知识库按 1024 维建索引）；不是 1024 维、或者模型不支持指定维度时不通过。
+- 转写模型：发一段 1 秒的静音 WAV，有回答就算通过，`reply` 为 null。
 - 重排模型：不测试，返回 `{"ok": false, "problem": {"code": "unsupported", ...}}`。
 - 超时 30 秒。测试调用也记一行调用记录（不带运行）。
 
@@ -164,7 +166,7 @@ key 两种填法：
 
 新增两张平台表，都带 `tenant_id`：
 
-- `model_calls`：`at`、`model`（别名）、`kind`（`chat` | `embedding` | `rerank`）、`run_id`、`node`、`prompt_tokens`、`completion_tokens`、`cost_usd`（网关响应头 `x-litellm-response-cost`，没有时为空）、`ok`、`error`（问题分类的 `code`）、`duration_ms`。启动时删掉 180 天以前的记录。记录失败只写日志，不影响调用本身。
+- `model_calls`：`at`、`model`（别名）、`kind`（`chat` | `embedding` | `rerank` | `transcription`）、`run_id`、`node`、`prompt_tokens`、`completion_tokens`、`cost_usd`（网关响应头 `x-litellm-response-cost`，没有时为空）、`ok`、`error`（问题分类的 `code`）、`duration_ms`、`audio_seconds`（转写的音频秒数，别的调用为空）。启动时删掉 180 天以前的记录。记录失败只写日志，不影响调用本身。
 - `platform_settings`：`key`、`value`（JSON），这一版只存默认模型 `default_models`。
 
 ## 权限

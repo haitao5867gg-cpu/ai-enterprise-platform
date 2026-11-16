@@ -1,7 +1,7 @@
 import { requestJson } from "./runs";
 
 // docs/api/models.md is the source of truth for these wire types.
-export type Purpose = "chat" | "embedding" | "rerank";
+export type Purpose = "chat" | "embedding" | "rerank" | "transcription";
 export type ProviderId =
   | "anthropic"
   | "openai"
@@ -21,6 +21,8 @@ export type ModelUsageSummary = {
   errors: number;
   prompt_tokens: number;
   completion_tokens: number;
+  // Seconds of audio a transcription model heard (docs/api/transcription.md).
+  audio_seconds?: number;
   cost_usd: number | null;
   last_call_at: string | null;
   last_error: string | null;
@@ -199,6 +201,7 @@ export const purposeLabels: Record<Purpose, string> = {
   chat: "对话模型",
   embedding: "向量模型",
   rerank: "重排模型",
+  transcription: "转写模型",
 };
 // Where a model's key comes from, in the reader's language (pass `t` from useT()).
 export const keyLabel = (

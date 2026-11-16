@@ -11,12 +11,11 @@ import asyncio
 import logging
 import os
 import shutil
-import stat
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from aep.config import Settings
-from aep.media.files import thumbnail_path
+from aep.media.files import VolumeFileError, thumbnail_path, volume_file
 from aep.media.store import MediaItem, MediaStore
 from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, tool_message
 
@@ -26,6 +25,9 @@ WORK = "_work"
 PROBE_TOOL = "probe"
 RETRY_SECONDS = 60
 BATCH = 20
+
+
+OUTSIDE = "路径不在连接器的工作目录里"
 
 
 class WorkFileError(ValueError):
@@ -42,27 +44,12 @@ def work_file(root: Path, path: Any) -> Path:
     if not isinstance(path, str) or not path:
         raise WorkFileError("文件引用没有路径")
     parts = path.split("/")
-    if (
-        parts[0] != WORK
-        or len(parts) < 2
-        or "\\" in path
-        or "\x00" in path
-        or PurePosixPath(path).is_absolute()
-        or any(part in ("", ".", "..") for part in parts)
-    ):
-        raise WorkFileError(f"路径不在连接器的工作目录里：{path}")
-    current = root.resolve()
-    for part in parts:
-        current = current / part
-        try:
-            mode = current.lstat().st_mode
-        except FileNotFoundError:
-            raise WorkFileError(f"文件不见了：{path}") from None
-        if stat.S_ISLNK(mode):
-            raise WorkFileError(f"路径不在连接器的工作目录里：{path}")
-    if not stat.S_ISREG(current.lstat().st_mode):
-        raise WorkFileError(f"文件不见了：{path}")
-    return current
+    if parts[0] != WORK or len(parts) < 2:
+        raise WorkFileError(f"{OUTSIDE}：{path}")
+    try:
+        return volume_file(root, path, OUTSIDE)
+    except VolumeFileError as exc:
+        raise WorkFileError(str(exc)) from None
 
 
 def move(source: Path, target: Path) -> None:

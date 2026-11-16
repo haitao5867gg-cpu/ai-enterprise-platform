@@ -137,7 +137,11 @@ export type RunProject = {
   params: Record<string, string | number | boolean | null>;
   param_labels: Record<string, string>;
   // The project's own policy setting; null parts follow the platform default.
-  policy: { samples: SampleLevel | null; models: string[] | null };
+  policy: {
+    samples: SampleLevel | null;
+    models: string[] | null;
+    media?: PolicyMedia[] | null;
+  };
 };
 export type SampleLevel = "full" | "masked" | "stats" | "schema";
 export type RunPolicy = {
@@ -145,7 +149,10 @@ export type RunPolicy = {
   samples: SampleLevel;
   // The model aliases the run may use; null: any.
   models: string[] | null;
+  // The kinds of media files nodes may send to models (runs from before: all).
+  media?: PolicyMedia[];
 };
+export type PolicyMedia = "audio" | "image";
 export const sampleLabels: Record<SampleLevel, string> = {
   full: "完整样本",
   masked: "脱敏样本",

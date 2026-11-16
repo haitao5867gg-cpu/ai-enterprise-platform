@@ -357,6 +357,8 @@ class RunPolicy(BaseModel):
 
     samples: Literal["full", "masked", "stats", "schema"]
     models: list[str] | None
+    # Kinds of media files that may go to models (docs/api/transcription.md).
+    media: list[Literal["audio", "image"]]
 
 
 class RunSummary(BaseModel):

@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # use (comma separated; empty: any). A project may set its own.
     data_samples: Literal["full", "masked", "stats", "schema"] = "full"
     allowed_models: str = ""
+    # Which kinds of media files may be sent to models (comma separated: audio, image;
+    # empty: none), docs/api/transcription.md "数据外发策略：媒体".
+    data_media: str = "audio,image"
+    # Largest file the transcribe node sends to a transcription model.
+    transcribe_max_mb: int = Field(25, gt=0)
     # Each call to a connector (MCP server) tool; a Databricks data source's tools get
     # longer, as their statements may wait for a warehouse or cluster (longer than the
     # connector's own AEP_DATABRICKS_READ_TIMEOUT_SECONDS).

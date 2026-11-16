@@ -56,6 +56,8 @@ export const mockModels = [
   "qwen",
   "deepseek",
 ];
+// Every alias on the mock gateway, the transcription model included (mock-models.ts).
+const gatewayAliases = [...mockModels, "transcribe"];
 export const questionInput: Input = {
   key: "question",
   label: "客户问题",
@@ -610,6 +612,15 @@ const defaults: FlowNode[] = [
     top_k: 5,
     min_score: 0.3,
     retrieval: { ...mockKnowledgeOptions.retrieval },
+  },
+  {
+    id: "asr",
+    type: "transcribe",
+    title: "语音转写",
+    model: "transcribe",
+    audio: "",
+    language: "zh",
+    prompt: "",
   },
   blankConfig().graph.nodes[0],
   { ...(blankConfig().graph.nodes[1] as LlmNode), quiet: false },
@@ -1173,7 +1184,7 @@ export function missingReferences(
           datasource_id,
           message: "没有这个数据源，请在节点里重新选择",
         });
-    if ("model" in node && node.model && !mockModels.includes(node.model))
+    if ("model" in node && node.model && !gatewayAliases.includes(node.model))
       problems.push({
         kind: "model",
         name: node.model,
