@@ -45,6 +45,8 @@ const configModel = (alias: string, purpose: Model["purpose"]): Model => ({
   source: "config",
   is_default: false,
   allowed: true,
+  // The mock gateway's Qwen can look at images (docs/api/vision.md).
+  vision: alias === "qwen",
   context_window: null,
   price: null,
   usage:
@@ -120,6 +122,7 @@ export const mockModelChoices = (): ModelChoice[] =>
     label: model.display_name,
     purpose: model.purpose,
     allowed: model.allowed,
+    vision: model.vision,
   }));
 
 function problem(model: Keyed) {
@@ -212,6 +215,8 @@ async function create(request: Request) {
     );
   if (body.purpose !== "chat" && body.purpose !== "embedding")
     return mockError("「用途」的格式、长度或范围不正确", 422);
+  if (body.vision === true && body.purpose !== "chat")
+    return mockError("只有对话模型能设为能看图", 422);
   if (typeof body.display_name !== "string" || !body.display_name.trim())
     return mockError("「显示名」的格式、长度或范围不正确", 422);
   const provider = body.provider as ProviderId;
@@ -238,6 +243,7 @@ async function create(request: Request) {
     source: "page",
     is_default: false,
     allowed: true,
+    vision: body.purpose === "chat" && body.vision === true,
     context_window: null,
     price: null,
     usage: { ...EMPTY },
@@ -271,6 +277,11 @@ async function update(request: Request, model: Keyed) {
   if (typeof body.description === "string") next.description = body.description;
   if (typeof body.model === "string") next.model = body.model.trim();
   if (typeof body.api_base === "string") next.api_base = body.api_base.trim();
+  if (typeof body.vision === "boolean") {
+    if (body.vision && model.purpose !== "chat")
+      return mockError("只有对话模型能设为能看图", 422);
+    next.vision = body.vision;
+  }
   applyKey(next, body.key);
   const tested = ["model", "api_base", "api_version", "aws_region", "key"].some(
     (field) => field in body,

@@ -116,10 +116,13 @@
  "output": {"kind": "text"}
         |  {"kind": "json", "fields": [{"key": "amount", "type": "string" | "number" | "boolean" | "array" | "object", "description": "退款金额"}]},   // 可选，不写为 {"kind": "text"}
  "quiet": false,                       // 可选，默认 false；true 时文本回答不写进运行过程
- "history": false}                     // 可选，默认 false；true 时带上会话历史（应用要打开对话，见“对话”）
+ "history": false,                     // 可选，默认 false；true 时带上会话历史（应用要打开对话，见“对话”）
+ "images": ["{{start.photo}}"]}        // 可选，最多 10 项；随提示词发给能看图的模型，见 vision.md
 ```
 
 产出：`text`；JSON 输出时是每个字段（不再有 `text`）。模型没按格式回答时自动重试一次，仍不对就按 `output_format` 出错处理。无分支（设了失败分支时另有 `error`）。
+
+`images` 的写法、检查和外发策略见 [vision.md](vision.md)。
 
 `quiet` 只管运行过程（`messages`），不改产出：设了 `quiet` 的节点照样产出 `text`，后面的节点照常引用，流程视图里照常能看。给回答只是中间结果的步骤用，比如 `etl-lakehouse` 模板的「出方案」「写代码」。JSON 输出本来就不写进运行过程。`quiet` 不是 true 或 false 时保存报错，`loc` 指到 `quiet`。
 

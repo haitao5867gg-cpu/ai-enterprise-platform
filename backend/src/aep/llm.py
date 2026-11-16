@@ -184,7 +184,7 @@ def make_client(settings: Settings, http_client: httpx.AsyncClient | None = None
 
 async def chat(
     client: AsyncOpenAI,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     model: str,
     **params: object,
 ) -> ChatResult:

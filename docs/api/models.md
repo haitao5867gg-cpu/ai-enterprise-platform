@@ -7,7 +7,7 @@
 ## 概念
 
 - **模型**：网关上的一个别名（`alias`），节点和知识库按别名调用它。来源有两种：
-  - `config`：写在 `infra/litellm/config.yaml` 里的（`mock`、`company`、`company-qwen`、`company-embed` 等）。页面上只读，改它们仍然改配置文件和 `.env`。
+  - `config`：写在 `infra/litellm/config.yaml` 里的（`mock`、`company`、`company-qwen`、`company-vision`、`company-embed` 等）。页面上只读，改它们仍然改配置文件和 `.env`。
   - `page`：在页面上新增的。网关把它存在自己的数据库里（LiteLLM 的 `store_model_in_db`），加上、改完立刻能调，不用重启。
 - **用途**（`purpose`）：`chat`（对话，节点用）、`embedding`（向量，知识库用）、`rerank`（重排）、`transcription`（转写，语音转写节点用，见 [transcription.md](transcription.md)）。页面上只能新增 `chat` 和 `embedding`；重排和转写模型仍在配置文件里加。
 - **key 不进平台**：页面上填的 key 直接交给网关，网关加密后存进它自己的库（用 `LITELLM_SALT_KEY` 加密）。平台的库、日志和接口都不保存、不返回 key，只记 key 是「页面上填的」还是「服务器环境变量 `XXX_API_KEY`」。这和「凭据留在连接器那边」是同一条约定。
@@ -32,6 +32,7 @@
   "source": "config" | "page",
   "is_default": false,                    // 是不是它这个用途的平台默认模型
   "allowed": true,                        // 平台默认的数据外发策略允不允许运行用它（AEP_ALLOWED_MODELS 为空时都允许）
+  "vision": false,                        // 能看图的对话模型（model_info.supports_vision 为 true），见 vision.md；别的用途总是 false
   "context_window": 1000000 | null,       // 网关知道的最大输入 token
   "price": {"input": 3.0, "output": 15.0} | null,   // 美元 / 百万 token，网关知道时才有
   "usage": {                              // 近 30 天，来自调用记录
@@ -85,9 +86,9 @@ key 两种填法：
 | 方法 | 路径 | 请求体 | 返回 |
 | --- | --- | --- | --- |
 | GET | `/models` | | `ModelList` |
-| POST | `/models` | `{"alias", "display_name", "purpose", "provider", "model", "api_base"?, "api_version"?, "aws_region"?, "key"?, "description"?}` | 201 `Model`。先检查重名（409），再在网关上加上并测试；测试没通过就从网关删掉，返回 422，什么都不留 |
+| POST | `/models` | `{"alias", "display_name", "purpose", "provider", "model", "api_base"?, "api_version"?, "aws_region"?, "key"?, "description"?, "vision"?}` | 201 `Model`。`vision` 默认 false，只有对话模型能设为 true（否则 422「只有对话模型能设为能看图」）。先检查重名（409），再在网关上加上并测试；测试没通过就从网关删掉，返回 422，什么都不留 |
 | GET | `/models/{alias}` | | `Model` |
-| PATCH | `/models/{alias}` | `{"display_name"?, "description"?, "model"?, "api_base"?, "api_version"?, "aws_region"?, "key"?}` | `Model`。只能改 `page` 模型；`alias`、`purpose`、`provider` 不能改（422）。只改显示名和说明不测试；改了型号、地址或 key 要测试，没通过返回 422，网关上的设置保持原样 |
+| PATCH | `/models/{alias}` | `{"display_name"?, "description"?, "model"?, "api_base"?, "api_version"?, "aws_region"?, "key"?, "vision"?}` | `Model`。只能改 `page` 模型；`alias`、`purpose`、`provider` 不能改（422）。只改显示名、说明和能不能看图不测试；改了型号、地址或 key 要测试，没通过返回 422，网关上的设置保持原样 |
 | DELETE | `/models/{alias}` | | 204。只能删 `page` 模型。是平台默认模型、或者有应用的当前版本在用时 409 |
 | POST | `/models/{alias}/test` | | 200 `TestResult`，没通过也是 200，看 `ok` |
 | GET | `/models/{alias}/usage` | | `Usage` |
@@ -109,10 +110,10 @@ key 两种填法：
 `GET /apps/{app}` 的 `options` 新增（只增不改）：
 
 ```jsonc
-"model_choices": [{"alias": "claude-sonnet", "label": "Claude Sonnet 5.5", "purpose": "chat", "allowed": true}]
+"model_choices": [{"alias": "claude-sonnet", "label": "Claude Sonnet 5.5", "purpose": "chat", "allowed": true, "vision": false}]
 ```
 
-`models`、`default_model` 不变。下拉框只列 `purpose` 为 `chat` 的模型，显示 `label`（和别名不同时写成「Claude Sonnet 5.5（claude-sonnet）」），外发策略不允许的标「（外发策略不允许）」。网关连不上时 `model_choices` 为 `[]`，页面退回按 `models` 显示。
+`models`、`default_model` 不变。下拉框只列 `purpose` 为 `chat` 的模型，显示 `label`（和别名不同时写成「Claude Sonnet 5.5（claude-sonnet）」），外发策略不允许的标「（外发策略不允许）」，能看图的标「（能看图）」（`vision`，见 [vision.md](vision.md)）。网关连不上时 `model_choices` 为 `[]`，页面退回按 `models` 显示。
 
 知识库的向量模型选项（`GET /knowledge-bases/options` 的 `embedding_models`）在 `AEP_EMBEDDING_MODELS` 之外加上页面新增的向量模型，`default_embedding_model` 改为平台默认向量模型。新建知识库时同样接受这些模型。
 

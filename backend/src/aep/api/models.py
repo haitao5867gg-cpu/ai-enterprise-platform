@@ -24,6 +24,7 @@ router = APIRouter(
             "aws_region": "区域",
             "key": "key",
             "description": "说明",
+            "vision": "能看图",
             "chat": "默认对话模型",
             "embedding": "默认向量模型",
         }
@@ -56,6 +57,7 @@ class CreateModel(NoNulls):
     aws_region: Short | None = None
     key: dict[str, Any] | None = None
     description: Description = ""
+    vision: bool = False
 
 
 class UpdateModel(NoNulls):
@@ -68,6 +70,7 @@ class UpdateModel(NoNulls):
     api_version: Short | None = None
     aws_region: Short | None = None
     key: dict[str, Any] | None = None
+    vision: bool | None = None
 
 
 class Defaults(NoNulls):

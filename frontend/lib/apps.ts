@@ -85,6 +85,9 @@ export type LlmNode = NodeBase &
     quiet?: boolean;
     // The conversation's history as chat messages (docs/api/flow-apps.md, "对话").
     history?: boolean;
+    // Images sent after the prompt to a model that can see them (docs/api/vision.md):
+    // each a reference or a media path.
+    images?: string[];
   };
 export type ClassifierNode = NodeBase &
   ModelSettings &
@@ -603,6 +606,8 @@ export type ModelChoice = {
   label: string;
   purpose: "chat" | "embedding" | "rerank" | "transcription";
   allowed: boolean;
+  // A chat model that can look at images (docs/api/vision.md).
+  vision?: boolean;
 };
 
 // The model dropdown for nodes: chat models by display name, falling back to the bare
@@ -631,7 +636,9 @@ export function modelChoices(
         label:
           (choice.label && choice.label !== choice.alias
             ? `${choice.label}（${choice.alias}）`
-            : choice.alias) + (choice.allowed ? "" : "（外发策略不允许）"),
+            : choice.alias) +
+          (choice.vision ? "（能看图）" : "") +
+          (choice.allowed ? "" : "（外发策略不允许）"),
       }))
     : options.models.map((model) => ({ value: model, label: model }));
   return current && !entries.some((entry) => entry.value === current)

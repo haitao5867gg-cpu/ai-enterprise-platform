@@ -359,7 +359,8 @@ async def test_the_model_page_lists_and_tests_a_transcription_model():
     )
     # App pages offer it, by purpose, to the transcribe node.
     assert {"alias": "transcribe", "label": "语音转写（faster-whisper）",
-            "purpose": "transcription", "allowed": True} in await p.models.choices()  # fmt: skip
+            "purpose": "transcription", "allowed": True,
+            "vision": False} in await p.models.choices()  # fmt: skip
     assert tested["ok"] and tested["reply"] is None
     [sent] = [r for r in p.gateway.requests if r["url"].endswith("/audio/transcriptions")]
     assert sent["body"]["file"] == {"filename": "测试.wav", "size": 44 + 32000}

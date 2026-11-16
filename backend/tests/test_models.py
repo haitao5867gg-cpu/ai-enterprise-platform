@@ -160,6 +160,7 @@ async def test_list_reads_the_gateway_with_defaults_and_usage():
         "source": "config",
         "is_default": False,
         "allowed": True,
+        "vision": False,
         "context_window": None,
         "price": None,
         "usage": None,
@@ -501,6 +502,7 @@ async def test_app_options_name_models_by_their_display_names():
         "label": "Claude Sonnet 5.5",
         "purpose": "chat",
         "allowed": True,
+        "vision": False,
     }
     assert choices["company-embed"]["purpose"] == "embedding"
 
