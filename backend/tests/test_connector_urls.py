@@ -49,6 +49,7 @@ def test_rules_parse():
         "connector-files:8003",
         "connector-databricks:8005",
         "connector-git:8006",
+        "connector-stock:8009",
     ]
 
 

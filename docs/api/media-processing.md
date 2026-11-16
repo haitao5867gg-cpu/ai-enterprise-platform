@@ -209,7 +209,7 @@
 2. 在原地逐个探测（同上传后探测）：有一个不是能用的音视频或图片，整批不存。连不上连接器时不探测，照原样存。
 3. 都通过后，把文件和缩略图移进库里，建素材，直接是 `ready`：`source` 是 `{"kind": "run", "run_id": "<这次运行>"}`，`uploaded_by` 是 null，名称用引用的 `name`。
 
-从素材站下载的文件（比如图库连接器下载的视频），文件引用里可以带上它的来源：`{"aep_file": {"path", "name", "source": {"kind": "stock", "site", "url", "author", "license", "license_url"}}}`。
+从素材站下载的文件（比如[图库连接器](stock.md)下载的视频），文件引用里可以带上它的来源：`{"aep_file": {"path", "name", "source": {"kind": "stock", "site", "url", "author", "license", "license_url"}}}`。
 
 - `source.kind` 是 `stock`，带着素材页面的 `url`，并且字段符合 `PATCH` 素材时 `source` 的规则（[media.md](media.md)）：素材记下这个来源，不记成这次运行产出的。
 - 没带 `source`、`kind` 不是 `stock`、没有 `url`、或者字段不合规则：照旧记成 `{"kind": "run", …}`，不报错。

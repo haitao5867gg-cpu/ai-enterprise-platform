@@ -76,6 +76,7 @@ class Settings(BaseSettings):
         "connector-files:8003",
         "connector-databricks:8005",
         "connector-git:8006",
+        "connector-stock:8009",
     ]
     # Testing a connector, its health and listing its tools; stays under the web
     # proxy's 10 seconds (frontend/app/api/[...path]/route.ts).

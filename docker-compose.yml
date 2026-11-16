@@ -182,6 +182,26 @@ services:
       timeout: 3s
       retries: 20
 
+  # Stock footage (docs/api/stock.md): searches Pixabay for commercially usable video and
+  # downloads the chosen clips into its own folder on the media volume. The key goes in
+  # .env as AEP_STOCK_PIXABAY_KEY; without it the connector starts and its tools say so.
+  connector-stock:
+    build: ./connectors/stock
+    environment:
+      AEP_MEDIA_DIR: /data/media
+      AEP_STOCK_MCP_HOST: 0.0.0.0
+      AEP_STOCK_MCP_PORT: 8009
+      AEP_STOCK_PIXABAY_KEY: ${AEP_STOCK_PIXABAY_KEY:-}
+    volumes:
+      - media-data:/data/media
+    ports:
+      - "127.0.0.1:8009:8009"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # 语音转写（docs/api/transcription.md）：可选的本地 faster-whisper（speaches，CPU 版），
   # 模型网关的 transcribe 别名默认指向它。docker compose --profile asr up -d 才启动
   # （或在 .env 里写 COMPOSE_PROFILES=asr）。第一次启动时下载 ASR_MODEL 到 asr-models 卷，
@@ -414,7 +434,8 @@ services:
       AEP_DEFAULT_DATASOURCES: >-
         [{"name": "示例库", "kind": "postgres", "connector_url": "http://connector-postgres:8001/mcp", "description": "本地示例源库：客户、商品、订单"},
          {"name": "MySQL 示例库", "kind": "mysql", "connector_url": "http://connector-mysql:8002/mcp", "description": "本地 MySQL 示例源库：sales（客户、商品、订单）和 retail（零售订单，演示用），都含脏数据"},
-         {"name": "媒体处理", "kind": "mcp", "connector_url": "http://connector-media:8008/mcp", "description": "探测、抽帧和渲染媒体库里的视频、音频和图片（ffmpeg）"}]
+         {"name": "媒体处理", "kind": "mcp", "connector_url": "http://connector-media:8008/mcp", "description": "探测、抽帧和渲染媒体库里的视频、音频和图片（ffmpeg）"},
+         {"name": "图库", "kind": "mcp", "connector_url": "http://connector-stock:8009/mcp", "description": "在 Pixabay 上搜可商用的视频，把选中的下载下来存进媒体库"}]
       # Eval sets, for the eval a draft app version must pass before it is published.
       AEP_EVALS_DIR: /evals
       AEP_EVAL_DATASOURCE: ${AEP_EVAL_DATASOURCE:-示例库}
