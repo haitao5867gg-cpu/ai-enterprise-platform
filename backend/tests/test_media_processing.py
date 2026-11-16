@@ -11,7 +11,7 @@ import pytest
 
 from aep.main import app
 from aep.media import outputs, probe
-from aep.media.files import UNSUPPORTED
+from aep.media.files import UNSUPPORTED, thumbnail_path
 from aep.media.outputs import SaveError, import_key, save_outputs
 from aep.media.probe import Prober
 from aep.media.store import ItemQuery, MediaItem
@@ -414,8 +414,7 @@ async def test_records_written_while_the_database_is_lost_get_their_files(tmp_pa
         # Not known whether the records were written: the file is put back for a retry.
         [item] = await p.saved(p.footage)
         assert p.work() == ["j_1/成片.mp4"] and not (root / item.rel_path).exists()
-        await p.prober.sweep()  # probed meanwhile: no file there
-        assert (await p.media.item(p.footage, item.item_id)).status == "error"
+        assert item.has_thumbnail and not thumbnail_path(root, item).exists()
 
         # Run again once the database is back: the file joins its record, probed again.
         lost = False
@@ -425,12 +424,52 @@ async def test_records_written_while_the_database_is_lost_get_their_files(tmp_pa
         assert result == {"video": summary(item)}
         assert (root / item.rel_path).is_file() and p.work() == []
         assert item.status == "ready" and item.error is None and item.duration_seconds == 12.5
+        assert item.has_thumbnail and thumbnail_path(root, item).is_file()
         assert await p.saved(p.footage) == [item]  # no second item
 
         # Gone from both places: said so, not a summary of a missing file.
         (root / item.rel_path).unlink()
         with pytest.raises(SaveError, match="文件「成片.mp4」：文件不见了"):
             await save()
+
+
+async def test_a_file_that_is_not_media_stops_the_batch(tmp_path):
+    async with Processing(tmp_path) as p:
+        root = p.settings.media_dir
+        refs = []
+        for n, name in enumerate(["成片.mp4", "坏.mp4"]):
+            folder = root / "_work" / f"j_{n}"
+            folder.mkdir(parents=True)
+            (folder / name).write_bytes(b"\x00" * 10)
+            refs.append({"aep_file": {"path": f"_work/j_{n}/{name}", "name": name}})
+
+        async def save(value: Any) -> Any:
+            return await save_outputs(
+                value, store=p.media, settings=p.settings, prober=p.prober,
+                library_id=p.footage, run_id="r-1", summary=summary,
+            )  # fmt: skip
+
+        # Probed where the tool left them, before anything is saved.
+        with pytest.raises(SaveError, match="文件「坏.mp4」：探测失败：不是有效的视频：没有画面"):
+            await save(refs)
+        assert await p.saved(p.footage) == []
+        assert [f for f in p.work() if not f.endswith("thumbnail.jpg")] == [
+            "j_0/成片.mp4",
+            "j_1/坏.mp4",
+        ]
+        assert [a["source"] for a in p.connector.probed] == [
+            "_work/j_0/成片.mp4",
+            "_work/j_1/坏.mp4",
+        ]
+        # Run again it fails the same way, rather than handing on a file nobody can use.
+        with pytest.raises(SaveError, match="探测失败"):
+            await save(refs)
+        # The good one alone is saved ready, with what the probe found and its thumbnail.
+        [saved] = await save(refs[:1])
+        [item] = await p.saved(p.footage)
+        assert saved == summary(item) and item.status == "ready"
+        assert (item.duration_seconds, item.width, item.height) == (12.5, 1080, 1920)
+        assert item.has_thumbnail and thumbnail_path(root, item).is_file()
 
 
 async def test_a_cancel_while_moving_leaves_the_files_for_a_retry(tmp_path, monkeypatch):

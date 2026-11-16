@@ -3,12 +3,13 @@
 
 A connector writes what it makes under ``_work`` on the media volume and names each file
 in its result as ``{"aep_file": {"path", "name"}}``. A tool node with ``save_media``
-moves every such file into the library, records it as made by the run
+probes every such file, moves it into the library, records it as made by the run
 (``source.kind: run``) and puts the item's summary where the reference was, so later
 nodes, the run's ``files`` and the app API see the library's file.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import uuid
 from collections.abc import Callable
@@ -17,8 +18,16 @@ from pathlib import Path
 from typing import Any
 
 from aep.config import Settings
-from aep.media.files import KINDS, UNSUPPORTED, _short
-from aep.media.probe import Prober, WorkFileError, move, work_file
+from aep.media.files import KINDS, UNSUPPORTED, _short, thumbnail_path
+from aep.media.probe import (
+    ProbeFailed,
+    Prober,
+    WorkFileError,
+    keep_thumbnail,
+    measured,
+    move,
+    work_file,
+)
 from aep.media.store import ItemLimit, MediaItem, MediaStore, MissingLibrary
 
 MAX_SAVED = 20
@@ -74,6 +83,7 @@ class _Planned:
     path: str
     source: Path
     item: MediaItem
+    thumbnail: Any = None  # the probe's thumbnail, a work file
 
 
 def _name(ref: dict[str, Any], path: str) -> str:
@@ -138,7 +148,7 @@ async def save_outputs(
             kind=kind,
             size_bytes=size,
             rel_path=f"{library_id}/{item_id}/{name}",
-            status="processing" if prober is not None else "ready",
+            status="ready",
             description=description,
             tags=tags,
             source={"kind": "run", "run_id": run_id},
@@ -147,6 +157,8 @@ async def save_outputs(
         planned.append(_Planned(path, source, item))
     if planned and library.item_count + len(planned) > settings.media_max_items:
         raise SaveError(f"一个媒体库最多 {settings.media_max_items} 个素材")
+    if prober is not None:
+        await _probe_all(prober, planned)
     moved: list[_Planned] = []
     moving = asyncio.ensure_future(asyncio.to_thread(_move_all, root, planned, moved))
     try:
@@ -174,13 +186,24 @@ async def save_outputs(
             raise SaveError(str(exc)) from exc
         raise SaveError(f"移动文件失败：{exc}") from exc
     for plan, item in zip(planned, added, strict=True):
-        if prober is not None:
-            probed = await prober.probe(item)
-            if probed is None:  # the connector is away: usable as it is
-                probed = await store.update_item(library_id, item.item_id, status="ready")
-            item = probed or item
         saved[plan.path] = item
     return replace_refs(value, {path: summary(item) for path, item in saved.items()})
+
+
+async def _probe_all(prober: Prober, planned: list[_Planned]) -> None:
+    """Probe each file where the tool left it, before anything is saved: a file that is
+    not usable media stops the batch. While the connector is away the files are saved
+    as they are (as an upload is then)."""
+    for plan in planned:
+        item = plan.item
+        try:
+            found = await prober.look(plan.path, item.kind != "audio")
+        except ProbeFailed as exc:
+            raise SaveError(f"文件「{item.name}」：探测失败：{exc}") from None
+        if found is None:
+            return
+        plan.item = dataclasses.replace(item, **measured(found))
+        plan.thumbnail = found.get("thumbnail")
 
 
 async def _recovered(
@@ -190,6 +213,8 @@ async def _recovered(
     lost (and the check after it too), its file was put back in ``_work`` for a retry:
     it is brought in now and probed again, as a probe meanwhile found no file."""
     target = root / done.rel_path
+    if done.status == "error":
+        raise SaveError(f"文件「{done.name}」：{done.error or '用不了'}")
     if await asyncio.to_thread(target.is_file):
         return done
     try:
@@ -202,17 +227,23 @@ async def _recovered(
         raise SaveError(f"移动文件失败：{exc}") from exc
     if prober is None:
         return done
-    probed = await prober.probe(done)
+    probed = await prober.probe(done)  # its thumbnail went when the file was put back
     if probed is None:  # the connector is away: usable as it is
-        probed = await store.update_item(done.library_id, done.item_id, status="ready", error=None)
+        probed = await store.update_item(done.library_id, done.item_id, has_thumbnail=False)
+    elif probed.status == "error":
+        raise SaveError(f"文件「{done.name}」：{probed.error}")
     return probed or done
 
 
 def _move_all(root: Path, planned: list[_Planned], moved: list[_Planned]) -> None:
-    """In a worker thread: each file into the library, noted in ``moved`` once it is."""
+    """In a worker thread: each file into the library, noted in ``moved`` once it is,
+    and its thumbnail where the item's is kept."""
     for plan in planned:
         move(plan.source, root / plan.item.rel_path)
         moved.append(plan)
+        if plan.thumbnail is not None:
+            kept = keep_thumbnail(root, plan.item, plan.thumbnail)
+            plan.item = dataclasses.replace(plan.item, has_thumbnail=kept)
 
 
 class _Cleanup:
@@ -243,8 +274,13 @@ class _Cleanup:
 
 
 def _put_back(root: Path, moved: list["_Planned"]) -> None:
-    """Renames on the media volume: done at once, even while a cancel is handled."""
+    """Renames on the media volume: done at once, even while a cancel is handled. The
+    thumbnails go; a retry probes again."""
     for plan in moved:
+        try:
+            thumbnail_path(root, plan.item).unlink(missing_ok=True)
+        except OSError:
+            pass
         target = root / plan.item.rel_path
         try:
             move(target, plan.source)
