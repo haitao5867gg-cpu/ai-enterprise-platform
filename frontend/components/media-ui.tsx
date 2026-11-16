@@ -96,6 +96,7 @@ export function MediaPicker({
   onChange,
   disabled,
   common,
+  onBusy,
 }: {
   id: string;
   library: string;
@@ -104,6 +105,9 @@ export function MediaPicker({
   onChange: (value: string) => void;
   disabled: boolean;
   common: Record<string, unknown>;
+  // Told while an upload is sent or checked: the form's value is still the old one
+  // then, so the form waits rather than send it.
+  onBusy?: (busy: boolean) => void;
 }) {
   const t = useT();
   // Uploading to a library is for builders (docs/api/auth.md); others only pick.
@@ -180,6 +184,14 @@ export function MediaPicker({
     setRevision((n) => n + 1);
   }
   const busy = progress !== null || checking !== null;
+  const latestBusy = useRef(onBusy);
+  useEffect(() => {
+    latestBusy.current = onBusy;
+  });
+  useEffect(() => {
+    latestBusy.current?.(busy);
+  }, [busy]);
+  useEffect(() => () => latestBusy.current?.(false), []);
   const accepted = kinds?.length ? kinds : undefined;
   const oneKind = accepted?.length === 1 ? accepted[0] : undefined;
   const pickable = (page: MediaItem[]) =>

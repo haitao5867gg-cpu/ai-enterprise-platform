@@ -137,6 +137,7 @@
   "一段文字": "Text",
   "一般引用前一步的产出，比如 {{check_plan.plan}}。": "Usually references the previous step's output, e.g. {{check_plan.plan}}.",
   "上一条还没处理完": "The last message is still being handled",
+  "素材还在上传或检查，好了再发": "A file is still uploading or being checked; send once it is ready",
   "上传企业资料，在应用中检索并引用可信的内容。": "Upload company documents so apps can search them and cite trusted content.",
   "上传文件": "Uploaded file",
   "上传文件#按钮": "Upload a file",

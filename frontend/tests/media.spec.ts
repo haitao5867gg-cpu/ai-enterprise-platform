@@ -236,6 +236,21 @@ test("a flow app binds a library, its runs pick an item, and the run page lists 
   );
   await expect(box.getByRole("status")).toHaveCount(0);
   await expect(box.getByRole("alert")).toHaveCount(0);
+  // A replacement being checked holds the form: the run cannot start with the one
+  // chosen before.
+  const startRun = form.getByRole("button", { name: "开始运行" });
+  await expect(startRun).toBeEnabled();
+  await form
+    .getByLabel("上传一个素材")
+    .setInputFiles([file("配音2待检查.m4a", "audio/mp4")]);
+  await expect(box.getByRole("status")).toContainText(
+    "正在检查「配音2待检查.m4a」",
+  );
+  await expect(startRun).toBeDisabled();
+  await expect(picker.locator("option:checked")).toContainText(
+    "配音2待检查.m4a",
+  );
+  await expect(startRun).toBeEnabled();
 
   await form
     .getByLabel("上传一个素材")

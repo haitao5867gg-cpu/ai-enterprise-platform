@@ -79,6 +79,10 @@ export function NewRun({
   const [error, setError] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // Media inputs still uploading or checking a file (their value is the old one), by
+  // field group.
+  const [mediaBusy, setMediaBusy] = useState({ basic: false, advanced: false });
+  const waitingForMedia = mediaBusy.basic || mediaBusy.advanced;
   const [source, setSource] = useState<Run | null>(null);
   const [sourceError, setSourceError] = useState("");
   const [sourceRevision, setSourceRevision] = useState(0);
@@ -228,6 +232,7 @@ export function NewRun({
     if (
       busy.current ||
       uploading ||
+      waitingForMedia ||
       needsSource ||
       copyBlocked ||
       !detail ||
@@ -535,6 +540,9 @@ export function NewRun({
                 errors={errors}
                 disabled={submitting || uploading}
                 datasources={sources}
+                onBusy={(busy) =>
+                  setMediaBusy((had) => ({ ...had, basic: busy }))
+                }
               />
               {advanced.length > 0 && (
                 <details
@@ -560,6 +568,9 @@ export function NewRun({
                     errors={errors}
                     disabled={submitting || uploading}
                     datasources={sources}
+                    onBusy={(busy) =>
+                      setMediaBusy((had) => ({ ...had, advanced: busy }))
+                    }
                   />
                 </details>
               )}
@@ -650,6 +661,7 @@ export function NewRun({
               disabled={
                 submitting ||
                 uploading ||
+                waitingForMedia ||
                 !detail ||
                 detail.app !== app ||
                 Boolean(appsError) ||
