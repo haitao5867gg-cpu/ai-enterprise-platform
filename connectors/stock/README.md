@@ -10,7 +10,7 @@ MCP Streamable HTTP，默认端口 **8009**，端点 `/mcp`，`GET /healthz` 检
 
 ## 文件和 key
 
-- 和平台挂同一个媒体卷（`AEP_MEDIA_DIR`，默认 `/data/media`），只写 `_work/stock/`，超过 24 小时的文件删掉。平台按节点的 `save_media` 把要留的移进媒体库。
+- 和平台挂同一个媒体卷（`AEP_MEDIA_DIR`，默认 `/data/media`），只写 `_work/stock/`，超过 24 小时的文件删掉。下载的视频留在 `cache/`，每次回答给一份自己的硬链接，平台按节点的 `save_media` 把它移进媒体库，不影响别的运行。
 - 镜像里的进程先以 root 启动，只为把 `_work/stock` 交给 65532 用户，然后用 `setpriv` 降到这个用户运行。
 - Pixabay 的 API key 只放在服务器的 `.env`（`AEP_STOCK_PIXABAY_KEY`）。key 是请求地址里的参数，所以连接器不记录请求地址，错误里也不带 key。
 - 搜索结果缓存 24 小时；任务只记在内存里。

@@ -1,4 +1,6 @@
 import asyncio
+import re
+import shutil
 import time
 
 import httpx
@@ -133,7 +135,7 @@ async def test_thumbnails_are_work_files_and_a_missing_one_is_null(settings, tra
         assert ref == {"path": "_work/stock/thumbs/pixabay-1.jpg", "name": "pixabay-1.jpg"}
         assert (settings.media_dir / ref["path"]).read_bytes().startswith(b"\xff\xd8")
         # The poster is the smallest one of at least 360 px.
-        assert not list(work(settings.media_dir).glob("*.part-*"))
+        assert not list(work(settings.media_dir).rglob("*.part-*"))
     await jobs.close()
     await pixabay.close()
 
@@ -147,10 +149,12 @@ async def test_a_download_gets_the_smallest_sharp_enough_version_with_its_source
         job = reply.structured_content["aep_job"]
         assert job["status"] == "done"
         result = job["result"]
+        handed = result["file"]["aep_file"]["path"]
+        assert re.fullmatch(r"_work/stock/out-[0-9a-f]{16}/pixabay-2-1920x1080\.mp4", handed)
         assert result == {
             "file": {
                 "aep_file": {
-                    "path": "_work/stock/pixabay-2-1920x1080.mp4",
+                    "path": handed,
                     "name": "pixabay-2.mp4",
                     "source": {
                         "kind": "stock",
@@ -170,12 +174,17 @@ async def test_a_download_gets_the_smallest_sharp_enough_version_with_its_source
         assert path.stat().st_size == 1_080_000
         assert fake.downloads == ["2-1_medium.mp4"]
 
-        # Asked again under its key: the same job. Again under no key: the file is there.
+        # Asked again under its key: the same job. Again under no key: the download is
+        # there, and this answer gets its own file, which saving the first one into a
+        # library (a move) leaves alone.
         again = await call(client, "download_video", {"id": "pixabay:2"}, JOB_KEY)
         assert again.structured_content["aep_job"]["job_id"] == job["job_id"]
-        other = await call(client, "download_video", {"id": "pixabay:2"})
-        assert other.structured_content["aep_job"]["result"] == result
+        other = (await call(client, "download_video", {"id": "pixabay:2"})).structured_content
+        mine = other["aep_job"]["result"]["file"]["aep_file"]["path"]
+        assert mine != handed and mine.endswith("/pixabay-2-1920x1080.mp4")
         assert fake.downloads == ["2-1_medium.mp4"]
+        path.rename(settings.media_dir / "saved.mp4")
+        assert (settings.media_dir / mine).stat().st_size == 1_080_000
         sharper = await call(client, "download_video", {"id": "pixabay:2", "min_short_side": 2160})
         assert sharper.structured_content["aep_job"]["result"]["width"] == 3840
 
@@ -217,15 +226,35 @@ async def test_a_slow_download_is_handed_back_and_can_be_cancelled(tmp_path, tra
         assert (tmp_path / done["result"]["file"]["aep_file"]["path"]).stat().st_size == 1_080_000
 
         # Cancelled half way: the part file goes.
-        (tmp_path / done["result"]["file"]["aep_file"]["path"]).unlink()
+        cache = work(tmp_path) / "cache"
+        for found in cache.glob("*.mp4"):
+            found.unlink()
         fake.release.clear()
         started = await call(client, "download_video", {"id": "pixabay:5"}, "b" * 64)
         job_id = started.structured_content["aep_job"]["job_id"]
-        assert list(work(tmp_path).glob("*.part-*"))
+        assert list(cache.glob("*.part-*"))
         stopped = await call(client, "aep_job_cancel", {"job_id": job_id})
         assert stopped.structured_content["aep_job"]["status"] == "cancelled"
-        assert not list(work(tmp_path).glob("*.part-*"))
-        assert not list(work(tmp_path).glob("*.mp4"))
+        assert not list(cache.glob("*.part-*"))
+        assert not list(cache.glob("*.mp4"))
+    await jobs.close()
+    await pixabay.close()
+
+
+async def test_the_folders_come_back_after_the_work_folder_is_cleared(settings, transport, fake):
+    server, jobs, pixabay = build(settings, transport)
+    async with Client(server) as client:
+        first = await call(client, "download_video", {"id": "pixabay:1"})
+        assert first.structured_content["aep_job"]["status"] == "done"
+        # The media connector clears old folders in _work, this one included.
+        shutil.rmtree(work(settings.media_dir))
+        found = await call(client, "search_videos", {"query": "kitchen", "thumbnails": True})
+        assert found.structured_content["items"][0]["thumbnail"] is not None
+        again = await call(client, "download_video", {"id": "pixabay:1"})
+        job = again.structured_content["aep_job"]
+        assert job["status"] == "done", job
+        assert (settings.media_dir / job["result"]["file"]["aep_file"]["path"]).is_file()
+        assert fake.downloads == ["1-1_medium.mp4"] * 2
     await jobs.close()
     await pixabay.close()
 

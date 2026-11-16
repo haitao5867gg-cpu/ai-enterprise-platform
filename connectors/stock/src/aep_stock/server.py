@@ -2,7 +2,10 @@
 (docs/api/stock.md)."""
 
 import asyncio
+import os
 import re
+import secrets
+import shutil
 import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -30,6 +33,8 @@ LOOKS = ToolAnnotations(
 WORK = "_work"
 FOLDER = "stock"
 THUMBS = "thumbs"
+CACHE = "cache"
+OUT = "out-"
 SWEEP_SECONDS = 3600
 ID = re.compile(r"pixabay:(\d{1,12})")
 
@@ -41,7 +46,12 @@ def _key(ctx: Context) -> str | None:
 
 
 class Folder:
-    """``_work/stock`` on the media volume: downloads, and thumbnails under ``thumbs``."""
+    """``_work/stock`` on the media volume: downloads kept under ``cache``, each answer's
+    own copy of one (a hard link) in a folder of its own, thumbnails under ``thumbs``.
+
+    A run's save moves the file it was handed into a library, so two runs downloading
+    one clip each get their own. The media connector also clears old folders in
+    ``_work``, so the folders are made again before every write."""
 
     def __init__(self, media_dir: Path, keep_hours: float) -> None:
         self.root = media_dir.resolve()
@@ -49,10 +59,18 @@ class Folder:
         self.keep_seconds = keep_hours * 3600
         self.swept = 0.0
 
+    @property
+    def cache(self) -> Path:
+        return self.path / CACHE
+
+    @property
+    def thumbs(self) -> Path:
+        return self.path / THUMBS
+
     def prepare(self) -> None:
-        for folder in (self.root / WORK, self.path, self.path / THUMBS):
+        for folder in (self.root / WORK, self.path, self.cache, self.thumbs):
             if folder.is_symlink():
-                raise RuntimeError(f"{folder} 不能是软链接")
+                raise StockError(f"{self.relative(folder)} 不能是软链接")
             folder.mkdir(exist_ok=True)
 
     def relative(self, path: Path) -> str:
@@ -71,18 +89,36 @@ class Folder:
             return False
         return path.is_file() and time.time() - info.st_mtime < self.keep_seconds
 
+    def hand_out(self, cached: Path) -> Path:
+        """This answer's own copy of a downloaded file."""
+        self.prepare()
+        folder = self.path / f"{OUT}{secrets.token_hex(8)}"
+        folder.mkdir()
+        target = folder / cached.name
+        try:
+            os.link(cached, target)
+        except OSError:  # a file system without hard links
+            shutil.copyfile(cached, target)
+        return target
+
     def sweep(self) -> None:
-        """Remove downloads and thumbnails older than the keep time (at most hourly)."""
+        """Remove downloads, handed-out copies and thumbnails older than the keep time
+        (at most hourly)."""
         now = time.time()
         if now - self.swept < SWEEP_SECONDS:
             return
         self.swept = now
-        for folder in (self.path, self.path / THUMBS):
+        for folder in (self.path, self.cache, self.thumbs):
             if not folder.is_dir():
                 continue
             for path in folder.iterdir():
                 try:
-                    if path.is_file() and now - path.lstat().st_mtime >= self.keep_seconds:
+                    if now - path.lstat().st_mtime < self.keep_seconds:
+                        continue
+                    if path.is_dir() and not path.is_symlink():
+                        if path.name.startswith(OUT):
+                            shutil.rmtree(path, ignore_errors=True)
+                    else:
                         path.unlink(missing_ok=True)
                 except OSError:
                     continue
@@ -131,7 +167,7 @@ def build(
         url = clip.thumbnail()
         if url is None:
             return None
-        target = folder.path / THUMBS / f"pixabay-{clip.number}.jpg"
+        target = folder.thumbs / f"pixabay-{clip.number}.jpg"
         if not folder.fresh(target) and not await pixabay.image(url, target):
             return None
         return folder.ref(target, target.name)
@@ -159,6 +195,10 @@ def build(
         if not query.strip():
             raise ToolError("搜索词不能是空的")
         folder.sweep()
+        try:
+            folder.prepare()
+        except StockError as exc:
+            raise ToolError(str(exc)) from None
         try:
             clips = await pixabay.search(query, lang)
         except StockError as exc:
@@ -214,19 +254,27 @@ def build(
             raise ToolError(f"这段视频没有短边 {min_short_side} 像素以上的版本")
         if version.size > max_bytes:
             raise ToolError(f"文件超过 {settings.stock_max_mb} MB，没有下载")
-        target = folder.path / f"pixabay-{clip.number}-{version.width}x{version.height}.mp4"
-        result = {
-            "file": folder.ref(target, f"pixabay-{clip.number}.mp4", clip.source()),
-            "width": version.width,
-            "height": version.height,
-            "seconds": clip.seconds,
-        }
-        if folder.fresh(target):
-            return jobs.envelope(jobs.done(key, result))
+        cached = folder.cache / f"pixabay-{clip.number}-{version.width}x{version.height}.mp4"
+
+        def answer(path: Path) -> dict[str, Any]:
+            return {
+                "file": folder.ref(path, f"pixabay-{clip.number}.mp4", clip.source()),
+                "width": version.width,
+                "height": version.height,
+                "seconds": clip.seconds,
+            }
+
+        try:
+            folder.prepare()
+            if folder.fresh(cached):
+                return jobs.envelope(jobs.done(key, answer(folder.hand_out(cached))))
+        except (StockError, OSError) as exc:
+            raise ToolError(f"放不下下载的文件：{exc}") from None
 
         async def work(report: Any) -> dict[str, Any]:
-            await pixabay.download(version.url, target, max_bytes, report)
-            return result
+            folder.prepare()
+            await pixabay.download(version.url, cached, max_bytes, report)
+            return answer(folder.hand_out(cached))
 
         # The same key may have been handed in again while Pixabay was asked.
         known = jobs.find(key)

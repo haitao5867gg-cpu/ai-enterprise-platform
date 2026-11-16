@@ -6,7 +6,9 @@
 
 ## 连接器（`connectors/stock`）
 
-MCP Streamable HTTP，地址 `http://connector-stock:8009/mcp`，`GET /healthz` 检查进程存活。和媒体处理连接器挂同一个媒体卷，只写 `_work/stock/`（下载的视频）和 `_work/stock/thumbs/`（缩略图），超过 24 小时的文件自己删掉（媒体处理连接器清 `_work` 时也会清）。
+MCP Streamable HTTP，地址 `http://connector-stock:8009/mcp`，`GET /healthz` 检查进程存活。和媒体处理连接器挂同一个媒体卷，只写 `_work/stock/`：下载的视频留在 `cache/`，每次回答给一份自己的（`out-<随机>/` 下的硬链接，不支持硬链接时复制一份），缩略图在 `thumbs/`。超过 24 小时的自己删掉；媒体处理连接器清 `_work` 时也可能整个清掉，所以每次写之前重新建目录。
+
+每次回答一份自己的文件，是因为运行用 `save_media` 存库时会把文件移走：两次运行同时下载同一段、存进不同的库时，互不影响。
 
 Pixabay 的规矩照办：
 
@@ -55,7 +57,7 @@ Pixabay 的规矩照办：
 {"id": "pixabay:12345", "min_short_side": 1080}
 
 // 结果（长任务做完时的 result，见 connector-jobs.md）
-{"file": {"aep_file": {"path": "_work/stock/pixabay-12345-1080x1920.mp4",
+{"file": {"aep_file": {"path": "_work/stock/out-3f9a…/pixabay-12345-1080x1920.mp4",
                        "name": "pixabay-12345.mp4",
                        "source": {"kind": "stock", "site": "Pixabay",
                                   "url": "https://pixabay.com/videos/id-12345/",
@@ -117,5 +119,5 @@ Pixabay 的规矩照办：
 连接器测试（`connectors/stock/tests`）用进程内的假 Pixabay（API 和 CDN 都是假的，不连外网）：
 
 - 搜索：按短边、横竖、时长过滤，选满足条件的最小版本，`limit`、`total`；只要实拍、安全搜索、前 100 条，语言照参数；同样的搜索（大小写、空格不同也算）24 小时内只问一次，过期后再问；缩略图下载成工作文件，有一张失败时只有那条是 null。
-- 下载：拿到满足条件的最小版本，结果带 `source`；同一个任务键是同一个任务；24 小时内再下直接用已有的文件；没有够清楚的版本、文件超过上限、id 不对、Pixabay 上没有了时报错；慢的交回任务、能查到进度、做完后有结果；取消后删掉没下完的文件。
+- 下载：拿到满足条件的最小版本，结果带 `source`；同一个任务键是同一个任务；24 小时内再下直接用已有的文件，每次回答一份自己的、移走一份不影响另一份；`_work/stock` 被整个清掉后照常下载；没有够清楚的版本、文件超过上限、id 不对、Pixabay 上没有了时报错；慢的交回任务、能查到进度、做完后有结果；取消后删掉没下完的文件。
 - 错误：没配 key（不问 Pixabay）、key 不对、429、5xx、回答看不懂、连不上；错误里不带 key。
