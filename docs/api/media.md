@@ -50,12 +50,13 @@
     "run_id": null | "……"          // kind 为 run 时是产出它的运行
   },
   "uploaded_by": "王教练" | null,
+  "has_thumbnail": false,          // 有缩略图（媒体处理连接器探测时做的），见 media-processing.md
   "created_at": "……", "updated_at": "……"
 }
 ```
 
 - `kind` 按扩展名定：视频 `.mp4 .mov .m4v .webm .mkv`，音频 `.m4a .mp3 .wav .aac .ogg .opus .flac`，图片 `.jpg .jpeg .png .webp`。别的扩展名返回 422「文件「x」：只支持视频（mp4、mov、m4v、webm、mkv）、音频（m4a、mp3、wav、aac、ogg、opus、flac）和图片（jpg、jpeg、png、webp）」。
-- `status`：上传后是 `processing`，平台在后台探测时长、宽高（媒体处理连接器，后续批次）后变成 `ready` 或 `error`。**没有配置媒体处理连接器时**，上传后直接是 `ready`，`duration_seconds`、`width`、`height`、`orientation` 都是 null。
+- `status`：上传后是 `processing`，平台在后台用媒体处理连接器探测时长、宽高、做缩略图后变成 `ready` 或 `error`（[media-processing.md](media-processing.md)“上传后探测”）。**没有配置媒体处理连接器时**，上传后直接是 `ready`，`duration_seconds`、`width`、`height`、`orientation` 都是 null。
 - `error` 的素材也能下载、能删，只是流程不会选中它。
 
 ## 接口
@@ -93,6 +94,7 @@
 | `AEP_MEDIA_DIR` | `/data/media` | 文件存放目录；compose 里是 `media-data` 卷，媒体处理连接器挂同一个卷 |
 | `AEP_MEDIA_MAX_FILE_MB` | 1024 | 单个文件上限 |
 | `AEP_MEDIA_MAX_ITEMS` | 5000 | 一个库最多几个素材 |
+| `AEP_MEDIA_CONNECTOR_URL` | 空 | 媒体处理连接器的 MCP 地址；设了才探测上传的素材、做缩略图（compose 里是 `http://connector-media:8008/mcp`） |
 
 ## 应用用媒体库（`/v1` 传文件）
 

@@ -3,9 +3,11 @@
 ``build``: same tools and result shapes as connectors/postgres (issue #6), serving a
 small shop database (customers and orders) with some dirty rows. ``build_databricks``:
 the 6 tools of connectors/databricks over two tables of a Databricks catalog.
+``MediaConnector``: the media processing connector's ``probe`` and a tool that makes files.
 """
 
 import re
+from pathlib import Path
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
@@ -688,5 +690,88 @@ class JobConnector:
                 self.jobs[job_id]["status"] = "cancelled"
                 return self.envelope(job_id)
             raise ToolError("没有这个任务")
+
+        return server
+
+
+MEDIA_URL = "http://media.test/mcp"
+MEDIA_KINDS = {".mp4": "video", ".mov": "video", ".m4a": "audio", ".mp3": "audio"}
+MEDIA_KINDS |= {".wav": "audio", ".jpg": "image", ".png": "image"}
+JPEG = b"\xff\xd8\xff\xe0" + bytes(64) + b"\xff\xd9"
+
+
+class MediaConnector:
+    """The media processing connector (docs/api/media-processing.md) over the media
+    directory ``root`` on the test's disk.
+
+    ``probe`` finds 12.5 seconds at 1080×1920 (audio: no size); a file with 坏 in its
+    name is not a usable video. Asked for a thumbnail, it writes one under ``_work``.
+    ``make`` writes the files it is asked for under ``_work`` and names them in its
+    result: ``files`` is ``[{"name", "size", "path", "link"}]``, where ``path`` names a
+    reference without writing a file and ``link`` writes a symbolic link to that path.
+    ``down`` is how many of the next calls find it unreachable (see :meth:`resolve`)."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.down = 0
+        self.probed: list[dict] = []
+        self.tasks = 0
+
+    def resolve(self, server: MCPServer) -> MCPServer:
+        if self.down:
+            self.down -= 1
+            raise ConnectionRefusedError("connector restarting")
+        return server
+
+    def _task(self) -> tuple[str, Path]:
+        self.tasks += 1
+        rel = f"_work/t_{self.tasks}"
+        folder = self.root / rel
+        folder.mkdir(parents=True, exist_ok=True)
+        return rel, folder
+
+    def build(self) -> MCPServer:
+        server = MCPServer("fake-media")
+
+        @server.tool()
+        def probe(source: str, thumbnail: bool = False) -> dict:
+            """What a media file is."""
+            self.probed.append({"source": source, "thumbnail": thumbnail})
+            path = self.root / source
+            if not path.is_file():
+                raise ToolError(f"文件不存在：{source}")
+            if "坏" in path.name:
+                raise ToolError("不是有效的视频：没有画面")
+            kind = MEDIA_KINDS.get(path.suffix.lower(), "video")
+            found: dict = {
+                "kind": kind,
+                "duration_seconds": None if kind == "image" else 12.5,
+                "width": None if kind == "audio" else 1080,
+                "height": None if kind == "audio" else 1920,
+                "size_bytes": path.stat().st_size,
+            }
+            if thumbnail and kind != "audio":
+                rel, folder = self._task()
+                (folder / "thumbnail.jpg").write_bytes(JPEG)
+                found["thumbnail"] = {
+                    "aep_file": {"path": f"{rel}/thumbnail.jpg", "name": "thumbnail.jpg"}
+                }
+            return found
+
+        @server.tool()
+        def make(files: list[dict]) -> dict:
+            """Make files."""
+            rel, folder = self._task()
+            refs = []
+            for spec in files:
+                name = spec["name"]
+                path = spec.get("path") or f"{rel}/{name}"
+                if spec.get("link"):
+                    (folder / name).symlink_to(self.root / spec["link"])
+                    path = f"{rel}/{name}"
+                elif not spec.get("path"):
+                    (folder / name).write_bytes(b"\x00" * spec.get("size", 2048))
+                refs.append({"aep_file": {"path": path, "name": name}})
+            return {"video": refs[0], "all": refs, "count": len(refs)}
 
         return server

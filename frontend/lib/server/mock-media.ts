@@ -41,6 +41,11 @@ const TYPES: Record<string, string> = {
   webp: "image/webp",
 };
 
+// The mock's thumbnail: a grey frame (the real one is a JPG the connector made).
+const POSTER =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="270" height="480">' +
+  '<rect width="270" height="480" fill="#8a8f98"/></svg>';
+
 function newItem(
   library_id: string,
   name: string,
@@ -65,6 +70,7 @@ function newItem(
     usable: true,
     source: { kind: "upload" },
     uploaded_by: null,
+    has_thumbnail: false,
     created_at: now(),
     updated_at: now(),
     ...extra,
@@ -100,6 +106,7 @@ function seed(): Store {
       description: "健身房杠铃卧推，侧面全景",
       tags: ["胸", "卧推"],
       uploaded_by: "王教练",
+      has_thumbnail: true,
     }),
   );
   add(
@@ -323,6 +330,12 @@ export async function mockMedia(
   const entry = store.items.get(itemId);
   if (!entry || entry.item.library_id !== id)
     return mockError("没有这个素材", 404);
+  if (action === "thumbnail") {
+    if (!entry.item.has_thumbnail) return mockError("这个素材没有缩略图", 404);
+    return new Response(POSTER, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache" },
+    });
+  }
   if (action === "file") {
     const ext = entry.item.name.split(".").pop()?.toLowerCase() ?? "";
     return new Response(entry.bytes.slice().buffer, {

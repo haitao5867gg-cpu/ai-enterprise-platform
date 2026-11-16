@@ -9,6 +9,7 @@ import {
   listMediaItems,
   mediaAccept,
   mediaFileUrl,
+  mediaPosterUrl,
   mediaKindLabels,
   mediaUploadProblem,
   uploadMediaWithProgress,
@@ -23,10 +24,13 @@ export function MediaPreview({
   kind,
   src,
   name,
+  poster,
 }: {
   kind: MediaKind;
   src: string;
   name: string;
+  // A thumbnail: the video shows it and loads nothing until it plays.
+  poster?: string;
 }) {
   if (kind === "image")
     // A user's own file through the proxy: next/image would try to optimise it.
@@ -46,8 +50,9 @@ export function MediaPreview({
     <video
       className="media-preview"
       src={src}
+      poster={poster}
       controls
-      preload="metadata"
+      preload={poster ? "none" : "metadata"}
       playsInline
       aria-label={name}
     />
@@ -296,6 +301,7 @@ export function MediaPicker({
           kind={shown.kind}
           src={mediaFileUrl(shown.library_id, shown.item_id)}
           name={shown.name}
+          poster={mediaPosterUrl(shown)}
         />
       )}
       {error && (

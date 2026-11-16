@@ -236,3 +236,28 @@ async def test_libraries_with_a_given_id_and_the_items_a_run_made(store):
     assert await store.run_items(run, ["not-a-uuid"], 10) == []
     await store.delete_library(wanted)
     await store.delete_library(other.library_id)
+
+
+async def test_items_waiting_for_a_probe_and_files_a_run_saved(store):
+    library = await store.create_library(_name("成片"))
+    lid = library.library_id
+    waiting = [_item(lid, f"{n}.mp4", status="processing") for n in ("一", "二")]
+    saved = _item(lid, "成片.mp4", import_key="k" * 64, source={"kind": "run", "run_id": "r"})
+    await store.add_items(lid, [*waiting, _item(lid, "好了.mp4"), saved], 10)
+    mine = [i for i in await store.processing(1000) if i.library_id == lid]
+    assert [i.name for i in mine] == ["一.mp4", "二.mp4"]
+    assert len(await store.processing(1)) == 1
+
+    probed = await store.update_item(
+        lid, waiting[0].item_id, status="ready", duration_seconds=3.5, has_thumbnail=True
+    )
+    assert probed is not None and probed.has_thumbnail and probed.duration_seconds == 3.5
+    assert await store.item(lid, waiting[0].item_id) == probed
+    assert [i.name for i in await store.processing(1000) if i.library_id == lid] == ["二.mp4"]
+
+    found = await store.imported(lid, "k" * 64)
+    assert found is not None and found.item_id == saved.item_id
+    assert found.import_key == "k" * 64
+    assert await store.imported(lid, "x" * 64) is None
+    assert await store.imported("not-a-uuid", "k" * 64) is None
+    await store.delete_library(lid)

@@ -348,3 +348,111 @@ test("the run's media picker lists a big library page by page", async ({
   await picker.selectOption((await oldest.getAttribute("value"))!);
   await expect(form.locator("audio")).toHaveCount(1);
 });
+
+test("a tool node saves its files into a library bound for writing, and items show their thumbnail", async ({
+  page,
+  request,
+}) => {
+  const app = unique("cut");
+  expect(
+    (
+      await request.post("/api/apps", {
+        data: { app, title: "剪成片", from: { blank: true } },
+      })
+    ).status(),
+  ).toBe(201);
+  const library = await libraryNamed(request, "教练素材");
+  const detail = (await (
+    await request.get(`/api/apps/${app}`)
+  ).json()) as AppDetail;
+  const config = structuredClone(
+    (detail.draft ?? detail.current).config,
+  ) as FlowConfig;
+  config.graph.nodes.push({
+    id: "cut",
+    type: "tool",
+    title: "合成成片",
+    datasource: "ticket-tools",
+    tool: "search_tickets",
+    args: {},
+  });
+  config.graph.edges = [
+    { from: "start", to: "cut" },
+    { from: "cut", to: "answer" },
+    { from: "answer", to: "end" },
+  ];
+  config.media = {
+    libraries: [{ library_id: library.library_id, access: "read" }],
+  };
+  const put = await request.put(`/api/apps/${app}/draft`, {
+    data: { config },
+  });
+  expect(put.status(), await put.text()).toBe(200);
+
+  // Only a library bound for writing can take the files.
+  await page.goto(`/apps/${app}`);
+  await page
+    .getByRole("button", { name: /合成成片/ })
+    .first()
+    .click();
+  const save = page
+    .getByRole("region", { name: /^节点设置：/ })
+    .getByRole("group", { name: "产出的文件存进媒体库" });
+  const where = save.getByLabel("存进哪个库");
+  await expect(where.locator("option")).toHaveText([
+    "不存（文件 24 小时后删掉）",
+  ]);
+  await expect(save).toContainText("先在“媒体库”里以“写”权限绑定一个库。");
+  await page
+    .getByRole("region", { name: "媒体库" })
+    .getByLabel("权限")
+    .selectOption("write");
+  await where.selectOption(library.library_id);
+  await save
+    .getByRole("textbox", { name: "素材说明" })
+    .fill("{{start.question}} 的成片");
+  await save.getByLabel("素材标签").fill("成片，卧推 成片");
+  await save.getByLabel("素材标签").blur();
+  await expect(save.getByLabel("素材标签")).toHaveValue("成片, 卧推");
+  const saving = page.waitForRequest(
+    (r) => r.url().endsWith(`/api/apps/${app}/draft`) && r.method() === "PUT",
+  );
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  const sent = (await saving).postDataJSON() as { config: FlowConfig };
+  expect(
+    sent.config.graph.nodes.find((node) => node.id === "cut"),
+  ).toMatchObject({
+    save_media: {
+      library: library.library_id,
+      description: "{{start.question}} 的成片",
+      tags: ["成片", "卧推"],
+    },
+  });
+
+  // Choosing 不存 takes the setting off the node.
+  await where.selectOption("");
+  await expect(save.getByRole("textbox", { name: "素材说明" })).toHaveCount(0);
+  const clearing = page.waitForRequest(
+    (r) => r.url().endsWith(`/api/apps/${app}/draft`) && r.method() === "PUT",
+  );
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  const cleared = (await clearing).postDataJSON() as { config: FlowConfig };
+  expect(
+    cleared.config.graph.nodes.find((node) => node.id === "cut"),
+  ).not.toHaveProperty("save_media");
+
+  // A probed video shows its thumbnail until it is played.
+  await page.goto(`/media/${library.library_id}`);
+  const card = page
+    .getByRole("list", { name: "素材列表" })
+    .getByRole("listitem")
+    .filter({ hasText: "卧推侧面.mp4" });
+  const video = card.locator("video");
+  await expect(video).toHaveAttribute(
+    "poster",
+    /\/api\/media-libraries\/.+\/items\/.+\/thumbnail$/,
+  );
+  await expect(video).toHaveAttribute("preload", "none");
+  const poster = await request.get((await video.getAttribute("poster"))!);
+  expect(poster.status()).toBe(200);
+});

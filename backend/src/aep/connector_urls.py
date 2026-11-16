@@ -190,10 +190,14 @@ def _service(url: str) -> tuple[str, int] | None:
 
 
 def allowed_rules(s: "Settings") -> list[HostRule]:
-    """AEP_CONNECTOR_HOSTS, and the exact host and port of the files connector and of
-    every default data source."""
+    """AEP_CONNECTOR_HOSTS, and the exact host and port of the files connector, the media
+    processing connector and every default data source."""
     rules = [parse_rule(r) for r in s.connector_hosts]
-    urls = [s.files_connector_url, *(d.get("connector_url", "") for d in s.default_datasources)]
+    urls = [
+        s.files_connector_url,
+        s.media_connector_url,
+        *(d.get("connector_url", "") for d in s.default_datasources),
+    ]
     for url in urls:
         if (found := _service(url)) is not None:
             rules.append(HostRule(*found))

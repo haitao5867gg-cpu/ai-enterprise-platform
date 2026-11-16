@@ -64,6 +64,7 @@ from aep.installs import PostgresInstallStore, Runtime
 from aep.knowledge.keywords import warm
 from aep.knowledge.store import PostgresKnowledgeStore
 from aep.knowledge.worker import KnowledgeWorker
+from aep.media.probe import Prober
 from aep.media.store import PostgresMediaStore
 from aep.models import GatewayAdmin, ModelService, PostgresCallStore
 from aep.notify import Notifier, PostgresNotificationStore
@@ -293,11 +294,17 @@ def create_app() -> FastAPI:
         app.state.databricks = databricks
         app.state.knowledge = knowledge_store
         app.state.media = media_store
+        # Uploads are probed by the media processing connector when it is set
+        # (docs/api/media-processing.md), on the platform and on a runtime alike.
+        media_prober = Prober(media_store, tools, settings)
+        app.state.media_prober = media_prober
         knowledge_worker = KnowledgeWorker(knowledge_store, llm_client)
         app.state.knowledge_worker = knowledge_worker
         background: list[asyncio.Task] = []
         if not runtime_mode:
             background.append(asyncio.create_task(knowledge_worker.run()))
+        if media_prober.enabled:
+            background.append(asyncio.create_task(media_prober.run()))
         # Runs started on a schedule (docs/api/schedules.md).
         schedule_store = PostgresScheduleStore(pool)
         await schedule_store.setup()

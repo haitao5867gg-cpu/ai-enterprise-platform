@@ -36,6 +36,8 @@ from aep.knowledge.retrieval import Retrieval
 from aep.knowledge.retrieval import defaults as retrieval_defaults
 from aep.knowledge.search import record_hits, search
 from aep.knowledge.store import Chunk, Hit, KnowledgeStore, today_in
+from aep.media.outputs import SaveError, save_outputs
+from aep.media.probe import Prober
 from aep.media.store import MediaStore
 from aep.policy import DataPolicy
 from aep.projects import project_value
@@ -1963,6 +1965,9 @@ async def check_tool(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:
     )
     if not isinstance(node.get("args", {}), dict):
         p.add(("args",), "参数必须是对象")
+    if node.get(flowmedia.SAVE) is not None:
+        for loc, message in flowmedia.save_problems(node[flowmedia.SAVE]):
+            p.add(loc, message)
 
 
 async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Outcome:
@@ -1983,7 +1988,33 @@ async def run_tool(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
 
     source = await rt.source(refs.resolve(node["datasource"], get))
     result = await rt.call(source, node["tool"], refs.resolve(args, lookup), node, state)
+    save = node.get(flowmedia.SAVE)
+    if isinstance(save, dict) and state.get("run_id"):
+        result = await _save_media(result, save, state, rt)
     return Outcome({"result": result}, data=["result"] if source.kind in DATA_KINDS else [])
+
+
+async def _save_media(result: Any, save: dict[str, Any], state: dict[str, Any], rt: Runtime) -> Any:
+    """The files the tool made, moved into the node's library (save_media); a single-node
+    test has no run and saves nothing (docs/api/media-processing.md)."""
+    if rt.media is None:
+        raise NodeFailure("tool_error", "存进媒体库失败：平台没有配置媒体库")
+    description = refs.render(save.get("description") or "", rt.lookup(state))
+    prober = Prober(rt.media, rt.tools, rt.settings)
+    try:
+        return await save_outputs(
+            result,
+            store=rt.media,
+            settings=rt.settings,
+            prober=prober if prober.enabled else None,
+            library_id=save["library"],
+            run_id=str(state["run_id"]),
+            description=description.strip()[: flowmedia.MAX_DESCRIPTION],
+            tags=flowmedia.save_tags(save),
+            summary=flowmedia.summary,
+        )
+    except SaveError as exc:
+        raise NodeFailure("tool_error", f"存进媒体库失败：{exc}") from exc
 
 
 async def check_agent(node: dict[str, Any], p: Problems, env: CheckEnv) -> None:

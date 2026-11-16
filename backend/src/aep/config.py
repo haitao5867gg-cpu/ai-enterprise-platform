@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     media_dir: Path = Path("/data/media")
     media_max_file_mb: int = Field(1024, gt=0)
     media_max_items: int = Field(5000, gt=0)
+    # The media processing connector (docs/api/media-processing.md): probes uploads and
+    # files a run saved, and makes thumbnails. Empty: uploads are ready at once.
+    media_connector_url: str = ""
     files_connector_url: str = "http://connector-files:8003"
     # The code sandbox (connectors/sandbox), where code nodes of flow apps run.
     sandbox_url: str = "http://sandbox-relay:8004/mcp"

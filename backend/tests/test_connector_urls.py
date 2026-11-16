@@ -18,6 +18,7 @@ from aep.connector_urls import (
 SETTINGS = Settings(
     connector_hosts=["connector.test", "*.connector.test:*", "127.0.0.1:1"],
     files_connector_url="http://files.test:8003",
+    media_connector_url="http://media.test:8008/mcp",
     default_datasources=[
         {"name": "演示库", "kind": "mysql", "connector_url": "http://demo.test:8002/mcp"}
     ],
@@ -63,6 +64,8 @@ def test_allowlist():
     assert check_url("http://files.test:8003/datasets/x/mcp", SETTINGS)
     assert check_url("http://demo.test:8002/mcp", SETTINGS)
     assert rejected("http://files.test:8004/mcp").code == "host_not_allowed"
+    assert check_url("http://media.test:8008/mcp", SETTINGS)
+    assert rejected("http://media.test:8009/mcp").code == "host_not_allowed"
     elsewhere = rejected("http://elsewhere.example/mcp")
     assert elsewhere.code == "host_not_allowed"
     assert elsewhere.message == TEXT["host_not_allowed"].format(host="elsewhere.example:80")

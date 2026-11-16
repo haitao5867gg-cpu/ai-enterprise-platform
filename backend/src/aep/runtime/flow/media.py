@@ -91,6 +91,48 @@ def check_inputs(start: dict[str, Any], bound: list[dict[str, Any]], add: Add) -
             add(where, "素材输入要选一个绑定到应用的媒体库")
 
 
+SAVE = "save_media"
+MAX_TAGS = 20
+MAX_TAG = 20
+MAX_DESCRIPTION = 500
+
+
+def save_problems(save: Any) -> list[tuple[tuple[str | int, ...], str]]:
+    """What is wrong with a tool node's ``save_media`` (whether the app binds the
+    library for writing is checked with the whole configuration)."""
+    if not isinstance(save, dict):
+        return [((SAVE,), '要是 {"library", "description", "tags"}')]
+    found: list[tuple[tuple[str | int, ...], str]] = []
+    library = save.get("library")
+    if not isinstance(library, str) or not library:
+        found.append(((SAVE, "library"), "要选存进哪个媒体库"))
+    description = save.get("description", "")
+    if not isinstance(description, str) or len(description) > MAX_DESCRIPTION:
+        found.append(((SAVE, "description"), f"说明要是最多 {MAX_DESCRIPTION} 个字符的文字"))
+    tags = save.get("tags", [])
+    if (
+        not isinstance(tags, list)
+        or len(tags) > MAX_TAGS
+        or not all(isinstance(t, str) and 1 <= len(t.strip()) <= MAX_TAG for t in tags)
+    ):
+        found.append(((SAVE, "tags"), f"标签最多 {MAX_TAGS} 个，每个 1–{MAX_TAG} 个字"))
+    return found
+
+
+def check_saves(node: dict[str, Any], bound: list[dict[str, Any]], add: Add) -> None:
+    """A tool node saves its files into a library the app binds for writing."""
+    save = node.get(SAVE)
+    library = save.get("library") if isinstance(save, dict) else None
+    if not isinstance(library, str) or not library:
+        return
+    if not any(b["library_id"] == library and b["access"] == "write" for b in bound):
+        add(["graph", "nodes", node["id"], SAVE, "library"], "存进的媒体库要以“写”权限绑定到应用")
+
+
+def save_tags(save: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(t.strip() for t in save.get("tags") or []))
+
+
 def field_problems(f: dict[str, Any]) -> list[tuple[tuple[str | int, ...], str]]:
     """What is wrong with a media input's own settings (whether its library is bound is
     checked with the whole configuration)."""

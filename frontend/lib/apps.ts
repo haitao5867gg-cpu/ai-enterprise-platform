@@ -148,7 +148,14 @@ export type ToolNode = NodeBase &
     datasource: string;
     tool: string;
     args: Record<string, unknown>;
+    // Files the tool makes are moved into this library (docs/api/media-processing.md).
+    save_media?: SaveMedia | null;
   };
+export type SaveMedia = {
+  library: string;
+  description?: string;
+  tags?: string[];
+};
 export type KnowledgeNode = NodeBase &
   Fallible & {
     type: "knowledge";

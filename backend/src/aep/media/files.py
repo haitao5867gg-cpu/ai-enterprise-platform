@@ -16,6 +16,8 @@ from fastapi import UploadFile
 from aep.media.store import ItemStatus, MediaItem, MediaKind
 
 MAX_FILES = 20
+# Thumbnails sit in this folder of each library, named by item id.
+THUMBNAILS = "_thumbnails"
 # A file name's UTF-8 bytes; leaves room under the usual 255-byte limit.
 MAX_NAME_BYTES = 200
 COPY_BUFFER = 1024 * 1024
@@ -130,9 +132,15 @@ def save_files(files: list[UploadFile], items: list[MediaItem], root: Path) -> N
             shutil.copyfileobj(upload.file, target, COPY_BUFFER)
 
 
+def thumbnail_path(root: Path, item: MediaItem) -> Path:
+    """Where an item's thumbnail is kept: beside the library's item folders."""
+    return root / item.library_id / THUMBNAILS / f"{item.item_id}.jpg"
+
+
 def remove_files(items: list[MediaItem], root: Path) -> None:
     for item in items:
         shutil.rmtree((root / item.rel_path).parent, ignore_errors=True)
+        thumbnail_path(root, item).unlink(missing_ok=True)
 
 
 def remove_library(library_id: str, root: Path) -> None:

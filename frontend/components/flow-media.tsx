@@ -2,18 +2,20 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { FlowConfig } from "../lib/apps";
+import type { FlowConfig, SaveMedia } from "../lib/apps";
+import { issuesUnder, type Variable } from "../lib/flow-edit";
 import { useT } from "../lib/i18n/client";
 import {
   cachedMediaLibraries,
   MAX_BINDINGS,
   mediaAccessLabels,
+  splitMediaTags,
   type MediaAccess,
   type MediaBinding,
   type MediaLibrary,
 } from "../lib/media";
 import { errorMessage } from "../lib/runs";
-import { SelectField } from "./flow-fields";
+import { RefField, SelectField, TextField } from "./flow-fields";
 
 // All media libraries on the platform, or why they could not be read.
 function useLibraries(): { libraries: MediaLibrary[] | null; error: string } {
@@ -39,14 +41,105 @@ function useLibraries(): { libraries: MediaLibrary[] | null; error: string } {
 // The libraries the configuration binds, by name, for the start node's media inputs.
 export function useBoundLibraries(
   config: FlowConfig,
+  access?: MediaAccess,
 ): { value: string; label: string }[] {
   const { libraries } = useLibraries();
-  return (config.media?.libraries ?? []).map((binding) => ({
-    value: binding.library_id,
-    label:
-      libraries?.find((library) => library.library_id === binding.library_id)
-        ?.name ?? binding.library_id,
-  }));
+  return (config.media?.libraries ?? [])
+    .filter((binding) => !access || binding.access === access)
+    .map((binding) => ({
+      value: binding.library_id,
+      label:
+        libraries?.find((library) => library.library_id === binding.library_id)
+          ?.name ?? binding.library_id,
+    }));
+}
+
+// A tool node's 产出的文件存进媒体库 (docs/api/media-processing.md): which library the
+// files it makes are moved into, with the description and tags their items get.
+export function SaveMediaFields({
+  save,
+  config,
+  variables,
+  issues,
+  onChange,
+}: {
+  save: SaveMedia | null | undefined;
+  config: FlowConfig;
+  variables: Variable[];
+  issues: Record<string, string> | undefined;
+  onChange: (save: SaveMedia | null) => void;
+}) {
+  const t = useT();
+  const writable = useBoundLibraries(config, "write");
+  const library = save?.library ?? "";
+  const known = writable.some((choice) => choice.value === library);
+  // What is typed stays until the box loses focus; a new value from outside replaces it.
+  const saved = (save?.tags ?? []).join(", ");
+  const [tags, setTags] = useState(saved);
+  const [shown, setShown] = useState(saved);
+  if (shown !== saved) {
+    setShown(saved);
+    setTags(saved);
+  }
+  const commitTags = () => {
+    if (!save) return;
+    const list = splitMediaTags(tags);
+    setTags(list.join(", "));
+    onChange({ ...save, tags: list });
+  };
+  return (
+    <fieldset className="list-editor">
+      <legend>{t("产出的文件存进媒体库")}</legend>
+      <SelectField
+        label={t("存进哪个库")}
+        value={library}
+        issues={issuesUnder(issues, "save_media.library")}
+        help={
+          writable.length
+            ? t("工具产出的文件移进这个库，后面的节点拿到库里的素材。")
+            : t("先在“媒体库”里以“写”权限绑定一个库。")
+        }
+        onChange={(value) =>
+          onChange(
+            value
+              ? { description: "", tags: [], ...save, library: value }
+              : null,
+          )
+        }
+        choices={[
+          { value: "", label: t("不存（文件 24 小时后删掉）") },
+          ...writable,
+          ...(library && !known
+            ? [
+                {
+                  value: library,
+                  label: t("{library}（没有以“写”绑定）", { library }),
+                },
+              ]
+            : []),
+        ]}
+      />
+      {save && (
+        <>
+          <RefField
+            label={t("素材说明")}
+            value={save.description ?? ""}
+            variables={variables}
+            issues={issuesUnder(issues, "save_media.description")}
+            onChange={(description) => onChange({ ...save, description })}
+          />
+          <TextField
+            label={t("素材标签")}
+            value={tags}
+            help={t("用逗号或空格隔开")}
+            issues={issuesUnder(issues, "save_media.tags")}
+            onChange={setTags}
+            onBlur={commitTags}
+          />
+        </>
+      )}
+    </fieldset>
+  );
 }
 
 function withoutMedia(config: FlowConfig): FlowConfig {
