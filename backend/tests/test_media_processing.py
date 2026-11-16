@@ -3,6 +3,7 @@ by the media processing connector, thumbnails, and tool nodes that save the file
 made into a media library."""
 
 import asyncio
+import contextlib
 import threading
 import uuid
 from typing import Any
@@ -577,3 +578,114 @@ async def test_what_saving_refuses(tmp_path, monkeypatch):
         [item] = await p.saved(p.footage)
         assert (item.status, item.duration_seconds) == ("ready", None)
         assert saved == [summary(item)]
+
+
+async def test_a_file_from_a_stock_site_keeps_its_source_and_is_saved_once(tmp_path):
+    async with Processing(tmp_path) as p:
+        root = p.settings.media_dir
+        page = "https://pixabay.com/videos/id-12345/"
+        stock = {
+            "kind": "stock",
+            "site": "Pixabay",
+            "url": page,
+            "author": "某某",
+            "license": "Pixabay Content License",
+            "license_url": "https://pixabay.com/service/license-summary/",
+        }
+
+        def ref(name: str, source: Any = None) -> dict[str, Any]:
+            (root / "_work" / "s").mkdir(parents=True, exist_ok=True)
+            (root / "_work" / "s" / name).write_bytes(b"\x00" * 10)
+            found = {"path": f"_work/s/{name}", "name": name}
+            return {"aep_file": found if source is None else {**found, "source": source}}
+
+        async def save(value: Any, run_id: str) -> Any:
+            return await save_outputs(
+                value,
+                store=p.media,
+                settings=p.settings,
+                prober=p.prober,
+                library_id=p.footage,
+                run_id=run_id,
+                summary=summary,
+            )
+
+        # Two files from one page in a batch are saved once; a source that breaks the
+        # rules, or is not a stock site's, leaves the file the run's.
+        value = {
+            "items": [
+                ref("a.mp4", stock),
+                ref("b.mp4", stock),
+                ref("c.mp4", {**stock, "url": "https://x/2", "license_url": "ftp://x"}),
+                ref("d.mp4", {"kind": "upload", "site": "Pixabay"}),
+                ref("e.mp4", "Pixabay"),
+                # A stock site's file needs the page it came from.
+                ref("h.mp4", {"kind": "stock", "site": "Pixabay"}),
+                ref("i.mp4", {**stock, "url": "  "}),
+            ]
+        }
+        got = await save(value, "r-1")
+        items = {i.name: i for i in await p.saved(p.footage)}
+        runs = ["c.mp4", "d.mp4", "e.mp4", "h.mp4", "i.mp4"]
+        assert sorted(items) == ["a.mp4", *runs]
+        assert items["a.mp4"].source == {**stock, "run_id": None}
+        for name in runs:
+            assert items[name].source == {"kind": "run", "run_id": "r-1"}
+        assert got["items"][0] == got["items"][1] == summary(items["a.mp4"])
+        assert "s/b.mp4" in p.work()
+
+        # The run's files list only what the run made.
+        made = await p.media.run_items("r-1", [p.footage], 50)
+        assert sorted(i.name for i in made) == runs
+
+        # Another run downloads the same page again: the library's item is used.
+        again = await save({"video": ref("f.mp4", stock)}, "r-2")
+        assert again == {"video": summary(items["a.mp4"])}
+        assert len(await p.saved(p.footage)) == 6
+
+        # Once that item's file is gone, the page is saved anew.
+        (root / items["a.mp4"].rel_path).unlink()
+        fresh = await save({"video": ref("g.mp4", stock)}, "r-3")
+        assert fresh["video"]["item_id"] != items["a.mp4"].item_id
+        assert fresh["video"]["name"] == "g.mp4"
+
+
+async def test_two_runs_saving_one_stock_page_at_once_keep_one_item(tmp_path):
+    async with Processing(tmp_path) as p:
+        root = p.settings.media_dir
+        stock = {"kind": "stock", "site": "Pixabay", "url": "https://pixabay.com/videos/id-7/"}
+        both = asyncio.Event()
+        probing = 0
+
+        class Slow(Prober):
+            # Each save waits in its probe until the other one has started: without
+            # taking turns, both would find the page missing and save it.
+            async def look(self, path: str, thumbnail: bool) -> Any:
+                nonlocal probing
+                probing += 1
+                if probing == 2:
+                    both.set()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(both.wait(), 0.3)
+                return await super().look(path, thumbnail)
+
+        slow = Slow(p.media, p.service._ctx.tools, p.settings)
+
+        async def save(name: str, run_id: str) -> Any:
+            (root / "_work" / run_id).mkdir(parents=True, exist_ok=True)
+            (root / "_work" / run_id / name).write_bytes(VIDEO)
+            ref = {"aep_file": {"path": f"_work/{run_id}/{name}", "name": name, "source": stock}}
+            return await save_outputs(
+                {"video": ref},
+                store=p.media,
+                settings=p.settings,
+                prober=slow,
+                library_id=p.footage,
+                run_id=run_id,
+                summary=summary,
+            )
+
+        first, second = await asyncio.gather(save("a.mp4", "r-1"), save("b.mp4", "r-2"))
+        assert first == second
+        assert [i.name for i in await p.saved(p.footage)] == ["a.mp4"]
+        assert probing == 1  # the second save found the first one's item
