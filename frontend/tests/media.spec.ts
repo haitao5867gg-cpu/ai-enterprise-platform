@@ -211,6 +211,32 @@ test("a flow app binds a library, its runs pick an item, and the run page lists 
   await expect(
     picker.locator("option", { hasText: "卧推侧面.mp4" }),
   ).toHaveCount(0);
+  // With the media connector set an upload is probed first: it is chosen only once
+  // it is ready, and one that is not usable media is said so and not chosen.
+  const box = form.locator(".media-picker");
+  await form
+    .getByLabel("上传一个素材")
+    .setInputFiles([file("坏待检查.m4a", "audio/mp4")]);
+  await expect(box.getByRole("status")).toContainText(
+    "正在检查「坏待检查.m4a」",
+  );
+  await expect(box.getByRole("alert")).toContainText(
+    "「坏待检查.m4a」用不了：探测失败：不是有效的视频：没有画面",
+  );
+  await expect(picker).toHaveValue("");
+  await form
+    .getByLabel("上传一个素材")
+    .setInputFiles([file("配音待检查.m4a", "audio/mp4")]);
+  await expect(box.getByRole("status")).toContainText(
+    "正在检查「配音待检查.m4a」",
+  );
+  await expect(picker).toBeDisabled();
+  await expect(picker.locator("option:checked")).toContainText(
+    "配音待检查.m4a",
+  );
+  await expect(box.getByRole("status")).toHaveCount(0);
+  await expect(box.getByRole("alert")).toHaveCount(0);
+
   await form
     .getByLabel("上传一个素材")
     .setInputFiles([file("配音0116.m4a", "audio/mp4")]);

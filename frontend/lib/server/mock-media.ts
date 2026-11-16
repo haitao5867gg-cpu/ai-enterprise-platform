@@ -15,7 +15,8 @@ type StoredLibrary = Omit<
   MediaLibrary,
   "item_count" | "total_bytes" | "status_counts"
 >;
-type StoredItem = { item: MediaItem; bytes: Uint8Array };
+// `looks`: how often a probed upload was asked for (it is ready on the second look).
+type StoredItem = { item: MediaItem; bytes: Uint8Array; looks?: number };
 type Store = {
   libraries: Map<string, StoredLibrary>;
   items: Map<string, StoredItem>;
@@ -235,6 +236,8 @@ async function upload(request: Request, library: StoredLibrary) {
         description: typeof description === "string" ? description : "",
         tags,
         uploaded_by: typeof by === "string" && by.trim() ? by.trim() : null,
+        // As if the media connector were set: a name with 待检查 is probed first.
+        status: file.name.includes("待检查") ? "processing" : "ready",
       },
     );
     store.items.set(item.item_id, {
@@ -385,6 +388,16 @@ export async function mockMedia(
     if (typeof body.usable === "boolean") item.usable = body.usable;
     if (isRecord(body.source)) item.source = body.source as MediaSource;
     item.updated_at = now();
+  }
+  if (method === "GET" && entry.item.status === "processing") {
+    // The probe finishes on the second look; a name with 坏 is not usable media.
+    entry.looks = (entry.looks ?? 0) + 1;
+    if (entry.looks >= 2) {
+      const broken = entry.item.name.includes("坏");
+      entry.item.status = broken ? "error" : "ready";
+      entry.item.error = broken ? "探测失败：不是有效的视频：没有画面" : null;
+      entry.item.updated_at = now();
+    }
   }
   return mockJson(entry.item);
 }
