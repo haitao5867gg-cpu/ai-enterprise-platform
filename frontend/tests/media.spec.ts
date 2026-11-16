@@ -307,6 +307,28 @@ test("a flow app binds a library, its runs pick an item, and the run page lists 
     "src",
     `/api/media-libraries/${library.library_id}/items/${voice.item_id}/file`,
   );
+
+  // An eval case is held the same way: it cannot be saved with the item chosen before
+  // while a replacement is checked.
+  await page.goto(`/apps/${app}#release`);
+  await page
+    .getByRole("region", { name: "评测集" })
+    .getByRole("button", { name: "新增用例" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "新增用例" });
+  const saveCase = dialog.getByRole("button", { name: "放进评测集" });
+  await expect(saveCase).toBeEnabled();
+  await dialog
+    .getByLabel("上传一个素材")
+    .setInputFiles([file("配音3待检查.m4a", "audio/mp4")]);
+  await expect(
+    dialog.locator(".media-picker").getByRole("status"),
+  ).toContainText("正在检查「配音3待检查.m4a」");
+  await expect(saveCase).toBeDisabled();
+  await expect(
+    dialog.locator("#eval-case-input-voiceover option:checked"),
+  ).toContainText("配音3待检查.m4a");
+  await expect(saveCase).toBeEnabled();
 });
 
 test("the run's media picker lists a big library page by page", async ({
