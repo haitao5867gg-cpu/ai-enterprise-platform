@@ -31,11 +31,13 @@ class Source(BaseModel):
 
 
 def stock_source(value: Any) -> dict[str, Any] | None:
-    """A file reference's ``source`` when it names a stock site and follows the rules
-    above; anything else is not one (the file is then recorded as the run's)."""
+    """A file reference's ``source`` when it names a stock site, with the page it came
+    from, and follows the rules above; anything else is not one (the file is then
+    recorded as the run's)."""
     if not isinstance(value, dict) or value.get("kind") != "stock":
         return None
     try:
-        return Source.model_validate(value).model_dump()
+        found = Source.model_validate(value).model_dump()
     except ValidationError:
         return None
+    return found if found["url"] else None

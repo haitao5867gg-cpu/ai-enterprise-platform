@@ -13,9 +13,11 @@ saved a second time.
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import hashlib
 import uuid
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +99,11 @@ def _name(ref: dict[str, Any], path: str) -> str:
     return Path(name.replace("\\", "/")).name.strip()
 
 
+# Saves of one stock page into one library take turns, so two runs downloading it at
+# the same time keep one item: the later one finds the first one's item.
+_PAGES: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = weakref.WeakValueDictionary()
+
+
 async def save_outputs(
     value: Any,
     *,
@@ -116,6 +123,40 @@ async def save_outputs(
         return value
     if len(refs) > MAX_SAVED:
         raise SaveError(f"一次最多存 {MAX_SAVED} 个文件，工具产出了 {len(refs)} 个")
+    pages = {stock["url"] for ref in refs if (stock := stock_source(ref.get("source")))}
+    async with contextlib.AsyncExitStack() as turns:
+        for page in sorted(pages):  # one order, so two saves never wait on each other
+            lock = _PAGES.get((library_id, page))
+            if lock is None:
+                lock = _PAGES[(library_id, page)] = asyncio.Lock()
+            await turns.enter_async_context(lock)
+        return await _save(
+            value,
+            refs,
+            store=store,
+            settings=settings,
+            prober=prober,
+            library_id=library_id,
+            run_id=run_id,
+            description=description,
+            tags=tags,
+            summary=summary,
+        )
+
+
+async def _save(
+    value: Any,
+    refs: list[dict[str, Any]],
+    *,
+    store: MediaStore,
+    settings: Settings,
+    prober: Prober | None,
+    library_id: str,
+    run_id: str,
+    description: str,
+    tags: tuple[str, ...],
+    summary: Callable[[MediaItem], dict[str, Any]],
+) -> Any:
     library = await store.library(library_id)
     if library is None:
         raise SaveError("没有这个媒体库")
