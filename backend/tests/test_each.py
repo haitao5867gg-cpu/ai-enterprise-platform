@@ -3,12 +3,13 @@
 
 import asyncio
 import copy
+import dataclasses
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from aep.runtime.flow import each, files, graph
+from aep.runtime.flow import each, files, graph, refs
 from aep.runtime.flow.nodes import Runtime
 from aep.tools import jobs
 from tests import fake_connector
@@ -229,6 +230,26 @@ async def test_a_failed_item_stops_the_node_or_is_skipped():
         run = await p.run("cut", {"topic": "x"})
         assert run["status"] == "error"
         assert "每一项都失败了，第 1 项：工具报错：没找到「冬天减脂难吗」的素材" in run["error"]
+
+
+async def test_after_a_failed_item_no_waiting_item_starts(monkeypatch):
+    # Which items' steps were started, noted before the step awaits anything.
+    tool = each.TYPES["tool"]
+    started: list[str] = []
+
+    async def run(node: dict, state: dict, rt: Runtime) -> Any:
+        if node["id"] == "pick":
+            started.append(state["vars"][refs.ITEM]["line"])
+        return await tool.run(node, state, rt)
+
+    monkeypatch.setitem(each.TYPES, "tool", dataclasses.replace(tool, run=run))
+    async with Each() as p:
+        p.studio.failing = {"冬天减脂难吗": 9}
+        await p.app(p.config(concurrency=1))
+        result = await p.run("cut", {"topic": "x"})
+        assert result["status"] == "error"
+        assert "第 1 项" in result["error"]
+        assert started == ["冬天减脂难吗"]
 
 
 async def test_a_retry_tries_again_only_the_item_that_failed():

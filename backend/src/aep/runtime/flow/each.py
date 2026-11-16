@@ -142,37 +142,51 @@ async def run_each(node: dict[str, Any], state: dict[str, Any], rt: Runtime) -> 
             message += f"，跳过 {len(failed)} 项"
         await rt.report_progress(run_id, node["id"], done / total, message)
 
+    stopping = False
+
     async def one(index: int, value: Any) -> None:
-        nonlocal done
+        nonlocal done, stopping
         position = index + 1
         async with gate:
-            item_state = _with_item(state, value, position, data, quoted)
-            failure = NodeFailure("model_error", "")
-            for attempt in range(attempts):
-                try:
-                    outcome = await spec.run(body, item_state, inner)
-                except NodeFailure as exc:
-                    failure = exc
-                else:
-                    outcomes[index] = outcome
-                    results[index] = outcome.outputs
-                    break
-                if failure.type == INPUT_ERROR:
-                    break
-                if attempt + 1 < attempts:
-                    await asyncio.sleep(interval)
-            if outcomes[index] is None:
-                if not skip:
-                    raise _Failed(position, failure)
-                failed.append(
-                    {
-                        "position": position,
-                        "error_type": failure.type,
-                        "error_message": failure.message,
-                    }
-                )
-            done += 1
-            await report()
+            # The node is stopping: an item that was waiting for a slot does not start.
+            if stopping:
+                return
+            try:
+                await attempt_item(index, value, position)
+            except BaseException:
+                # Set while this item still holds its slot, before a waiting one gets it.
+                stopping = True
+                raise
+
+    async def attempt_item(index: int, value: Any, position: int) -> None:
+        nonlocal done
+        item_state = _with_item(state, value, position, data, quoted)
+        failure = NodeFailure("model_error", "")
+        for attempt in range(attempts):
+            try:
+                outcome = await spec.run(body, item_state, inner)
+            except NodeFailure as exc:
+                failure = exc
+            else:
+                outcomes[index] = outcome
+                results[index] = outcome.outputs
+                break
+            if failure.type == INPUT_ERROR:
+                break
+            if attempt + 1 < attempts:
+                await asyncio.sleep(interval)
+        if outcomes[index] is None:
+            if not skip:
+                raise _Failed(position, failure)
+            failed.append(
+                {
+                    "position": position,
+                    "error_type": failure.type,
+                    "error_message": failure.message,
+                }
+            )
+        done += 1
+        await report()
 
     with jobs.abandonable() as abandon:
         tasks = [asyncio.ensure_future(one(i, v)) for i, v in enumerate(items)]
