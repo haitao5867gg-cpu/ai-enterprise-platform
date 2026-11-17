@@ -240,3 +240,4 @@ async def test_app_keys_carry_on_from_their_app_runs():
         theirs = await p.run("other", {"note": "别的应用"})
         refused = await start({"note": "改", "previous": theirs["run_id"]})
         assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"] == "上一版：这个应用没有这次运行"

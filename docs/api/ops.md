@@ -46,7 +46,7 @@
 
 智能体应用第 1 批新增，所有应用都有，在应用页「概览」标签显示，借鉴 Copilot Studio 的「分析」页（会话量、回答率、点赞点踩、用到的工具），放在已有标签里，不另开页。
 
-`GET /apps/{app}/usage?days=30`（`days` 只能是 7、30、90，默认 30；搭建者）返回：
+`GET /apps/{app}/usage?days=30`（`days` 只能是 7、30、90，默认 30；搭建者）返回下面的内容；外部应用用自己的 API 密钥调 `GET /v1/apps/{app}/usage`，拿到的一样（[app-access.md](app-access.md)）：
 
 ```jsonc
 {
