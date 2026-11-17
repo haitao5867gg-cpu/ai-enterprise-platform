@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, StringConstraints
 
+from aep import usage
 from aep.api.conversations import ConversationDetail, detail
 from aep.api.runs import ProjectChoice
 from aep.api.validation import NoNulls, chinese_errors
@@ -23,6 +24,8 @@ from aep.app_access import (
     start,
 )
 from aep.auth import who
+from aep.feedback import MemoryFeedbackStore
+from aep.ops import DAYS
 from aep.runtime.service import (
     ConversationBusy,
     InvalidValues,
@@ -174,9 +177,15 @@ async def _own_run(request: Request, key: ApiKey, run_id: str) -> Any:
 
 
 def _invalid(where: str, exc: InvalidValues) -> RequestValidationError:
+    # The reason goes with each error, so the 422 says what is wrong (chinese_errors).
     return RequestValidationError(
         [
-            {"loc": ["body", where, k], "msg": message, "type": "value_error"}
+            {
+                "loc": ["body", where, k],
+                "msg": message,
+                "type": "value_error",
+                "ctx": {"error": message},
+            }
             for k, message in exc.problems.items()
         ]
     )
@@ -220,6 +229,21 @@ async def get_conversation(conversation_id: str, request: Request) -> Conversati
     if found is None or found.owner != key_owner(key) or found.app != key.app:
         raise HTTPException(404, "没有找到这个会话")
     return ConversationDetail(**await detail(service, found))
+
+
+@router.get("/v1/apps/{app}/usage")
+async def app_usage(
+    app: str, request: Request, days: Annotated[int, Query()] = 30
+) -> dict[str, Any]:
+    """How the key's app is used, as the app page shows it (docs/api/ops.md, 应用的使用情况):
+    an external app's own page shows it to its users."""
+    key = await api_key(request)
+    if key.app != app:
+        raise HTTPException(403, f"这个密钥不能调用应用 {app}")
+    if days not in DAYS:
+        raise HTTPException(422, "days 只能是 7、30 或 90")
+    feedback = getattr(request.app.state, "feedback", None) or MemoryFeedbackStore()
+    return await usage.app_usage(app, days, run_service(request), request.app.state.ops, feedback)
 
 
 @router.get("/v1/runs/{run_id}")

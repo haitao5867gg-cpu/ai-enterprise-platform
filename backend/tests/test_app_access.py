@@ -10,6 +10,8 @@ from mcp.client.streamable_http import streamable_http_client
 
 from aep.app_access import ApiKeys, MemoryApiKeyStore, digest
 from aep.app_mcp import input_schema
+from aep.models import MemoryCallStore, MemorySettingStore
+from aep.ops import MemoryBudgetStore, MemoryComputeStore, Ops
 from tests.test_auth import Platform, signed
 from tests.test_flow_apps import end, flow
 
@@ -145,6 +147,8 @@ async def test_forms_can_be_answered_and_keys_see_only_their_apps_runs():
     async with p.client() as api:
         bad = await api.post("/v1/apps/orders/runs", json={"input": {}}, headers=bearer(orders))
         assert bad.status_code == 422
+        # The 422 says what is wrong with the input, as POST /runs does.
+        assert bad.json()["detail"] == "问题不能为空"
         run = (
             await api.post(
                 "/v1/apps/orders/runs",
@@ -266,3 +270,37 @@ async def test_mcp_needs_the_apps_key(app, key_app, status):
             headers=headers | {"Accept": "application/json, text/event-stream"},
         )
     assert resp.status_code == status
+
+
+async def test_a_key_reads_its_apps_usage():
+    p = Access()
+    p.app.state.ops = Ops(
+        p.service._store,  # noqa: SLF001
+        MemoryCallStore(),
+        MemoryComputeStore(),
+        MemoryBudgetStore(),
+        MemorySettingStore(),
+        p.service.app_titles,
+    )
+    await p.form_app()
+    orders = await p.key("orders")
+    async with p.client() as api:
+        started = await api.post(
+            "/v1/apps/orders/runs", json={"input": {"question": "补录"}}, headers=bearer(orders)
+        )
+        assert started.status_code == 201, started.text
+        got = await api.get("/v1/apps/orders/usage", headers=bearer(orders))
+        assert got.status_code == 200, got.text
+        usage = got.json()
+        # The same as the app page shows (docs/api/ops.md, 应用的使用情况).
+        assert usage["days"] == 30 and usage["totals"]["runs"] == 1
+        assert usage["entries"]["api"] == 1 and "prompt_tokens" in usage["totals"]
+        week = await api.get("/v1/apps/orders/usage", params={"days": 7}, headers=bearer(orders))
+        assert week.status_code == 200 and week.json()["days"] == 7
+        other = await api.get("/v1/apps/hello/usage", headers=bearer(orders))
+        assert other.status_code == 403
+        assert other.json()["detail"] == "这个密钥不能调用应用 hello"
+        odd = await api.get("/v1/apps/orders/usage", params={"days": 3}, headers=bearer(orders))
+        assert odd.status_code == 422
+        assert (await api.get("/v1/apps/orders/usage")).status_code == 401
+    await p.service.wait_idle()

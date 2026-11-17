@@ -689,7 +689,7 @@ async def test_the_app_api_and_mcp_go_on_with_a_conversation():
         empty = await api.post(
             path, json={"input": {}, "new_conversation": True}, headers=bearer(secret)
         )
-        assert empty.status_code == 422 and "input.message" in empty.json()["detail"]
+        assert empty.status_code == 422 and empty.json()["detail"] == "消息不能为空"
         # Nobody on the platform owns a key's conversation (no admins with sign-in off).
         assert (await api.get(f"/conversations/{cid}")).status_code == 404
         assert (await api.get("/conversations")).json() == []

@@ -64,13 +64,14 @@
 ```
 
 - `POST /v1/apps/{app}/runs`，请求体 `{"input": {…}, "wait": 30, "project": {…}}` → 201 `RunResult`。
-  - `input` 同 `POST /runs`：编排应用按开始节点的 `inputs` 校验，代码应用 `etl` 是 `{"request": "…"}`。不合格返回 422。
+  - `input` 同 `POST /runs`：编排应用按开始节点的 `inputs` 校验，代码应用 `etl` 是 `{"request": "…"}`。不合格返回 422，`detail` 是第一处不合格的原因（比如「问题不能为空」「上一版：这次运行还没做完，做完才能接着改」），外部页面可以直接显示给用户。
   - `wait`：最多等多少秒（0–60，默认 0）再返回；运行在这之前结束或停下来等人，就提前返回。
   - `project`：可选，同 `POST /runs`（projects.md）。
   - `conversation_id`、`new_conversation`：可选，多轮对话用，见“会话”。
   - 运行的是应用的当前版本。
 - `GET /v1/runs/{run_id}?wait=0` → `RunResult`。只能查这个密钥所属应用的运行，别的返回 404「没有找到这次运行」。`wait` 同上：运行还在跑时最多等这么久。
-- `POST /v1/runs/{run_id}/answer`，请求体 `{"values": {…}, "wait": 0}` → `RunResult`。只能填表单（`pending.kind` 是 `form`）；等的是审批时返回 403「这一步要审批者在平台上确认」，没在等返回 409「这次运行现在没有在等表单」。
+- `POST /v1/runs/{run_id}/answer`，请求体 `{"values": {…}, "wait": 0}` → `RunResult`。只能填表单（`pending.kind` 是 `form`）；等的是审批时返回 403「这一步要审批者在平台上确认」，没在等返回 409「这次运行现在没有在等表单」。填得不合格同样 422，`detail` 是原因。
+- `GET /v1/apps/{app}/usage?days=30` → 这个应用的使用情况，和应用页「概览」看到的一样（运行数、成功率、模型调用次数、tokens、费用、按天的运行数等），格式见 [ops.md](ops.md)“应用的使用情况”。外部应用的页面用它给自己的用户看用量（比如教练页面的「统计」）。`days` 只能是 7、30、90，别的 422；密钥不属于这个应用 403「这个密钥不能调用应用 xxx」。运行包（`AEP_MODE=runtime`）上同样能用。
 
 应用绑定了媒体库时，`/v1` 还能上传、列出、下载素材，运行的输入可以是素材，见 [media.md](media.md)“应用用媒体库”。
 
