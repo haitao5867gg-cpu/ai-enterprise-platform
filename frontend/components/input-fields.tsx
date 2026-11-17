@@ -130,6 +130,14 @@ export function InputFields({
                   ))
                 )}
               </select>
+            ) : field.type === "run" ? (
+              <input
+                {...common}
+                type="text"
+                placeholder="run_…"
+                value={String(values[field.key] ?? "")}
+                onChange={(e) => change(e.target.value)}
+              />
             ) : (
               <input
                 {...common}
@@ -167,6 +175,11 @@ export function InputFields({
                   ))}
                 </div>
               )}
+            {field.type === "run" && (
+              <span className="field-hint">
+                {t("这个应用以前做完的一次运行的 id，在它的结果上接着改")}
+              </span>
+            )}
             {field.max_length !== undefined && (
               <span className="field-hint">
                 {t("最多 {n} 个字符", { n: field.max_length })}

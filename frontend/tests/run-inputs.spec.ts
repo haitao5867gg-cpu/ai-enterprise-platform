@@ -99,3 +99,37 @@ test("a step is decided under a name: the page asks for it before sending", asyn
   });
   await expect(page.getByRole("heading", { name: "运行结果" })).toBeVisible();
 });
+
+test("a run input takes the id of an earlier run to carry on from", async ({
+  page,
+}) => {
+  // The app as the new-run page reads it, with an input of type run (flow-apps.md,
+  // 接着以前的运行改).
+  await page.route("**/api/apps/retail-etl-v2", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const response = await route.fetch();
+    const detail = await response.json();
+    detail.inputs = [
+      ...(detail.inputs ?? []),
+      { key: "previous", label: "在哪一版上改", type: "run", required: false },
+    ];
+    await route.fulfill({ response, json: detail });
+  });
+  await page.goto("/runs/new?app=retail-etl-v2");
+  const form = page.getByRole("form", { name: "新建运行" });
+  const field = form.getByLabel("在哪一版上改");
+  await expect(field).toHaveAttribute("placeholder", "run_…");
+  await expect(form).toContainText(
+    "这个应用以前做完的一次运行的 id，在它的结果上接着改",
+  );
+  await field.fill("run_0f3a");
+  await form.locator("#input-request").fill("把第 3 个镜头换掉");
+  const sent = page.waitForRequest(
+    (r) => r.url().endsWith("/api/runs") && r.method() === "POST",
+  );
+  await form.getByRole("button", { name: "开始运行" }).click();
+  expect((await sent).postDataJSON()).toMatchObject({
+    app: "retail-etl-v2",
+    input: { request: "把第 3 个镜头换掉", previous: "run_0f3a" },
+  });
+});

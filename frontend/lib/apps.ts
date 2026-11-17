@@ -25,7 +25,10 @@ export type InputType =
   | "select"
   | "datasource"
   // An item of a media library the app binds (docs/api/media.md, 素材输入).
-  | "media";
+  | "media"
+  // An earlier run of the same app, to carry on from (start inputs only;
+  // docs/api/flow-apps.md, 接着以前的运行改).
+  | "run";
 export type Input<T extends InputType = InputType> = {
   key: string;
   label: string;
@@ -41,7 +44,9 @@ export type Input<T extends InputType = InputType> = {
   library?: string;
   kinds?: MediaKind[];
 };
-export type FormField = Input<Exclude<InputType, "datasource" | "media">>;
+export type FormField = Input<
+  Exclude<InputType, "datasource" | "media" | "run">
+>;
 export type ValueType = "string" | "number" | "boolean" | "array" | "object";
 export type OutputField = {
   key: string;

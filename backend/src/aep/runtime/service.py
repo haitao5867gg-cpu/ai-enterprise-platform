@@ -405,14 +405,53 @@ class RunService:
         """The media libraries (docs/api/media.md)."""
         return self._ctx.media
 
-    async def _check_input(self, fields: list[dict[str, Any]], given: dict[str, Any]) -> None:
+    async def _check_input(
+        self, app: str, fields: list[dict[str, Any]], given: dict[str, Any]
+    ) -> None:
         """A new run's input against the start node's inputs: ``InvalidValues`` when it does
-        not do, the media items it names included (docs/api/media.md, 素材输入)."""
+        not do, the media items (docs/api/media.md, 素材输入) and earlier runs it names
+        included."""
         _, problems = flownodes.answers(fields, given)
         if not problems:
             problems = await flowmedia.value_problems(self._ctx.media, fields, given)
+            problems |= await self._run_problems(app, fields, given)
         if problems:
             raise InvalidValues(problems)
+
+    async def _run_problems(
+        self, app: str, fields: list[dict[str, Any]], given: dict[str, Any]
+    ) -> dict[str, str]:
+        """Why the runs given for run inputs cannot be carried on from, by input key: a run
+        of the same app that is done (docs/api/flow-apps.md, "接着以前的运行改")."""
+        problems: dict[str, str] = {}
+        for f in fields:
+            value = given.get(f["key"])
+            if f.get("type") != flownodes.RUN or not isinstance(value, str) or not value.strip():
+                continue
+            found = await self._store.get(value.strip())
+            if found is None or found.app != app:
+                problems[f["key"]] = f"{f['label']}：这个应用没有这次运行"
+            elif found.status in ("running", "waiting"):
+                problems[f["key"]] = f"{f['label']}：这次运行还没做完，做完才能接着改"
+            elif found.status != "done":
+                problems[f["key"]] = f"{f['label']}：这次运行没有做成，不能接着改"
+        return problems
+
+    async def earlier_run(self, run_id: str) -> dict[str, Any] | None:
+        """What a start input of type run puts out: the earlier run's id, version, time,
+        input and result; None when it is gone."""
+        try:
+            view = await self.get(run_id)
+        except RunNotFound:
+            return None
+        record = view.record
+        return {
+            "run_id": record.run_id,
+            "app_version": record.app_version,
+            "created_at": record.created_at.isoformat(),
+            "input": record.input,
+            "result": view.result if record.status == "done" else None,
+        }
 
     @property
     def code_apps(self) -> list[str]:
@@ -501,6 +540,7 @@ class RunService:
             report_progress=self.report_progress,
             run_cancelled=self.run_cancelled,
             media=self._ctx.media,
+            earlier_run=self.earlier_run,
         )
 
     async def report_progress(
@@ -862,7 +902,7 @@ class RunService:
             config = found.config
         if kind == "flow":
             config = self.flow_config(app, config)
-            await self._check_input(flowgraph.inputs(config), input)
+            await self._check_input(app, flowgraph.inputs(config), input)
         bound = await self._bind(app, kind, config, project)
         platform = policy.platform_default(self._ctx.settings)
         rules = projects.effective_policy(bound, platform)
@@ -1401,6 +1441,7 @@ class RunService:
         problems |= found
         if not problems:
             problems = await flowmedia.value_problems(self._ctx.media, fields, given)
+            problems |= await self._run_problems(app, fields, given)
         if problems:
             raise InvalidValues(problems)
         # The project is checked as a run's (a turn binds it again each time).

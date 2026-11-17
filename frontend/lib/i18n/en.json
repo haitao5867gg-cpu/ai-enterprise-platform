@@ -1702,5 +1702,7 @@
   "给模型的说明（选填）": "Note for the model (optional)",
   "自动描述": "Auto-describe",
   "要带的标签（选填）": "Required tags (optional)",
-  "请选择能看图的模型": "Choose a model that can see images"
+  "请选择能看图的模型": "Choose a model that can see images",
+  "以前的运行": "Earlier run",
+  "这个应用以前做完的一次运行的 id，在它的结果上接着改": "The id of a finished run of this app, to carry on from its result"
 }

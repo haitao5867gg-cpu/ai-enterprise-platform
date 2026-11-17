@@ -31,6 +31,8 @@ def input_schema(inputs: list[dict[str, Any]] | None) -> dict[str, Any]:
                 prop["description"] += "（数据源 id）"
             elif kind == "media":
                 prop["description"] += "（素材 id，先经 /v1 上传）"
+            elif kind == "run":
+                prop["description"] += "（这个应用以前做完的一次运行的 run_id）"
         if f.get("default") is not None:
             prop["default"] = f["default"]
         properties[f["key"]] = prop
