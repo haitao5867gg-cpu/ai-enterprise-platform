@@ -53,7 +53,10 @@ from aep.tools.mcp import ConnectorUnavailable, McpTools, ToolError, ToolInfo, t
 ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 ID_RULE = "只能用小写字母、数字和下划线，以字母开头，最多 32 个字符"
 MAX_TEXT = 20000
-FIELD_TYPES = ("text", "textarea", "number", "boolean", "select", "datasource", "media")
+# ``run``: an earlier run of the same app, to carry on from its result (start inputs
+# only, docs/api/flow-apps.md "接着以前的运行改").
+RUN = "run"
+FIELD_TYPES = ("text", "textarea", "number", "boolean", "select", "datasource", "media", RUN)
 JSON_TYPES = ("string", "number", "boolean", "array", "object")
 OPS = ("eq", "ne", "contains", "not_contains", "gt", "gte", "lt", "lte", "empty", "not_empty")
 ERROR_TYPES = (
@@ -230,6 +233,9 @@ class Runtime:
     run_cancelled: Callable[[str], Awaitable[bool]] | None = None
     # The media libraries start inputs of type media pick items from (docs/api/media.md).
     media: MediaStore | None = None
+    # What a start input of type run puts out: the summary of that earlier run, or None
+    # when it is gone (docs/api/flow-apps.md, "接着以前的运行改").
+    earlier_run: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None
 
     def lookup(self, state: dict[str, Any]) -> refs.Lookup:
         values = state.get("vars") or {}
@@ -712,10 +718,14 @@ def _field_problems(
     kind = f.get("type")
     if kind == flowmedia.MEDIA and kind not in types:
         found.append((("type",), "只有开始节点的输入可以是素材"))
+    elif kind == RUN and kind not in types:
+        found.append((("type",), "只有开始节点的输入可以是以前的运行"))
     elif kind not in types:
         found.append((("type",), "类型只能是 " + "、".join(types)))
     elif kind == flowmedia.MEDIA:
         found += flowmedia.field_problems(f)
+    elif kind == RUN and f.get("default") is not None:
+        found.append((("default",), "以前的运行不能设默认值"))
     if "required" in f and not isinstance(f["required"], bool):
         found.append((("required",), "required 必须是 true 或 false"))
     if kind == "select":
@@ -744,6 +754,9 @@ def field_problem(f: dict[str, Any], value: Any) -> str | None:
     if kind == flowmedia.MEDIA:
         if not isinstance(value, str):
             return f"{f['label']}要是素材 id"
+    elif kind == RUN:
+        if not isinstance(value, str):
+            return f"{f['label']}要是运行 id"
     elif kind in ("text", "textarea", "datasource"):
         if not isinstance(value, str):
             return f"{f['label']}必须是文字"
@@ -799,15 +812,32 @@ async def run_start(node: dict[str, Any], state: dict[str, Any], rt: Runtime) ->
     fields = node.get("inputs") or []
     given = state.get("input") or {}
     values = {f["key"]: given.get(f["key"], f.get("default")) for f in fields}
+    earlier: list[str] = []
     for f in fields:
         value = values[f["key"]]
-        if f.get("type") != flowmedia.MEDIA or not isinstance(value, str):
+        if f.get("type") not in (flowmedia.MEDIA, RUN) or not isinstance(value, str):
             continue
-        # An optional media input left blank stays empty, as the run's checks allowed.
-        values[f["key"]] = await _media_summary(f, value.strip(), rt) if value.strip() else ""
+        # An optional input left blank stays empty, as the run's checks allowed.
+        if not value.strip():
+            values[f["key"]] = ""
+        elif f["type"] == RUN:
+            values[f["key"]] = await _earlier_run(f, value.strip(), rt)
+            earlier.append(f["key"])
+        else:
+            values[f["key"]] = await _media_summary(f, value.strip(), rt)
     text = _first_text(fields, values)
     said = {"role": "user", "content": text, "actor": state.get("requester")}
-    return Outcome(values, messages=[said] if text else [])
+    # What an earlier run worked out may come from its data: kept as data values, as an
+    # app node keeps what the run it called worked out.
+    return Outcome(values, messages=[said] if text else [], data=earlier)
+
+
+async def _earlier_run(f: dict[str, Any], run_id: str, rt: Runtime) -> dict[str, Any]:
+    """The summary of the earlier run a run input names (checked when the run was made)."""
+    found = await rt.earlier_run(run_id) if rt.earlier_run is not None else None
+    if found is None:
+        raise NodeFailure(INPUT_ERROR, f"{f['label']}：那次运行已经不在了")
+    return found
 
 
 async def _media_summary(f: dict[str, Any], item_id: str, rt: Runtime) -> dict[str, Any]:
@@ -1055,7 +1085,7 @@ async def run_condition(node: dict[str, Any], state: dict[str, Any], rt: Runtime
 
 MAX_QUESTIONS = 20
 MAX_DATA_KEYS = 16
-QUESTION_TYPES = tuple(t for t in FIELD_TYPES if t not in ("datasource", "media"))
+QUESTION_TYPES = tuple(t for t in FIELD_TYPES if t not in ("datasource", "media", RUN))
 APPROVAL_ONLY = "只有确认模式可以设"
 # What an approval produces (a form produces its fields and ``actor``).
 APPROVAL_OUTPUTS = (

@@ -116,6 +116,7 @@ const inputTypes: { value: InputType; label: string }[] = [
   { value: "select", label: "下拉选择" },
   { value: "datasource", label: "数据源" },
   { value: "media", label: "素材" },
+  { value: "run", label: "以前的运行" },
 ];
 const operators: { value: Condition["op"]; label: string }[] = [
   { value: "eq", label: "等于" },
@@ -522,7 +523,8 @@ function InputList<T extends Input>({
               inputTypes.filter(
                 (item) =>
                   (allowDatasource || item.value !== "datasource") &&
-                  (libraries !== undefined || item.value !== "media"),
+                  (libraries !== undefined || item.value !== "media") &&
+                  (start || item.value !== "run"),
               ),
             )}
             onChange={(type) => {
@@ -537,6 +539,8 @@ function InputList<T extends Input>({
                 delete next.library;
                 delete next.kinds;
               }
+              // Which earlier run to carry on from is given at run time.
+              if (type === "run") delete next.default;
               // Examples only fit text: dropped here, not left to fail the save unseen.
               if (type !== "text" && type !== "textarea") {
                 delete next.max_length;
